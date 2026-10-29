@@ -823,8 +823,9 @@ max_output = 128000
 modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
+# Economy tier, same upstream id as Coding Plan; the label stays product-level.
 [[models]]
-id = "deepseek-v4.1-flash"
+id = "deepseek-v4.1-flash-economy"
 provider_id = "ark-agent"
 label = "DeepSeek V4.1 Flash"
 endpoint_type = "chat_completions"

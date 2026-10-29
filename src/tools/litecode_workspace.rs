@@ -340,10 +340,18 @@ fn format_apps(list: &AppList, only: Option<&str>) -> Result<String, String> {
         Some(id) => match list.apps.iter().find(|app| app.id == id) {
             Some(app) => vec![app],
             None => {
+                if let Some(rec) = list.recommendations.iter().find(|rec| rec.id == id) {
+                    return Ok(format_recommendation(rec));
+                }
                 let ids = list
                     .apps
                     .iter()
                     .map(|app| format!("'{}'", app.id))
+                    .chain(
+                        list.recommendations
+                            .iter()
+                            .map(|rec| format!("'{}' (recommendation)", rec.id)),
+                    )
                     .collect::<Vec<_>>()
                     .join(", ");
                 return Err(format!("unknown app id '{id}'.\n\nKnown ids: {ids}\n"));
@@ -358,6 +366,7 @@ fn format_apps(list: &AppList, only: Option<&str>) -> Result<String, String> {
         .filter(|app| !app.source.is_custom())
         .count();
     let custom = list.apps.len() - builtin;
+    let recommendations = list.recommendations.len();
     let mut out = String::new();
     out.push_str(&format!(
         "- registry: workspace '{}' · global '{}'\n",
@@ -366,6 +375,9 @@ fn format_apps(list: &AppList, only: Option<&str>) -> Result<String, String> {
     out.push_str(&format!(
         "- apps: {} (built-in {builtin}, custom {custom})\n",
         list.apps.len()
+    ));
+    out.push_str(&format!(
+        "- external recommendations not registered: {recommendations}\n"
     ));
     if list.registry_errors.is_empty() {
         out.push_str("- registry errors: none\n");
@@ -386,33 +398,69 @@ fn format_apps(list: &AppList, only: Option<&str>) -> Result<String, String> {
 
     for app in selected {
         out.push_str(&format!("\n## {} ('{}')\n", app.name, app.id));
-        let install = if app.builtin_view.is_some() {
-            "no install"
-        } else if app.required_bytes.is_some() {
-            "auto-install"
-        } else {
-            "external install"
-        };
         out.push_str(&format!(
-            "- source: {} · {install} · status: {}\n",
+            "- source: {} · status: {}\n",
             app.source.as_str(),
             app.status.as_str()
         ));
         if !app.description.is_empty() {
             out.push_str(&format!("- {}\n", app.description));
         }
-        if !app.summary.is_empty() {
-            out.push_str(&format!("- note: {}\n", app.summary));
+        if let Some(repo) = app.repo.as_deref() {
+            out.push_str(&format!("- repo: {repo}\n"));
+        }
+        if let Some(docs) = app.docs_url.as_deref() {
+            out.push_str(&format!("- docs: {docs}\n"));
         }
         if let Some(url) = app.url.as_deref() {
             out.push_str(&format!("- url: {url}\n"));
         }
-        if let Some(view) = app.builtin_view {
-            out.push_str(&format!("- launch: built-in panel ('{view}')\n"));
-        }
-        out.push_str(&format!("- data: {} ({})\n", app.data_dir, app.data_scope));
-        if app.builtin_view.is_none() {
-            out.push_str(&format!("- install dir: {}\n", app.install_dir));
+        if let Some(install) = &app.install {
+            out.push_str(&format!(
+                "- install: {}{}\n",
+                if install.installed {
+                    "present"
+                } else {
+                    "missing"
+                },
+                if install.can_install || install.can_uninstall {
+                    " (managed by LiteCode)"
+                } else {
+                    ""
+                }
+            ));
+            if let Some(progress) = &install.progress {
+                let percent = progress
+                    .percent
+                    .map(|p| format!(" {p}%"))
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "- install progress:{percent} {}{}\n",
+                    progress.phase,
+                    progress
+                        .message
+                        .as_deref()
+                        .map(|message| format!(" — {message}"))
+                        .unwrap_or_default()
+                ));
+            }
+            if let Some(error) = &install.error {
+                out.push_str(&format!("- install error: {}\n", error.message));
+                if let Some(path) = error.log_path.as_deref() {
+                    out.push_str(&format!("- install log: {path}\n"));
+                }
+                if let Some(tail) = error.tail.as_deref() {
+                    let excerpt = tail_excerpt(tail);
+                    if !excerpt.is_empty() {
+                        out.push_str("- install log tail:\n");
+                        for line in excerpt.lines() {
+                            out.push_str(&format!("  {line}\n"));
+                        }
+                    }
+                }
+            }
+        } else if app.builtin_view.is_none() {
+            out.push_str("- install: none — this app brings its own dependencies\n");
         }
         if !app.permissions.is_empty() {
             out.push_str(&format!("- permissions: {}\n", app.permissions.join(", ")));
@@ -420,47 +468,37 @@ fn format_apps(list: &AppList, only: Option<&str>) -> Result<String, String> {
         if !app.trusted {
             out.push_str("- trust: waiting for human confirmation\n");
         }
-        if let Some(progress) = &app.install_progress {
-            let percent = progress
-                .percent
-                .map(|p| format!(" {p}%"))
-                .unwrap_or_default();
-            out.push_str(&format!(
-                "- install progress:{percent} {}{}\n",
-                progress.phase,
-                progress
-                    .message
-                    .as_deref()
-                    .map(|message| format!(" — {message}"))
-                    .unwrap_or_default()
-            ));
-        }
-        if let Some(error) = &app.install_error {
-            out.push_str(&format!("- install error: {}\n", error.message));
-            if let Some(path) = error.log_path.as_deref() {
-                out.push_str(&format!("- install log: {path}\n"));
-            }
-            if let Some(tail) = error.tail.as_deref() {
-                let excerpt = tail_excerpt(tail);
-                if !excerpt.is_empty() {
-                    out.push_str("- install log tail:\n");
-                    for line in excerpt.lines() {
-                        out.push_str(&format!("  {line}\n"));
-                    }
-                }
-            }
-        }
         if let Some(error) = &app.runtime_error {
             out.push_str(&format!("- runtime error: {error}\n"));
         }
         out.push_str(&format!("- next: {}\n", human_next(app)));
     }
+
+    if only.is_none() && !list.recommendations.is_empty() {
+        out.push_str("\n## External recommendations (not registered)\n");
+        for rec in &list.recommendations {
+            out.push_str(&format!(
+                "- {} ('{}'): {} — {}\n",
+                rec.name, rec.id, rec.description, rec.repo
+            ));
+        }
+        out.push_str(
+            "- next: when the human asks, install the runtime, write a registry entry with real paths, then let the human trust and start it\n",
+        );
+    }
     Ok(out)
+}
+
+fn format_recommendation(rec: &crate::apps::service::RecommendationView) -> String {
+    format!(
+        "## {} ('{}')\n- external recommendation, not registered\n- {}\n- repo: {}\n- next: human copies the agent prompt from Apps; install the runtime, register it, then human trusts and starts it\n",
+        rec.name, rec.id, rec.description, rec.repo
+    )
 }
 
 fn human_next(app: &AppView) -> String {
     if !app.trusted {
-        return "human confirms trust in the Apps detail, then installs or starts".into();
+        return "human confirms trust in the Apps detail, then starts it".into();
     }
     if app.builtin_view.is_some() {
         return "human opens the built-in panel from Apps".into();
@@ -468,14 +506,13 @@ fn human_next(app: &AppView) -> String {
     if matches!(app.status, crate::apps::schema::AppStatus::Installing) {
         return "installing; wait for it to finish".into();
     }
-    if !app.installed {
-        if app.can_install {
-            return "human clicks Install in Apps".into();
+    if let Some(install) = app.install.as_ref() {
+        if !install.installed {
+            if install.can_install {
+                return "human clicks Install in Apps".into();
+            }
+            return "human provides the bundled runtime files, then clicks Start".into();
         }
-        return format!(
-            "external install: put files/runtime under '{}/app' (see note), then human clicks Start",
-            app.install_dir
-        );
     }
     if app.running {
         return "human opens it from Apps; use the url above".into();
@@ -646,7 +683,7 @@ impl LitecodeWorkspaceTool {
                 "# apps\n\n- The app service is attached only in the LiteCode workbench; this CLI session has none.\n- 'guide apps' explains the registry, and built-in apps appear in the workbench Apps panel.\n",
             );
         };
-        match format_apps(&service.list_brief(), id) {
+        match format_apps(&service.list(), id) {
             Ok(body) => ToolCallResult::ok(format!("# apps\n\n{body}")),
             Err(message) => ToolCallResult::error(format!("# apps\n\n{message}")),
         }
@@ -1521,7 +1558,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let service =
             crate::apps::AppService::new(dir.path().join("workspace"), dir.path().join("global"));
-        let list = service.list_brief();
+        let list = service.list();
         let body = format_apps(&list, None).expect("apps list");
         assert!(body.contains("Gallery"));
         assert!(body.contains("built-in panel"));

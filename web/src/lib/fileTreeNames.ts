@@ -1,10 +1,12 @@
 const INVALID_CHARS = /[\\/<>:"|?*\u0000-\u001f]/;
 
+/** Returns an i18n key for the first problem, so the caller stays the one
+ *  deciding the language. */
 export function validateFileName(name: string): string | null {
   const trimmed = name.trim();
-  if (!trimmed) return "Name cannot be empty";
-  if (trimmed === "." || trimmed === "..") return "Invalid name";
-  if (INVALID_CHARS.test(trimmed)) return "Name contains invalid characters";
+  if (!trimmed) return "explorer.nameEmpty";
+  if (trimmed === "." || trimmed === "..") return "explorer.nameInvalid";
+  if (INVALID_CHARS.test(trimmed)) return "explorer.nameInvalidChars";
   return null;
 }
 

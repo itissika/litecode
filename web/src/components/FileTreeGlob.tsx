@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { MagnifyingGlass, X } from "@phosphor-icons/react";
 
 import { fetchGlob, type TreeEntry } from "../api/workspace";
+import i18n from "../i18n";
 import { gitFileLetters, gitStatusColor } from "../lib/gitStatus";
 import { useEditorStore } from "../stores/editorStore";
 import { useGitStore } from "../stores/gitStore";
@@ -35,14 +36,14 @@ export function FileTreeGlobInput({
             onQueryChange("");
           }
         }}
-        placeholder="Filter files"
-        title="Filter by file name. Globs like *.ts or src/**/*.rs work too."
+        placeholder={i18n.t("explorer.filterFiles")}
+        title={i18n.t("explorer.filterTitle")}
         className="min-w-0 flex-1 border-0 bg-transparent py-0.5 text-xs text-(--_dk-text-secondary) outline-none placeholder:text-(--_dk-text-disabled)"
       />
       {query ? (
         <button
           type="button"
-          title="Clear filter"
+          title={i18n.t("explorer.clearFilter")}
           className="shrink-0 text-(--_dk-text-muted) hover:text-(--_dk-text-secondary)"
           onClick={() => onQueryChange("")}
         >
@@ -115,7 +116,7 @@ export function FileTreeGlobHits({
       )}
       {!error && !busy && hits.length === 0 && (
         <p className="px-3 py-2 text-xs text-(--_dk-text-disabled)">
-          No files matching &lsquo;{query}&rsquo;
+          {i18n.t("explorer.noMatches", { query })}
         </p>
       )}
       {hits.map((entry) => (
@@ -128,7 +129,7 @@ export function FileTreeGlobHits({
       ))}
       {truncated && (
         <p className="px-3 py-2 text-[11px] text-(--_dk-text-disabled)">
-          Showing first 1000 matches
+          {i18n.t("explorer.truncated", { count: 1000 })}
         </p>
       )}
     </div>

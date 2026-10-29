@@ -23,6 +23,7 @@ import { AgentTab } from "../tabs/AgentTab";
 import { KnowledgeGraphTab } from "../tabs/KnowledgeGraphTab";
 import { BrowserTab } from "../tabs/BrowserTab";
 import { AppTab } from "../tabs/AppTab";
+import { DefaultTab } from "../tabs/DefaultTab";
 
 export const panelComponents: Record<
   string,
@@ -49,6 +50,7 @@ export const tabComponents: Record<
   string,
   React.FunctionComponent<IDockviewPanelProps>
 > = {
+  default: DefaultTab,
   edge: EdgeTab,
   editor: EditorTab,
   agent: AgentTab,

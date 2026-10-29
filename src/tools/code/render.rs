@@ -253,11 +253,13 @@ fn fits(text: &str, budget: usize) -> bool {
 /// degrade structurally and stay valid JSON / whole table rows:
 /// 1. every array keeps its first K items, the rest become `"… N more"`
 ///    (tables: one `… N more rows` line);
-/// 2. containers deeper than D become `"{…N keys}"` / `"[…N items]"`;
-/// 3. strings longer than S chars become `prefix…(N chars)`.
+/// 2. strings longer than S chars become `prefix…(N chars)`;
+/// 3. containers deeper than D become `"{…N keys}"` / `"[…N items]"`.
 ///
-/// Each knob is the largest value that fits (binary search). Only the start
-/// is kept; the over-budget notice is the first line.
+/// Content comes before structure: cutting a long string keeps the key and the
+/// useful prefix, while collapsing a container would throw all of it away to
+/// save the same bytes. Each knob is the largest value that fits (binary
+/// search). Only the start is kept; the over-budget notice is the first line.
 fn budget_value(value: &Value, budget: usize) -> String {
     let body = render_result_body(value);
     if fits(&body, budget) {
@@ -291,7 +293,24 @@ fn budget_value(value: &Value, budget: usize) -> String {
     if fits(&render(&shape), budget) {
         return format!("{notice}\n{}", render(&shape));
     }
-    // 2. depth
+    // 2. string length. Try content-preserving cuts before any container
+    //    collapse: a shallow object of long file texts otherwise "fits" by
+    //    replacing every value with `{…N keys}`, which drops the whole payload.
+    let (mut lo, mut hi) = (0usize, longest_string(value));
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        shape.chars = mid;
+        if fits(&render(&shape), budget) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    shape.chars = lo;
+    if fits(&render(&shape), budget) {
+        return format!("{notice}\n{}", render(&shape));
+    }
+    // 3. depth. Even empty strings are too much; collapse deep containers.
     let max_depth = depth_of(value);
     let (mut lo, mut hi) = (1usize, max_depth.clamp(1, DEGRADE_MAX_DEPTH));
     while lo < hi {
@@ -307,23 +326,8 @@ fn budget_value(value: &Value, budget: usize) -> String {
     if fits(&render(&shape), budget) {
         return format!("{notice}\n{}", render(&shape));
     }
-    // 3. string length
-    let (mut lo, mut hi) = (0usize, longest_string(value));
-    while lo < hi {
-        let mid = (lo + hi + 1) / 2;
-        shape.chars = mid;
-        if fits(&render(&shape), budget) {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    shape.chars = lo;
-    let body = render(&shape);
-    if fits(&body, budget) {
-        return format!("{notice}\n{body}");
-    }
     // Still over (e.g. a huge flat object): whole leading lines only.
+    let body = render(&shape);
     let kept = token_prefix(&body, budget).to_string();
     format!("{notice}\n{kept}\n… [truncated]")
 }
@@ -1451,6 +1455,37 @@ mod tests {
         assert!(crate::session::estimate::count_text_tokens(body) <= RESULT_TOKEN_BUDGET);
         // Key order of the agent survives degradation.
         assert!(body.starts_with("{\"total\":4000,\"items\":["), "{}", &body[..40]);
+    }
+
+    #[test]
+    fn long_strings_are_cut_before_containers_collapse_to_key_counts() {
+        // Shape from a real run: four file reads returned as {path,n,text}.
+        // At ~11k tokens the result must keep useful prefixes, not become
+        // {"catalog":"{…3 keys}",...}, which drops the whole payload.
+        let value = serde_json::json!({
+            "catalog": {"path": "src/apps/catalog.rs", "n": 660, "text": "x".repeat(20_000)},
+            "app_panel": {"path": "web/src/lib/appPanel.ts", "n": 420, "text": "x".repeat(20_000)},
+            "app_tab": {"path": "web/src/dockview/tabs/AppTab.tsx", "n": 310, "text": "x".repeat(20_000)},
+            "app_view": {"path": "web/src/dockview/panels/AppViewPanel.tsx", "n": 280, "text": "x".repeat(20_000)},
+        });
+        let text = ok_with(value);
+        let result = result_of(&text);
+        let (notice, body) = result.split_once('\n').unwrap();
+        assert!(notice.contains("exceeds 8.0k; truncated"), "{notice}");
+        let parsed: Value = serde_json::from_str(body).expect("still valid JSON");
+        for (key, path) in [
+            ("catalog", "src/apps/catalog.rs"),
+            ("app_panel", "web/src/lib/appPanel.ts"),
+            ("app_tab", "web/src/dockview/tabs/AppTab.tsx"),
+            ("app_view", "web/src/dockview/panels/AppViewPanel.tsx"),
+        ] {
+            assert_eq!(parsed[key]["path"].as_str(), Some(path), "{body}");
+            let kept = parsed[key]["text"].as_str().expect("text kept");
+            assert!(kept.starts_with('x'), "{kept}");
+            assert!(kept.len() > 1_000, "{}", kept.len());
+        }
+        assert!(!body.contains("{…"), "{body}");
+        assert!(crate::session::estimate::count_text_tokens(body) <= RESULT_TOKEN_BUDGET);
     }
 
     #[test]

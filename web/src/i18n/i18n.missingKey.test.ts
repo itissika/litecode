@@ -56,6 +56,31 @@ describe("i18n missing-key / skeleton keys", () => {
     await i18n.changeLanguage("en");
   });
 
+  it("has explorer context-menu strings in both locales", async () => {
+    const keys = [
+      "explorer.newFile",
+      "explorer.reveal",
+      "explorer.copyPath",
+      "explorer.delete",
+      "explorer.revealFailed",
+    ];
+    for (const key of keys) {
+      expect(i18n.t(key)).not.toBe(key);
+    }
+    await i18n.changeLanguage("zh-CN");
+    expect(i18n.t("explorer.reveal")).toBe("在资源管理器中显示");
+    for (const key of keys) {
+      expect(i18n.t(key)).not.toBe(key);
+    }
+    // A count-bearing key must resolve through i18next plural lookup even
+    // though only the base key exists.
+    expect(i18n.t("explorer.deleteMany", { count: 3 })).toContain("3");
+    expect(i18n.t("explorer.truncated", { count: 1000 })).toContain("1000");
+    await i18n.changeLanguage("en");
+    expect(i18n.t("explorer.deleteMany", { count: 3 })).toContain("items");
+    expect(i18n.t("explorer.truncated", { count: 1000 })).toContain("1000");
+  });
+
   it("does not throw on missing keys (returns key)", () => {
     expect(() => i18n.t("does.not.exist.ever")).not.toThrow();
     expect(i18n.t("does.not.exist.ever")).toBe("does.not.exist.ever");

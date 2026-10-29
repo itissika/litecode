@@ -27,7 +27,6 @@ import { useWorkspaceChangeStore } from "../stores/workspaceChangeStore";
 import {
   BASH_CLAIM_GRACE_MS,
   PANEL_EXIT_MS,
-  PANEL_MAX_H,
   PANEL_MIN_H,
   PLAN_EXECUTE_PROMPT,
   SessionStatusLine,
@@ -708,11 +707,12 @@ describe("SessionStatusLine — vertical expand", () => {
 
     const scroll = screen.getByTestId("status-panel-scroll");
     expect(scroll.className).toContain("overscroll-contain");
-    // Content-sized: the panel carries no height of its own, only its own
-    // `max-height` ceiling — the pane clamp is flexbox's job.
+    // Content-sized: the panel carries no height of its own and no static
+    // `max-height` either — whatever the capsule, the pane clamp alone
+    // (flexbox) stops it.
     const panel = screen.getByTestId("status-capsule-panel");
     expect(panel.style.height).toBe("");
-    expect(panel.style.maxHeight).toBe(`${PANEL_MAX_H}px`);
+    expect(panel.style.maxHeight).toBe("");
   });
 
   it("keeps the flex shrink chain open, so the browser — not a measurement — clamps the panel", () => {
@@ -1035,15 +1035,18 @@ describe("SessionStatusLine — drag handle", () => {
     expect(panel.style.height).toBe("");
   });
 
-  it("clamps the panel height at the maximum when dragged far up", () => {
+  it("lets a drag grow without a static cap — only the pane can stop it", () => {
     render(<SessionStatusLine sessionId="s1" />);
-    fireEvent.click(screen.getByTestId("capsule-todo"));
+    fireEvent.click(screen.getByTestId("capsule-plan"));
     const panel = screen.getByTestId("status-capsule-panel");
     const handle = screen.getByTestId("status-panel-resize");
 
     fireEvent.pointerDown(handle, { pointerId: 1, clientY: 1000 });
     fireEvent.pointerMove(handle, { pointerId: 1, clientY: 0 });
-    expect(panel.style.height).toBe(`${PANEL_MAX_H}px`);
+    // jsdom reports offsetHeight 0, so the floor (PANEL_MIN_H) is the start
+    // height; with no static ceiling the drag adds the full delta on top —
+    // a shorter pane shrinks the panel back through flex.
+    expect(panel.style.height).toBe(`${PANEL_MIN_H + 1000}px`);
 
     fireEvent.pointerUp(handle, { pointerId: 1, clientY: 0 });
   });

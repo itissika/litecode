@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 
-import { fetchMediaThumb, type MediaEntry } from "../../api/workspace";
+import {
+  MEDIA_THUMB_VERSION,
+  fetchMediaThumb,
+  type MediaEntry,
+} from "../../api/workspace";
 
 /**
  * Object-URL cache for Gallery thumbnails.
@@ -28,7 +32,9 @@ export interface ThumbLookup {
 const EMPTY: ThumbLookup = { url: null, failed: false };
 
 export function mediaThumbKey(entry: MediaEntry): string {
-  return `${entry.path}|${entry.size}|${entry.mtime}`;
+  // The encoder version belongs in the key as much as the file revision: a
+  // blob URL built by an older encoder must not survive a version bump.
+  return `${entry.path}|${entry.size}|${entry.mtime}|${MEDIA_THUMB_VERSION}`;
 }
 
 function pin(key: string): void {

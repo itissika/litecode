@@ -9,8 +9,13 @@ use super::tree::{GlobListing, TreeEntry, TreeError, list_glob, list_tree, list_
 /// Maximum file size for read/write (10 MB), matching the read tool.
 pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
-/// Maximum bytes the file panel will download for an image, PDF, or media preview.
+/// Maximum bytes the file panel will download for an image or PDF preview.
 pub const MAX_PREVIEW_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Timeline media is large by nature: a minute of 44.1 kHz 16-bit stereo WAV is
+/// around 10 MB, and a minute of 1080p video is bigger still. The image / PDF
+/// ceiling would reject both, so audio and video get their own.
+pub const MAX_MEDIA_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceError {
@@ -46,12 +51,16 @@ pub enum WorkspaceError {
     Sqlite(String),
     #[error("opening with the system app is not available on this host")]
     OpenUnsupported,
+    #[error("showing in the file manager is not available on this host")]
+    RevealUnsupported,
     #[error("not an image: {0}")]
     MediaUnsupported(String),
     #[error("{0}")]
     MediaFailed(String),
     #[error("{0}")]
     OpenFailed(String),
+    #[error("{0}")]
+    RevealFailed(String),
     #[error("invalid move: {0}")]
     InvalidMove(String),
     #[error(transparent)]
@@ -98,6 +107,8 @@ pub struct WorkspaceService {
     /// WP-141: the watcher lost track (notify error, Rescan flag, queue
     /// overflow). Consumers run a full disk reconcile; no paths attached.
     rescan_tx: broadcast::Sender<()>,
+    /// Gallery listing snapshot, stale as soon as anything reports a change.
+    media: super::media::MediaCache,
 }
 
 impl WorkspaceService {
@@ -109,6 +120,7 @@ impl WorkspaceService {
             sandbox,
             change_tx,
             rescan_tx,
+            media: super::media::MediaCache::default(),
         }))
     }
 
@@ -133,6 +145,10 @@ impl WorkspaceService {
     }
 
     fn emit_changed(&self, paths: Vec<String>, kind: &str) {
+        // A write through the service names exactly what it touched, so the
+        // media snapshot is patched instead of dropped: renaming or trashing
+        // one file must not cost a whole-tree walk.
+        self.media.apply(self.sandbox.root(), &paths);
         let _ = self.change_tx.send(WorkspaceChange {
             paths,
             kind: kind.to_string(),
@@ -186,11 +202,11 @@ impl WorkspaceService {
             ));
         }
         let meta = abs.metadata()?;
-        if meta.len() > MAX_PREVIEW_BYTES {
+        let rel = sandbox.rel_path(&abs)?;
+        if meta.len() > preview_limit(&rel) {
             return Err(WorkspaceError::PreviewTooLarge);
         }
         let bytes = std::fs::read(&abs)?;
-        let rel = sandbox.rel_path(&abs)?;
         let mime = preview_mime(&rel);
         Ok((rel, mime, bytes))
     }
@@ -242,9 +258,47 @@ impl WorkspaceService {
         }
     }
 
+    /// Reveal a file or folder in the host file manager (Windows only).
+    pub fn reveal_in_file_manager(&self, path: &str) -> Result<(), WorkspaceError> {
+        let sandbox = self.sandbox();
+        let abs = sandbox.resolve(path)?;
+        if !abs.exists() {
+            return Err(WorkspaceError::NotFound(
+                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
+            ));
+        }
+        match super::open_host::reveal_in_file_manager(&abs) {
+            Ok(()) => Ok(()),
+            Err(super::open_host::OpenHostError::Unsupported) => {
+                Err(WorkspaceError::RevealUnsupported)
+            }
+            Err(super::open_host::OpenHostError::Failed(message)) => {
+                Err(WorkspaceError::RevealFailed(message))
+            }
+        }
+    }
+
     /// One workspace media listing for the Gallery panel.
-    pub fn list_media(&self) -> Result<super::media::MediaListing, WorkspaceError> {
-        Ok(super::media::list_media(self.sandbox.root())?)
+    ///
+    /// Served from the generation-keyed snapshot: only a stale generation walks
+    /// the tree. Callers get an Arc so a hit copies nothing.
+    pub fn list_media(&self) -> Result<Arc<super::media::MediaListing>, WorkspaceError> {
+        Ok(self.media.ensure(self.sandbox.root())?)
+    }
+
+    /// Discard the media snapshot. A caller that knows the tree moved (a manual
+    /// refresh, a resumed watcher) asks the next listing to walk.
+    pub fn invalidate_media(&self) {
+        self.media.invalidate();
+    }
+
+    /// Reconcile the media snapshot with paths the watcher reported.
+    ///
+    /// Returns whether every path could be applied exactly; a folder move (or
+    /// an event stream carrying names we cannot resolve) still leaves the
+    /// snapshot stale, so the next listing walks.
+    pub fn apply_media_paths(&self, paths: &[String]) -> bool {
+        self.media.apply(self.sandbox.root(), paths)
     }
 
     /// One cached thumbnail; `edge` is clamped by the media module.
@@ -530,6 +584,15 @@ impl WorkspaceService {
     }
 }
 
+/// Byte ceiling for one in-panel preview. Audio and video may be far larger
+/// than an image or a PDF: a WAV is uncompressed and worth minutes of playback.
+fn preview_limit(rel: &str) -> u64 {
+    match super::media::MediaKind::of_path(rel) {
+        Some(super::media::MediaKind::Audio | super::media::MediaKind::Video) => MAX_MEDIA_BYTES,
+        _ => MAX_PREVIEW_BYTES,
+    }
+}
+
 fn media_error(err: super::media::MediaError) -> WorkspaceError {
     match err {
         super::media::MediaError::NotFound(path) => WorkspaceError::NotFound(path),
@@ -794,6 +857,102 @@ fn copy_recursive(
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn audio_and_video_get_the_larger_preview_ceiling() {
+        assert_eq!(preview_limit("song.wav"), MAX_MEDIA_BYTES);
+        assert_eq!(preview_limit("clips/reel.MP4"), MAX_MEDIA_BYTES);
+        // Everything else keeps the image / PDF ceiling.
+        assert_eq!(preview_limit("shot.png"), MAX_PREVIEW_BYTES);
+        assert_eq!(preview_limit("paper.pdf"), MAX_PREVIEW_BYTES);
+        assert_eq!(preview_limit("notes.md"), MAX_PREVIEW_BYTES);
+    }
+
+    #[test]
+    fn a_wav_past_the_preview_ceiling_still_previews() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        let oversized = MAX_PREVIEW_BYTES + 1;
+
+        // A minute or two of uncompressed audio already exceeds the image cap.
+        std::fs::File::create(dir.path().join("song.wav"))
+            .unwrap()
+            .set_len(oversized)
+            .unwrap();
+        let (rel, mime, bytes) = service.read_preview_bytes("song.wav").unwrap();
+        assert_eq!(rel, "song.wav");
+        assert_eq!(mime, "audio/wav");
+        assert_eq!(bytes.len() as u64, oversized);
+
+        // An image of the same size is still refused: the ceiling is per kind.
+        std::fs::File::create(dir.path().join("shot.png"))
+            .unwrap()
+            .set_len(oversized)
+            .unwrap();
+        assert!(matches!(
+            service.read_preview_bytes("shot.png"),
+            Err(WorkspaceError::PreviewTooLarge)
+        ));
+    }
+
+    #[tokio::test]
+    async fn media_listing_is_patched_by_a_write_instead_of_walking() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        std::fs::write(dir.path().join("cover.png"), b"x").unwrap();
+
+        let first = service.list_media().unwrap();
+        assert_eq!(first.entries.len(), 1);
+
+        // Created behind the service's back: only the watcher reports it, so a
+        // walk would pick it up. Patching must not.
+        std::fs::write(dir.path().join("ghost.png"), b"x").unwrap();
+        service.write_file("notes.txt", "hi").unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &service.list_media().unwrap()),
+            "a write that names no media keeps the snapshot"
+        );
+
+        // A media file the service wrote is patched in.
+        service.write_file("hero.png", "png").unwrap();
+        let second = service.list_media().unwrap();
+        assert_eq!(second.entries.len(), 2);
+        assert!(second.entries.iter().any(|entry| entry.path == "hero.png"));
+        assert!(!second.entries.iter().any(|entry| entry.path == "ghost.png"));
+    }
+
+    #[tokio::test]
+    async fn trashing_a_media_file_drops_it_without_a_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        std::fs::write(dir.path().join("cover.png"), b"x").unwrap();
+        assert_eq!(service.list_media().unwrap().entries.len(), 1);
+
+        std::fs::write(dir.path().join("ghost.png"), b"x").unwrap();
+        service.delete_path("cover.png", false).unwrap();
+
+        let after = service.list_media().unwrap();
+        assert!(after.entries.is_empty());
+        // No walk happened: the ghost never entered the listing.
+        assert!(!after.entries.iter().any(|entry| entry.path == "ghost.png"));
+    }
+
+    #[tokio::test]
+    async fn renaming_a_media_file_keeps_the_snapshot_in_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        std::fs::write(dir.path().join("cover.png"), b"x").unwrap();
+        assert_eq!(service.list_media().unwrap().entries.len(), 1);
+
+        std::fs::write(dir.path().join("ghost.png"), b"x").unwrap();
+        service.rename_path("cover.png", "hero.png", false).unwrap();
+
+        let after = service.list_media().unwrap();
+        assert_eq!(after.entries.len(), 1);
+        assert_eq!(after.entries[0].path, "hero.png");
+        assert_eq!(after.entries[0].name, "hero.png");
+        assert!(!after.entries.iter().any(|entry| entry.path == "ghost.png"));
+    }
 
     #[tokio::test]
     async fn change_broadcast_is_bounded_and_lagged_receiver_recovers() {

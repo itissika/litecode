@@ -6,6 +6,7 @@ import {
   renamePath,
   writeBlob,
 } from "../api/workspace";
+import i18n from "../i18n";
 import { useEditorStore } from "../stores/editorStore";
 import { useExplorerStore } from "../stores/explorerStore";
 import { useToastStore } from "../stores/toastStore";
@@ -116,16 +117,16 @@ export async function renameEntry(
   });
 }
 
-export async function deleteEntries(paths: string[]): Promise<void> {
+/** Trash these paths after a confirm. False when the user backed out. */
+export async function deleteEntries(paths: string[]): Promise<boolean> {
   const unique = [...new Set(paths)].filter(Boolean);
-  if (unique.length === 0) return;
-  const label = unique.length === 1 ? unique[0] : `${unique.length} items`;
+  if (unique.length === 0) return false;
   const ok = window.confirm(
     unique.length === 1
-      ? `Delete "${label}"?\n\nOn Windows this is sent to the Recycle Bin.`
-      : `Delete ${label}?\n\nOn Windows this is sent to the Recycle Bin.`,
+      ? i18n.t("explorer.deleteOne", { name: unique[0] })
+      : i18n.t("explorer.deleteMany", { count: unique.length }),
   );
-  if (!ok) return;
+  if (!ok) return false;
 
   await withBusy(unique, async () => {
     for (const path of unique) {
@@ -139,6 +140,7 @@ export async function deleteEntries(paths: string[]): Promise<void> {
     useExplorerStore.getState().clearSelection();
     await refreshParents(unique);
   });
+  return true;
 }
 
 export async function duplicateEntries(paths: string[]): Promise<void> {
@@ -180,7 +182,7 @@ export async function pasteEntries(targetDir: string): Promise<void> {
       if (clip.mode === "cut" && isSelfOrDescendant(from, targetDir)) {
         useToastStore
           .getState()
-          .showToast("Cannot move a folder into itself", "error");
+          .showToast(i18n.t("explorer.moveIntoSelf"), "error");
         continue;
       }
       const sameParent = parentPath(from) === targetDir;
@@ -271,7 +273,10 @@ export async function importOsFiles(
       if (file.size > max) {
         useToastStore
           .getState()
-          .showToast(`"${file.name}" exceeds the 10 MB upload limit`, "error");
+          .showToast(
+            i18n.t("explorer.uploadTooLarge", { name: file.name }),
+            "error",
+          );
         continue;
       }
       const existing = childNamesAt(

@@ -27,6 +27,9 @@ const HANDSHAKE_TIMEOUT_MS = 2000;
 /** Server pushes `server/stats` every 2s. Silence longer than this means the
  *  socket is open in name only (sleep, half-open TCP). */
 const STALE_AFTER_MS = 10_000;
+/** A silent OPEN socket gets one short grace window before replacement: frames
+ *  may just be queued behind a frozen tab, and replacing it aborts live asks. */
+const STALE_RECHECK_MS = 2_000;
 /** Drop a fragment that never becomes JSON. A complete message is delivered
  *  even when it is larger than this. */
 const MAX_WS_BUFFER = 8 * 1024 * 1024;
@@ -71,6 +74,10 @@ export class AgentWsClient {
   private generation = 0;
   private connectStartedAt = 0;
   private lastInboundAt = 0;
+  /** Counts inbound frames so a grace recheck can tell whether the socket woke. */
+  private inboundSeq = 0;
+  /** Pending grace window before replacing a silent OPEN socket. */
+  private staleRecheckTimer: ReturnType<typeof setTimeout> | null = null;
   private lineBuffer = "";
 
   /** In-flight JSON-RPC 2.0 promises keyed by request id. */
@@ -95,6 +102,7 @@ export class AgentWsClient {
     this.socketOpened = false;
     this.handshakeTimedOut = false;
     this.lineBuffer = "";
+    this.clearStaleRecheck();
     this.clearReconnectTimer();
     this.clearHandshakeTimer();
     const previous = this.ws;
@@ -141,6 +149,8 @@ export class AgentWsClient {
     ws.onmessage = (ev) => {
       if (!current()) return;
       if (typeof ev.data !== "string") return;
+      this.clearStaleRecheck();
+      this.inboundSeq += 1;
       this.lastInboundAt = Date.now();
       this.handleIncoming(ev.data);
     };
@@ -162,6 +172,7 @@ export class AgentWsClient {
 
     ws.onclose = () => {
       if (!current()) return;
+      this.clearStaleRecheck();
       this.rejectAllPendingRpc("WebSocket closed");
       this.ws = null;
       this.lineBuffer = "";
@@ -189,6 +200,8 @@ export class AgentWsClient {
 
   /**
    * Reconnect when this socket is gone or has gone silent.
+   * A silent OPEN socket gets one short grace window: its frames may just be
+   * queued behind a frozen tab, and replacing it would abort live asks.
    * `force` is the window-focus path: it also retries once after an auth
    * give-up, and it skips a pending backoff. A healthy socket stays up.
    */
@@ -206,8 +219,9 @@ export class AgentWsClient {
         this.lastInboundAt > 0 &&
         Date.now() - this.lastInboundAt > STALE_AFTER_MS
       ) {
-        this.reconnectAttempt = Math.max(this.reconnectAttempt, 1);
-        this.connect();
+        this.scheduleStaleRecheck();
+      } else {
+        this.clearStaleRecheck();
       }
       return;
     }
@@ -237,6 +251,7 @@ export class AgentWsClient {
     this.intentionalClose = true;
     this.clearReconnectTimer();
     this.clearHandshakeTimer();
+    this.clearStaleRecheck();
     const ws = this.ws;
     this.ws = null;
     this.generation += 1;
@@ -343,6 +358,7 @@ export class AgentWsClient {
     this.intentionalClose = true;
     this.clearHandshakeTimer();
     this.clearReconnectTimer();
+    this.clearStaleRecheck();
     this.ws?.close();
     this.ws = null;
     this.setConnectionState("disconnected");
@@ -461,6 +477,31 @@ export class AgentWsClient {
     );
     this.reconnectAttempt += 1;
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
+
+  /** Give queued frames a chance before declaring a silent socket dead. */
+  private scheduleStaleRecheck(): void {
+    if (this.staleRecheckTimer) return;
+    const seen = this.inboundSeq;
+    this.staleRecheckTimer = setTimeout(() => {
+      this.staleRecheckTimer = null;
+      if (this.stopped || this.intentionalClose) return;
+      const ws = this.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN || !this.handshakeComplete) {
+        return;
+      }
+      // A frame arrived while the tab was thawing; the socket is alive.
+      if (this.inboundSeq !== seen) return;
+      this.reconnectAttempt = Math.max(this.reconnectAttempt, 1);
+      this.connect();
+    }, STALE_RECHECK_MS);
+  }
+
+  private clearStaleRecheck(): void {
+    if (this.staleRecheckTimer) {
+      clearTimeout(this.staleRecheckTimer);
+      this.staleRecheckTimer = null;
+    }
   }
 
   private clearReconnectTimer(): void {

@@ -42,7 +42,11 @@ pub fn workspace_error(error: crate::workspace::WorkspaceError) -> ToolCallResul
             "invalid_input"
         }
         Kind::Binary | Kind::Utf16 | Kind::NotUtf8 | Kind::MediaUnsupported(_) => "unsupported",
-        Kind::TooLarge | Kind::Io(_) | Kind::Sqlite(_) | Kind::OpenFailed(_) => "io",
+        Kind::TooLarge
+        | Kind::Io(_)
+        | Kind::Sqlite(_)
+        | Kind::OpenFailed(_)
+        | Kind::RevealFailed(_) => "io",
         Kind::MediaFailed(_) => "internal",
         Kind::PreviewTooLarge
         | Kind::NotSqlite
@@ -50,6 +54,7 @@ pub fn workspace_error(error: crate::workspace::WorkspaceError) -> ToolCallResul
         | Kind::Sandbox(_)
         | Kind::Tree(_)
         | Kind::OpenUnsupported
+        | Kind::RevealUnsupported
         | Kind::PreviewOffset => "internal",
     };
     coded_error(code, error.to_string())

@@ -1,18 +1,18 @@
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
-import { ArrowClockwise, Info, Spinner } from "@phosphor-icons/react";
+import { ArrowClockwise, Info, Spinner, X } from "@phosphor-icons/react";
 
-import type { AppCategory, AppView } from "../../api/apps";
+import type { AppCategory, AppView, RecommendationView } from "../../api/apps";
 import { appsAvailable } from "../../lib/appsAvailability";
-import { formatBytes } from "../../lib/bytes";
 import { builtinAppName, openAppPanel, openBuiltinAppView } from "../../lib/appPanel";
 import { appDescription } from "../../lib/appText";
-import { pushBrowserObscure } from "../../lib/browserObscure";
 import { Popover } from "../../components/ui/Popover";
 import { useAppsStore } from "../../stores/appsStore";
 import { useToastStore } from "../../stores/toastStore";
 import i18n from "../../i18n";
 import { AppDetail } from "../../components/apps/AppDetail";
+import { RecommendationDetail } from "../../components/apps/RecommendationDetail";
+import { PromptCopy } from "../../components/apps/PromptCopy";
 import { AppIcon } from "../../components/apps/AppIcon";
 
 const CATEGORY_ORDER: AppCategory[] = [
@@ -26,6 +26,8 @@ const CATEGORY_ORDER: AppCategory[] = [
   "task",
   "general",
 ];
+
+const NO_RECOMMENDATIONS: RecommendationView[] = [];
 
 function categoryLabel(category: AppCategory): string {
   return i18n.t(`apps.category.${category}`, { defaultValue: category });
@@ -46,12 +48,18 @@ function AppTile({
   onOpen: () => void;
   detailTrigger?: boolean;
 }) {
-  const progress = app.install_progress?.percent ?? null;
+  const progress = app.install?.progress?.percent ?? null;
+  const isInstalled = app.install?.installed ?? true;
+  const isBuiltin = app.source === "builtin";
+  const installActive = busy === "install" && !isInstalled;
+  const showSpinner =
+    (!!busy && busy !== "install") || installActive || app.status === "installing";
   const showProgress =
+    !!app.install?.progress ||
     app.status === "installing" ||
     app.status === "stopping" ||
     app.status === "uninstalling" ||
-    busy === "install" ||
+    installActive ||
     busy === "uninstall";
 
   const statusText = app.builtin_view
@@ -63,7 +71,7 @@ function AppTile({
   const renderTile = (onClick: () => void) => (
     <button
       type="button"
-      className={`apps-tile is-${app.status} ${app.installed ? "is-installed" : "is-uninstalled"}`}
+      className={`apps-tile is-${app.status} ${isInstalled ? "is-installed" : "is-uninstalled"}${isBuiltin ? "" : " is-external"}`}
       title={appDescription(app)}
       aria-label={`${builtinAppName(app)} — ${statusText}`}
       onClick={onClick}
@@ -71,7 +79,7 @@ function AppTile({
     >
       <span className="apps-tile-icon">
         <AppIcon app={app} size={32} />
-        {busy || app.status === "installing" ? (
+        {showSpinner ? (
           <span className="apps-tile-spinner">
             <Spinner size={12} className="apps-spin" />
           </span>
@@ -136,65 +144,76 @@ function AppTile({
   );
 }
 
-function RegisterInfo({
-  close,
-  paths,
-}: {
-  close: () => void;
-  paths: { global: string; workspace: string } | null | undefined;
-}) {
-  useLayoutEffect(() => pushBrowserObscure(), []);
+function RecommendationTile({ rec }: { rec: RecommendationView }) {
   return (
-    <div className="apps-register">
-      <div className="apps-register-title">{i18n.t("apps.registerTitle")}</div>
-      <p>{i18n.t("apps.registerBody")}</p>
-      <div className="apps-register-paths">
-        <div>
-          <span>{i18n.t("apps.registerWorkspace")}</span>
-          <code>{paths?.workspace ?? "—"}</code>
-        </div>
-        <div>
-          <span>{i18n.t("apps.registerGlobal")}</span>
-          <code>{paths?.global ?? "—"}</code>
-        </div>
-      </div>
-      <pre className="apps-register-prompt">{i18n.t("apps.registerPrompt")}</pre>
-      <button type="button" className="apps-action" onClick={close}>
-        {i18n.t("apps.close")}
-      </button>
+    <div className="apps-tile-wrap">
+      <Popover
+        width={320}
+        estimatedHeight={360}
+        placement="down-right"
+        className="block w-full"
+        panelClassName="apps-popover"
+        trigger={({ toggle }) => (
+          <button
+            type="button"
+            className="apps-tile is-uninstalled is-external"
+            title={appDescription(rec)}
+            aria-label={`${rec.name} — ${i18n.t("apps.externalRecommendation")}`}
+            onClick={toggle}
+          >
+            <span className="apps-tile-icon">
+              <AppIcon app={rec} size={32} />
+            </span>
+            <span className="apps-tile-text">
+              <span className="apps-tile-name">{rec.name}</span>
+            </span>
+          </button>
+        )}
+      >
+        {({ close }) => <RecommendationDetail rec={rec} close={close} />}
+      </Popover>
     </div>
   );
 }
 
-function AppGrid({
-  apps,
-  busyFor,
-  onOpen,
-  detailMode,
-}: {
-  apps: AppView[];
-  busyFor: (id: string) => string | undefined;
-  onOpen: (app: AppView) => void;
-  detailMode: "tile" | "info";
-}) {
+function RegisterInfo({ close }: { close: () => void }) {
   return (
-    <div className="apps-grid">
-      {apps.map((app) => (
-        <AppTile
-          key={app.id}
-          app={app}
-          busy={busyFor(app.id)}
-          onOpen={() => onOpen(app)}
-          detailTrigger={detailMode === "tile" && !app.installed}
-        />
-      ))}
+    <div className="apps-detail">
+      <div className="apps-detail-head">
+        <div className="min-w-0 flex-1">
+          <div className="apps-detail-name">{i18n.t("apps.installableTitle")}</div>
+        </div>
+        <button
+          type="button"
+          className="apps-icon-button"
+          aria-label={i18n.t("apps.close")}
+          onClick={close}
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <PromptCopy
+        hint={i18n.t("apps.installableHint")}
+        text={i18n.t("apps.installablePrompt")}
+      />
     </div>
   );
+}
+
+type AvailableItem =
+  | { kind: "app"; app: AppView }
+  | { kind: "recommendation"; rec: RecommendationView };
+
+function itemName(item: AvailableItem): string {
+  return item.kind === "app" ? item.app.name : item.rec.name;
 }
 
 export function AppsPanel(_props: IDockviewPanelProps) {
   const [available] = useState(() => appsAvailable());
   const apps = useAppsStore((state) => state.apps);
+  const recommendations = useAppsStore(
+    (state) => state.snapshot?.recommendations ?? NO_RECOMMENDATIONS,
+  );
   const loading = useAppsStore((state) => state.loading);
   const error = useAppsStore((state) => state.error);
   const busy = useAppsStore((state) => state.busy);
@@ -206,34 +225,55 @@ export function AppsPanel(_props: IDockviewPanelProps) {
   useEffect(() => {
     if (!available) return;
     void load();
-    const timer = window.setInterval(() => {
+    const refresh = () => {
       if (document.visibilityState === "visible") void load();
-    }, 2500);
-    return () => window.clearInterval(timer);
+    };
+    const timer = window.setInterval(refresh, 2500);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
   }, [available, load]);
 
+  // Installed is a flat list: bundled apps that LiteCode installed, plus
+  // external apps the user has registered.
   const installed = useMemo(
     () =>
       apps
-        .filter((app) => app.installed)
+        .filter((app) => app.install?.installed ?? true)
         .sort((a, b) => a.name.localeCompare(b.name)),
     [apps],
   );
-  const uninstalled = useMemo(() => {
-    const groups = new Map<AppCategory, AppView[]>();
+
+  // Not installed holds bundled apps that are not installed yet and external
+  // recommendations that are not registered yet. Both group by purpose.
+  const availableGroups = useMemo(() => {
+    const groups = new Map<AppCategory, AvailableItem[]>();
+    const push = (category: AppCategory, item: AvailableItem) => {
+      const list = groups.get(category) ?? [];
+      list.push(item);
+      groups.set(category, list);
+    };
     for (const app of apps) {
-      if (app.installed) continue;
-      const list = groups.get(app.category) ?? [];
-      list.push(app);
-      groups.set(app.category, list);
+      if (app.install?.installed ?? true) continue;
+      push(app.category, { kind: "app", app });
     }
-    return CATEGORY_ORDER.flatMap((category) => {
-      const list = (groups.get(category) ?? []).sort((a, b) =>
-        a.name.localeCompare(b.name),
-      );
-      return list.map((app) => ({ app, category }));
-    });
-  }, [apps]);
+    for (const rec of recommendations) {
+      push(rec.category, { kind: "recommendation", rec });
+    }
+    for (const list of groups.values()) {
+      list.sort((a, b) => itemName(a).localeCompare(itemName(b)));
+    }
+    return groups;
+  }, [apps, recommendations]);
+
+  const availableCount = useMemo(
+    () => [...availableGroups.values()].reduce((sum, list) => sum + list.length, 0),
+    [availableGroups],
+  );
 
   const busyFor = (id: string) => busy[id];
 
@@ -242,19 +282,16 @@ export function AppsPanel(_props: IDockviewPanelProps) {
       openBuiltinAppView(app.builtin_view);
       return;
     }
-    if (app.status === "crashed" || app.status === "error") {
-      showToast(i18n.t("apps.cannotStart"), "info");
-      return;
-    }
-    if (app.running && app.status === "running") {
+    if (app.running) {
       openAppPanel(app);
       return;
     }
-    if (!app.installed || !app.can_start) {
+    if (!app.can_start) {
+      const managed = app.install;
       showToast(
-        app.installed
-          ? i18n.t("apps.cannotStart")
-          : i18n.t("apps.installFirst"),
+        managed && !managed.installed
+          ? i18n.t("apps.installFirst")
+          : i18n.t("apps.cannotStart"),
         "info",
       );
       return;
@@ -284,29 +321,24 @@ export function AppsPanel(_props: IDockviewPanelProps) {
           {loading ? <Spinner size={12} className="apps-spin" /> : null}
         </div>
         <div className="apps-panel-head-right">
-          <span className="apps-space" title={i18n.t("apps.availableBytes")}>
-            {formatBytes(snapshot?.available_bytes)}
-          </span>
           <Popover
             width={300}
-            estimatedHeight={180}
+            estimatedHeight={170}
             placement="down-right"
             panelClassName="apps-popover"
             trigger={({ open, toggle }) => (
               <button
                 type="button"
                 className={`apps-icon-button ${open ? "is-open" : ""}`}
-                aria-label={i18n.t("apps.registerHint")}
-                title={i18n.t("apps.registerHint")}
+                aria-label={i18n.t("apps.installableTitle")}
+                title={i18n.t("apps.installableTitle")}
                 onClick={toggle}
               >
                 <Info size={14} />
               </button>
             )}
           >
-            {({ close }) => (
-              <RegisterInfo close={close} paths={snapshot?.registry_paths} />
-            )}
+            {({ close }) => <RegisterInfo close={close} />}
           </Popover>
           <button
             type="button"
@@ -331,13 +363,16 @@ export function AppsPanel(_props: IDockviewPanelProps) {
           {snapshot.registry_errors.map((entry, index) => (
             <div key={`${entry.file}-${index}`}>
               <strong>{entry.source}</strong>{" "}
+              {entry.severity === "warning" ? (
+                <span>({i18n.t("apps.registryWarning")}) </span>
+              ) : null}
               <code>{entry.file}</code>
               {entry.app_id ? <span> ({entry.app_id})</span> : null}: {entry.message}
             </div>
           ))}
         </details>
       ) : null}
-      {apps.length === 0 && !loading ? (
+      {apps.length === 0 && recommendations.length === 0 && !loading ? (
         <div className="apps-empty">{i18n.t("apps.empty")}</div>
       ) : null}
 
@@ -347,42 +382,52 @@ export function AppsPanel(_props: IDockviewPanelProps) {
             {i18n.t("apps.installedSection")}
             <span className="apps-count">{installed.length}</span>
           </div>
-          <AppGrid
-            apps={installed}
-            busyFor={busyFor}
-            onOpen={(app) => void handleOpen(app)}
-            detailMode="info"
-          />
+          <div className="apps-grid">
+            {installed.map((app) => (
+              <AppTile
+                key={app.id}
+                app={app}
+                busy={busyFor(app.id)}
+                onOpen={() => void handleOpen(app)}
+              />
+            ))}
+          </div>
         </section>
-      ) : apps.length > 0 ? (
+      ) : apps.length > 0 || recommendations.length > 0 ? (
         <div className="apps-empty apps-empty-installed">
           {i18n.t("apps.emptyInstalled")}
         </div>
       ) : null}
 
-      {uninstalled.length > 0 ? (
+      {availableCount > 0 ? (
         <section className="apps-section">
           <div className="apps-section-title">{i18n.t("apps.availableSection")}</div>
           {CATEGORY_ORDER.map((category) => {
-            const list = uninstalled
-              .filter((entry) => entry.category === category)
-              .map((entry) => entry.app);
-            if (list.length === 0) return null;
+            const items = availableGroups.get(category);
+            if (!items || items.length === 0) return null;
             return (
               <div key={category} className="apps-category">
                 <div className="apps-category-title">{categoryLabel(category)}</div>
-                <AppGrid
-                  apps={list}
-                  busyFor={busyFor}
-                  onOpen={() => undefined}
-                  detailMode="tile"
-                />
+                <div className="apps-grid">
+                  {items.map((item) =>
+                    item.kind === "app" ? (
+                      <AppTile
+                        key={`app-${item.app.id}`}
+                        app={item.app}
+                        busy={busyFor(item.app.id)}
+                        onOpen={() => undefined}
+                        detailTrigger
+                      />
+                    ) : (
+                      <RecommendationTile key={`rec-${item.rec.id}`} rec={item.rec} />
+                    ),
+                  )}
+                </div>
               </div>
             );
           })}
         </section>
       ) : null}
-
     </div>
   );
 }

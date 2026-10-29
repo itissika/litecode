@@ -47,6 +47,43 @@
   box-shadow: 0 0 0 1px var(--_dk-line);
 }
 
+.gallery-toolbar-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 4px;
+}
+
+.gallery-views {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  border-radius: 5px;
+  background: var(--_dk-ix-bg-hover);
+}
+
+.gallery-view {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--_dk-text-muted);
+  transition: background 120ms, color 120ms;
+}
+
+.gallery-view:hover {
+  color: var(--_dk-text-secondary);
+}
+
+.gallery-view.is-active {
+  background: var(--_dk-surface-raised);
+  color: var(--_dk-text-primary);
+  box-shadow: 0 0 0 1px var(--_dk-line);
+}
+
 .gallery-refresh {
   display: inline-flex;
   align-items: center;
@@ -131,41 +168,145 @@
   padding: 4px 12px 12px;
 }
 
-.gallery-folder-list {
+/* Thumbnail or list: folders and files follow the same shape in a view. */
+.gallery-folder-grid {
+  margin-bottom: 10px;
+}
+
+.gallery-tile-folder {
+  color: var(--_dk-text-muted);
+}
+
+.gallery-list {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  container-type: inline-size;
+}
+
+.gallery-folder-list {
   margin-bottom: 8px;
 }
 
-.gallery-folder {
+.gallery-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
+  gap: 7px;
+  min-width: 0;
+  padding: 3px 5px;
   border-radius: 4px;
   color: var(--_dk-text-secondary);
   text-align: left;
 }
 
-.gallery-folder:hover {
+.gallery-row:hover {
   background: var(--_dk-ix-bg-hover);
-  color: var(--_dk-text-primary);
 }
 
-.gallery-folder-name {
+.gallery-row:focus-visible {
+  outline: 2px solid var(--_dk-accent-ring);
+  outline-offset: -2px;
+}
+
+.gallery-row.is-selected {
+  background: var(--_dk-ix-bg-selected);
+}
+
+.gallery-row-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  overflow: hidden;
+  border: 1px solid var(--_dk-line);
+  border-radius: 4px;
+  background: var(--_dk-editor);
+  color: var(--_dk-text-muted);
+}
+
+.gallery-row.is-selected .gallery-row-frame {
+  border-color: var(--_dk-text-muted);
+}
+
+.gallery-row-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.gallery-row-name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  font-size: 11px;
+  line-height: 15px;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
 }
 
-.gallery-folder-count {
+.gallery-row.is-selected .gallery-row-name {
+  color: var(--_dk-text-primary);
+}
+
+.gallery-row-meta {
+  flex: none;
   color: var(--_dk-text-muted);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
+}
+
+/* Fixed meta columns keep type / size / date aligned down the list. */
+.gallery-row-type {
+  flex: none;
+  width: 34px;
+  overflow: hidden;
+  color: var(--_dk-text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gallery-row-size {
+  flex: none;
+  width: 52px;
+  color: var(--_dk-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.gallery-row-time {
+  flex: none;
+  width: 58px;
+  overflow: hidden;
+  color: var(--_dk-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A narrow dock keeps the name readable by dropping the least useful columns. */
+@container (max-width: 320px) {
+  .gallery-row-type {
+    display: none;
+  }
+}
+
+@container (max-width: 250px) {
+  .gallery-row-time {
+    display: none;
+  }
+}
+
+.gallery-row .gallery-tile-rename {
+  flex: 1;
+  width: auto;
 }
 
 .gallery-sections {
@@ -176,15 +317,39 @@
 
 .gallery-section-head {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
   padding: 4px 2px;
   color: var(--_dk-text-muted);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.08em;
+  text-align: left;
   text-transform: uppercase;
+  cursor: pointer;
+}
+
+.gallery-section-head:hover {
+  color: var(--_dk-text-secondary);
+}
+
+.gallery-section-caret {
+  flex: none;
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+
+.gallery-section-head.is-folded .gallery-section-caret {
+  transform: rotate(0deg);
+}
+
+.gallery-section-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .gallery-section-count {
@@ -217,6 +382,18 @@
   border-radius: 6px;
   border: 1px solid var(--_dk-line);
   background: var(--_dk-editor);
+}
+
+/* Checkerboard under a painted image: opaque pixels cover it, so it only
+   shows where the asset is transparent. Glyph tiles stay plain. */
+.gallery-tile-frame.has-image {
+  background-image:
+    linear-gradient(45deg, var(--_dk-border-visible) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--_dk-border-visible) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--_dk-border-visible) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--_dk-border-visible) 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
 }
 
 .gallery-tile-frame img {
@@ -287,6 +464,21 @@
 
 .gallery-tile.is-selected .gallery-tile-name {
   color: var(--_dk-text-secondary);
+}
+
+.gallery-tile-rename {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 3px;
+  border: 1px solid var(--_dk-accent-ring);
+  border-radius: 3px;
+  background: var(--_dk-editor);
+  color: var(--_dk-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  line-height: 13px;
+  outline: none;
 }
 
 .gallery-placeholder {
@@ -375,24 +567,85 @@
   font-variant-numeric: tabular-nums;
 }
 
-.gallery-detail-actions {
+.gallery-hover {
+  position: fixed;
+  z-index: 60;
   display: flex;
+  flex-direction: column;
   gap: 4px;
+  padding: 5px;
+  border: 1px solid var(--_dk-border-visible);
+  border-radius: 8px;
+  background: var(--_dk-surface-raised);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
 }
 
-.gallery-detail-actions button {
-  display: inline-flex;
+.gallery-hover-media {
+  display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 7px;
-  border-radius: 4px;
+  justify-content: center;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  border-radius: 5px;
+  background: var(--_dk-editor);
+}
+
+.gallery-hover-media.is-audio {
+  aspect-ratio: auto;
+  padding: 6px 4px;
   background: var(--_dk-ix-bg-hover);
+}
+
+.gallery-hover-media video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.gallery-hover-media audio {
+  width: 100%;
+}
+
+.gallery-hover-note {
+  padding: 10px 6px;
+  color: var(--_dk-text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.gallery-hover-caption {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 2px 1px;
+}
+
+.gallery-hover-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
   color: var(--_dk-text-secondary);
   font-size: 11px;
-  transition: background 120ms, color 120ms;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.gallery-detail-actions button:hover {
-  background: var(--_dk-ix-bg-pressed);
-  color: var(--_dk-text-primary);
+.gallery-hover-sound {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--_dk-text-muted);
+}
+
+.gallery-hover-sound:hover {
+  background: var(--_dk-ix-bg-hover);
+  color: var(--_dk-text-secondary);
 }

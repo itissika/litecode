@@ -230,13 +230,40 @@ describe("AgentWsClient liveness", () => {
     expect(socketsCreated).toBe(1);
   });
 
-  it("reconnects a silent open socket once", () => {
+  it("gives a silent open socket one grace window before reconnecting", () => {
     const client = clientWith();
     openAndHello(client);
     vi.advanceTimersByTime(10_001);
     client.ensureLive(false);
+    expect(socketsCreated).toBe(1);
+    vi.advanceTimersByTime(2_000);
     expect(socketsCreated).toBe(2);
     client.ensureLive(false);
+    expect(socketsCreated).toBe(2);
+  });
+
+  it("keeps the socket when a frame arrives inside the grace window", () => {
+    const client = clientWith();
+    const ws = openAndHello(client);
+    vi.advanceTimersByTime(10_001);
+    client.ensureLive(true);
+    expect(socketsCreated).toBe(1);
+    // A frozen tab can thaw with its stats frame still queued.
+    ws.onmessage?.({
+      data: JSON.stringify({ jsonrpc: "2.0", method: "server/stats", params: {} }),
+    });
+    vi.advanceTimersByTime(2_000);
+    expect(socketsCreated).toBe(1);
+  });
+
+  it("keeps one grace window across repeated nudges", () => {
+    const client = clientWith();
+    openAndHello(client);
+    vi.advanceTimersByTime(10_001);
+    client.ensureLive(true);
+    client.ensureLive(false);
+    expect(socketsCreated).toBe(1);
+    vi.advanceTimersByTime(2_000);
     expect(socketsCreated).toBe(2);
   });
 

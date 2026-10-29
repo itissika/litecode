@@ -8,6 +8,7 @@ import {
   gitShow,
   gitStatus,
   refreshRetrieval,
+  revealInFileManager,
 } from "./workspace";
 
 describe("workspace engine API", () => {
@@ -173,6 +174,21 @@ describe("workspace engine API", () => {
     ]);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "/api/workspace/tree?path=src%2Fa.ts&reveal=1",
+    );
+  });
+
+  it("asks the host to reveal a path in the file manager", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, data: { revealed: true } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await revealInFileManager("src/a.ts");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/workspace/reveal");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(
+      JSON.stringify({ path: "src/a.ts" }),
     );
   });
 });

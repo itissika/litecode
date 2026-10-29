@@ -376,7 +376,7 @@ function AppSurface({
               {app.name} · {statusLabel(app.status)}
             </div>
             <p className="apps-view-card-text">
-              {app.install_error?.message ?? app.runtime_error ?? i18n.t("apps.notRunning")}
+              {app.install?.error?.message ?? app.runtime_error ?? i18n.t("apps.notRunning")}
             </p>
             {app.can_start ? (
               <button

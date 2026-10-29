@@ -1,7 +1,7 @@
 //! Per-workspace app runtime: child processes and static loopback servers.
 
-use std::collections::HashMap;
-use std::io::Write;
+use std::collections::{HashMap, VecDeque};
+use std::io::Read;
 use std::net::{TcpListener as StdTcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -9,21 +9,39 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, HeaderValue, Request, StatusCode};
+use axum::http::{HeaderValue, Request, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::Router;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tower_http::services::{ServeDir, ServeFile};
 
-use super::install::{self, now_ms};
+use super::exec;
 use super::registry::{AppRegistry, RegisteredApp};
 use super::schema::{AppStatus, LaunchSpec, PortSpec};
 use crate::config::path::strip_verbatim;
 use crate::serve::shutdown::is_process_alive;
+
+/// Everything a launch may substitute. Bundled apps also have an install
+/// directory and a data directory; a registered app only has the workspace.
+pub struct LaunchContext {
+    pub workspace: PathBuf,
+    pub app_dir: Option<PathBuf>,
+    pub data_dir: Option<PathBuf>,
+}
+
+impl LaunchContext {
+    pub fn registered(workspace: PathBuf) -> Self {
+        Self {
+            workspace,
+            app_dir: None,
+            data_dir: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeView {
@@ -35,9 +53,9 @@ pub struct RuntimeView {
 }
 
 impl RuntimeView {
-    pub fn installed() -> Self {
+    pub fn idle() -> Self {
         Self {
-            status: AppStatus::Installed,
+            status: AppStatus::Stopped,
             port: None,
             url: None,
             error: None,
@@ -46,11 +64,36 @@ impl RuntimeView {
     }
 }
 
+/// Last output lines of an app process, kept in memory. LiteCode does not own
+/// the app's log files: the app writes wherever it wants, and this tail only
+/// exists to explain a crash in the panel.
+#[derive(Clone, Default)]
+pub struct OutputTail(Arc<Mutex<VecDeque<String>>>);
+
+const OUTPUT_TAIL_LINES: usize = 120;
+
+impl OutputTail {
+    fn push_line(&self, line: String) {
+        let Ok(mut lines) = self.0.lock() else { return };
+        if lines.len() == OUTPUT_TAIL_LINES {
+            lines.pop_front();
+        }
+        lines.push_back(line);
+    }
+
+    pub fn text(&self) -> String {
+        self.0
+            .lock()
+            .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default()
+    }
+}
+
 enum RuntimeKind {
     Process {
         child: Child,
         pid: u32,
-        log: PathBuf,
+        output: OutputTail,
     },
     Static {
         shutdown: Option<oneshot::Sender<()>>,
@@ -105,17 +148,12 @@ impl AppRuntime {
         let mut states = self.states.lock().expect("app runtime lock");
         let state = states
             .entry(app_id.to_string())
-            .or_insert_with(|| RuntimeState::idle(AppStatus::Installed));
-        if let Some(RuntimeKind::Process { child, log, .. }) = state.kind.as_mut() {
-            let log_path = log.display().to_string();
+            .or_insert_with(|| RuntimeState::idle(AppStatus::Stopped));
+        if let Some(RuntimeKind::Process { child, output, .. }) = state.kind.as_mut() {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let code = status.code();
                     state.status = AppStatus::Crashed;
-                    state.error = Some(match code {
-                        Some(code) => format!("app exited with code {code}; log: {log_path}"),
-                        None => format!("app exited; log: {log_path}"),
-                    });
+                    state.error = Some(crash_message(status.code(), output));
                     state.kind = None;
                     state.url = None;
                     if let Some(path) = state.run_marker.take() {
@@ -125,9 +163,7 @@ impl AppRuntime {
                 Ok(None) => {}
                 Err(err) => {
                     state.status = AppStatus::Crashed;
-                    state.error = Some(format!(
-                        "cannot inspect app process: {err}; log: {log_path}"
-                    ));
+                    state.error = Some(format!("cannot inspect app process: {err}"));
                     state.kind = None;
                     state.url = None;
                     if let Some(path) = state.run_marker.take() {
@@ -169,7 +205,7 @@ impl AppRuntime {
             }
             None => {}
         }
-        state.status = AppStatus::Installed;
+        state.status = AppStatus::Stopped;
         state.port = None;
         state.url = None;
         state.error = None;
@@ -193,8 +229,7 @@ impl AppRuntime {
     pub fn start_process(
         &self,
         app: &RegisteredApp,
-        install_dir: &Path,
-        data_dir: &Path,
+        ctx: &LaunchContext,
     ) -> Result<RuntimeView, String> {
         let LaunchSpec::Process {
             command,
@@ -224,60 +259,28 @@ impl AppRuntime {
                 return Err("app is already running".into());
             }
         }
-        let port = allocate_port(port.clone())?;
-        let app_dir = install::app_dir(install_dir);
-        let data = data_dir.to_path_buf();
-        // External apps can legitimately have no files yet (the command lives
-        // on PATH); the workdir still has to exist before spawn.
-        std::fs::create_dir_all(&app_dir).map_err(|e| format!("create app dir: {e}"))?;
-        std::fs::create_dir_all(&data).map_err(|e| format!("create app data dir: {e}"))?;
-        let expanded_url = expand(url, &self.registry, &app_dir, &data, port);
-        let workdir = match cwd.as_deref().unwrap_or("app") {
-            "workspace" => self.registry.workspace_root.clone(),
-            _ => app_dir.clone(),
-        };
-        let expanded_command = expand(command, &self.registry, &app_dir, &data, port);
-        let (program, mut all_args) = resolve_program(&expanded_command, &app_dir)?;
+        let port = allocate_port(port)?;
+        let workdir = resolve_workdir(&expand(cwd, ctx, port)?, ctx)?;
+        let expanded_url = expand(url, ctx, port)?;
+        let program = exec::resolve_executable(&expand(command, ctx, port)?, &workdir)
+            .map_err(|err| format!("{err} (cwd: {})", workdir.display()))?;
+        let mut all_args = Vec::with_capacity(args.len());
         for arg in args {
-            all_args.push(expand(arg, &self.registry, &app_dir, &data, port));
+            all_args.push(expand(arg, ctx, port)?);
         }
         let mut resolved_env = HashMap::new();
         for (key, value) in env {
-            resolved_env.insert(
-                key.clone(),
-                expand(value, &self.registry, &app_dir, &data, port),
-            );
+            resolved_env.insert(key.clone(), expand(value, ctx, port)?);
         }
-        let logs = install::logs_dir(install_dir);
-        std::fs::create_dir_all(&logs).map_err(|e| format!("create app logs: {e}"))?;
-        let log = logs.join("app.log");
-        rotate_log(&log);
-        let mut log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log)
-            .map_err(|e| format!("open app log: {e}"))?;
-        let _ = writeln!(
-            log_file,
-            "\n[{}] $ {} {} (cwd: {})",
-            now_ms(),
-            program.display(),
-            all_args.join(" "),
-            workdir.display()
-        );
-        let stdout = log_file
-            .try_clone()
-            .map_err(|e| format!("clone app log: {e}"))?;
-        let stderr = log_file
-            .try_clone()
-            .map_err(|e| format!("clone app log: {e}"))?;
+
+        let output = OutputTail::default();
         let mut cmd = Command::new(&program);
         cmd.args(&all_args)
             .current_dir(&workdir)
             .envs(&resolved_env)
             .stdin(Stdio::null())
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr));
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -292,7 +295,7 @@ impl AppRuntime {
         // the spawning thread, and this call runs on a retirable blocking
         // worker, so binding it here would kill a healthy app. Graceful
         // shutdown and the Windows Job Object cover the supported paths.
-        let marker = claim_run_marker(app, install_dir, &self.registry, std::process::id())?;
+        let marker = claim_run_marker(app, &self.registry, std::process::id())?;
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(err) => {
@@ -301,6 +304,12 @@ impl AppRuntime {
             }
         };
         let pid = child.id();
+        if let Some(stdout) = child.stdout.take() {
+            pump(stdout, output.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            pump(stderr, output.clone());
+        }
         crate::proc_lifetime::bind_child_to_parent(pid);
         if let Some(path) = marker.as_deref() {
             if let Err(err) = write_run_marker(path, &self.registry, pid) {
@@ -328,7 +337,7 @@ impl AppRuntime {
         let started = Instant::now();
         let ready = loop {
             if let Ok(Some(status)) = child.try_wait() {
-                break Err(format!("app exited during startup ({status})"));
+                break Err(crash_message(status.code(), &output));
             }
             let tcp_ready = TcpStream::connect_timeout(
                 &format!("127.0.0.1:{port}")
@@ -371,6 +380,7 @@ impl AppRuntime {
             crate::terminal::kill_process_tree(pid);
             let _ = child.wait();
             remove_run_marker(marker.as_deref());
+            let message = with_tail(err, &output);
             let mut states = self.states.lock().expect("app runtime lock");
             states.insert(
                 app.id.clone(),
@@ -378,13 +388,13 @@ impl AppRuntime {
                     status: AppStatus::Error,
                     port: None,
                     url: None,
-                    error: Some(format!("{err}; log: {}", log.display())),
+                    error: Some(message.clone()),
                     started_at: None,
                     kind: None,
                     run_marker: None,
                 },
             );
-            return Err(err);
+            return Err(message);
         }
 
         {
@@ -397,7 +407,7 @@ impl AppRuntime {
                     url: Some(expanded_url.clone()),
                     error: None,
                     started_at: Some(now_ms()),
-                    kind: Some(RuntimeKind::Process { child, pid, log }),
+                    kind: Some(RuntimeKind::Process { child, pid, output }),
                     run_marker: marker,
                 },
             );
@@ -408,13 +418,11 @@ impl AppRuntime {
     pub async fn start_static(
         &self,
         app: &RegisteredApp,
-        install_dir: &Path,
+        ctx: &LaunchContext,
     ) -> Result<RuntimeView, String> {
-        let app_dir = install::app_dir(install_dir);
-        let index = app_dir.join("index.html");
-        if !index.is_file() {
-            return Err(format!("static app is missing {}", index.display()));
-        }
+        let LaunchSpec::Static { dir, spa } = &app.definition.launch else {
+            return Err("app does not use a static launch".into());
+        };
         {
             let states = self.states.lock().expect("app runtime lock");
             if states
@@ -430,6 +438,19 @@ impl AppRuntime {
                 return Err("app is already running".into());
             }
         }
+        let app_dir = resolve_workdir(&expand(dir, ctx, 0)?, ctx)?;
+        if !app_dir.is_dir() {
+            return Err(format!(
+                "static directory is missing: {}",
+                app_dir.display()
+            ));
+        }
+        if !spa && !app_dir.join("index.html").is_file() {
+            return Err(format!(
+                "static directory has no index.html: {}",
+                app_dir.display()
+            ));
+        }
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .map_err(|e| format!("bind static app: {e}"))?;
@@ -439,7 +460,7 @@ impl AppRuntime {
         let port = addr.port();
         let token = uuid::Uuid::new_v4().to_string();
         let cookie_name = format!("litecode_app_{port}");
-        let spa = matches!(app.definition.launch, LaunchSpec::Static { spa: true });
+        let spa = *spa;
         let auth = StaticAuth {
             cookie_name: cookie_name.clone(),
             token: token.clone(),
@@ -447,14 +468,16 @@ impl AppRuntime {
         };
         let app_router = if spa {
             Router::new()
-                .fallback_service(ServeDir::new(&app_dir).fallback(ServeFile::new(index)))
+                .fallback_service(
+                    ServeDir::new(&app_dir).fallback(ServeFile::new(app_dir.join("index.html"))),
+                )
                 .layer(middleware::from_fn_with_state(auth, static_auth))
         } else {
             Router::new()
                 .fallback_service(ServeDir::new(&app_dir))
                 .layer(middleware::from_fn_with_state(auth, static_auth))
         };
-        let marker = claim_run_marker(app, install_dir, &self.registry, std::process::id())?;
+        let marker = claim_run_marker(app, &self.registry, std::process::id())?;
         let (tx, rx) = oneshot::channel();
         let task = tokio::spawn(async move {
             let server = axum::serve(listener, app_router).with_graceful_shutdown(async {
@@ -491,13 +514,18 @@ impl AppRuntime {
     }
 }
 
+/// Run marker directory, keyed by app and workspace. LiteCode owns this, not
+/// the app: it lives under the global data root, never in an install dir.
+fn run_marker_dir(registry: &AppRegistry, app_id: &str) -> PathBuf {
+    registry.global_data.join("app-runtime").join(app_id)
+}
+
 fn claim_run_marker(
     app: &RegisteredApp,
-    install_dir: &Path,
     registry: &AppRegistry,
     pid: u32,
 ) -> Result<Option<PathBuf>, String> {
-    let dir = install::run_dir(install_dir);
+    let dir = run_marker_dir(registry, &app.id);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create app run dir: {e}"))?;
     let own = dir.join(format!("{}.json", registry.workspace_hash()));
     if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -526,17 +554,16 @@ fn claim_run_marker(
             }
         }
     }
-    // Every running app leaves a marker, not only single-instance ones. The
-    // marker is what lets another workspace refuse an uninstall while this
-    // app is still serving pages here.
+    // Every running app leaves a marker, not only single-instance ones: it is
+    // how another workspace knows a shared runtime is still serving pages.
     write_run_marker(&own, registry, pid)?;
     Ok(Some(own))
 }
 
-/// True while any workspace still has a live app process for this install.
-/// Dead markers are cleaned here, so an uninstall after a crash can proceed.
-pub fn has_live_run_marker(install_dir: &Path) -> bool {
-    let dir = install::run_dir(install_dir);
+/// True while any workspace still has a live app process for this app.
+/// Dead markers are cleaned here, so a later start can proceed.
+pub fn has_live_run_marker(registry: &AppRegistry, app_id: &str) -> bool {
+    let dir = run_marker_dir(registry, app_id);
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return false;
     };
@@ -590,16 +617,12 @@ async fn static_auth(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    let cookie = format!("{}={}", auth.cookie_name, auth.token);
     let authorized = request
         .headers()
         .get(header::COOKIE)
         .and_then(|value| value.to_str().ok())
-        .map(|cookies| {
-            cookies.split(';').any(|part| {
-                let part = part.trim();
-                part == format!("{}={}", auth.cookie_name, auth.token)
-            })
-        })
+        .map(|cookies| cookies.split(';').any(|part| part.trim() == cookie))
         .unwrap_or(false);
     if authorized {
         return next.run(request).await;
@@ -664,7 +687,7 @@ fn listens_on_lan(port: u16) -> bool {
     TcpStream::connect_timeout(&(ip, port).into(), Duration::from_millis(350)).is_ok()
 }
 
-fn allocate_port(spec: PortSpec) -> Result<u16, String> {
+fn allocate_port(spec: &PortSpec) -> Result<u16, String> {
     if let Some(port) = spec.fixed() {
         let listener = StdTcpListener::bind(("127.0.0.1", port))
             .map_err(|e| format!("port {port} is not available: {e}"))?;
@@ -681,44 +704,134 @@ fn allocate_port(spec: PortSpec) -> Result<u16, String> {
     Ok(port)
 }
 
-fn expand(value: &str, registry: &AppRegistry, app_dir: &Path, data: &Path, port: u16) -> String {
-    value
-        .replace(
-            "{workspace}",
-            &strip_verbatim(registry.workspace_root.clone()).to_string_lossy(),
-        )
-        .replace("{appdir}", &app_dir.to_string_lossy())
-        .replace("{data}", &data.to_string_lossy())
-        .replace("{port}", &port.to_string())
+/// Substitute the tokens LiteCode owns. A bundled app also gets its install
+/// directory and data directory; a registered app gets neither.
+fn expand(value: &str, ctx: &LaunchContext, port: u16) -> Result<String, String> {
+    let mut out = value.replace(
+        "{workspace}",
+        &strip_verbatim(ctx.workspace.clone()).to_string_lossy(),
+    );
+    out = out.replace("{port}", &port.to_string());
+    for (token, dir) in [("{appdir}", &ctx.app_dir), ("{data}", &ctx.data_dir)] {
+        if !out.contains(token) {
+            continue;
+        }
+        match dir {
+            Some(dir) => out = out.replace(token, &dir.to_string_lossy()),
+            None => {
+                return Err(format!(
+                    "{token} is only available to bundled apps; use {{workspace}} instead"
+                ));
+            }
+        }
+    }
+    Ok(out)
 }
 
-fn resolve_program(command: &str, app_dir: &Path) -> Result<(PathBuf, Vec<String>), String> {
-    if command.eq_ignore_ascii_case("npm") {
-        let (program, _) = crate::lsp::install::npm::npm_program_and_args(&[])
-            .ok_or_else(|| "npm was not found on PATH".to_string())?;
-        return Ok((program, Vec::new()));
-    }
-    if command.eq_ignore_ascii_case("npx") {
-        let (program, _) = crate::lsp::install::npm::npm_program_and_args(&[])
-            .ok_or_else(|| "npm was not found on PATH".to_string())?;
-        return Ok((program, vec!["exec".into()]));
-    }
-    let path = Path::new(command);
-    if path.is_absolute() {
-        Ok((path.to_path_buf(), Vec::new()))
-    } else if command.contains('/') || command.contains('\\') || command.ends_with(".exe") {
-        Ok((app_dir.join(path), Vec::new()))
+/// Relative launch paths are relative to the workspace; absolute paths are
+/// used as written. The directory must already exist: LiteCode does not
+/// create the places where an app runs.
+fn resolve_workdir(value: &str, ctx: &LaunchContext) -> Result<PathBuf, String> {
+    let path = Path::new(value);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
     } else {
-        Ok((path.to_path_buf(), Vec::new()))
+        ctx.workspace.join(path)
+    };
+    if resolved.is_dir() {
+        Ok(resolved)
+    } else {
+        Err(format!(
+            "working directory does not exist: {}",
+            resolved.display()
+        ))
     }
 }
 
-fn rotate_log(path: &Path) {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return;
+fn pump<R: Read + Send + 'static>(mut reader: R, tail: OutputTail) {
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        let mut pending: Vec<u8> = Vec::new();
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => {
+                    pending.extend_from_slice(&buffer[..read]);
+                    while let Some(index) = pending.iter().position(|byte| *byte == b'\n') {
+                        let line: Vec<u8> = pending.drain(..=index).collect();
+                        tail.push_line(String::from_utf8_lossy(&line).trim_end().to_string());
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+        if !pending.is_empty() {
+            tail.push_line(String::from_utf8_lossy(&pending).trim_end().to_string());
+        }
+    });
+}
+
+fn crash_message(code: Option<i32>, output: &OutputTail) -> String {
+    let exit = match code {
+        Some(code) => format!("app exited with code {code}"),
+        None => "app exited".to_string(),
     };
-    if meta.len() > 5 * 1024 * 1024 {
-        let backup = path.with_extension("log.1");
-        let _ = std::fs::rename(path, backup);
+    with_tail(exit, output)
+}
+
+fn with_tail(message: String, output: &OutputTail) -> String {
+    let tail = output.text();
+    if tail.is_empty() {
+        message
+    } else {
+        format!("{message}\n{tail}")
+    }
+}
+
+fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registered_apps_get_only_workspace_and_port() {
+        let ctx = LaunchContext::registered(PathBuf::from("/tmp/work"));
+        let out = expand("{workspace}/site:{port}", &ctx, 8080).expect("expand");
+        assert!(out.ends_with("/site:8080"), "{out}");
+        let err = expand("{appdir}", &ctx, 1).expect_err("appdir token");
+        assert!(err.contains("{appdir}"), "{err}");
+    }
+
+    #[test]
+    fn bundled_apps_get_their_own_directories() {
+        let ctx = LaunchContext {
+            workspace: PathBuf::from("/tmp/work"),
+            app_dir: Some(PathBuf::from("/data/apps/demo/app")),
+            data_dir: Some(PathBuf::from("/tmp/work/.litecode/apps/demo")),
+        };
+        assert_eq!(
+            expand("{appdir}/run.{data}", &ctx, 1).expect("expand"),
+            "/data/apps/demo/app/run./tmp/work/.litecode/apps/demo"
+        );
+    }
+
+    #[test]
+    fn relative_working_directories_resolve_under_the_workspace() {
+        let dir = std::env::temp_dir().join(format!("litecode-runtime-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("site")).expect("temp dir");
+        let ctx = LaunchContext::registered(dir.clone());
+        let resolved = resolve_workdir("site", &ctx).expect("resolve");
+        assert_eq!(resolved, dir.join("site"));
+        let missing = resolve_workdir("nope", &ctx).expect_err("missing dir");
+        assert!(missing.contains("does not exist"), "{missing}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

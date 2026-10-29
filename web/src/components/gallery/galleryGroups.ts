@@ -4,6 +4,9 @@ import type { MediaEntry, MediaKind } from "../../api/workspace";
 
 export type GalleryMode = "all" | "folder" | "kind";
 
+/** How the panel paints entries: square thumbnails or compact rows. */
+export type GalleryView = "grid" | "list";
+
 export type GalleryKind = MediaKind;
 
 export const MEDIA_KIND_ORDER: readonly MediaKind[] = [

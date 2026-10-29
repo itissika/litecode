@@ -35,10 +35,7 @@ export function ensureEdgePanel(component: string, api?: DockviewApi | null): vo
     component: spec.component,
     title: spec.title ?? spec.component,
     tabComponent: spec.tabComponent,
-    position:
-      spec.component === "apps"
-        ? { referenceGroup, index: 0 }
-        : { referenceGroup },
+    position: { referenceGroup },
   });
 }
 

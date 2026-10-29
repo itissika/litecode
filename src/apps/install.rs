@@ -10,9 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::builtin::{ArchiveFormat, InstallStep};
 use super::registry::{AppRegistry, RegisteredApp};
-use super::schema::{ArchiveFormat, InstallKind, InstallStep, LaunchSpec};
-use super::space;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct InstallMarker {
@@ -54,10 +53,6 @@ pub fn manifest_path(install_dir: &Path) -> PathBuf {
 
 pub fn logs_dir(install_dir: &Path) -> PathBuf {
     install_dir.join("logs")
-}
-
-pub fn run_dir(install_dir: &Path) -> PathBuf {
-    install_dir.join("run")
 }
 
 pub fn app_dir(install_dir: &Path) -> PathBuf {
@@ -235,18 +230,15 @@ pub fn log_tail(path: &Path) -> Option<String> {
 }
 
 pub fn install_blocking(registry: &AppRegistry, app: &RegisteredApp) -> Result<(), String> {
-    if app.definition.install.kind != InstallKind::Steps {
-        return Err("this app is external; no managed install is available".into());
+    let spec = app
+        .managed_install()
+        .ok_or_else(|| "this app has no managed install".to_string())?;
+    if !spec.manages_files() {
+        return Err("this app has no managed install steps".to_string());
     }
-    let install_dir = registry.install_dir(app);
-    if let Some(required) = app.definition.install.size_bytes {
-        let free = space::available_bytes(&registry.apps_root).unwrap_or(u64::MAX);
-        if free < required {
-            return Err(format!(
-                "not enough disk space: need {required} bytes, {free} bytes free"
-            ));
-        }
-    }
+    let install_dir = registry
+        .install_dir(app)
+        .ok_or_else(|| "this app has no managed install".to_string())?;
     let lock = InstallLock::acquire(lock_path(&install_dir))?;
     clear_marker(&install_dir);
     std::fs::create_dir_all(&install_dir).map_err(|e| format!("create install dir: {e}"))?;
@@ -256,7 +248,7 @@ pub fn install_blocking(registry: &AppRegistry, app: &RegisteredApp) -> Result<(
     let _ = std::fs::write(&log, b"");
     marker(&install_dir, "preparing", Some(1), None, Some(log.clone()));
 
-    let result = install_inner(registry, app, &install_dir, &log);
+    let result = install_inner(registry, app, spec, &install_dir, &log);
     match result {
         Ok(()) => {
             let manifest = InstallManifest {
@@ -284,6 +276,7 @@ pub fn install_blocking(registry: &AppRegistry, app: &RegisteredApp) -> Result<(
 fn install_inner(
     registry: &AppRegistry,
     app: &RegisteredApp,
+    spec: &super::builtin::InstallSpec,
     install_dir: &Path,
     log: &Path,
 ) -> Result<(), String> {
@@ -294,13 +287,14 @@ fn install_inner(
     std::fs::create_dir_all(&staging).map_err(|e| format!("create staging: {e}"))?;
     let stage_app = staging.join("app");
     std::fs::create_dir_all(&stage_app).map_err(|e| format!("create staging app: {e}"))?;
-    let data = registry.data_dir(app, install_dir);
+    let data = registry
+        .data_dir(app, install_dir)
+        .unwrap_or_else(|| install_dir.join("data"));
     std::fs::create_dir_all(&data).map_err(|e| format!("create data dir: {e}"))?;
 
     let result = (|| {
-        for (index, step) in app.definition.install.steps.iter().enumerate() {
-            let percent =
-                5 + ((index as u32 * 80) / app.definition.install.steps.len().max(1) as u32) as u8;
+        for (index, step) in spec.steps.iter().enumerate() {
+            let percent = 5 + ((index as u32 * 80) / spec.steps.len().max(1) as u32) as u8;
             match step {
                 InstallStep::Download { url, sha256, file } => {
                     marker(
@@ -365,7 +359,6 @@ fn install_inner(
                         &expanded_args,
                         &workdir,
                         &resolved_env,
-                        &stage_app,
                         *timeout_ms,
                         log,
                     )?;
@@ -379,19 +372,10 @@ fn install_inner(
             Some("verify install".into()),
             Some(log.to_path_buf()),
         );
-        if let Some(check) = &app.definition.install.check {
+        if let Some(check) = &spec.check {
             let path = safe_join(&stage_app, &check.path)?;
             if !path.exists() {
                 return Err(format!("install check failed: {} is missing", check.path));
-            }
-        }
-        if app.definition.install.size_bytes.is_some() {
-            let free = space::available_bytes(&registry.apps_root).unwrap_or(u64::MAX);
-            let needed = space::directory_size(&staging);
-            if free < needed {
-                return Err(format!(
-                    "not enough disk space: need {needed} bytes, {free} bytes free"
-                ));
             }
         }
         Ok(())
@@ -603,39 +587,16 @@ fn expand_tokens(value: &str, registry: &AppRegistry, app_dir: &Path, data: &Pat
         .replace("{data}", &data.to_string_lossy())
 }
 
-fn resolve_program(command: &str, app_dir: &Path) -> Result<(PathBuf, Vec<String>), String> {
-    let (program, extra) = if command.eq_ignore_ascii_case("npm") {
-        let shim = crate::lsp::install::npm::resolve_npm_shim()
-            .ok_or_else(|| "npm was not found on PATH".to_string())?;
-        (shim, Vec::new())
-    } else if command.eq_ignore_ascii_case("npx") {
-        let shim = crate::lsp::install::npm::resolve_npm_shim()
-            .ok_or_else(|| "npm was not found on PATH".to_string())?;
-        (shim, vec!["exec".to_string()])
-    } else {
-        let path = Path::new(command);
-        if path.is_absolute() {
-            (path.to_path_buf(), Vec::new())
-        } else if command.contains('/') || command.contains('\\') || command.ends_with(".exe") {
-            (app_dir.join(path), Vec::new())
-        } else {
-            (path.to_path_buf(), Vec::new())
-        }
-    };
-    Ok((program, extra))
-}
-
 fn run_command(
     command: &str,
     args: &[String],
     cwd: &Path,
     env: &BTreeMap<String, String>,
-    app_dir: &Path,
     timeout_ms: u64,
     log: &Path,
 ) -> Result<(), String> {
-    let (program, mut all_args) = resolve_program(command, app_dir)?;
-    all_args.extend(args.iter().cloned());
+    let program = super::exec::resolve_executable(command, cwd)?;
+    let all_args = args.to_vec();
     let mut cmd = Command::new(&program);
     cmd.args(&all_args)
         .current_dir(cwd)
@@ -701,14 +662,5 @@ fn run_command(
 fn append_log(path: &Path, line: &str) {
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{line}");
-    }
-}
-
-/// A compact preview used by tests and diagnostics.
-pub fn describe_launch(launch: &LaunchSpec) -> String {
-    match launch {
-        LaunchSpec::Process { command, args, .. } => format!("{command} {}", args.join(" ")),
-        LaunchSpec::Static { .. } => "static".into(),
-        LaunchSpec::Builtin { view } => format!("builtin:{}", view.as_str()),
     }
 }

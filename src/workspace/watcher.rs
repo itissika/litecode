@@ -59,6 +59,9 @@ impl WorkspaceWatcher {
                         // overflow means events were lost; the consumers run a
                         // full disk reconcile instead of trusting the stream.
                         let Some(event) = event.filter(|e| !event_requests_rescan(e)) else {
+                            // Events were lost, so the media snapshot is not
+                            // trusted either: the next listing walks again.
+                            workspace.invalidate_media();
                             let _ = rescan_tx.send(());
                             continue;
                         };
@@ -85,8 +88,24 @@ impl WorkspaceWatcher {
                         let changes = coalesce_pending(&mut pending, &mut pending_deleted, |rel| {
                             rel_base.join(rel).exists()
                         });
-                        if changes_include_workspace_excludes(&changes) {
+                        let excludes_changed = changes_include_workspace_excludes(&changes);
+                        if excludes_changed {
                             reload_workspace_excludes_from_disk(&rel_base);
+                        }
+                        // The tree moved outside the service. Patch the media
+                        // snapshot for the paths we can name; a change to the
+                        // ignore rules themselves alters what is visible at all,
+                        // so that still drops the snapshot for a fresh walk.
+                        if excludes_changed
+                            || changes.iter().any(|change| {
+                                change.paths.iter().any(|rel| rel_changes_ignore_rules(rel))
+                            })
+                        {
+                            workspace.invalidate_media();
+                        } else {
+                            for change in &changes {
+                                workspace.apply_media_paths(&change.paths);
+                            }
                         }
                         for change in changes {
                             let _ = change_tx.send(change);
@@ -240,6 +259,11 @@ fn is_knowledge_corpus_rel(rel: &str) -> bool {
         return false;
     }
     !rel.split('/').any(|seg| seg.contains(".litecode-tmp-"))
+}
+
+/// Edits that change which paths are visible to the Explorer face.
+fn rel_changes_ignore_rules(rel: &str) -> bool {
+    rel.ends_with(".gitignore") || rel.ends_with(".git/info/exclude")
 }
 
 fn changes_include_workspace_excludes(changes: &[WorkspaceChange]) -> bool {

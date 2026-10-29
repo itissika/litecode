@@ -25,15 +25,6 @@ export interface PanelKindSpec {
 
 export const PANEL_KINDS: readonly PanelKindSpec[] = [
   {
-    component: "apps",
-    tabComponent: "edge",
-    zone: "edge",
-    rail: "left",
-    canPopout: false,
-    singletonId: "apps",
-    title: "Apps",
-  },
-  {
     component: "filetree",
     tabComponent: "edge",
     zone: "edge",
@@ -68,6 +59,15 @@ export const PANEL_KINDS: readonly PanelKindSpec[] = [
     canPopout: false,
     singletonId: "workspace-knowledge",
     title: "Knowledge",
+  },
+  {
+    component: "apps",
+    tabComponent: "edge",
+    zone: "edge",
+    rail: "left",
+    canPopout: false,
+    singletonId: "apps",
+    title: "Apps",
   },
   {
     component: "sessions",
@@ -157,6 +157,7 @@ export function kindForComponent(
   return PANEL_KINDS.find((kind) => kind.component === component);
 }
 
+/** Edge panels in rail order. `ensureEdgePanel` appends, so this order is the tab order. */
 export function edgeKinds(): PanelKindSpec[] {
   return PANEL_KINDS.filter((kind) => kind.zone === "edge");
 }

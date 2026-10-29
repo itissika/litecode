@@ -7,8 +7,10 @@ import {
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
-import type { TreeEntry } from "../api/workspace";
+import { revealInFileManager, type TreeEntry } from "../api/workspace";
 import { revealEdgePanel } from "../dockview/workbench/edges";
+import i18n from "../i18n";
+import { useConnectionStore } from "../stores/connectionStore";
 import { useEditorStore } from "../stores/editorStore";
 import { useExplorerStore } from "../stores/explorerStore";
 import { useSessionStore } from "../stores/sessionStore";
@@ -100,7 +102,7 @@ function handleDropEvent(
     if (osFiles.every((f) => f.size === 0 && !f.type)) {
       useToastStore
         .getState()
-        .showToast("Folder drops from the OS are not supported", "info");
+        .showToast(i18n.t("explorer.folderDropUnsupported"), "info");
       return;
     }
     void importOsFiles(target, osFiles);
@@ -112,7 +114,7 @@ function handleDropEvent(
     if (blocked && !copy) {
       useToastStore
         .getState()
-        .showToast("Cannot move a folder into itself", "error");
+        .showToast(i18n.t("explorer.moveIntoSelf"), "error");
       return;
     }
     void moveOrCopyEntries(internal, target, copy);
@@ -129,7 +131,9 @@ async function beginCreate(
 
 function openIntegratedTerminal(path: string, isDir: boolean): void {
   if (!revealEdgePanel("terminal")) {
-    useToastStore.getState().showToast("Terminal is unavailable", "error");
+    useToastStore
+      .getState()
+      .showToast(i18n.t("explorer.terminalUnavailable"), "error");
     return;
   }
   const cwd = isDir ? path : parentPath(path);
@@ -158,7 +162,7 @@ function InlineNameInput({
     if (submit) {
       const err = validateFileName(value);
       if (err) {
-        useToastStore.getState().showToast(err, "error");
+        useToastStore.getState().showToast(i18n.t(err), "error");
         ref.current?.focus();
         return;
       }
@@ -424,6 +428,7 @@ export function FileTree() {
   const expanded = useTreeStore((s) => s.expanded);
   const childrenMap = useTreeStore((s) => s.children);
   const project = useSessionStore((s) => s.project);
+  const hostOs = useConnectionStore((s) => s.hostOs);
   const menu = useExplorerStore((s) => s.menu);
   const inline = useExplorerStore((s) => s.inline);
   const clipboard = useExplorerStore((s) => s.clipboard);
@@ -604,6 +609,17 @@ export function FileTree() {
     }
   };
 
+  const revealInHost = (target: string): void => {
+    void revealInFileManager(target).catch((reason: unknown) => {
+      useToastStore.getState().showToast(
+        i18n.t("explorer.revealFailed", {
+          message: reason instanceof Error ? reason.message : String(reason),
+        }),
+        "error",
+      );
+    });
+  };
+
   const menuItems = (): FileTreeMenuItem[] => {
     const path = menu?.path ?? null;
     const paths = operatePaths();
@@ -614,12 +630,12 @@ export function FileTree() {
     return [
       {
         id: "new-file",
-        label: "New File…",
+        label: i18n.t("explorer.newFile"),
         onClick: () => void beginCreate(parent, "newFile"),
       },
       {
         id: "new-folder",
-        label: "New Folder…",
+        label: i18n.t("explorer.newFolder"),
         onClick: () => void beginCreate(parent, "newFolder"),
       },
       { id: "sep-1", separator: true },
@@ -627,48 +643,59 @@ export function FileTree() {
         ? [
             {
               id: "open",
-              label: "Open",
+              label: i18n.t("explorer.open"),
               onClick: () => void useEditorStore.getState().openFile(single),
             } satisfies FileTreeMenuItem,
           ]
         : []),
       {
         id: "terminal",
-        label: "Open in Integrated Terminal",
+        label: i18n.t("explorer.openInTerminal"),
         onClick: () =>
           openIntegratedTerminal(path ?? "", path === null ? true : isDir),
       },
+      // Only a Windows serve host has a file manager to show things in; a
+      // remote session's server must never pop its own.
+      ...(path !== null && hostOs === "windows"
+        ? [
+            {
+              id: "reveal",
+              label: i18n.t("explorer.reveal"),
+              onClick: () => revealInHost(path),
+            } satisfies FileTreeMenuItem,
+          ]
+        : []),
       { id: "sep-2", separator: true },
       {
         id: "cut",
-        label: "Cut",
+        label: i18n.t("explorer.cut"),
         shortcut: "Ctrl+X",
         disabled: paths.length === 0,
         onClick: () => setClipboard({ mode: "cut", paths }),
       },
       {
         id: "copy",
-        label: "Copy",
+        label: i18n.t("explorer.copy"),
         shortcut: "Ctrl+C",
         disabled: paths.length === 0,
         onClick: () => setClipboard({ mode: "copy", paths }),
       },
       {
         id: "paste",
-        label: "Paste",
+        label: i18n.t("explorer.paste"),
         shortcut: "Ctrl+V",
         disabled: !clipboard,
         onClick: () => void pasteEntries(parent),
       },
       {
         id: "dup",
-        label: "Duplicate",
+        label: i18n.t("explorer.duplicate"),
         disabled: paths.length === 0,
         onClick: () => void duplicateEntries(paths),
       },
       {
         id: "rename",
-        label: "Rename",
+        label: i18n.t("explorer.rename"),
         shortcut: "F2",
         disabled: !single || path === null,
         onClick: () => single && setInline({ kind: "rename", path: single }),
@@ -676,13 +703,13 @@ export function FileTree() {
       { id: "sep-3", separator: true },
       {
         id: "copy-path",
-        label: "Copy Path",
+        label: i18n.t("explorer.copyPath"),
         onClick: () =>
           void copyAbsolutePaths(paths.length ? paths : [path ?? ""], project),
       },
       {
         id: "copy-rel",
-        label: "Copy Relative Path",
+        label: i18n.t("explorer.copyRelativePath"),
         onClick: () =>
           void copyRelativePaths(paths.length ? paths : [path ?? ""]),
       },
@@ -691,7 +718,7 @@ export function FileTree() {
             { id: "sep-collapse", separator: true } satisfies FileTreeMenuItem,
             {
               id: "collapse",
-              label: "Collapse All",
+              label: i18n.t("explorer.collapseAll"),
               onClick: () => collapseAll(),
             } satisfies FileTreeMenuItem,
           ]
@@ -699,7 +726,7 @@ export function FileTree() {
       { id: "sep-4", separator: true },
       {
         id: "delete",
-        label: "Delete",
+        label: i18n.t("explorer.delete"),
         shortcut: "Del",
         danger: true,
         disabled: paths.length === 0,
@@ -723,7 +750,9 @@ export function FileTree() {
           className="truncate px-1 text-[11px] text-(--_dk-text-disabled)"
           title={project || undefined}
         >
-          {project ? fileNameFromPath(project) || project : "Project"}
+          {project
+            ? fileNameFromPath(project) || project
+            : i18n.t("explorer.project")}
         </span>
         <FileTreeGlobInput query={globQuery} onQueryChange={setGlobQuery} />
       </div>

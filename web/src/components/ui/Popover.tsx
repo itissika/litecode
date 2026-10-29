@@ -9,6 +9,7 @@ import {
 import { createPortal } from "react-dom";
 
 import { viewOf } from "../../lib/domView";
+import { dockPane, opensUpward, visibleBox, VIEWPORT_MARGIN } from "./dockPane";
 import { useFloatingLayer } from "./useFloatingLayer";
 
 interface PopoverApi {
@@ -23,7 +24,8 @@ interface PopoverProps {
    *  pointer leaves both trigger and panel (with a grace period). */
   triggerOn?: "click" | "hover";
   /** Where the floating panel anchors relative to the trigger. Auto-flips
-   *  vertically when the requested direction would run off the viewport. */
+   *  vertically when the requested direction would run off the dock pane (or
+   *  the viewport outside dockview). */
   placement?: "up-right" | "up-left" | "down-right" | "down-left";
   /** Fixed pixel width of the panel, or "trigger" to match the trigger width. */
   width?: number | "trigger";
@@ -55,26 +57,27 @@ const MIN_TRIGGER_WIDTH = 120;
 /** Panel height estimate driving the vertical auto-flip. Current panels cap
  *  their scroll area at max-h-48 (192px) plus chrome, so this covers them. */
 const PANEL_MAX_H = 260;
-/** Minimum distance kept between the panel and the viewport edges. */
-const VIEWPORT_MARGIN = 8;
+/** Smallest pane span that can host a usable panel; below it, close rather
+ *  than render a sliver in a collapsed rail. */
+const MIN_PANE_SPAN = 48;
 
 /** Fixed-position style object for the portaled panel. */
 type PanelPos = {
   top?: number;
-  right?: number;
   bottom?: number;
   left?: number;
   width?: number;
+  maxHeight?: number;
 };
 
 function samePos(a: PanelPos | null, b: PanelPos): boolean {
   if (!a) return false;
   return (
     a.top === b.top &&
-    a.right === b.right &&
     a.bottom === b.bottom &&
     a.left === b.left &&
-    a.width === b.width
+    a.width === b.width &&
+    a.maxHeight === b.maxHeight
   );
 }
 
@@ -101,10 +104,11 @@ function releaseSingleOpen(close: () => void): void {
  * Portal-based floating panel primitive.
  *
  * Owns only the mechanics: open/close state (click toggle or hover with
- * delays), app-wide single-open exclusion, viewport-anchored positioning
- * (fixed + getBoundingClientRect, repositioned on scroll/resize, auto-flip
- * and clamp at the viewport edges) and dismissal (toggle re-click, outside
- * mousedown, Escape). It renders no content of its own - callers inject both
+ * delays), app-wide single-open exclusion, pane-anchored positioning (fixed
+ * + getBoundingClientRect, repositioned on scroll/resize, auto-flip and clamp
+ * to the dock pane the trigger lives in; the viewport is the fallback outside
+ * dockview) and dismissal (toggle re-click, outside mousedown, Escape). It
+ * renders no content of its own - callers inject both
  * the trigger and the panel body, so the same primitive backs notification
  * panels, context-usage popovers, hover commit details, etc.
  */
@@ -125,6 +129,9 @@ export function Popover({
   const [pos, setPos] = useState<PanelPos | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  /** The panel's own CSS max-height, measured once per open before the inline
+   *  pane cap would mask it. `null` until that first measurement. */
+  const styleCapRef = useRef<number | null>(null);
   const openTimer = useRef<number | null>(null);
   const closeTimer = useRef<number | null>(null);
   const hover = triggerOn === "hover";
@@ -150,34 +157,60 @@ export function Popover({
     const rect = el.getBoundingClientRect();
     const vw = view.innerWidth;
     const vh = view.innerHeight;
-    const w =
-      width === "trigger" ? Math.max(rect.width, MIN_TRIGGER_WIDTH) : width;
+    const box = visibleBox(el, vw, vh);
+    const pane = dockPane(el);
 
-    const next: PanelPos = { width: w };
-
-    // Vertical: honor the requested direction, flip when the estimated panel
-    // would run off the viewport (same policy as Dropdown).
-    const fitsDown = vh - rect.bottom >= estimatedHeight + VIEWPORT_MARGIN;
-    const fitsUp = rect.top >= estimatedHeight + VIEWPORT_MARGIN;
-    if (placement.startsWith("up")) {
-      if (fitsUp) next.bottom = vh - rect.top + gap;
-      else next.top = rect.bottom + gap; // flip down
-    } else {
-      if (fitsDown) next.top = rect.bottom + gap;
-      else next.bottom = vh - rect.top + gap; // flip up
+    // The panel is clamped to its dock pane; once the trigger scrolls out of
+    // that pane there is nothing left to anchor to.
+    if (pane && (rect.bottom <= box.top || rect.top >= box.bottom)) {
+      setOpen(false);
+      return;
     }
 
-    // Horizontal: anchor to the requested edge, clamped into the viewport.
-    if (placement.endsWith("left")) {
-      next.left = Math.max(
-        VIEWPORT_MARGIN,
-        Math.min(rect.left, vw - w - VIEWPORT_MARGIN),
-      );
-    } else {
-      next.right = Math.max(
-        VIEWPORT_MARGIN,
-        Math.min(vw - rect.right, vw - w - VIEWPORT_MARGIN),
-      );
+    const boxW = box.right - box.left;
+    const boxH = box.bottom - box.top;
+    const minSpan = 2 * VIEWPORT_MARGIN + MIN_PANE_SPAN;
+    if (boxW < minSpan || boxH < minSpan) {
+      setOpen(false);
+      return;
+    }
+
+    const wanted =
+      width === "trigger" ? Math.max(rect.width, MIN_TRIGGER_WIDTH) : width;
+    const w = Math.min(wanted, boxW - 2 * VIEWPORT_MARGIN);
+
+    // Vertical: prefer the requested side, flip when it cannot hold the panel
+    // and the other side can (or has more room). The panel is then capped to
+    // the room left inside the box.
+    const above = Math.max(0, rect.top - box.top);
+    const below = Math.max(0, box.bottom - rect.bottom);
+    const openUp = opensUpward(
+      placement.startsWith("up") ? "up" : "down",
+      above,
+      below,
+      estimatedHeight + gap,
+    );
+    const room = Math.max(
+      0,
+      (openUp ? above : below) - gap - VIEWPORT_MARGIN,
+    );
+
+    const next: PanelPos = { width: w };
+    if (openUp) next.bottom = vh - rect.top + gap;
+    else next.top = rect.bottom + gap;
+
+    // Horizontal: anchor to the requested edge, then clamp into the box.
+    const anchor = placement.endsWith("left") ? rect.left : rect.right - w;
+    next.left = Math.max(
+      box.left + VIEWPORT_MARGIN,
+      Math.min(anchor, box.right - VIEWPORT_MARGIN - w),
+    );
+
+    // Cap the height to the box. The panel's own CSS max-height still wins
+    // when it is the tighter limit; it is measured once per open, before this
+    // cap is written inline.
+    if (styleCapRef.current !== null) {
+      next.maxHeight = Math.min(room, styleCapRef.current);
     }
 
     setPos((prev) => (samePos(prev, next) ? prev : next));
@@ -186,10 +219,29 @@ export function Popover({
   useLayoutEffect(() => {
     if (!open) {
       setPos(null);
+      styleCapRef.current = null;
       return;
     }
     update();
   }, [open, update]);
+
+  // Measure the panel's own CSS max-height once per open, before writing the
+  // pane cap inline (which would otherwise mask it). Then re-run the layout
+  // so the cap is min(room inside the pane, the panel's own limit).
+  useLayoutEffect(() => {
+    if (!open) {
+      styleCapRef.current = null;
+      return;
+    }
+    const panel = panelRef.current;
+    if (!panel || styleCapRef.current !== null) return;
+    const view = viewOf(panel);
+    const raw = view.getComputedStyle(panel).maxHeight;
+    const px = Number.parseFloat(raw);
+    styleCapRef.current =
+      raw.endsWith("px") && Number.isFinite(px) ? px : Number.POSITIVE_INFINITY;
+    update();
+  }, [open, pos, update]);
 
   // Single-open: claim on open, release on close/unmount.
   useEffect(() => {
@@ -218,6 +270,17 @@ export function Popover({
     },
     onResize: update,
   });
+
+  // Re-clamp when the dock pane is resized; sash drags do not fire window
+  // resize. Same observer as Dropdown.
+  useEffect(() => {
+    if (!open) return;
+    const pane = rootRef.current ? dockPane(rootRef.current) : null;
+    if (!pane || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => update());
+    observer.observe(pane);
+    return () => observer.disconnect();
+  }, [open, update]);
 
   // Hover intent: entering the trigger or the panel cancels a pending close;
   // leaving both schedules one. The open side uses a delay so sweeping the
@@ -268,10 +331,14 @@ export function Popover({
         createPortal(
           <div
             ref={panelRef}
+            data-popover-panel=""
             onMouseEnter={hover ? onPointerEnter : undefined}
             onMouseLeave={hover ? onPointerLeave : undefined}
             className={`fixed z-1000 border border-(--_dk-line-visible) bg-(--_dk-overlay) shadow-[0_6px_18px_rgba(0,0,0,0.18)] ${panelClassName}`}
-            style={pos}
+            style={{
+              ...pos,
+              overflowY: pos.maxHeight != null ? "auto" : undefined,
+            }}
           >
             {typeof children === "function" ? children({ close }) : children}
           </div>,

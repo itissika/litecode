@@ -48,7 +48,7 @@ const RAIL_BOX_MAX =
   USER_RAIL_WIDTH_MAX + USER_RAIL_PAD_LEFT + USER_RAIL_PAD_RIGHT;
 /** Message column insets, tuned alongside the rail strip. */
 const LIST_PAD_LEFT = 4;
-const LIST_PAD_RIGHT = 4;
+const LIST_PAD_RIGHT = 8;
 
 class AgentErrorBoundary extends Component<
   { onClose: () => void; children: ReactNode },
@@ -435,10 +435,12 @@ export function ComposerDock({
     // its column, so the browser — not a JS measurement — owns the height
     // clamp: the status panel below is the one shrinkable item (row, chips and
     // input are `shrink-0`), so a long plan is stopped at the free space above
-    // the capsule row instead of growing out of the agent panel.
+    // the capsule row instead of growing out of the agent panel. `pt-4` matches
+    // the left/right/bottom insets, so a fully-grown panel tops out 16px below
+    // the pane edge instead of touching it.
     <div
       data-testid="composer-dock"
-      className="pointer-events-none absolute inset-0 z-10 flex min-h-0 flex-col justify-end px-4 pb-4"
+      className="pointer-events-none absolute inset-0 z-10 flex min-h-0 flex-col justify-end px-4 pb-4 pt-4"
     >
       {/* Hit-testing surface. The wrapper must also drop pointer events while
           collapsed: the collapse only *translates* the content out of view, so

@@ -1,6 +1,7 @@
 import { apiFetch } from "./auth";
 
 export type AppStatus =
+  | "stopped"
   | "not_installed"
   | "installing"
   | "installed"
@@ -23,7 +24,6 @@ export type AppCategory =
   | "general";
 
 export type AppSource = "builtin" | "global" | "workspace";
-export type InstallScope = "global" | "workspace";
 
 export interface AppInstallProgress {
   phase: string;
@@ -37,55 +37,76 @@ export interface AppInstallError {
   tail: string | null;
 }
 
+/** Managed install state. Only bundled apps that ship one have this at all. */
+export interface AppInstallState {
+  installed: boolean;
+  can_install: boolean;
+  can_uninstall: boolean;
+  progress: AppInstallProgress | null;
+  error: AppInstallError | null;
+}
+
+/** Offline documentation for a bundled app, in both UI languages. */
+export interface AppDocs {
+  en: string;
+  zh: string;
+}
+
 export interface AppView {
   id: string;
   name: string;
   description: string;
   /** One-line description by locale; `description` is the fallback. */
   description_i18n: Record<string, string>;
-  summary: string;
   category: AppCategory;
   icon: string;
-  homepage: string | null;
+  /** Official repository and optional docs link; both may be absent. */
+  repo: string | null;
+  docs_url: string | null;
+  docs: AppDocs | null;
   source: AppSource;
-  install_scope: InstallScope;
-  install_dir: string;
-  data_dir: string;
   view_key: string;
   status: AppStatus;
-  installed: boolean;
   running: boolean;
   url: string | null;
   /** Set when the app is a panel LiteCode paints itself ("gallery"). */
   builtin_view: string | null;
   port: number | null;
-  required_bytes: number | null;
-  size_bytes: number | null;
-  can_install: boolean;
-  can_uninstall: boolean;
   can_start: boolean;
   can_open: boolean;
   trusted: boolean;
   definition_hash: string | null;
   trust_preview: string | null;
   permissions: string[];
-  data_scope: "workspace" | "app";
   single_instance: boolean;
-  install_progress: AppInstallProgress | null;
-  install_error: AppInstallError | null;
+  /** null for registered apps: they bring their own dependencies. */
+  install: AppInstallState | null;
   runtime_error: string | null;
 }
 
 export interface AppsRegistryError {
+  /** "error" keeps the entry out; "warning" only needs to be shown. */
+  severity: "error" | "warning";
   source: string;
   file: string;
   app_id: string | null;
   message: string;
 }
 
+/** External recommendation metadata. It has no launch and cannot be started. */
+export interface RecommendationView {
+  id: string;
+  name: string;
+  description: string;
+  description_i18n: Record<string, string>;
+  category: AppCategory;
+  icon: string;
+  repo: string;
+}
+
 export interface AppsSnapshot {
   apps: AppView[];
-  available_bytes: number | null;
+  recommendations: RecommendationView[];
   registry_paths: { global: string; workspace: string };
   registry_errors: AppsRegistryError[];
 }
@@ -107,7 +128,11 @@ async function parse<T>(res: Response): Promise<T> {
 }
 
 export async function fetchApps(): Promise<AppsSnapshot> {
-  return parse<AppsSnapshot>(await apiFetch("/api/workspace/apps"));
+  // The panel polls this endpoint; never let a browser cache serve a stale
+  // install state after the server has moved on.
+  return parse<AppsSnapshot>(
+    await apiFetch("/api/workspace/apps", { cache: "no-store" }),
+  );
 }
 
 async function postApp(id: string, action: string, init?: RequestInit): Promise<void> {
@@ -139,12 +164,4 @@ export async function trustApp(id: string, definitionHash: string): Promise<void
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ definition_hash: definitionHash }),
   });
-}
-
-export async function fetchAppReadme(id: string): Promise<string> {
-  const res = await apiFetch(
-    `/api/workspace/apps/${encodeURIComponent(id)}/readme`,
-  );
-  const data = await parse<{ id: string; text: string }>(res);
-  return data.text;
 }

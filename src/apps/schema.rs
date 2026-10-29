@@ -1,3 +1,6 @@
+//! The public app contract: a registry entry names a web app and how to launch
+//! it. Everything else (dependencies, data, logs) belongs to the app.
+
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
@@ -25,13 +28,6 @@ impl AppSource {
     pub fn is_custom(self) -> bool {
         !matches!(self, Self::Builtin)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InstallScope {
-    Global,
-    Workspace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,19 +61,6 @@ impl AppCategory {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DataScope {
-    Workspace,
-    App,
-}
-
-impl Default for DataScope {
-    fn default() -> Self {
-        Self::Workspace
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Permission {
     Microphone,
@@ -99,6 +82,8 @@ impl Permission {
     }
 }
 
+/// NotInstalled through Uninstalling only appear for bundled apps that ship a
+/// managed install. Every other app is Stopped until the user starts it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppStatus {
@@ -108,6 +93,7 @@ pub enum AppStatus {
     Starting,
     Running,
     Stopping,
+    Stopped,
     Crashed,
     Error,
     Uninstalling,
@@ -122,6 +108,7 @@ impl AppStatus {
             Self::Starting => "starting",
             Self::Running => "running",
             Self::Stopping => "stopping",
+            Self::Stopped => "stopped",
             Self::Crashed => "crashed",
             Self::Error => "error",
             Self::Uninstalling => "uninstalling",
@@ -143,112 +130,22 @@ pub struct AppDefinition {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    /// One-line descriptions keyed by locale (for example `zh-CN`).
+    /// One-line descriptions keyed by locale (for example zh-CN).
     #[serde(default)]
     pub description_i18n: BTreeMap<String, String>,
     pub category: AppCategory,
     pub icon: String,
+    /// Official repository. Shown in the panel; never executed.
     #[serde(default)]
-    pub summary: String,
+    pub repo: Option<String>,
+    /// Optional official docs link. Shown only when present.
     #[serde(default)]
-    pub homepage: Option<String>,
-    #[serde(default)]
-    pub readme_url: Option<String>,
-    pub install: InstallSpec,
+    pub docs: Option<String>,
     pub launch: LaunchSpec,
-    #[serde(default)]
-    pub data: DataScope,
     #[serde(default)]
     pub single_instance: bool,
     #[serde(default)]
     pub permissions: Vec<Permission>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InstallSpec {
-    #[serde(default)]
-    pub kind: InstallKind,
-    #[serde(default)]
-    pub installed: bool,
-    #[serde(default)]
-    pub size_bytes: Option<u64>,
-    #[serde(default)]
-    pub steps: Vec<InstallStep>,
-    #[serde(default)]
-    pub check: Option<CheckSpec>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InstallKind {
-    Steps,
-    None,
-}
-
-impl Default for InstallKind {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CheckSpec {
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum InstallStep {
-    Download {
-        url: String,
-        #[serde(default)]
-        sha256: Option<String>,
-        #[serde(default = "default_download_file")]
-        file: String,
-    },
-    Extract {
-        file: String,
-        format: ArchiveFormat,
-        #[serde(default)]
-        strip: usize,
-        #[serde(default = "default_into")]
-        into: String,
-    },
-    Run {
-        command: String,
-        #[serde(default)]
-        args: Vec<String>,
-        #[serde(default)]
-        cwd: Option<String>,
-        #[serde(default)]
-        env: BTreeMap<String, String>,
-        #[serde(default = "default_step_timeout")]
-        timeout_ms: u64,
-    },
-}
-
-fn default_download_file() -> String {
-    "download.bin".into()
-}
-
-fn default_into() -> String {
-    ".".into()
-}
-
-fn default_step_timeout() -> u64 {
-    600_000
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ArchiveFormat {
-    Zip,
-    #[serde(rename = "tar.gz")]
-    TarGz,
-    #[serde(rename = "7z")]
-    SevenZ,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,8 +157,8 @@ pub enum LaunchSpec {
         command: String,
         #[serde(default)]
         args: Vec<String>,
-        #[serde(default)]
-        cwd: Option<String>,
+        #[serde(default = "default_cwd")]
+        cwd: String,
         #[serde(default)]
         env: BTreeMap<String, String>,
         #[serde(default)]
@@ -273,9 +170,14 @@ pub enum LaunchSpec {
         timeout_ms: u64,
     },
     Static {
+        dir: String,
         #[serde(default)]
         spa: bool,
     },
+}
+
+fn default_cwd() -> String {
+    "{workspace}".into()
 }
 
 fn default_launch_timeout() -> u64 {
@@ -296,7 +198,7 @@ impl BuiltinView {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PortSpec {
     Fixed(u16),
@@ -310,9 +212,9 @@ impl Default for PortSpec {
 }
 
 impl PortSpec {
-    pub fn fixed(self) -> Option<u16> {
+    pub fn fixed(&self) -> Option<u16> {
         match self {
-            Self::Fixed(port) => Some(port),
+            Self::Fixed(port) => Some(*port),
             Self::Auto(_) => None,
         }
     }
@@ -353,27 +255,13 @@ pub fn validate_definition(
     if def.description.chars().count() > 240 {
         return Err("description is longer than 240 characters".into());
     }
-    if def.summary.chars().count() > 800 {
-        return Err("summary is longer than 800 characters".into());
-    }
     validate_description_i18n(&def.description_i18n)?;
     validate_icon(&def.icon, source, workspace_root)?;
-    if let Some(homepage) = def.homepage.as_deref() {
-        let url = Url::parse(homepage).map_err(|e| format!("homepage is not a URL: {e}"))?;
-        if url.scheme() != "https" || url.host_str().is_none() {
-            return Err("homepage must be an absolute https URL".into());
-        }
+    if let Some(repo) = &def.repo {
+        validate_https_link("repo", repo)?;
     }
-    if let Some(readme) = def.readme_url.as_deref() {
-        if !readme.starts_with("https://raw.githubusercontent.com/") {
-            return Err("readme_url must be https://raw.githubusercontent.com/...".into());
-        }
-    }
-    validate_install(&def.install, source)?;
-    if matches!(def.launch, LaunchSpec::Builtin { .. })
-        && (def.install.kind != InstallKind::None || !def.install.steps.is_empty())
-    {
-        return Err("a built-in launch cannot install files".into());
+    if let Some(docs) = &def.docs {
+        validate_https_link("docs", docs)?;
     }
     validate_launch(&def.launch, source)?;
     Ok(())
@@ -392,6 +280,14 @@ fn validate_description_i18n(texts: &BTreeMap<String, String>) -> Result<(), Str
                 "description_i18n.{locale} is longer than 240 characters"
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_https_link(field: &str, value: &str) -> Result<(), String> {
+    let parsed = Url::parse(value).map_err(|e| format!("{field}: {e}"))?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        return Err(format!("{field} must be an absolute https URL"));
     }
     Ok(())
 }
@@ -430,71 +326,14 @@ fn validate_icon(icon: &str, source: AppSource, workspace_root: &Path) -> Result
     Ok(())
 }
 
-fn validate_install(install: &InstallSpec, source: AppSource) -> Result<(), String> {
-    if install.kind == InstallKind::Steps && install.steps.is_empty() {
-        return Err("install.steps is empty".into());
-    }
-    if let Some(check) = &install.check {
-        if check.path.is_empty() || !safe_relative(Path::new(&check.path)) {
-            return Err("install.check.path must stay inside app/".into());
-        }
-    }
-    for step in &install.steps {
-        match step {
-            InstallStep::Download { url, sha256, file } => {
-                let parsed = Url::parse(url).map_err(|e| format!("download url: {e}"))?;
-                if parsed.scheme() != "https" || parsed.host_str().is_none() {
-                    return Err("download url must be an absolute https URL".into());
-                }
-                if !safe_relative(Path::new(file)) {
-                    return Err("download file must stay inside the app directory".into());
-                }
-                if let Some(hash) = sha256 {
-                    if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-                        return Err("download sha256 must be 64 hex characters".into());
-                    }
-                } else if source.is_custom() {
-                    return Err("custom app downloads require sha256".into());
-                }
-            }
-            InstallStep::Extract {
-                file,
-                strip: _,
-                into,
-                ..
-            } => {
-                if !safe_relative(Path::new(file)) {
-                    return Err("extract file must stay inside the app directory".into());
-                }
-                if !safe_relative(Path::new(into)) {
-                    return Err("extract into must stay inside the app directory".into());
-                }
-            }
-            InstallStep::Run {
-                command,
-                args,
-                cwd,
-                env,
-                timeout_ms,
-            } => {
-                if command.trim().is_empty() {
-                    return Err("run command is empty".into());
-                }
-                if args.iter().any(|a| a.contains('\0')) {
-                    return Err("run args contain NUL".into());
-                }
-                if let Some(cwd) = cwd {
-                    if cwd != "app" && cwd != "workspace" {
-                        return Err("run cwd must be app or workspace".into());
-                    }
-                }
-                if *timeout_ms == 0 || *timeout_ms > 3_600_000 {
-                    return Err("run timeout_ms must be between 1 and 3600000".into());
-                }
-                if env.keys().any(|k| k.is_empty() || k.contains('=')) {
-                    return Err("run env keys are invalid".into());
-                }
-            }
+/// The bundled catalog points at its own install directory with these tokens.
+/// A registered app has neither, so it must not use them.
+fn reject_bundled_tokens(field: &str, value: &str) -> Result<(), String> {
+    for token in ["{appdir}", "{data}"] {
+        if value.contains(token) {
+            return Err(format!(
+                "launch.{field} uses {token}, which is reserved for bundled apps"
+            ));
         }
     }
     Ok(())
@@ -518,9 +357,27 @@ fn validate_launch(launch: &LaunchSpec, source: AppSource) -> Result<(), String>
             if args.iter().any(|a| a.contains('\0')) {
                 return Err("launch args contain NUL".into());
             }
-            if let Some(cwd) = cwd {
-                if cwd != "app" && cwd != "workspace" {
-                    return Err("launch.cwd must be app or workspace".into());
+            if cwd.trim().is_empty() {
+                return Err("launch.cwd is empty".into());
+            }
+            if source.is_custom() {
+                if cwd == "app" {
+                    return Err(
+                        "launch.cwd \"app\" is no longer supported; use \"{workspace}\" or a path relative to the workspace"
+                            .into(),
+                    );
+                }
+                reject_bundled_tokens("command", command)?;
+                reject_bundled_tokens("cwd", cwd)?;
+                for arg in args {
+                    reject_bundled_tokens("args", arg)?;
+                }
+                for value in env.values() {
+                    reject_bundled_tokens("env", value)?;
+                }
+                reject_bundled_tokens("url", url)?;
+                if let Some(path) = ready_path {
+                    reject_bundled_tokens("ready_path", path)?;
                 }
             }
             if env.keys().any(|k| k.is_empty() || k.contains('=')) {
@@ -555,7 +412,21 @@ fn validate_launch(launch: &LaunchSpec, source: AppSource) -> Result<(), String>
             }
             Ok(())
         }
-        LaunchSpec::Static { .. } => Ok(()),
+        LaunchSpec::Static { dir, .. } => {
+            if dir.trim().is_empty() {
+                return Err("launch.dir is empty".into());
+            }
+            if source.is_custom() {
+                reject_bundled_tokens("dir", dir)?;
+                if dir == "app" {
+                    return Err(
+                        "launch.dir \"app\" is no longer supported; point it at a directory in the workspace"
+                            .into(),
+                    );
+                }
+            }
+            Ok(())
+        }
         LaunchSpec::Builtin { .. } => {
             if source != AppSource::Builtin {
                 return Err("launch.kind \"builtin\" is reserved for bundled apps".into());
@@ -577,17 +448,13 @@ pub fn definition_hash(def: &AppDefinition, source: AppSource) -> String {
     #[derive(Serialize)]
     struct Shape<'a> {
         source: &'static str,
-        install: &'a InstallSpec,
         launch: &'a LaunchSpec,
-        data: DataScope,
         single_instance: bool,
         permissions: &'a [Permission],
     }
     let shape = Shape {
         source: source.as_str(),
-        install: &def.install,
         launch: &def.launch,
-        data: def.data,
         single_instance: def.single_instance,
         permissions: &def.permissions,
     };
@@ -599,42 +466,6 @@ pub fn definition_hash(def: &AppDefinition, source: AppSource) -> String {
 
 pub fn trust_preview(def: &AppDefinition, source: AppSource) -> String {
     let mut out = format!("source: {}\n", source.as_str());
-    match def.install.kind {
-        InstallKind::None => out.push_str("install: external (no commands)\n"),
-        InstallKind::Steps => {
-            out.push_str("install:\n");
-            for step in &def.install.steps {
-                match step {
-                    InstallStep::Download { url, sha256, .. } => {
-                        out.push_str(&format!("  download {url}\n"));
-                        if let Some(hash) = sha256 {
-                            out.push_str(&format!("  sha256 {hash}\n"));
-                        }
-                    }
-                    InstallStep::Extract { file, format, .. } => {
-                        out.push_str(&format!("  extract {file} ({format:?})\n"));
-                    }
-                    InstallStep::Run {
-                        command,
-                        args,
-                        cwd,
-                        env,
-                        ..
-                    } => {
-                        out.push_str(&format!(
-                            "  run {} {} (cwd: {})\n",
-                            command,
-                            args.join(" "),
-                            cwd.as_deref().unwrap_or("app")
-                        ));
-                        for (key, value) in env {
-                            out.push_str(&format!("    env {key}={value}\n"));
-                        }
-                    }
-                }
-            }
-        }
-    }
     match &def.launch {
         LaunchSpec::Process {
             command,
@@ -642,27 +473,30 @@ pub fn trust_preview(def: &AppDefinition, source: AppSource) -> String {
             cwd,
             env,
             url,
+            ready_path,
             ..
         } => {
             out.push_str(&format!(
-                "launch: {} {} (cwd: {})\nurl: {}\n",
+                "run: {} {}\ncwd: {}\nurl: {}\n",
                 command,
                 args.join(" "),
-                cwd.as_deref().unwrap_or("app"),
+                cwd,
                 url
             ));
+            if let Some(path) = ready_path {
+                out.push_str(&format!("ready: {path}\n"));
+            }
             for (key, value) in env {
-                out.push_str(&format!("  env {key}={value}\n"));
+                out.push_str(&format!("env {key}={value}\n"));
             }
         }
-        LaunchSpec::Static { spa } => out.push_str(&format!("launch: static (spa: {spa})\n")),
-        LaunchSpec::Builtin { view } => {
-            out.push_str(&format!("launch: builtin ({})\n", view.as_str()))
+        LaunchSpec::Static { dir, spa } => {
+            out.push_str(&format!("static: {dir} (spa: {spa})\n"));
         }
+        LaunchSpec::Builtin { view } => out.push_str(&format!("builtin: {}\n", view.as_str())),
     }
     out.push_str(&format!(
-        "data: {:?}; single_instance: {}; permissions: {}\n",
-        def.data,
+        "single_instance: {}; permissions: {}\n",
         def.single_instance,
         def.permissions
             .iter()
@@ -671,6 +505,157 @@ pub fn trust_preview(def: &AppDefinition, source: AppSource) -> String {
             .join(", ")
     ));
     out
+}
+
+// ---------------------------------------------------------------------------
+// Registry parsing (version 2, with a read-only path for version 1)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct ParsedRegistry {
+    pub apps: Vec<(String, AppDefinition)>,
+    /// Definition-level problems: the rest of the file still loads.
+    pub errors: Vec<(Option<String>, String)>,
+    /// Loaded, but worth telling the user about.
+    pub warnings: Vec<(Option<String>, String)>,
+}
+
+/// Parse a registry file. A broken app is reported per entry; only a broken
+/// file (not JSON, unknown version) is a whole-file error.
+pub fn parse_registry_file(text: &str) -> Result<ParsedRegistry, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("invalid JSON: {e}"))?;
+    let version = value
+        .get("version")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let Some(apps) = value.get("apps").and_then(|apps| apps.as_object()) else {
+        return Err("apps must be an object".into());
+    };
+    let mut parsed = ParsedRegistry::default();
+    for (id, raw) in apps {
+        let definition = match version {
+            2 => serde_json::from_value::<AppDefinition>(raw.clone())
+                .map_err(|err| format!("invalid definition: {err}")),
+            1 => serde_json::from_value::<LegacyAppDefinition>(raw.clone())
+                .map_err(|err| format!("invalid definition: {err}"))
+                .and_then(LegacyAppDefinition::into_definition),
+            other => return Err(format!("unsupported version {other} (expected 1 or 2)")),
+        };
+        match definition {
+            Ok(definition) => parsed.apps.push((id.clone(), definition)),
+            Err(message) => parsed.errors.push((Some(id.clone()), message)),
+        }
+    }
+    if version == 1 {
+        parsed.warnings.push((
+            None,
+            "registry version 1 is deprecated; rewrite it as version 2 (install, data, summary, homepage, and readme_url are ignored)"
+                .into(),
+        ));
+    }
+    Ok(parsed)
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyAppDefinition {
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    description_i18n: BTreeMap<String, String>,
+    category: AppCategory,
+    icon: String,
+    launch: LegacyLaunch,
+    #[serde(default)]
+    single_instance: bool,
+    #[serde(default)]
+    permissions: Vec<Permission>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum LegacyLaunch {
+    Builtin {
+        view: BuiltinView,
+    },
+    Process {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        cwd: Option<String>,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+        #[serde(default)]
+        port: PortSpec,
+        url: String,
+        #[serde(default)]
+        ready_path: Option<String>,
+        #[serde(default = "default_launch_timeout")]
+        timeout_ms: u64,
+    },
+    Static {
+        #[serde(default)]
+        spa: bool,
+    },
+}
+
+impl LegacyAppDefinition {
+    fn into_definition(self) -> Result<AppDefinition, String> {
+        let launch = match self.launch {
+            LegacyLaunch::Builtin { view } => LaunchSpec::Builtin { view },
+            LegacyLaunch::Process {
+                command,
+                args,
+                cwd,
+                env,
+                port,
+                url,
+                ready_path,
+                timeout_ms,
+            } => {
+                let cwd = match cwd.as_deref() {
+                    None | Some("") | Some("workspace") => "{workspace}".to_string(),
+                    Some("app") => {
+                        return Err(
+                            "launch.cwd \"app\" is no longer supported; use \"{workspace}\" or a path relative to the workspace"
+                                .into(),
+                        )
+                    }
+                    Some(value) => value.to_string(),
+                };
+                LaunchSpec::Process {
+                    command,
+                    args,
+                    cwd,
+                    env,
+                    port,
+                    url,
+                    ready_path,
+                    timeout_ms,
+                }
+            }
+            LegacyLaunch::Static { .. } => {
+                return Err(
+                    "launch.kind \"static\" now needs \"dir\": point it at the directory that holds index.html"
+                        .into(),
+                )
+            }
+        };
+        Ok(AppDefinition {
+            name: self.name,
+            description: self.description,
+            description_i18n: self.description_i18n,
+            category: self.category,
+            icon: self.icon,
+            repo: None,
+            docs: None,
+            launch,
+            single_instance: self.single_instance,
+            permissions: self.permissions,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -684,9 +669,8 @@ mod tests {
                 "description": "A tiny local notes UI.",
                 {extra}
                 "category": "general",
-                "icon": "📝",
-                "install": {{ "kind": "none", "installed": true }},
-                "launch": {{ "kind": "static", "spa": false }}
+                "icon": "N",
+                "launch": {{ "kind": "static", "dir": "site" }}
             }}"#
         );
         let def: AppDefinition = serde_json::from_str(&json).map_err(|e| e.to_string())?;
@@ -706,5 +690,137 @@ mod tests {
             "长".repeat(241)
         );
         assert!(workspace_def(&long).is_err());
+    }
+
+    #[test]
+    fn version_two_parses_a_minimal_app() {
+        let parsed = parse_registry_file(
+            r#"{
+                "version": 2,
+                "apps": {
+                    "notes": {
+                        "name": "Notes",
+                        "description": "Local notes.",
+                        "category": "general",
+                        "icon": "N",
+                        "launch": { "kind": "process", "command": "npx", "args": ["serve"], "url": "http://127.0.0.1:{port}/" }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse");
+        assert_eq!(parsed.apps.len(), 1);
+        assert!(parsed.errors.is_empty());
+        assert!(parsed.warnings.is_empty());
+        match &parsed.apps[0].1.launch {
+            LaunchSpec::Process { cwd, port, .. } => {
+                assert_eq!(cwd, "{workspace}");
+                assert_eq!(*port, PortSpec::Auto("auto".into()));
+            }
+            other => panic!("unexpected launch {other:?}"),
+        }
+    }
+
+    #[test]
+    fn version_two_rejects_the_removed_install_block() {
+        let parsed = parse_registry_file(
+            r#"{
+                "version": 2,
+                "apps": {
+                    "notes": {
+                        "name": "Notes",
+                        "description": "Local notes.",
+                        "category": "general",
+                        "icon": "N",
+                        "install": { "kind": "none" },
+                        "launch": { "kind": "static", "dir": "site" }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse");
+        assert!(parsed.apps.is_empty());
+        assert_eq!(parsed.errors.len(), 1);
+        assert!(
+            parsed.errors[0].1.contains("install"),
+            "{:?}",
+            parsed.errors
+        );
+    }
+
+    #[test]
+    fn version_one_is_converted_with_a_warning() {
+        let parsed = parse_registry_file(
+            r#"{
+                "version": 1,
+                "apps": {
+                    "notes": {
+                        "name": "Notes",
+                        "description": "Local notes.",
+                        "category": "general",
+                        "icon": "N",
+                        "summary": "ignored",
+                        "install": { "kind": "none", "installed": true },
+                        "data": "app",
+                        "launch": { "kind": "process", "command": "node", "args": ["server.js"], "cwd": "workspace", "url": "http://127.0.0.1:{port}/" }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse");
+        assert_eq!(parsed.apps.len(), 1);
+        assert_eq!(parsed.warnings.len(), 1);
+        match &parsed.apps[0].1.launch {
+            LaunchSpec::Process { cwd, .. } => assert_eq!(cwd, "{workspace}"),
+            other => panic!("unexpected launch {other:?}"),
+        }
+    }
+
+    #[test]
+    fn version_one_reports_the_app_directory_cwd() {
+        let parsed = parse_registry_file(
+            r#"{
+                "version": 1,
+                "apps": {
+                    "notes": {
+                        "name": "Notes",
+                        "description": "Local notes.",
+                        "category": "general",
+                        "icon": "N",
+                        "launch": { "kind": "process", "command": "node", "cwd": "app", "url": "http://127.0.0.1:{port}/" }
+                    }
+                }
+            }"#,
+        )
+        .expect("parse");
+        assert!(parsed.apps.is_empty());
+        assert_eq!(parsed.errors.len(), 1);
+        assert!(
+            parsed.errors[0].1.contains("launch.cwd"),
+            "{:?}",
+            parsed.errors
+        );
+    }
+
+    #[test]
+    fn bundled_tokens_are_rejected_for_registered_apps() {
+        let def: AppDefinition = serde_json::from_str(
+            r#"{
+                "name": "Notes",
+                "description": "A tiny local notes UI.",
+                "category": "general",
+                "icon": "N",
+                "launch": {
+                    "kind": "process",
+                    "command": "node",
+                    "args": ["{data}/x.js"],
+                    "url": "http://127.0.0.1:{port}/"
+                }
+            }"#,
+        )
+        .expect("definition");
+        let err = validate_definition(&def, AppSource::Workspace, Path::new("."))
+            .expect_err("data token");
+        assert!(err.contains("{data}"), "{err}");
     }
 }

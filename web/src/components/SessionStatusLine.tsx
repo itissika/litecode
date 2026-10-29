@@ -50,15 +50,14 @@ export const PANEL_MIN_H = 80;
 /** Exit-animation duration (ms) — matches `status-panel-exit` in chat.css. */
 export const PANEL_EXIT_MS = 160;
 
-/** Static ceiling for the panel (px) — the `max-height` the panel itself
- *  carries, so even a very tall pane never opens a plan taller than this and
- *  the transcript stays readable.
- *
- *  The pane-aware limit is NOT measured here: the dock's column is a flex box
- *  where this panel is the only shrinkable item (row / input / chips are
- *  `shrink-0`), so the browser stops it at the free space above the capsule row
- *  inside the agent pane — however short that pane is. */
-export const PANEL_MAX_H = 480;
+/* No static max-height: every panel is content-sized, and the only ceiling
+ *  is the pane itself. The dock's column is a flex box where this panel is the
+ *  only shrinkable item (row / input / chips are `shrink-0`), so the browser
+ *  stops it at the free space above the capsule row inside the agent pane —
+ *  however short that pane is. The dock's own insets (px-4 pb-4 pt-4) are part
+ *  of that column, so a fully-grown panel keeps the same 16px headroom on all
+ *  sides (the model switcher's menu behaves the same way: clamped to its pane,
+ *  not to a constant). */
 
 /**
  * A newly-appeared background terminal claims the horizontal slot only after it
@@ -115,7 +114,8 @@ const EMPTY_TODO_ITEMS: TodoItem[] = [];
  *     (a rewrite lands as another plan file and only claims the slot). Todo
  *     owns the slot by default.
  *  3. Level 2 — vertical: clicking a capsule expands its panel above the row,
- *     content-sized (auto height) with PANEL_MAX_H as its own `max-height`.
+ *     content-sized (auto height). The pane clamp alone stops it (see above),
+ *     and its body scrolls — no static ceiling, no rect measurement.
  *     The pane clamp is pure flexbox: the panel is the only shrinkable item in
  *     the dock's column, so it can never grow past the agent pane — the
  *     browser hands it the free space above the capsule row inside the pane and
@@ -429,15 +429,12 @@ export function SessionStatusLine({
   // math as AgentChatInput's textarea resize. The new height is written straight
   // to the panel's style (no React state), so dragging never re-renders the
   // panel body. The drag starts from the height the content-sized panel happens
-  // to have and never lifts a shorter panel to PANEL_MIN_H; PANEL_MAX_H is the
-  // drag's own ceiling (a shorter pane still shrinks the panel through flex).
+  // to have and never lifts a shorter panel to PANEL_MIN_H. No static
+  // ceiling either — a shorter pane still shrinks the panel through flex.
   const applyResize = (clientY: number) => {
     const start = dragStartRef.current;
     const delta = start.y - clientY;
-    const next = Math.max(
-      Math.min(PANEL_MIN_H, start.h),
-      Math.min(PANEL_MAX_H, start.h + delta),
-    );
+    const next = Math.max(Math.min(PANEL_MIN_H, start.h), start.h + delta);
     heightRef.current = next;
     if (panelRef.current) panelRef.current.style.height = `${next}px`;
   };
@@ -545,10 +542,9 @@ export function SessionStatusLine({
             ...(heightRef.current != null
               ? { height: heightRef.current }
               : null),
-            // The panel's own ceiling. The tighter pane clamp is flexbox's job:
-            // `min-h-0` lets the dock column shrink this panel down to the free
-            // space above the row, while its siblings stay `shrink-0`.
-            maxHeight: PANEL_MAX_H,
+            // No max-height of its own — the pane clamp is flexbox's job:
+            // `min-h-0` lets the dock column shrink this panel down to the
+            // free space above the row, while its siblings stay `shrink-0`.
             transformOrigin: `${originX}px 100%`,
           }}
           // No `[container-type:size]` here: its size containment would make the

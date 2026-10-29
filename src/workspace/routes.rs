@@ -88,6 +88,11 @@ struct OpenBody {
 }
 
 #[derive(Debug, Deserialize)]
+struct RevealBody {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct CitationsBody {
     refs: Vec<CitationQuery>,
 }
@@ -124,6 +129,15 @@ pub struct PathQuery {
     pub path: String,
     #[serde(default)]
     pub recursive: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MediaQuery {
+    /// Any value asks for a real walk. The manual refresh must not trust the
+    /// snapshot, even when nothing reported a change (a missed watcher event,
+    /// or a watcher that never started).
+    #[serde(default)]
+    pub fresh: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,6 +246,7 @@ pub fn router() -> Router<ServeState> {
         .route("/media/thumb", get(get_media_thumb))
         .route("/sqlite", get(get_sqlite))
         .route("/open", post(post_open))
+        .route("/reveal", post(post_reveal))
         .route("/citations", post(post_citations))
         .route("/symbols", get(get_symbols))
         .route("/symbols/at", get(get_symbol_at))
@@ -671,12 +686,22 @@ async fn get_bytes(State(state): State<ServeState>, Query(query): Query<PathQuer
     }
 }
 
-async fn get_media(State(state): State<ServeState>) -> Response {
+async fn get_media(State(state): State<ServeState>, Query(query): Query<MediaQuery>) -> Response {
     let workspace = state.workspace.clone();
-    match tokio::task::spawn_blocking(move || workspace.list_media()).await {
+    let fresh = query.fresh.is_some();
+    match tokio::task::spawn_blocking(move || {
+        if fresh {
+            workspace.invalidate_media();
+        }
+        workspace.list_media()
+    })
+    .await
+    {
+        // The Arc keeps the walk off the request path; the body is serialized
+        // from an owned copy because the envelope owns its data.
         Ok(Ok(listing)) => Json(ApiOk {
             ok: true,
-            data: listing,
+            data: (*listing).clone(),
         })
         .into_response(),
         Ok(Err(e)) => workspace_error(e),
@@ -869,6 +894,23 @@ async fn post_open(State(state): State<ServeState>, Json(body): Json<OpenBody>) 
         Err(e) => open_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("open task join: {e}"),
+        ),
+    }
+}
+
+async fn post_reveal(State(state): State<ServeState>, Json(body): Json<RevealBody>) -> Response {
+    let workspace = state.workspace.clone();
+    let path = body.path;
+    match tokio::task::spawn_blocking(move || workspace.reveal_in_file_manager(&path)).await {
+        Ok(Ok(())) => Json(ApiOk {
+            ok: true,
+            data: serde_json::json!({ "revealed": true }),
+        })
+        .into_response(),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("reveal task join: {e}"),
         ),
     }
 }
@@ -1166,11 +1208,15 @@ fn workspace_error(err: WorkspaceError) -> Response {
         WorkspaceError::Binary | WorkspaceError::Utf16 | WorkspaceError::NotUtf8 => {
             (StatusCode::UNSUPPORTED_MEDIA_TYPE, err.to_string())
         }
-        WorkspaceError::OpenUnsupported => (StatusCode::NOT_IMPLEMENTED, err.to_string()),
+        WorkspaceError::OpenUnsupported | WorkspaceError::RevealUnsupported => {
+            (StatusCode::NOT_IMPLEMENTED, err.to_string())
+        }
         WorkspaceError::MediaUnsupported(_) => {
             (StatusCode::UNSUPPORTED_MEDIA_TYPE, err.to_string())
         }
-        WorkspaceError::OpenFailed(_) | WorkspaceError::MediaFailed(_) => {
+        WorkspaceError::OpenFailed(_)
+        | WorkspaceError::RevealFailed(_)
+        | WorkspaceError::MediaFailed(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
         WorkspaceError::Sandbox(super::sandbox::SandboxError::Io(e)) | WorkspaceError::Io(e) => {

@@ -141,14 +141,31 @@ export interface MediaListing {
   truncated: boolean;
 }
 
-/** One workspace walk over image / video / audio files for the Gallery panel. */
-export async function fetchMedia(): Promise<MediaListing> {
-  const res = await apiFetch("/api/workspace/media");
+/**
+ * Image / video / audio files for the Gallery panel.
+ *
+ * Served from the server's generation-keyed snapshot, so a repeat call costs no
+ * walk. fresh asks for a real walk: the manual refresh, and the only way to see
+ * a change the watcher never reported.
+ */
+export async function fetchMedia(options?: {
+  fresh?: boolean;
+}): Promise<MediaListing> {
+  const query = options?.fresh ? "?fresh=1" : "";
+  const res = await apiFetch("/api/workspace/media" + query);
   if (!res.ok) throw await errorFromResponse(res);
   return parseJson<MediaListing>(res);
 }
 
-/** Cached JPEG thumbnail. `mtime` and `size` make the URL self-invalidating. */
+/**
+ * Thumbnail encoder version. Mirrors `THUMB_CACHE_VERSION` in
+ * `src/workspace/media.rs`; the server serves thumbs as `immutable`, so the
+ * URL has to change when the rendering does or the browser keeps the old one.
+ */
+export const MEDIA_THUMB_VERSION = "2";
+
+/** Cached thumbnail. `mtime`, `size` and the encoder version make the URL
+ * self-invalidating. */
 export async function fetchMediaThumb(
   path: string,
   mtime: number,
@@ -158,7 +175,7 @@ export async function fetchMediaThumb(
   const params = new URLSearchParams({
     path,
     w: String(edge),
-    v: `${mtime}-${size}`,
+    v: `${mtime}-${size}-${MEDIA_THUMB_VERSION}`,
   });
   const res = await apiFetch(`/api/workspace/media/thumb?${params}`);
   if (!res.ok) throw await errorFromResponse(res);
@@ -198,6 +215,17 @@ export async function openWithDefaultApp(path: string): Promise<void> {
   });
   if (!res.ok) throw await errorFromResponse(res);
   await parseJson<{ opened: boolean }>(res);
+}
+
+/** Windows server only. Other hosts respond 501. */
+export async function revealInFileManager(path: string): Promise<void> {
+  const res = await apiFetch("/api/workspace/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw await errorFromResponse(res);
+  await parseJson<{ revealed: boolean }>(res);
 }
 
 export async function writeFile(path: string, content: string): Promise<void> {

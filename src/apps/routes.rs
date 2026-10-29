@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
+use axum::Json;
+use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Json;
-use axum::Router;
 use serde::{Deserialize, Serialize};
 
 use super::service::{AppError, AppService};
@@ -30,12 +30,6 @@ struct AppIdData {
     id: String,
 }
 
-#[derive(Serialize)]
-struct ReadmeData {
-    id: String,
-    text: String,
-}
-
 #[derive(Debug, Deserialize)]
 struct TrustBody {
     definition_hash: String,
@@ -44,7 +38,6 @@ struct TrustBody {
 pub fn router() -> Router<ServeState> {
     Router::new()
         .route("/", get(list_apps))
-        .route("/{id}/readme", get(get_readme))
         .route("/{id}/install", post(post_install))
         .route("/{id}/start", post(post_start))
         .route("/{id}/stop", post(post_stop))
@@ -59,19 +52,6 @@ async fn list_apps(State(state): State<ServeState>) -> Response {
         Err(err) => api_err(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("list apps task: {err}"),
-        ),
-    }
-}
-
-async fn get_readme(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
-    let apps = Arc::clone(&state.apps);
-    let app_id = id.clone();
-    match tokio::task::spawn_blocking(move || apps.readme(&app_id)).await {
-        Ok(Ok(text)) => ok(ReadmeData { id, text }),
-        Ok(Err(err)) => app_err(err),
-        Err(err) => api_err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("readme task: {err}"),
         ),
     }
 }

@@ -118,6 +118,9 @@ describe("ComposerDock flex height clamp", () => {
     expect(dock.className).toContain("absolute");
     expect(dock.className).toContain("inset-0");
     expect(dock.className).toContain("justify-end");
+    // The dock's own insets (px-4 pb-4 pt-4) frame the pane on all four
+    // sides, so a fully-grown status panel tops out 16px below the pane edge.
+    expect(dock.className).toContain("pt-4");
 
     // Every level between the pane and the panel must let a shrink through
     // (`min-h-0`), or a long plan would push the input out of the pane instead

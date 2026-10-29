@@ -7,6 +7,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { dockPane, opensUpward, visibleBox, VIEWPORT_MARGIN } from "./dockPane";
 import { useFloatingLayer } from "./useFloatingLayer";
 
 /** Display + width fallback per variant, applied to the root wrapper.
@@ -72,9 +73,6 @@ const PANEL_MAX_W: Record<DropdownVariant, number> = {
   panel: 320,
 };
 
-/** Keep the portaled panel at least this far from the viewport edges. */
-const VIEWPORT_MARGIN = 8;
-
 /** Fixed-position style object for the portaled panel. */
 type PanelPos = {
   top?: number;
@@ -86,64 +84,6 @@ type PanelPos = {
   maxWidth?: number;
   maxHeight?: number;
 };
-
-type SideBox = { top: number; right: number; bottom: number; left: number };
-
-/** Box the menu must stay inside. Dockview lifts panel content out of
- *  `.dv-groupview` into `.dv-render-overlay` and positions that overlay on
- *  the group's content box, so the trigger has no groupview ancestor.
- *  Walking up to the group misses the pane and the menu only meets the
- *  screen. The overlay's rect is the absolute top and bottom of the pane.
- *  A groupview ancestor is the fallback for content that was not relocated. */
-function dockPane(el: HTMLElement): HTMLElement | null {
-  const overlay = el.closest<HTMLElement>(".dv-render-overlay");
-  if (overlay) {
-    const rect = overlay.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) return overlay;
-  }
-  const group = el.closest<HTMLElement>(".dv-groupview");
-  if (!group) return null;
-  for (const child of group.children) {
-    if (child.classList.contains("dv-content-container")) {
-      return child as HTMLElement;
-    }
-  }
-  return group;
-}
-
-/** Viewport clipped to the pane. Height uses this box; a pane that hangs
- *  off the screen does not lend the menu that off-screen space. */
-function visibleBox(el: HTMLElement, vw: number, vh: number): SideBox {
-  const pane = dockPane(el)?.getBoundingClientRect();
-  if (!pane) return { top: 0, right: vw, bottom: vh, left: 0 };
-  return {
-    top: Math.max(0, pane.top),
-    left: Math.max(0, pane.left),
-    right: Math.min(vw, pane.right),
-    bottom: Math.min(vh, pane.bottom),
-  };
-}
-
-/** Prefer `direction`. A finite wish keeps that side when the side can hold
- *  it; otherwise the menu opens toward whichever side of the box is taller
- *  (down included). */
-function opensUpward(
-  direction: "up" | "down",
-  above: number,
-  below: number,
-  wish: number | undefined,
-): boolean {
-  const holds = (room: number) =>
-    wish != null && room >= wish + VIEWPORT_MARGIN;
-  if (direction === "up") {
-    if (holds(above)) return true;
-    if (holds(below)) return false;
-    return above >= below;
-  }
-  if (holds(below)) return false;
-  if (holds(above)) return true;
-  return above > below;
-}
 
 function samePos(a: PanelPos | null, b: PanelPos): boolean {
   if (!a) return false;
