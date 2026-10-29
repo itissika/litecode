@@ -1,7 +1,5 @@
-Open `run_code` when one program can finish the work: explore with reads/searches, make the minimal edits, then verify with the real check. A short program is fine; do not wrap a single peek or edit in a long ritual.
-Explore first; write only after the target is known. `await` when a later call needs an earlier value. Use `Promise.all` only when every call must succeed; use `Promise.allSettled` when one failure must not stop the batch.
-`return` a short result: what changed, what ran, and the few facts that matter, not raw dumps. The run header and logs are diagnostics; `result` is your output. Oversized result text is truncated with a note at the start.
-`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not paste type annotations into `code`. Call bundled tools only through `tools.name(args)`; a code suite keeps its namespace even with one member: `tools.suite.member(args)`. One argument object each. Other LiteCode tools may remain directly callable outside this SDK.
+`code` is an async JavaScript function body. Top-level `await` and `return` are supported. The top-level return value becomes `result`; the run header and logs are diagnostics.
+The TypeScript declarations below are documentation only; do not paste type annotations into `code`. Call bundled tools only through `tools.name(args)`, with exactly one argument object. A code suite keeps its namespace even with one member: `tools.suite.member(args)`. Other LiteCode tools may remain directly callable outside this SDK.
 Every resolved call has boolean `ok`: `false` is a domain failure with `reason`/`message`, so one bad item need not end a batch. Unknown tools and extra JavaScript arguments throw `TypeError`; invalid tool arguments resolve `ok: false` `invalid_args`, and unknown fields are never silently dropped. Cancellation, the `run_code` budget, and hard limits end the program and cannot be caught.
 `libs` are deterministic pure-JS helpers (no filesystem, network, or process). `fs.ls` / `fs.stat` / `fs.exists` are synchronous, read-only workspace probes; mutate files only through declared tools. The sandbox has no `setTimeout` / `setInterval`.
 Unhandled Promise rejections do not end the program; a `[warn]` notes them after settle.
@@ -212,6 +210,33 @@ type BrowserTypeData = {
   url: string;
 };
 
+type CodeSearchInput = {
+  // One natural-language or code-token query.
+  query: string;
+  // Optional glob filter for workspace paths.
+  include_pattern?: string;
+  // Minimum raw dense cosine similarity. Default 0.80; 0 disables the floor.
+  min_score?: number;
+  // Maximum hits. Default 8, maximum 20.
+  top_k?: Integer;
+};
+
+// Code-search outcome. Off/warming/failed/busy resolve with ok=false so the program can branch.
+type CodeSearchData = {
+  hits: Array<{
+    anchor_line: Integer;
+    end_line: Integer;
+    path: string;
+    // Source excerpt, at most 24 lines; overlong lines are capped.
+    snippet: string;
+    start_line: Integer;
+    symbol?: string;
+  }>;
+  ok: boolean;
+  status: "ok" | "off" | "warming" | "failed" | "busy";
+  message?: string;
+};
+
 type PathInput = {
   // Source file under the workspace (workspace-relative preferred).
   path: string;
@@ -313,11 +338,15 @@ type GoToImplementationData = LocationsData;
 type GrepInput = {
   // Regular expression over file contents, unless literal is true.
   pattern: string;
+  // Lines of context after each hit. Default 0, maximum 5.
+  after?: Integer;
+  // Lines of context before each hit. Default 0, maximum 5.
+  before?: Integer;
   // Filter which files to search: one glob, or a comma-separated list. A leading ! excludes. Relative to path.
   glob?: string;
   // Ignore case when matching. Default false.
   ignore_case?: boolean;
-  // Maximum hits to return. Default 20, maximum 100.
+  // Maximum hits to return. Default 40, maximum 100.
   limit?: Integer;
   // Search for pattern as plain text. Default false.
   literal?: boolean;
@@ -331,8 +360,20 @@ type GrepData = {
     line: Integer;
     path: string;
     text: string;
+    // Exact lines after the hit, when after > 0.
+    after?: Array<{
+      line: Integer;
+      text: string;
+    }>;
+    // Exact lines before the hit, when before > 0.
+    before?: Array<{
+      line: Integer;
+      text: string;
+    }>;
   }>;
   message: string;
+  // Present and true when the limit or 8K-token data guard removed results or context.
+  truncated?: boolean;
 };
 
 type HoverInput = RangeInput;
@@ -599,6 +640,8 @@ declare const tools: {
   //
   // While the edit runs the page is dimmed with an "Agent is working" overlay and human keyboard, mouse, and wheel input is paused. This tool does not submit forms; click the submit button with browser_click when needed.
   readonly ["browser_type"]: (args: BrowserTypeInput) => Promise<BrowserTypeData | ToolFailure>;
+  // Semantic search over the workspace code index by meaning or code identifier. Returns ranked source snippets with workspace path, anchor line, exact snippet line range, and an optional AST symbol. One query per call; there is no paging. Optional `include_pattern`, `top_k` (default 8, max 20), and `min_score` (raw dense cosine, default 0.80, 0 disables the floor) constrain the query. The corpus is the suffix allowlist in Settings -> Files (`code_index_extensions`); changing `search_exclude` does not change it. Engine off, warming, failed, and busy outcomes resolve with `ok: false` and a `status` so a program can branch.
+  readonly ["code_search"]: (args: CodeSearchInput) => Promise<CodeSearchData | ToolFailure>;
   // List diagnostics for one source file. Pass `{ path }`. Resolves `{ items, message }`—each item `{ severity, path, line, character, message }` (string severity, 1-based). Clean file → empty `items`. Cap 100; truncation noted in `message`. Engine-not-ready rejects `ToolError`.
   // Example:
   // const diags = await tools.diagnostics({ path: "src/a.rs" });
@@ -640,10 +683,10 @@ declare const tools: {
   // const impls = await tools.go_to_implementation({ path: "src/trait_foo.rs", line: 3, character: 10 });
   // return { locations: impls.locations, message: impls.message };
   readonly ["go_to_implementation"]: (args: GoToImplementationInput) => Promise<GoToImplementationData | ToolFailure>;
-  // Search file contents. Pass `pattern`, optional `path`, `glob`, `literal`, `ignore_case`, and `limit` (default 20, max 100). Resolves `{ hits, message }`; each hit is `{ path, line, text }`. Empty and hit-the-limit results still resolve; invalid regex resolves `ok: false` `invalid_args`.
+  // Search file contents. Pass `pattern`, optional `path`, `glob`, `literal`, `ignore_case`, `limit` (default 40, max 100), and `before` / `after` (0-5, default 0, in 1-based source lines). Resolves `{ hits, message }`, with `truncated: true` when a limit or the 8K-token data guard removed context or hits. Each hit is `{ path, line, text }`; when requested, `before` and `after` are arrays of `{ line, text }`. Empty and hit-the-limit results resolve; invalid regex resolves `ok: false` `invalid_args`. Truncation is reported in `message`; there is no cursor or next page.
   // Example:
-  // const found = await tools.grep({ pattern: "fn start", path: "src", literal: true });
-  // return { first: found.hits[0] || null, n: found.hits.length, message: found.message };
+  // const found = await tools.grep({ pattern: "fn start", path: "src", literal: true, before: 1, after: 2 });
+  // return { first: found.hits[0] || null, n: found.hits.length, truncated: found.truncated === true, message: found.message };
   readonly ["grep"]: (args: GrepInput) => Promise<GrepData | ToolFailure>;
   // Fetch hover docs / type info at a file position. Pass `path` plus 1-based `line` and UTF-16 `character`. Resolves `{ markdown, message }` (flattened text in `markdown`, not raw LSP JSON). Unavailable hover still resolves with explanatory `message`.
   // Example:

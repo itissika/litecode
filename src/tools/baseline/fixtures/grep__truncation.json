@@ -9,7 +9,8 @@
         "text": "hit one"
       }
     ],
-    "message": "Showing first 1 hits; more matches exist. Raise limit to see more."
+    "message": "Showing first 1 hits; more matches exist. Narrow pattern/path for fewer matches, or raise limit to see more.",
+    "truncated": true
   },
   "error": null,
   "gap": null,

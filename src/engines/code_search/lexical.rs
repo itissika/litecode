@@ -62,6 +62,7 @@ impl LexicalMatch {
             end_line: self.end_line,
             summary: self.line_text.trim_end().to_string(),
             score,
+            dense_similarity: 0.0,
         }
     }
 }

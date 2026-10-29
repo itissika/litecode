@@ -496,7 +496,11 @@ fn expect_shape(case: &Live, result: &ToolCallResult) {
     if case.tool == "glob" && case.scenario == "truncation" {
         let data = result.data.as_ref().unwrap();
         assert!(
-            data["message"].as_str().unwrap().contains("Raise limit"),
+            data["message"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("raise limit"),
             "{data}"
         );
         assert_eq!(data["paths"].as_array().unwrap().len(), 1000, "{data}");
@@ -505,7 +509,11 @@ fn expect_shape(case: &Live, result: &ToolCallResult) {
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["hits"].as_array().unwrap().len(), 1, "{data}");
         assert!(
-            data["message"].as_str().unwrap().contains("Raise limit"),
+            data["message"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("raise limit"),
             "{data}"
         );
     }

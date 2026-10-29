@@ -1,4 +1,4 @@
-Search file contents. Pass `pattern`, optional `path`, `glob`, `literal`, `ignore_case`, and `limit` (default 20, max 100). Resolves `{ hits, message }`; each hit is `{ path, line, text }`. Empty and hit-the-limit results still resolve; invalid regex resolves `ok: false` `invalid_args`.
+Search file contents. Pass `pattern`, optional `path`, `glob`, `literal`, `ignore_case`, `limit` (default 40, max 100), and `before` / `after` (0-5, default 0, in 1-based source lines). Resolves `{ hits, message }`, with `truncated: true` when a limit or the 8K-token data guard removed context or hits. Each hit is `{ path, line, text }`; when requested, `before` and `after` are arrays of `{ line, text }`. Empty and hit-the-limit results resolve; invalid regex resolves `ok: false` `invalid_args`. Truncation is reported in `message`; there is no cursor or next page.
 Example:
-const found = await tools.grep({ pattern: "fn start", path: "src", literal: true });
-return { first: found.hits[0] || null, n: found.hits.length, message: found.message };
+const found = await tools.grep({ pattern: "fn start", path: "src", literal: true, before: 1, after: 2 });
+return { first: found.hits[0] || null, n: found.hits.length, truncated: found.truncated === true, message: found.message };

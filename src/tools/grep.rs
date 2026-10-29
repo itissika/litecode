@@ -1,9 +1,11 @@
 //! Agent `grep` tool.
 //!
-//! Bounded content search. Result shape is only `{ hits, message }`.
-//! Hits are `{ path, line, text }` with 1-based line numbers. Truncation
-//! and empty-result guidance live in `message` only — no cursor, page,
-//! searched, base, or multi-enum reason fields.
+//! Bounded content search. Result shape is `{ hits, message }`, plus
+//! `truncated: true` when a limit or the 8K-token data guard removed context
+//! or hits. Hits are `{ path, line, text }` with 1-based line numbers; when
+//! requested, `before` and `after` add exact `{ line, text }` context arrays.
+//! Empty-result and truncation guidance live in `message` only — no cursor,
+//! page, next, or offset fields.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -24,20 +26,38 @@ use crate::workspace::filter::{
     split_glob_include_exclude, walk_builder_with,
 };
 
-const DEFAULT_GREP_LIMIT: usize = 20;
+const DEFAULT_GREP_LIMIT: usize = 40;
 const MAX_GREP_LIMIT: usize = 100;
+const DEFAULT_CONTEXT_LINES: usize = 0;
+const MAX_CONTEXT_LINES: usize = 5;
 const MAX_MATCH_LINE_CHARS: usize = 500;
+/// The serialized grep `data` object is capped at 8K cl100k tokens. Context is
+/// dropped first; only then are hits removed.
+const MAX_GREP_DATA_TOKENS: usize = 8_000;
 /// Backstop on matches examined while filling one call. Production asks for
 /// at most `limit + 1`, so this fires only when a caller tightens it.
 const GREP_EXAMINE_CAP: usize = 10_000;
+
+#[derive(Debug, Clone, Serialize)]
+struct GrepContextLine {
+    line: u32,
+    text: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
 struct GrepHit {
     path: String,
     line: u32,
     text: String,
+    /// Empty context is omitted so a context-free hit remains exactly
+    /// `{ path, line, text }` and homogeneous hits stay table-renderable.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    before: Vec<GrepContextLine>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    after: Vec<GrepContextLine>,
 }
 
+#[derive(Debug)]
 struct GrepOptions {
     pattern: String,
     glob: Option<String>,
@@ -46,6 +66,8 @@ struct GrepOptions {
     ignore_case: bool,
     literal: bool,
     limit: usize,
+    before: usize,
+    after: usize,
 }
 
 struct Candidate {
@@ -92,7 +114,22 @@ impl Tool for GrepTool {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 100,
-                    "description": "Maximum hits to return. Default 20, maximum 100."
+                    "default": 40,
+                    "description": "Maximum hits to return. Default 40, maximum 100."
+                },
+                "before": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5,
+                    "default": 0,
+                    "description": "Lines of context before each hit. Default 0, maximum 5."
+                },
+                "after": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5,
+                    "default": 0,
+                    "description": "Lines of context after each hit. Default 0, maximum 5."
                 }
             },
             "required": ["pattern"],
@@ -113,10 +150,40 @@ impl Tool for GrepTool {
                         "properties": {
                             "path": { "type": "string" },
                             "line": { "type": "integer", "minimum": 1 },
-                            "text": { "type": "string" }
+                            "text": { "type": "string" },
+                            "before": {
+                                "type": "array",
+                                "description": "Exact lines before the hit, when before > 0.",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "line": { "type": "integer", "minimum": 1 },
+                                        "text": { "type": "string" }
+                                    },
+                                    "required": ["line", "text"]
+                                }
+                            },
+                            "after": {
+                                "type": "array",
+                                "description": "Exact lines after the hit, when after > 0.",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "line": { "type": "integer", "minimum": 1 },
+                                        "text": { "type": "string" }
+                                    },
+                                    "required": ["line", "text"]
+                                }
+                            }
                         },
                         "required": ["path", "line", "text"]
                     }
+                },
+                "truncated": {
+                    "type": "boolean",
+                    "description": "Present and true when the limit or 8K-token data guard removed results or context."
                 },
                 "message": { "type": "string" }
             },
@@ -231,6 +298,8 @@ fn parse_grep_options(input: &Value) -> Result<GrepOptions> {
         ignore_case,
         literal,
         limit: parse_limit(input)?,
+        before: parse_context(input, "before")?,
+        after: parse_context(input, "after")?,
     })
 }
 
@@ -254,6 +323,21 @@ fn parse_limit(input: &Value) -> Result<usize> {
         )));
     }
     Ok(limit)
+}
+
+fn parse_context(input: &Value, name: &str) -> Result<usize> {
+    let Some(value) = input.get(name).filter(|value| !value.is_null()) else {
+        return Ok(DEFAULT_CONTEXT_LINES);
+    };
+    let lines = value.as_u64().ok_or_else(|| {
+        LitecodeError::ToolExecution(format!("parameter '{name}' expected an integer"))
+    })?;
+    if lines > MAX_CONTEXT_LINES as u64 {
+        return Err(LitecodeError::ToolExecution(format!(
+            "parameter '{name}' must be between 0 and {MAX_CONTEXT_LINES}"
+        )));
+    }
+    Ok(lines as usize)
 }
 
 fn optional_string(input: &Value, name: &str) -> Result<Option<String>> {
@@ -373,6 +457,7 @@ fn search(
         return Ok(finish_hits(
             Vec::new(),
             "Binary file skipped; grep only searches text files.",
+            false,
         ));
     }
     if !file_scoped
@@ -382,6 +467,7 @@ fn search(
         return Ok(finish_hits(
             Vec::new(),
             "Path is hidden by default search filters (.gitignore / workspace excludes).",
+            false,
         ));
     }
 
@@ -401,6 +487,7 @@ fn search(
         return Ok(finish_hits(
             Vec::new(),
             "No files matched the glob filter.",
+            false,
         ));
     }
 
@@ -418,25 +505,23 @@ fn search(
             return Ok(finish_hits(
                 Vec::new(),
                 "File could not be searched.",
+                false,
             ));
         }
         if scan.opened || !candidates.is_empty() {
-            return Ok(finish_hits(Vec::new(), "No matches found."));
+            return Ok(finish_hits(Vec::new(), "No matches found.", false));
         }
-        return Ok(finish_hits(Vec::new(), "No files to search."));
+        return Ok(finish_hits(Vec::new(), "No files to search.", false));
     }
 
     let message = if scan.truncated {
-        format!(
-            "Showing first {} hits; more matches exist. Raise limit to see more.",
-            scan.hits.len()
-        )
+        limit_truncation_message(scan.hits.len())
     } else if scan.line_capped {
-        "One or more match lines were truncated in text.".into()
+        "One or more match or context lines were truncated in text.".into()
     } else {
         String::new()
     };
-    Ok(finish_hits(scan.hits, message))
+    Ok(finish_hits(scan.hits, message, scan.truncated))
 }
 
 struct Scan {
@@ -530,8 +615,8 @@ fn search_file(
         exclude: None,
         multiline: false,
         max_matches: fetch.max(1),
-        before_context: 0,
-        after_context: 0,
+        before_context: options.before,
+        after_context: options.after,
         min_line: u32::try_from(min_line).unwrap_or(u32::MAX),
     };
     let outcome = lexical_search_for_agent_cancellable(&query, preset, workspace, Some(cancel))?;
@@ -545,10 +630,22 @@ fn search_file(
             if capped {
                 line_capped = true;
             }
+            let before_start = hit
+                .start_line
+                .saturating_sub(hit.context_before.len() as u32)
+                .max(1);
+            let before = context_lines(hit.context_before, before_start, &mut line_capped);
+            let after = context_lines(
+                hit.context_after,
+                hit.end_line.saturating_add(1),
+                &mut line_capped,
+            );
             GrepHit {
                 path: candidate.display.clone(),
                 line: hit.start_line,
                 text,
+                before,
+                after,
             }
         })
         .collect();
@@ -710,7 +807,6 @@ fn glob_allows(
     }
 }
 
-
 fn cap_match_line(text: &str) -> (String, bool) {
     let without_newline = text.trim_end_matches(['\n', '\r']);
     let mut chars = without_newline.chars();
@@ -722,12 +818,140 @@ fn cap_match_line(text: &str) -> (String, bool) {
     }
 }
 
-fn finish_hits(hits: Vec<GrepHit>, message: impl Into<String>) -> ToolCallResult {
-    // Code surface: facts in data; content empty (same as write/edit present).
-    crate::tool::outcome::ok_data(serde_json::json!({
+fn context_lines(
+    raw: Vec<String>,
+    first_line: u32,
+    line_capped: &mut bool,
+) -> Vec<GrepContextLine> {
+    raw.into_iter()
+        .enumerate()
+        .map(|(offset, line)| {
+            let (text, capped) = cap_match_line(&line);
+            if capped {
+                *line_capped = true;
+            }
+            GrepContextLine {
+                line: first_line.saturating_add(offset as u32),
+                text,
+            }
+        })
+        .collect()
+}
+
+fn limit_truncation_message(shown: usize) -> String {
+    if shown >= MAX_GREP_LIMIT {
+        format!(
+            "Showing first {shown} hits; maximum limit reached. Narrow pattern/path for fewer matches."
+        )
+    } else {
+        format!(
+            "Showing first {shown} hits; more matches exist. Narrow pattern/path for fewer matches, or raise limit to see more."
+        )
+    }
+}
+
+fn join_message(base: &str, detail: &str) -> String {
+    if base.trim().is_empty() {
+        detail.to_string()
+    } else {
+        format!("{base} {detail}")
+    }
+}
+
+fn context_guard_message(base: &str) -> String {
+    join_message(
+        base,
+        "Before/after context was omitted to keep the result within 8,000 cl100k tokens. Narrow pattern/path for fewer matches, or raise limit when more hits are needed.",
+    )
+}
+
+fn hits_guard_message(base: &str, shown: usize, total: usize, context_omitted: bool) -> String {
+    let omission = if context_omitted {
+        " after before/after context was omitted"
+    } else {
+        ""
+    };
+    join_message(
+        base,
+        &format!(
+            "Output capped at 8,000 cl100k tokens: showing first {shown} of {total} hits{omission}. Narrow pattern/path for fewer matches, or raise limit when more hits are needed."
+        ),
+    )
+}
+
+fn hits_data(hits: &[GrepHit], message: &str, truncated: bool) -> Value {
+    let mut data = serde_json::json!({
         "hits": hits,
-        "message": message.into(),
-    }))
+        "message": message,
+    });
+    if truncated {
+        data["truncated"] = Value::Bool(true);
+    }
+    data
+}
+
+fn data_fits(data: &Value) -> bool {
+    serde_json::to_string(data).is_ok_and(|serialized| {
+        crate::session::count_text_tokens(&serialized) <= MAX_GREP_DATA_TOKENS
+    })
+}
+
+fn finish_hits(
+    mut hits: Vec<GrepHit>,
+    message: impl Into<String>,
+    truncated: bool,
+) -> ToolCallResult {
+    let base_message = message.into();
+    let initial = hits_data(&hits, &base_message, truncated);
+    if data_fits(&initial) {
+        // Code surface: facts in data; content empty (same as write/edit present).
+        return crate::tool::outcome::ok_data(initial);
+    }
+
+    // Degrade in the agreed order: strip context from every hit first.
+    let had_context = hits
+        .iter()
+        .any(|hit| !hit.before.is_empty() || !hit.after.is_empty());
+    if had_context {
+        for hit in &mut hits {
+            hit.before.clear();
+            hit.after.clear();
+        }
+        let guarded = hits_data(&hits, &context_guard_message(&base_message), true);
+        if data_fits(&guarded) {
+            return crate::tool::outcome::ok_data(guarded);
+        }
+    }
+
+    // Context was not enough (or absent): keep the largest whole-hit prefix
+    // whose complete data object, including the actionable message, fits.
+    let total = hits.len();
+    let mut low = 0usize;
+    let mut high = total;
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        let candidate_message = hits_guard_message(&base_message, mid, total, had_context);
+        let candidate = hits_data(&hits[..mid], &candidate_message, true);
+        if data_fits(&candidate) {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    hits.truncate(low);
+    let final_message = hits_guard_message(&base_message, low, total, had_context);
+    let data = hits_data(&hits, &final_message, true);
+    if data_fits(&data) {
+        return crate::tool::outcome::ok_data(data);
+    }
+
+    // Defensive fallback for an implausibly tiny budget or huge fixed message:
+    // never return an over-budget object. The wording stays actionable.
+    crate::tool::outcome::ok_data(hits_data(
+        &[],
+        "Output capped at 8,000 cl100k tokens. Narrow pattern/path for fewer matches, or raise limit when more hits are needed.",
+        true,
+    ))
 }
 
 fn grep_virtual_file(
@@ -827,7 +1051,7 @@ fn finish_virtual(
         } else {
             "No files to search."
         };
-        return Ok(finish_hits(Vec::new(), message));
+        return Ok(finish_hits(Vec::new(), message, false));
     }
     let truncated = hits.len() > options.limit
         || (examine_cap < options.limit + 1 && hits.len() >= examine_cap);
@@ -837,14 +1061,11 @@ fn finish_virtual(
         hits.truncate(options.limit);
     }
     let message = if truncated {
-        format!(
-            "Showing first {} hits; more matches exist. Raise limit to see more.",
-            hits.len()
-        )
+        limit_truncation_message(hits.len())
     } else {
         String::new()
     };
-    Ok(finish_hits(hits, message))
+    Ok(finish_hits(hits, message, truncated))
 }
 
 fn grep_transcript(
@@ -870,27 +1091,47 @@ fn grep_transcript(
     } else {
         Vec::new()
     };
+    let line_number = |index: usize| u32::try_from(index + 1).unwrap_or(u32::MAX);
+    let visible: Vec<bool> = (1..=file.lines.len())
+        .map(|line_no| {
+            let line_no = u32::try_from(line_no).unwrap_or(u32::MAX);
+            !file
+                .seq_at(line_no)
+                .is_some_and(|seq| hidden.contains(&seq))
+        })
+        .collect();
+    let context = |start: usize, end: usize| -> Vec<GrepContextLine> {
+        (start..end.min(file.lines.len()))
+            .filter(|index| visible[*index])
+            .map(|index| {
+                let (text, _) = cap_match_line(&file.lines[index]);
+                GrepContextLine {
+                    line: line_number(index),
+                    text,
+                }
+            })
+            .collect()
+    };
     let mut hits = Vec::new();
     for (index, line) in file.lines.iter().enumerate() {
-        let line_no = (index + 1) as u32;
-        if file
-            .seq_at(line_no)
-            .is_some_and(|seq| hidden.contains(&seq))
-        {
+        if !visible[index] {
             continue;
         }
         if re.is_match(line) {
             let (text, _) = cap_match_line(line);
+            let before_start = index.saturating_sub(options.before);
+            let after_end = index.saturating_add(1).saturating_add(options.after);
             hits.push(GrepHit {
                 path: file.virtual_path.clone(),
-                line: line_no,
+                line: line_number(index),
                 text,
+                before: context(before_start, index),
+                after: context(index.saturating_add(1), after_end),
             });
         }
     }
     Ok(hits)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -984,29 +1225,257 @@ mod tests {
     }
 
     #[test]
-    fn limit_bounds_hits_and_notes_truncation() {
+    fn limit_defaults_to_forty_and_notes_truncation_without_pagination() {
         let dir = tempfile::tempdir().unwrap();
-        write_many_files(dir.path(), 25);
+        write_many_files(dir.path(), 45);
         let first = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
         assert_eq!(first.level, crate::types::ToolSignalLevel::Ok);
         assert!(first.content.is_empty(), "content must stay empty");
         let data = grep_data(&first);
-        assert_eq!(data["hits"].as_array().unwrap().len(), 20);
-        assert!(
-            data["message"].as_str().unwrap().contains("Raise limit"),
-            "{}",
-            data["message"]
-        );
+        let hits = data["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 40);
+        assert_eq!(data["truncated"], true);
+        let msg = data["message"].as_str().unwrap();
+        assert!(msg.to_lowercase().contains("raise limit"), "{msg}");
+        assert!(msg.to_lowercase().contains("narrow pattern/path"), "{msg}");
+        assert!(!msg.to_lowercase().contains("next"), "{msg}");
         assert!(data.get("page").is_none());
         assert!(data.get("matches").is_none());
+        assert!(data.get("cursor").is_none());
+        assert!(data.get("next").is_none());
+        assert!(data.get("offset").is_none());
+        // With no requested context, hits stay exactly `{ path, line, text }`
+        // so the outer formatter can still render them as a homogeneous table.
+        for hit in hits {
+            let hit = hit.as_object().unwrap();
+            let keys: Vec<&str> = hit.keys().map(String::as_str).collect();
+            assert_eq!(keys, ["path", "line", "text"]);
+        }
+    }
+
+    #[test]
+    fn before_after_context_reports_exact_line_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "a.rs",
+            "line one\nline two\nline three\nneedle\nline five\nline six\nline seven\n",
+        );
+        let result = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": "needle", "before": 2, "after": 2}),
+        );
+        let data = grep_data(&result);
+        assert!(data.get("truncated").is_none(), "{}", data["message"]);
+        let hits = data["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+        let hit = &hits[0];
+        assert_eq!(hit["path"], "a.rs");
+        assert_eq!(hit["line"], 4);
+        assert_eq!(
+            hit["before"],
+            serde_json::json!([
+                {"line": 2, "text": "line two"},
+                {"line": 3, "text": "line three"}
+            ])
+        );
+        assert_eq!(
+            hit["after"],
+            serde_json::json!([
+                {"line": 5, "text": "line five"},
+                {"line": 6, "text": "line six"}
+            ])
+        );
+    }
+
+    #[test]
+    fn context_parameters_are_bounded_and_written_to_the_schema() {
+        let schema = GrepTool.schema();
+        assert_eq!(schema["properties"]["limit"]["default"], 40);
+        assert_eq!(schema["properties"]["limit"]["maximum"], 100);
+        assert_eq!(schema["properties"]["before"]["default"], 0);
+        assert_eq!(schema["properties"]["before"]["maximum"], 5);
+        assert_eq!(schema["properties"]["after"]["default"], 0);
+        assert_eq!(schema["properties"]["after"]["maximum"], 5);
+        assert!(schema["properties"].get("context").is_none());
+        let data_schema = GrepTool.data_schema().unwrap();
+        assert_eq!(
+            data_schema["properties"]["hits"]["items"]["properties"]["before"]["items"]["required"],
+            serde_json::json!(["line", "text"])
+        );
+        let options = parse_grep_options(&serde_json::json!({
+            "pattern": "x", "before": 5, "after": 5
+        }))
+        .unwrap();
+        assert_eq!((options.before, options.after), (5, 5));
+        for name in ["before", "after"] {
+            let error = parse_grep_options(&serde_json::json!({
+                "pattern": "x", (name): 6
+            }))
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(name), "{error}");
+            assert!(error.contains("between 0 and 5"), "{error}");
+        }
+        let description = GrepTool.description(&crate::context_pipeline::Context {
+            cwd: std::env::current_dir().unwrap(),
+            workspace_paths: crate::config::WorkspacePaths::for_legacy_root(
+                &std::env::current_dir().unwrap(),
+            ),
+            agents_md: None,
+            claude_md: None,
+        });
+        assert!(description.contains("default 40"));
+        assert!(description.contains("`before` and `after`"));
+        assert!(description.contains("8K-token"));
+    }
+
+    #[test]
+    fn token_guard_drops_context_before_keeping_all_hits() {
+        let dir = tempfile::tempdir().unwrap();
+        let filler = "错".repeat(500);
+        let mut body = String::new();
+        for index in 0..20 {
+            for _ in 0..6 {
+                body.push_str(&filler);
+                body.push('\n');
+            }
+            body.push_str(&format!("needle {index}\n"));
+        }
+        write(dir.path(), "large.txt", &body);
+        let result = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": "needle", "before": 5, "after": 0}),
+        );
+        let data = grep_data(&result);
+        assert_eq!(data["truncated"], true, "{}", data["message"]);
+        let hits = data["hits"].as_array().unwrap();
+        assert_eq!(
+            hits.len(),
+            20,
+            "context reduction should fit without trimming hits"
+        );
+        for hit in hits {
+            assert!(hit.get("before").is_none(), "{hit}");
+            assert!(hit.get("after").is_none(), "{hit}");
+        }
+        let msg = data["message"].as_str().unwrap().to_lowercase();
+        assert!(msg.contains("context was omitted"), "{msg}");
+        assert!(msg.contains("8,000"), "{msg}");
+        assert!(msg.contains("narrow pattern/path"), "{msg}");
+        assert!(msg.contains("raise limit"), "{msg}");
+        assert!(
+            data_fits(&data),
+            "{}",
+            serde_json::to_string(&data).unwrap()
+        );
+    }
+
+    #[test]
+    fn token_guard_trims_hits_after_context_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = "错".repeat(500);
+        let mut body = String::new();
+        for index in 0..100 {
+            body.push_str(&format!("needle {index} {payload}\n"));
+        }
+        write(dir.path(), "dense.txt", &body);
+        let result = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": "needle", "limit": 100}),
+        );
+        let data = grep_data(&result);
+        assert_eq!(data["truncated"], true, "{}", data["message"]);
+        let hits = data["hits"].as_array().unwrap();
+        assert!(!hits.is_empty());
+        assert!(hits.len() < 100, "guard must trim: {}", hits.len());
+        let msg = data["message"].as_str().unwrap();
+        assert!(msg.contains("showing first"), "{msg}");
+        assert!(msg.contains("of 100 hits"), "{msg}");
+        assert!(msg.contains("8,000"), "{msg}");
+        assert!(msg.to_lowercase().contains("narrow pattern/path"), "{msg}");
+        assert!(msg.to_lowercase().contains("raise limit"), "{msg}");
+        assert!(!msg.to_lowercase().contains("next"), "{msg}");
+        assert!(data.get("cursor").is_none());
+        assert!(data.get("next").is_none());
+        assert!(data.get("offset").is_none());
+        assert!(
+            data_fits(&data),
+            "{}",
+            serde_json::to_string(&data).unwrap()
+        );
+    }
+
+    #[test]
+    fn virtual_transcript_grep_carries_exact_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let reader = crate::session::SessionDataReader::open(
+            &dir.path().join(".litecode").join("sessions.db"),
+        );
+        let lines = vec![
+            "zero".to_string(),
+            "one".to_string(),
+            "two".to_string(),
+            "needle".to_string(),
+            "four".to_string(),
+            "five".to_string(),
+        ];
+        let file = crate::session::transcript_file::TranscriptFile {
+            session_id: "session-1".to_string(),
+            virtual_path: crate::session::transcript_file::virtual_path_for("session-1"),
+            line_index: (1..=lines.len())
+                .map(|line| crate::session::transcript_file::LineSpan {
+                    line: line as u32,
+                    seq: 1,
+                    kind: "item/user".to_string(),
+                    item_type: "message".to_string(),
+                    is_header: false,
+                    char_start_in_item: 0,
+                    char_end_in_item: 0,
+                })
+                .collect(),
+            lines,
+            tool_names: Default::default(),
+            result_call_ids: Default::default(),
+            session_read_calls: Default::default(),
+        };
+        let options = parse_grep_options(&serde_json::json!({
+            "pattern": "needle", "before": 2, "after": 1
+        }))
+        .unwrap();
+        let hits = grep_transcript(&reader, &file, &options, "").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line, 4);
+        assert_eq!(
+            hits[0]
+                .before
+                .iter()
+                .map(|line| (line.line, line.text.as_str()))
+                .collect::<Vec<_>>(),
+            [(2, "one"), (3, "two")]
+        );
+        assert_eq!(
+            hits[0]
+                .after
+                .iter()
+                .map(|line| (line.line, line.text.as_str()))
+                .collect::<Vec<_>>(),
+            [(5, "four")]
+        );
     }
 
     #[test]
     fn wide_search_never_writes_a_spill_file() {
         let dir = tempfile::tempdir().unwrap();
-        write_many_files(dir.path(), 30);
+        write_many_files(dir.path(), 45);
         let result = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
-        assert!(grep_data(&result)["message"].as_str().unwrap().contains("Raise limit"));
+        assert!(
+            grep_data(&result)["message"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("raise limit")
+        );
         let bash_dir = dir.path().join(".litecode").join("bash");
         if bash_dir.is_dir() {
             let spill = std::fs::read_dir(bash_dir)
@@ -1071,7 +1540,6 @@ mod tests {
         );
         assert!(result.data.is_none());
     }
-
 }
 
 /// grep message states (merged from phase2_gate, WP-207).

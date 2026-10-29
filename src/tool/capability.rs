@@ -124,7 +124,9 @@ fn member(id: &str) -> MemberSpec {
 fn builtin_surface(id: &str) -> CallSurface {
     match id {
         "read" | "grep" | "glob" | "write" | "edit" | "apply_edits" | "run" | "wait" | "kill"
-        | "webfetch" | "websearch" | "memory" | BROWSER_CARD_ID => CallSurface::Code,
+        | "webfetch" | "websearch" | "memory" | "code_search" | BROWSER_CARD_ID => {
+            CallSurface::Code
+        }
         _ => CallSurface::Direct,
     }
 }
@@ -550,6 +552,10 @@ mod tests {
             ["memory.list", "memory.upsert", "memory.delete"]
         );
         assert_eq!(memory.surface, CallSurface::Code);
+        assert_eq!(
+            catalog.get("code_search").expect("code_search").surface,
+            CallSurface::Code
+        );
         assert_eq!(
             catalog.member_capability_id("memory.upsert"),
             Some("memory")

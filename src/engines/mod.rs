@@ -13,7 +13,7 @@ mod status_view;
 pub use status_view::{EngineUsability, retrieval_progress_for_workspace};
 
 mod code_search_engine;
-pub use code_search_engine::{CodeSearchEngine, is_search_worker_busy};
+pub use code_search_engine::{CodeSearchEngine, SEARCH_CANCELLED, is_search_worker_busy};
 
 mod lsp_engine;
 pub use lsp_engine::LspEngine;
@@ -69,6 +69,10 @@ pub struct RetrievalQuery {
     pub modality: RetrievalModality,
     pub filters: RetrievalFilters,
     pub top_k: usize,
+    /// Absolute raw-dense-cosine floor for the Code semantic branch. `None`
+    /// (or zero) disables filtering; the query-local fusion `score` is not
+    /// comparable across queries and must not be used here.
+    pub min_score: Option<f64>,
     /// Text pagination offset (Session × Text / grep-style). Ignored for semantic.
     pub offset: usize,
     /// Workspace root used to resolve default sessions.db / code paths.
@@ -92,6 +96,7 @@ pub enum RetrievalHit {
         end_line: u32,
         summary: String,
         score: f64,
+        dense_similarity: f64,
     },
     Session {
         session_id: String,
@@ -110,6 +115,7 @@ impl RetrievalHit {
             end_line: h.end_line,
             summary: h.summary,
             score: h.score,
+            dense_similarity: h.dense_similarity,
         }
     }
 
@@ -190,6 +196,24 @@ pub enum CodeSearchCallGate {
     Ready,
     Wait,
     Failed(String),
+}
+
+/// Keep Code hits whose raw dense similarity meets an optional absolute floor.
+/// Fusion `score` is query-local and deliberately never consulted here.
+fn retain_code_hits_at_or_above(hits: &mut Vec<RetrievalHit>, min_score: Option<f64>) {
+    let Some(floor) = min_score.filter(|floor| *floor > 0.0) else {
+        return;
+    };
+    // Only the unified search's Code arm reaches this helper, and that arm is
+    // produced by the semantic branch. Human/LexicalLane text results are a
+    // separate SearchHit list and carry dense_similarity 0.0, so they are never
+    // rejected by the semantic confidence floor.
+    hits.retain(|hit| match hit {
+        RetrievalHit::Code {
+            dense_similarity, ..
+        } => *dense_similarity >= floor,
+        _ => true,
+    });
 }
 
 pub fn merge_index_work(
@@ -335,6 +359,18 @@ impl WorkspaceEngines {
 
     /// Unified retrieval surface: corpus × modality. Unsupported pairs fail closed.
     pub fn search(&self, request: RetrievalQuery) -> Result<Vec<RetrievalHit>> {
+        self.search_with_cancel(request, None)
+    }
+
+    /// Code-surface form: no async-thread blocking and a cancellable, bounded
+    /// wait when a refresh currently holds the worker client lock.
+    pub fn search_with_cancel(
+        &self,
+        request: RetrievalQuery,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<Vec<RetrievalHit>> {
+        let min_score = request.min_score;
+        let has_dense_floor = min_score.is_some_and(|floor| floor > 0.0);
         match (request.corpus, request.modality) {
             (RetrievalCorpus::Code, RetrievalModality::Semantic) => {
                 match self.code_search_call_gate() {
@@ -348,12 +384,32 @@ impl WorkspaceEngines {
                     }
                     CodeSearchCallGate::Ready => {}
                 }
-                let hits = self.code_search.search(
-                    &request.query,
-                    request.filters.glob.as_deref(),
-                    request.top_k,
-                )?;
-                Ok(hits.into_iter().map(RetrievalHit::from_code).collect())
+                // Pull a full-size candidate set when a floor is active, then
+                // filter on the query-independent dense similarity and retain
+                // at most the caller's requested top_k.
+                let retrieval_k = if has_dense_floor {
+                    code_search::MAX_TOP_K
+                } else {
+                    request.top_k
+                };
+                let hits = match cancel {
+                    Some(cancel) => self.code_search.search_cancellable(
+                        &request.query,
+                        request.filters.glob.as_deref(),
+                        retrieval_k,
+                        cancel,
+                    )?,
+                    None => self.code_search.search(
+                        &request.query,
+                        request.filters.glob.as_deref(),
+                        retrieval_k,
+                    )?,
+                };
+                let mut hits: Vec<RetrievalHit> =
+                    hits.into_iter().map(RetrievalHit::from_code).collect();
+                retain_code_hits_at_or_above(&mut hits, min_score);
+                hits.truncate(request.top_k);
+                Ok(hits)
             }
             (RetrievalCorpus::Session, RetrievalModality::Text) => {
                 let reader = request
@@ -531,6 +587,7 @@ impl WorkspaceEngines {
                             ..Default::default()
                         },
                         top_k,
+                        min_score: None,
                         offset: 0,
                         workspace_root: Some(workspace_root.to_path_buf()),
                     }) {
@@ -543,12 +600,14 @@ impl WorkspaceEngines {
                                         end_line,
                                         summary,
                                         score,
+                                        dense_similarity,
                                     } => Some(code_search::SearchHit {
                                         path,
                                         start_line,
                                         end_line,
                                         summary,
                                         score,
+                                        dense_similarity,
                                     }),
                                     _ => None,
                                 })
@@ -1261,10 +1320,43 @@ impl Default for WorkspaceEngines {
 
 #[cfg(test)]
 mod tests {
-    
-    
-    
-    
+    use super::*;
+
+    fn code_hit(dense_similarity: f64) -> RetrievalHit {
+        RetrievalHit::Code {
+            path: "a.rs".into(),
+            start_line: 1,
+            end_line: 2,
+            summary: "summary".into(),
+            score: 0.99,
+            dense_similarity,
+        }
+    }
+
+    #[test]
+    fn code_floor_uses_raw_dense_similarity_not_fusion_score() {
+        let mut hits = vec![code_hit(0.79), code_hit(0.80), code_hit(0.95)];
+        retain_code_hits_at_or_above(&mut hits, Some(0.80));
+        assert_eq!(hits.len(), 2);
+        for hit in hits {
+            let RetrievalHit::Code {
+                dense_similarity, ..
+            } = hit
+            else {
+                panic!("code hit")
+            };
+            assert!(dense_similarity >= 0.80);
+        }
+    }
+
+    #[test]
+    fn zero_or_absent_code_floor_disables_filtering() {
+        let mut hits = vec![code_hit(0.0), code_hit(0.2)];
+        retain_code_hits_at_or_above(&mut hits, None);
+        assert_eq!(hits.len(), 2);
+        retain_code_hits_at_or_above(&mut hits, Some(0.0));
+        assert_eq!(hits.len(), 2);
+    }
 
     // ---- WP-167: deferred LSP availability probe ----
 

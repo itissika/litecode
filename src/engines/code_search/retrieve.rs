@@ -38,6 +38,11 @@ pub struct SearchHit {
     pub end_line: u32,
     pub summary: String,
     pub score: f64,
+    /// Raw dense cosine similarity (`1 - usearch Cos distance`). Unlike
+    /// `score`, this is comparable across queries and is safe for a threshold.
+    /// Lexical-only hits use 0.0 because they carry no semantic confidence.
+    #[serde(default)]
+    pub dense_similarity: f64,
 }
 
 /// Dense ANN only (kept for tests / ablations).
@@ -55,7 +60,8 @@ pub fn semantic_search(
             continue;
         }
         let score = 1.0 / (1.0 + dist as f64);
-        if let Some(h) = hit_from_chunk(index, id, score) {
+        let dense_similarity = dense_similarity_from_distance(dist);
+        if let Some(h) = hit_from_chunk(index, id, score, dense_similarity) {
             hits.push(h);
         }
     }
@@ -76,10 +82,12 @@ pub fn bm25_rrf_search(
     let sparse = bm25.search(query, pool)?;
 
     let mut rrf: HashMap<u64, f64> = HashMap::new();
-    for (rank, (id, _)) in dense.iter().enumerate() {
+    let mut dense_similarity: HashMap<u64, f64> = HashMap::new();
+    for (rank, (id, dist)) in dense.iter().enumerate() {
         if !apply_glob(index, *id, glob_filter) {
             continue;
         }
+        dense_similarity.insert(*id, dense_similarity_from_distance(*dist));
         *rrf.entry(*id).or_insert(0.0) += 1.0 / (RRF_K as f64 + rank as f64 + 1.0);
     }
     for (rank, (id, _)) in sparse.iter().enumerate() {
@@ -89,12 +97,15 @@ pub fn bm25_rrf_search(
         *rrf.entry(*id).or_insert(0.0) += 1.0 / (RRF_K as f64 + rank as f64 + 1.0);
     }
 
-    let mut ranked: Vec<(u64, f64)> = rrf.into_iter().collect();
+    let mut ranked: Vec<(u64, f64, f64)> = rrf
+        .into_iter()
+        .map(|(id, score)| (id, score, dense_similarity.get(&id).copied().unwrap_or(0.0)))
+        .collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut hits = Vec::new();
-    for (id, score) in ranked {
-        if let Some(h) = hit_from_chunk(index, id, score) {
+    for (id, score, dense_similarity) in ranked {
+        if let Some(h) = hit_from_chunk(index, id, score, dense_similarity) {
             hits.push(h);
         }
     }
@@ -123,12 +134,17 @@ pub fn bm25_cc_search(
     let dense = index.ann_search(query_vec, pool)?;
     let sparse = bm25.search(query, pool)?;
 
+    // Keep the established CC ranking input (1 / (1 + distance)) exactly as
+    // it was. The absolute cosine confidence is a separate value used only by
+    // the caller's threshold, never by fusion.
     let mut dense_raw: HashMap<u64, f64> = HashMap::new();
+    let mut dense_confidence: HashMap<u64, f64> = HashMap::new();
     for (id, dist) in &dense {
         if !apply_glob(index, *id, glob_filter) {
             continue;
         }
         dense_raw.insert(*id, 1.0 / (1.0 + *dist as f64));
+        dense_confidence.insert(*id, dense_similarity_from_distance(*dist));
     }
     let mut sparse_raw: HashMap<u64, f64> = HashMap::new();
     for (id, score) in &sparse {
@@ -157,7 +173,8 @@ pub fn bm25_cc_search(
 
     let mut hits = Vec::new();
     for (id, score) in ranked {
-        if let Some(h) = hit_from_chunk(index, id, score) {
+        let dense_similarity = dense_confidence.get(&id).copied().unwrap_or(0.0);
+        if let Some(h) = hit_from_chunk(index, id, score, dense_similarity) {
             hits.push(h);
         }
     }
@@ -187,7 +204,16 @@ fn minmax_norm(raw: &HashMap<u64, f64>) -> HashMap<u64, f64> {
         .collect()
 }
 
-fn hit_from_chunk(index: &CodeSearchIndex, chunk_id: u64, score: f64) -> Option<SearchHit> {
+fn dense_similarity_from_distance(distance: f32) -> f64 {
+    (1.0 - distance as f64).clamp(0.0, 1.0)
+}
+
+fn hit_from_chunk(
+    index: &CodeSearchIndex,
+    chunk_id: u64,
+    score: f64,
+    dense_similarity: f64,
+) -> Option<SearchHit> {
     let chunk = index.chunks().get(&chunk_id)?;
     Some(SearchHit {
         path: chunk.path.clone(),
@@ -195,6 +221,7 @@ fn hit_from_chunk(index: &CodeSearchIndex, chunk_id: u64, score: f64) -> Option<
         end_line: chunk.end_line,
         summary: chunk.summary(),
         score,
+        dense_similarity,
     })
 }
 
@@ -236,10 +263,10 @@ pub(crate) fn glob_match(pattern: &str, path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    
-    
-    
-    
-    
-
+    #[test]
+    fn dense_similarity_is_one_minus_cosine_distance() {
+        assert!((super::dense_similarity_from_distance(0.2) - 0.8).abs() < 1e-6);
+        assert_eq!(super::dense_similarity_from_distance(-0.1), 1.0);
+        assert_eq!(super::dense_similarity_from_distance(1.3), 0.0);
+    }
 }

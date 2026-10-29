@@ -598,6 +598,10 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(MemoryListTool::cold()),
         Arc::new(MemoryUpsertTool::cold()),
         Arc::new(MemoryDeleteTool::cold()),
+        // Engine-backed, but a code-surface tool first. Its cold adapter is
+        // used only for admission/schema rendering; live calls get the bound
+        // WorkspaceEngines adapter from capability instantiation.
+        Arc::new(CodeSearchTool::new(WorkspaceEngines::new())),
     ];
     // WP-210 I: the seven LSP navigation tools are Code-surface too (cold
     // engines; admission only needs their contracts).
@@ -789,6 +793,30 @@ mod tests {
         // engine is cold; the tool itself falls back to lexical search.
         assert!(names.contains(&"session_search"));
         assert!(names.contains(&"litecode_workspace"));
+    }
+
+    #[test]
+    fn builtin_code_and_direct_surfaces_never_intersect() {
+        let all = builtin_code_surface_tools();
+        let code_names: std::collections::HashSet<String> =
+            all.iter().map(|tool| tool.name().to_string()).collect();
+        assert!(code_names.contains("code_search"), "code_search must be a code tool");
+        let projected = project_tools(all);
+        let direct_names: std::collections::HashSet<String> = projected
+            .direct
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect();
+        let overlap: Vec<_> = direct_names.intersection(&code_names).cloned().collect();
+        assert!(overlap.is_empty(), "tool surfaced both direct and code: {overlap:?}");
+        assert!(
+            projected.code_tools.iter().any(|tool| tool.name() == "code_search"),
+            "code_search must survive code projection"
+        );
+        assert!(
+            !projected.direct.iter().any(|tool| tool.name() == "code_search"),
+            "code_search must not remain direct"
+        );
     }
 
     #[test]

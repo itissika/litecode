@@ -9,9 +9,9 @@ use super::ansi::strip_ansi;
 use super::error::{TerminalError, TerminalResult};
 
 /// Bytes kept at the start of the model-facing window.
-pub const INLINE_HEAD: usize = 2 * 1024;
+pub const INLINE_HEAD: usize = 8 * 1024;
 /// Bytes kept at the end of the model-facing window.
-pub const INLINE_TAIL: usize = 4 * 1024;
+pub const INLINE_TAIL: usize = 32 * 1024;
 /// Grow the in-memory buffer until this size, then freeze into head+tail.
 pub const INLINE_FULL: usize = INLINE_HEAD + INLINE_TAIL;
 /// Stop writing the on-disk log after this many bytes.
@@ -211,5 +211,36 @@ mod tests {
         assert_eq!(cap.total_bytes, FILE_MAX + 50);
         let on_disk = std::fs::read(&cap.path).unwrap();
         assert_eq!(on_disk.len(), FILE_MAX);
+    }
+
+    #[test]
+    fn inline_window_keeps_8k_head_and_32k_tail() {
+        assert_eq!(INLINE_HEAD, 8 * 1024);
+        assert_eq!(INLINE_TAIL, 32 * 1024);
+        assert_eq!(INLINE_FULL, 40 * 1024);
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut t = tee_in(dir.path());
+        let input: String = (0..3_000)
+            .map(|index| format!("line {index:04} payload payload\n"))
+            .collect();
+        for chunk in input.as_bytes().chunks(97) {
+            t.push_clean(std::str::from_utf8(chunk).unwrap());
+        }
+        let cap = t.snapshot_capture();
+        assert!(cap.frozen);
+        assert_eq!(cap.total_bytes, input.len());
+        assert!(cap.head.len() <= INLINE_HEAD, "{}", cap.head.len());
+        assert!(cap.tail.len() <= INLINE_TAIL, "{}", cap.tail.len());
+        assert!(cap.head.starts_with("line 0000 payload"));
+        let snapshot = cap.snapshot();
+        assert!(snapshot.contains("line 2999 payload"), "missing tail");
+        assert!(snapshot.len() <= INLINE_FULL, "{}", snapshot.len());
+        assert!(
+            snapshot.len() > INLINE_HEAD + INLINE_TAIL / 2,
+            "{}",
+            snapshot.len()
+        );
+        assert_eq!(std::fs::read(&cap.path).unwrap().len(), input.len());
     }
 }

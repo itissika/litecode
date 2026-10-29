@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use crate::engines::code_search::SearchHit;
 use crate::engines::code_search_ipc::CodeSearchWorkerClient;
@@ -13,6 +14,12 @@ use crate::types::{LitecodeError, Result};
 /// Refresh/embed keeps that lock for the whole pass. Callers must return
 /// immediately; blocking here stalls the agent turn until embedding finishes.
 pub const SEARCH_WORKER_BUSY: &str = "code_search worker is busy; semantic search was skipped";
+/// Bounded wait for a search already inside the code tool. Cancellation is
+/// checked between polls, so a run_code deadline never waits for this budget.
+pub const SEARCH_QUEUE_WAIT: Duration = Duration::from_secs(20);
+const SEARCH_QUEUE_POLL: Duration = Duration::from_millis(20);
+/// Returned when the execution token fires while waiting for the worker lock.
+pub const SEARCH_CANCELLED: &str = "code_search cancelled";
 
 const WORKER_NOT_RUNNING: &str = "code_search worker is not running; enable the retrieval engine or restart litecode with this workspace";
 
@@ -149,26 +156,61 @@ impl CodeSearchEngine {
         }
     }
 
-    /// Code-corpus semantic search.
-    ///
-    /// Never waits on the worker. A refresh holds the client lock for its whole
-    /// embed pass; blocking behind it is the stall [`SEARCH_WORKER_BUSY`] exists
-    /// to avoid. A dead or missing worker is still reported as not running.
+    /// Code-corpus semantic search. Compatibility/direct form: never waits.
     pub fn search(
         &self,
         query: &str,
         glob_filter: Option<&str>,
         top_k: usize,
     ) -> Result<Vec<SearchHit>> {
-        let mut guard = match self.client.try_lock() {
-            Ok(guard) => guard,
-            Err(std::sync::TryLockError::WouldBlock) => {
-                return Err(LitecodeError::ToolExecution(SEARCH_WORKER_BUSY.into()));
+        self.search_with_queue(query, glob_filter, top_k, Duration::ZERO, None)
+    }
+
+    /// Agent code-surface form. A silent refresh holds the client lock for its
+    /// whole pass, so wait for it in short cancellable slices instead of
+    /// failing immediately. The actual tool runs this on `spawn_blocking`; the
+    /// async runtime is never parked here.
+    pub fn search_cancellable(
+        &self,
+        query: &str,
+        glob_filter: Option<&str>,
+        top_k: usize,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<SearchHit>> {
+        self.search_with_queue(query, glob_filter, top_k, SEARCH_QUEUE_WAIT, Some(cancel))
+    }
+
+    fn search_with_queue(
+        &self,
+        query: &str,
+        glob_filter: Option<&str>,
+        top_k: usize,
+        wait: Duration,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<Vec<SearchHit>> {
+        let deadline = Instant::now().checked_add(wait);
+        let mut guard = loop {
+            if cancel.is_some_and(|token| token.is_cancelled()) {
+                return Err(LitecodeError::ToolExecution(SEARCH_CANCELLED.into()));
             }
-            Err(std::sync::TryLockError::Poisoned(err)) => {
-                return Err(LitecodeError::Config(format!(
-                    "code_search client lock: {err}"
-                )));
+            match self.client.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    let now = Instant::now();
+                    let Some(deadline) = deadline.filter(|deadline| now < *deadline) else {
+                        return Err(LitecodeError::ToolExecution(SEARCH_WORKER_BUSY.into()));
+                    };
+                    std::thread::sleep(
+                        deadline
+                            .saturating_duration_since(now)
+                            .min(SEARCH_QUEUE_POLL),
+                    );
+                }
+                Err(std::sync::TryLockError::Poisoned(err)) => {
+                    return Err(LitecodeError::Config(format!(
+                        "code_search client lock: {err}"
+                    )));
+                }
             }
         };
         let Some(client) = guard.as_mut() else {
@@ -548,12 +590,4 @@ impl Default for CodeSearchEngine {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-    
-    
-
-}
+mod tests {}

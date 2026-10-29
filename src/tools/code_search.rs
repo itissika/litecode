@@ -1,27 +1,111 @@
 use crate::context_pipeline::Context;
 use crate::engines::code_search::{
-    DEFAULT_TOP_K, IndexStatus, MAX_TOP_K, enclosing_scopes, format_breadcrumb, lines_slice,
-    resolve_index_view, syntax_ancestor_snippet,
+    DEFAULT_TOP_K, IndexStatus, MAX_TOP_K, code_tokenize, enclosing_scopes, format_breadcrumb,
+    resolve_index_view, scope_at,
 };
 use crate::engines::{
     CodeSearchCallGate, EngineState, RetrievalCorpus, RetrievalFilters, RetrievalHit,
     RetrievalModality, RetrievalQuery, WorkspaceEngines,
 };
 use crate::tool::Tool;
-use crate::types::ToolCallResult;
+use crate::tool::outcome::ToolOutcome;
+use crate::types::{ToolCallResult, ToolErrorKind};
+use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 
-/// Same budget as grep `content`: one response must leave room to reason.
-const CODE_SEARCH_TOKEN_BUDGET: usize = 6_000;
-/// Max lines shown from an indexed chunk when AST ancestor is unavailable (Expanded).
-const EXPANDED_CHUNK_LINES: u32 = 12;
-/// Max lines shown from an indexed chunk in the compact view.
-const CONTEXT_CHUNK_LINES: u32 = 6;
+const DEFAULT_MIN_SCORE: f64 = 0.80;
+/// Hard cap for one hit's source excerpt. No caller-controlled override exists.
+const SNIPPET_MAX_LINES: u32 = 24;
+/// Guard against minified/generated lines blowing up one snippet.
+const SNIPPET_MAX_LINE_CHARS: usize = 500;
+
+const STATUS_OK: &str = "ok";
+const STATUS_OFF: &str = "off";
+const STATUS_WARMING: &str = "warming";
+const STATUS_FAILED: &str = "failed";
+const STATUS_BUSY: &str = "busy";
+
+const ENGINE_OFF_MESSAGE: &str = "Code search engine is off. Enable it in Settings.";
+const WARMING_MESSAGE: &str = "Code search engine is warming; no results yet.";
+const BUSY_MESSAGE: &str = "Code search is busy; try again shortly.";
 
 pub struct CodeSearchTool {
     engines: WorkspaceEngines,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct CodeSearchData {
+    ok: bool,
+    status: String,
+    hits: Vec<CodeSearchHit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct CodeSearchHit {
+    path: String,
+    anchor_line: u32,
+    start_line: u32,
+    end_line: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    symbol: Option<String>,
+    snippet: String,
+}
+
+impl CodeSearchData {
+    fn soft(status: &str, message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            status: status.to_string(),
+            hits: Vec::new(),
+            message: Some(message.into()),
+        }
+    }
+
+    fn success(hits: Vec<CodeSearchHit>, message: Option<String>) -> Self {
+        Self {
+            ok: true,
+            status: STATUS_OK.to_string(),
+            hits,
+            message,
+        }
+    }
+}
+
+fn data_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Code-search outcome. Off/warming/failed/busy resolve with ok=false so the program can branch.",
+        "properties": {
+            "ok": { "type": "boolean" },
+            "status": {
+                "type": "string",
+                "enum": [STATUS_OK, STATUS_OFF, STATUS_WARMING, STATUS_FAILED, STATUS_BUSY]
+            },
+            "hits": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "path": { "type": "string" },
+                        "anchor_line": { "type": "integer", "minimum": 1 },
+                        "start_line": { "type": "integer", "minimum": 1 },
+                        "end_line": { "type": "integer", "minimum": 1 },
+                        "symbol": { "type": "string" },
+                        "snippet": { "type": "string", "description": "Source excerpt, at most 24 lines; overlong lines are capped." }
+                    },
+                    "required": ["path", "anchor_line", "start_line", "end_line", "snippet"]
+                }
+            },
+            "message": { "type": "string" }
+        },
+        "required": ["ok", "status", "hits"]
+    })
 }
 
 impl CodeSearchTool {
@@ -30,10 +114,8 @@ impl CodeSearchTool {
     }
 
     /// Start update/rebuild when the disk plan says work is due. Returns true
-    /// when this call kicked off consume. Never waits on the worker: an embed
-    /// holds the client lock, and `worker_alive` takes that lock.
+    /// when this call kicked off consume. Never waits on the worker.
     fn maybe_consume_index(&self) -> bool {
-        // `worker_pid` is an atomic. `worker_alive` blocks on the client lock.
         if self.engines.is_refresh_busy() || self.engines.code_search().worker_pid().is_none() {
             return false;
         }
@@ -49,374 +131,26 @@ impl CodeSearchTool {
             _ => self.engines.consume_code_index_work().is_ok(),
         }
     }
-}
 
-impl Tool for CodeSearchTool {
-    fn name(&self) -> &str {
-        "code_search"
+    fn present(data: CodeSearchData, content: String) -> ToolCallResult {
+        ToolOutcome::ok(data).into_call_result(content)
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Natural language or keyword query to find relevant code"
-                },
-                "include_pattern": {
-                    "type": "string",
-                    "description": "Optional glob filter for file paths (e.g. '**/*.rs', '**/*.{ts,tsx}')"
-                },
-                "top_k": {
-                    "type": "integer",
-                    "description": format!("Number of results to return (default {DEFAULT_TOP_K}, max {MAX_TOP_K})")
-                }
-            },
-            "required": ["query"]
-        })
-    }
-
-    fn is_concurrency_safe(&self, _input: &Value) -> bool {
-        true
-    }
-
-    fn call_inner(&self, input: Value) -> ToolCallResult {
-        let query = match crate::tool::require_nonempty_string_trimmed(&input, "query") {
-            Ok(q) => q,
-            Err(e) => return ToolCallResult::error(e),
-        };
-
-        let glob = input["include_pattern"].as_str().filter(|s| !s.is_empty());
-        let top_k = input["top_k"]
-            .as_u64()
-            .map(|k| k as usize)
-            .unwrap_or(DEFAULT_TOP_K)
-            .clamp(1, MAX_TOP_K);
-
-        // WP-148: visibility is bind-only; runtime state lands here as an ok result.
-        if let Some(result) = self.not_ready_result() {
-            return result;
-        }
-
-        // Kick index work if due, but never block the turn waiting for it.
-        let _ = self.maybe_consume_index();
-
-        let sync = crate::tools::sync_pct_for_workspace(&self.engines, None);
-        #[cfg(test)]
-        SEARCH_CALLS.with(|c| c.set(c.get() + 1));
-        match self.engines.search(RetrievalQuery {
-            query: query.to_string(),
-            corpus: RetrievalCorpus::Code,
-            modality: RetrievalModality::Semantic,
-            filters: RetrievalFilters {
-                glob: glob.map(str::to_string),
-                ..Default::default()
-            },
-            top_k,
-            workspace_root: None,
-            offset: 0,
-        }) {
-            Ok(hits) => {
-                if hits.is_empty() {
-                    let scope = glob
-                        .map(|p| format!(" for include_pattern '{p}'"))
-                        .unwrap_or_default();
-                    return ToolCallResult::ok(crate::tools::prepend_sync_pct(
-                        sync.as_ref(),
-                        &format!("No matching code chunks found{scope}."),
-                    ));
-                }
-                let root = self.engines.code_search().workspace_root();
-                ToolCallResult::ok(crate::tools::prepend_sync_pct(
-                    sync.as_ref(),
-                    &format_code_search_hits(root.as_deref(), &hits, CODE_SEARCH_TOKEN_BUDGET),
-                ))
-            }
-            Err(e) if crate::engines::is_search_worker_busy(&e) => warming_result(sync.as_ref()),
-            Err(e) => ToolCallResult::error(e.to_string()),
-        }
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/code_search.md"))
-    }
-
-    fn timeout(&self) -> Option<std::time::Duration> {
-        Some(std::time::Duration::from_secs(30))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CodeSearchView {
-    Expanded,
-    Context,
-}
-
-impl CodeSearchView {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Expanded => "expanded",
-            Self::Context => "context",
-        }
-    }
-
-    fn chunk_cap(self) -> u32 {
-        match self {
-            Self::Expanded => EXPANDED_CHUNK_LINES,
-            Self::Context => CONTEXT_CHUNK_LINES,
-        }
-    }
-}
-
-struct CodeHitRef<'a> {
-    path: &'a str,
-    start_line: u32,
-    end_line: u32,
-    summary: &'a str,
-}
-
-fn code_hits(hits: &[RetrievalHit]) -> Vec<CodeHitRef<'_>> {
-    hits.iter()
-        .filter_map(|h| match h {
-            RetrievalHit::Code {
-                path,
-                start_line,
-                end_line,
-                summary,
-                score: _,
-            } => Some(CodeHitRef {
-                path,
-                start_line: *start_line,
-                end_line: *end_line,
-                summary,
-            }),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Grep `content`-style evidence for ranked semantic hits. No extra knobs.
-fn format_code_search_hits(
-    root: Option<&Path>,
-    hits: &[RetrievalHit],
-    token_budget: usize,
-) -> String {
-    let hits = code_hits(hits);
-    if hits.is_empty() {
-        return "No matching code chunks found.".into();
-    }
-    let view = select_code_search_view(root, &hits, token_budget);
-    if page_fits(root, &hits, view, token_budget) {
-        return wrap_code_search_page(
-            &format_snippet_body(root, &hits, view),
-            hits.len(),
-            hits.len(),
-            view,
-        );
-    }
-
-    let mut low = 0usize;
-    let mut high = hits.len();
-    while low < high {
-        let mid = low + (high - low).div_ceil(2);
-        let output = wrap_code_search_page(
-            &format_snippet_body(root, &hits[..mid], CodeSearchView::Context),
-            mid,
-            hits.len(),
-            CodeSearchView::Context,
-        );
-        if crate::session::count_text_tokens(&output) <= token_budget {
-            low = mid;
-        } else {
-            high = mid.saturating_sub(1);
-        }
-    }
-    let shown = low.max(1);
-    wrap_code_search_page(
-        &format_snippet_body(root, &hits[..shown], CodeSearchView::Context),
-        shown,
-        hits.len(),
-        CodeSearchView::Context,
-    )
-}
-
-fn select_code_search_view(
-    root: Option<&Path>,
-    hits: &[CodeHitRef<'_>],
-    token_budget: usize,
-) -> CodeSearchView {
-    for view in [CodeSearchView::Expanded, CodeSearchView::Context] {
-        if page_fits(root, hits, view, token_budget) {
-            return view;
-        }
-    }
-    CodeSearchView::Context
-}
-
-fn page_fits(
-    root: Option<&Path>,
-    hits: &[CodeHitRef<'_>],
-    view: CodeSearchView,
-    token_budget: usize,
-) -> bool {
-    let output = wrap_code_search_page(
-        &format_snippet_body(root, hits, view),
-        hits.len(),
-        hits.len(),
-        view,
-    );
-    crate::session::count_text_tokens(&output) <= token_budget
-}
-
-fn wrap_code_search_page(body: &str, shown: usize, total: usize, view: CodeSearchView) -> String {
-    if shown < total {
-        format!(
-            "Showing {shown} of {total} chunks (view: {}):\n{body}",
-            view.label()
-        )
-    } else {
-        format!("Found {shown} chunks (view: {}):\n{body}", view.label())
-    }
-}
-
-fn format_snippet_body(
-    root: Option<&Path>,
-    hits: &[CodeHitRef<'_>],
-    view: CodeSearchView,
-) -> String {
-    let mut file_order: Vec<&str> = Vec::new();
-    let mut by_file: HashMap<&str, Vec<&CodeHitRef<'_>>> = HashMap::new();
-    for hit in hits {
-        if !by_file.contains_key(hit.path) {
-            file_order.push(hit.path);
-        }
-        by_file.entry(hit.path).or_default().push(hit);
-    }
-
-    let mut file_sources: HashMap<&str, Option<String>> = HashMap::new();
-    let mut body = String::new();
-    for path in file_order {
-        let Some(file_hits) = by_file.get(path) else {
-            continue;
-        };
-        body.push_str(&format!("\n## Matches in {path}\n"));
-        let source = file_sources
-            .entry(path)
-            .or_insert_with(|| root.and_then(|root| std::fs::read_to_string(root.join(path)).ok()))
-            .as_deref();
-        for hit in file_hits {
-            let snippet = snippet_for_hit(path, source, hit, view);
-            let line_label = crate::tool::format_line_label(snippet.start_line, snippet.end_line);
-            let heading = match (view == CodeSearchView::Expanded)
-                .then(|| {
-                    source.and_then(|src| {
-                        format_breadcrumb(&enclosing_scopes(path, src, snippet.hit_line))
-                    })
-                })
-                .flatten()
-            {
-                Some(crumb) => format!("\n### {crumb} › {line_label}"),
-                None => format!("\n### {line_label}"),
-            };
-            body.push_str(&heading);
-            body.push('\n');
-            body.push_str(&crate::tool::snippet::fence_block(&snippet.text));
-            if snippet.remaining_lines > 0 {
-                let reason = if snippet.from_ancestor {
-                    "ancestor node"
-                } else {
-                    "this chunk"
-                };
-                body.push_str(&format!(
-                    "\n{} lines remaining in {reason}.\n",
-                    snippet.remaining_lines
-                ));
-            }
-        }
-    }
-    body
-}
-
-struct SnippetRange {
-    start_line: u32,
-    end_line: u32,
-    hit_line: u32,
-    text: String,
-    remaining_lines: u32,
-    from_ancestor: bool,
-}
-
-fn snippet_for_hit(
-    path: &str,
-    source: Option<&str>,
-    hit: &CodeHitRef<'_>,
-    view: CodeSearchView,
-) -> SnippetRange {
-    let chunk_end = hit.end_line.max(hit.start_line);
-    // Prefer a line inside the chunk so breadcrumbs/ancestors resolve like grep
-    // (signature-only start lines often sit on the node boundary).
-    let focal = hit.start_line.saturating_add(1).min(chunk_end);
-    if view == CodeSearchView::Expanded
-        && let Some(src) = source
-        && let Some(ancestor) = syntax_ancestor_snippet(path, src, focal, focal)
-    {
-        return SnippetRange {
-            start_line: ancestor.start_line,
-            end_line: ancestor.end_line,
-            hit_line: focal,
-            text: lines_slice(src, ancestor.start_line, ancestor.end_line),
-            remaining_lines: ancestor.remaining_lines,
-            from_ancestor: true,
-        };
-    }
-
-    if let Some(src) = source {
-        let line_count = src.lines().count() as u32;
-        let start = hit.start_line.max(1);
-        let cap_end = start.saturating_add(view.chunk_cap().saturating_sub(1));
-        let end = cap_end.min(chunk_end).min(line_count.max(1));
-        return SnippetRange {
-            start_line: start,
-            end_line: end,
-            hit_line: focal,
-            text: lines_slice(src, start, end),
-            remaining_lines: chunk_end.saturating_sub(end),
-            from_ancestor: false,
-        };
-    }
-
-    SnippetRange {
-        start_line: hit.start_line,
-        end_line: chunk_end,
-        hit_line: focal,
-        text: hit.summary.to_string(),
-        remaining_lines: 0,
-        from_ancestor: false,
-    }
-}
-
-const ENGINE_OFF_BODY: &str = "代码引擎未开启，无结果。可在设置中开启代码检索引擎。";
-const WARMING_BODY: &str = "引擎预热中，暂无结果，请稍后重试。";
-
-#[cfg(test)]
-thread_local! {
-    /// Test-only: counts real retrieval calls issued by `call_inner`.
-    static SEARCH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-impl CodeSearchTool {
-    /// Contract v1 §C, decision order: engine off → failed → warming → (None = ready).
     fn not_ready_result(&self) -> Option<ToolCallResult> {
         use crate::tools::{SyncLineLabel, format_sync_pct_line_labeled};
+
         let root = self.engines.code_search().workspace_root();
-        let desired = root
-            .as_deref()
-            .is_some_and(|r| crate::config::workspace::workspace_engine_desired(r, "code_search"));
+        let desired = root.as_deref().is_some_and(|root| {
+            crate::config::workspace::workspace_engine_desired(root, "code_search")
+        });
         if !desired {
             let line = format_sync_pct_line_labeled(None, Some(SyncLineLabel::EngineOff));
-            return Some(ToolCallResult::ok(format!("{line}\n{ENGINE_OFF_BODY}")));
+            return Some(Self::present(
+                CodeSearchData::soft(STATUS_OFF, ENGINE_OFF_MESSAGE),
+                format!("{line}\n{ENGINE_OFF_MESSAGE}"),
+            ));
         }
+
         let sync = crate::tools::sync_pct_for_workspace(&self.engines, root.as_deref());
         let gate = self.engines.code_search_call_gate();
         let failed_detail = match (&gate, self.engines.state("code_search")) {
@@ -429,39 +163,589 @@ impl CodeSearchTool {
             _ => None,
         };
         if let Some(detail) = failed_detail {
+            let clean = detail.split_whitespace().collect::<Vec<_>>().join(" ");
             let line =
-                format_sync_pct_line_labeled(sync.as_ref(), Some(SyncLineLabel::Failed(&detail)));
-            let body = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-            return Some(ToolCallResult::ok(format!("{line}\n代码引擎失败：{body}")));
+                format_sync_pct_line_labeled(sync.as_ref(), Some(SyncLineLabel::Failed(&clean)));
+            return Some(Self::present(
+                CodeSearchData::soft(STATUS_FAILED, clean.clone()),
+                format!("{line}\n{clean}"),
+            ));
         }
+
         let searchable = matches!(self.engines.state("code_search"), Some(EngineState::Warm))
             && matches!(gate, CodeSearchCallGate::Ready);
         if !searchable {
-            return Some(warming_result(sync.as_ref()));
+            let line = format_sync_pct_line_labeled(sync.as_ref(), Some(SyncLineLabel::Warming));
+            return Some(Self::present(
+                CodeSearchData::soft(STATUS_WARMING, WARMING_MESSAGE),
+                format!("{line}\n{WARMING_MESSAGE}"),
+            ));
         }
+
         None
+    }
+
+    fn search_from_input(
+        &self,
+        input: Value,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+    ) -> ToolCallResult {
+        let query = match crate::tool::require_nonempty_string_trimmed(&input, "query") {
+            Ok(query) => query,
+            Err(error) => {
+                return ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, error, false)
+                    .with_error_code("invalid_input");
+            }
+        };
+        let glob = input["include_pattern"]
+            .as_str()
+            .filter(|glob| !glob.is_empty());
+        let top_k = input["top_k"]
+            .as_u64()
+            .map(|top_k| top_k as usize)
+            .unwrap_or(DEFAULT_TOP_K)
+            .clamp(1, MAX_TOP_K);
+        let min_score = match parse_min_score(&input) {
+            Ok(min_score) => min_score,
+            Err(error) => {
+                return ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, error, false)
+                    .with_error_code("invalid_input");
+            }
+        };
+
+        if let Some(result) = self.not_ready_result() {
+            return result;
+        }
+
+        let _ = self.maybe_consume_index();
+        let sync = crate::tools::sync_pct_for_workspace(&self.engines, None);
+
+        #[cfg(test)]
+        SEARCH_CALLS.with(|calls| calls.set(calls.get() + 1));
+
+        let request = RetrievalQuery {
+            query: query.to_string(),
+            corpus: RetrievalCorpus::Code,
+            modality: RetrievalModality::Semantic,
+            filters: RetrievalFilters {
+                glob: glob.map(str::to_string),
+                ..Default::default()
+            },
+            top_k,
+            min_score,
+            offset: 0,
+            workspace_root: None,
+        };
+        let result = match cancel {
+            Some(cancel) => self.engines.search_with_cancel(request, Some(cancel)),
+            None => self.engines.search(request),
+        };
+
+        match result {
+            Ok(hits) => {
+                let root = self.engines.code_search().workspace_root();
+                let hits: Vec<CodeSearchHit> = hits
+                    .iter()
+                    .filter_map(|hit| code_hit(root.as_deref(), query, hit))
+                    .collect();
+                let message = hits.is_empty().then(|| {
+                    let scope = glob
+                        .map(|pattern| format!(" for include_pattern '{pattern}'"))
+                        .unwrap_or_default();
+                    format!("No matching code chunks found{scope}.")
+                });
+                let data = CodeSearchData::success(hits, message);
+                Self::present(data, Self::success_progress_content(sync.as_ref()))
+            }
+            Err(_error) if cancel.is_some_and(|token| token.is_cancelled()) => {
+                ToolCallResult::error_with_kind(
+                    ToolErrorKind::Cancelled,
+                    crate::engines::SEARCH_CANCELLED,
+                    false,
+                )
+                .with_error_code("cancelled")
+            }
+            Err(error) if crate::engines::is_search_worker_busy(&error) => {
+                let data = CodeSearchData::soft(STATUS_BUSY, BUSY_MESSAGE);
+                Self::present(
+                    data,
+                    Self::soft_progress_content(sync.as_ref(), BUSY_MESSAGE),
+                )
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let data = CodeSearchData::soft(STATUS_FAILED, message.clone());
+                Self::present(data, Self::soft_progress_content(sync.as_ref(), &message))
+            }
+        }
+    }
+
+    fn success_progress_content(sync: Option<&crate::engines::progress::CorpusProgress>) -> String {
+        unfinished_sync_line(sync).unwrap_or_default()
+    }
+
+    fn soft_progress_content(
+        sync: Option<&crate::engines::progress::CorpusProgress>,
+        message: &str,
+    ) -> String {
+        let line = crate::tools::format_sync_pct_line(sync);
+        format!("{line}\n{message}")
     }
 }
 
-fn warming_result(sync: Option<&crate::engines::progress::CorpusProgress>) -> ToolCallResult {
-    use crate::tools::{SyncLineLabel, format_sync_pct_line_labeled};
-    let line = format_sync_pct_line_labeled(sync, Some(SyncLineLabel::Warming));
-    ToolCallResult::ok(format!("{line}\n{WARMING_BODY}"))
+impl Tool for CodeSearchTool {
+    fn name(&self) -> &str {
+        "code_search"
+    }
+
+    fn surface(&self) -> crate::tool::ToolSurface {
+        crate::tool::ToolSurface::Code
+    }
+
+    fn schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "One natural-language or code-token query."
+                },
+                "include_pattern": {
+                    "type": "string",
+                    "description": "Optional glob filter for workspace paths."
+                },
+                "top_k": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_TOP_K,
+                    "description": format!("Maximum hits. Default {DEFAULT_TOP_K}, maximum {MAX_TOP_K}.")
+                },
+                "min_score": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": "Minimum raw dense cosine similarity. Default 0.80; 0 disables the floor."
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
+    fn data_schema(&self) -> Option<Value> {
+        Some(data_schema())
+    }
+
+    fn is_concurrency_safe(&self, _input: &Value) -> bool {
+        true
+    }
+
+    /// The worker client lock is held across refresh/embed and the underlying
+    /// search is blocking. Queue in a cancellable blocking task so neither the
+    /// async runtime nor a cancelled run_code turn is stalled.
+    fn execute(
+        &self,
+        input: Value,
+        execution: crate::tool::trait_::ToolExecutionContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        let tool = CodeSearchTool::new(self.engines.clone());
+        let cancel = execution.cancel.clone();
+        Box::pin(async move {
+            let join =
+                tokio::task::spawn_blocking(move || tool.search_from_input(input, Some(&cancel)));
+            match join.await {
+                Ok(result) => result,
+                Err(error) => ToolCallResult::error_with_kind(
+                    ToolErrorKind::Internal,
+                    format!("code_search worker failed: {error}"),
+                    false,
+                )
+                .with_error_code("internal"),
+            }
+        })
+    }
+
+    fn call_inner(&self, input: Value) -> ToolCallResult {
+        // Test/synchronous helper: no caller token, so do not queue behind a
+        // refresh. Production always enters through `execute`.
+        self.search_from_input(input, None)
+    }
+
+    fn description(&self, _ctx: &Context) -> String {
+        crate::tools::description_text(include_str!("descriptions/code_search.md"))
+    }
+
+    fn timeout(&self) -> Option<std::time::Duration> {
+        // A queued search can legitimately outlive 30s. The enclosing run_code
+        // budget owns the deadline and cancels this cancellable tool.
+        None
+    }
+
+    fn is_cancellable(&self) -> bool {
+        true
+    }
+}
+
+fn parse_min_score(input: &Value) -> Result<Option<f64>, String> {
+    let Some(value) = input.get("min_score").filter(|value| !value.is_null()) else {
+        return Ok(Some(DEFAULT_MIN_SCORE));
+    };
+    let Some(score) = value.as_f64() else {
+        return Err("min_score must be a number between 0 and 1".into());
+    };
+    if !(0.0..=1.0).contains(&score) {
+        return Err("min_score must be between 0 and 1".into());
+    }
+    Ok((score > 0.0).then_some(score))
+}
+
+fn unfinished_sync_line(sync: Option<&crate::engines::progress::CorpusProgress>) -> Option<String> {
+    if sync.and_then(crate::engines::progress::CorpusProgress::percent) == Some(100) {
+        None
+    } else {
+        Some(crate::tools::format_sync_pct_line(sync))
+    }
+}
+
+fn code_hit(root: Option<&Path>, query: &str, hit: &RetrievalHit) -> Option<CodeSearchHit> {
+    let RetrievalHit::Code {
+        path,
+        start_line,
+        end_line,
+        summary,
+        ..
+    } = hit
+    else {
+        return None;
+    };
+    let source = root.and_then(|root| std::fs::read_to_string(root.join(path)).ok());
+    Some(result_for_source(
+        path,
+        source.as_deref(),
+        query,
+        *start_line,
+        *end_line,
+        summary,
+    ))
+}
+
+fn result_for_source(
+    path: &str,
+    source: Option<&str>,
+    query: &str,
+    chunk_start: u32,
+    chunk_end: u32,
+    summary: &str,
+) -> CodeSearchHit {
+    let Some(source) = source else {
+        return CodeSearchHit {
+            path: path.to_string(),
+            anchor_line: chunk_start.max(1),
+            start_line: chunk_start.max(1),
+            end_line: chunk_end.max(chunk_start).max(1),
+            symbol: None,
+            snippet: summary.to_string(),
+        };
+    };
+    let line_count = source.lines().count() as u32;
+    if line_count == 0 {
+        return CodeSearchHit {
+            path: path.to_string(),
+            anchor_line: chunk_start.max(1),
+            start_line: chunk_start.max(1),
+            end_line: chunk_end.max(chunk_start).max(1),
+            symbol: None,
+            snippet: summary.to_string(),
+        };
+    }
+    let chunk_start = chunk_start.clamp(1, line_count);
+    let chunk_end = chunk_end.max(chunk_start).min(line_count);
+
+    let terms = query_terms_without_noise(query);
+    let identifiers = code_tokenize::extract_identifiers(query);
+    let term_anchor = best_query_anchor(source, chunk_start, chunk_end, &terms, &identifiers);
+
+    let anchor_line = if let Some((line, _)) = term_anchor {
+        line
+    } else {
+        let probe = first_informative_non_symbol_line(source, chunk_start, chunk_end)
+            .unwrap_or(chunk_start);
+        scope_at(path, source, probe, probe)
+            .map(|scope| scope.start_line.clamp(chunk_start, chunk_end))
+            .unwrap_or(probe)
+    };
+
+    let scope = scope_at(path, source, anchor_line, anchor_line);
+    let symbol = scope
+        .as_ref()
+        .map(|scope| scope.chain.clone())
+        .or_else(|| format_breadcrumb(&enclosing_scopes(path, source, anchor_line)));
+
+    let (start_line, end_line) = if let Some(scope) = scope.as_ref() {
+        let scope_start = scope.start_line.max(1).min(line_count);
+        let scope_end = scope.end_line.max(scope_start).min(line_count);
+        if scope_end.saturating_sub(scope_start) < SNIPPET_MAX_LINES {
+            (scope_start, scope_end)
+        } else {
+            window_within(anchor_line, SNIPPET_MAX_LINES, scope_start, scope_end)
+        }
+    } else {
+        window_within(anchor_line, SNIPPET_MAX_LINES, 1, line_count)
+    };
+
+    let snippet = bounded_snippet(source, start_line, end_line);
+    let snippet = if snippet.is_empty() {
+        summary.to_string()
+    } else {
+        snippet
+    };
+    CodeSearchHit {
+        path: path.to_string(),
+        anchor_line: anchor_line.clamp(1, line_count),
+        start_line,
+        end_line,
+        symbol,
+        snippet,
+    }
+}
+
+fn bounded_snippet(source: &str, start_line: u32, end_line: u32) -> String {
+    let mut out = String::new();
+    for (index, line) in source.lines().enumerate() {
+        let line_no = index as u32 + 1;
+        if line_no < start_line || line_no > end_line {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        let mut chars = line.chars();
+        let kept: String = chars.by_ref().take(SNIPPET_MAX_LINE_CHARS).collect();
+        out.push_str(&kept);
+        if chars.next().is_some() {
+            out.push_str("...");
+        }
+    }
+    out
+}
+
+fn window_within(anchor: u32, max_lines: u32, low: u32, high: u32) -> (u32, u32) {
+    let low = low.max(1).min(high.max(1));
+    let high = high.max(low);
+    let max_lines = max_lines.max(1).min(high - low + 1);
+    let before = max_lines.saturating_sub(1) / 2;
+    let start = anchor.saturating_sub(before).clamp(low, high);
+    let end = start.saturating_add(max_lines - 1).min(high);
+    let start = end.saturating_sub(max_lines - 1).max(low);
+    (start, end)
+}
+
+fn query_terms_without_noise(query: &str) -> Vec<String> {
+    code_tokenize::query_terms(query)
+        .into_iter()
+        .filter(|term| !is_query_noise(term))
+        .collect()
+}
+
+fn is_query_noise(term: &str) -> bool {
+    matches!(
+        term,
+        "a" | "an"
+            | "and"
+            | "are"
+            | "as"
+            | "at"
+            | "be"
+            | "by"
+            | "code"
+            | "do"
+            | "does"
+            | "find"
+            | "for"
+            | "from"
+            | "how"
+            | "in"
+            | "is"
+            | "it"
+            | "of"
+            | "on"
+            | "or"
+            | "that"
+            | "the"
+            | "this"
+            | "to"
+            | "where"
+            | "which"
+            | "with"
+            | "work"
+            | "works"
+    )
+}
+
+fn best_query_anchor(
+    source: &str,
+    chunk_start: u32,
+    chunk_end: u32,
+    terms: &[String],
+    identifiers: &[String],
+) -> Option<(u32, u32)> {
+    if terms.is_empty() && identifiers.is_empty() {
+        return None;
+    }
+    let mut best: Option<(u32, u32)> = None;
+    for (index, line) in source.lines().enumerate() {
+        let line_no = index as u32 + 1;
+        if line_no < chunk_start || line_no > chunk_end || !is_informative_line(line) {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        let line_terms: HashSet<String> = code_tokenize::query_terms(line).into_iter().collect();
+        let mut score = 0u32;
+        for term in terms {
+            if line_terms.contains(term) {
+                score = score.saturating_add(2);
+            } else if term.len() >= 4 && lower.contains(term) {
+                score = score.saturating_add(1);
+            }
+        }
+        for identifier in identifiers {
+            if line_terms.contains(identifier) || lower.contains(identifier) {
+                score = score.saturating_add(8);
+            }
+        }
+        if is_comment_line(line) {
+            score /= 2;
+        }
+        if score > 0 && best.is_none_or(|(_, best_score)| score > best_score) {
+            best = Some((line_no, score));
+        }
+    }
+    best
+}
+
+fn first_informative_non_symbol_line(source: &str, start: u32, end: u32) -> Option<u32> {
+    let mut first_informative = None;
+    let mut first_comment = None;
+    for (index, line) in source.lines().enumerate() {
+        let line_no = index as u32 + 1;
+        if line_no < start || line_no > end || !is_informative_line(line) {
+            continue;
+        }
+        first_informative.get_or_insert(line_no);
+        if is_comment_line(line) {
+            first_comment.get_or_insert(line_no);
+            continue;
+        }
+        if !is_symbol_line(line) {
+            return Some(line_no);
+        }
+    }
+    first_comment.or(first_informative)
+}
+
+fn is_informative_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_punctuation() || ch.is_whitespace())
+}
+
+fn is_comment_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("//")
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with('*')
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("--")
+}
+
+fn is_symbol_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let mut words = trimmed.split_whitespace();
+    let Some(mut first) = words.next() else {
+        return false;
+    };
+    // Strip leading visibility / modifiers.
+    while matches!(
+        first,
+        "pub"
+            | "pub(crate)"
+            | "public"
+            | "private"
+            | "protected"
+            | "async"
+            | "static"
+            | "export"
+            | "unsafe"
+            | "const"
+    ) {
+        let Some(next) = words.next() else {
+            return false;
+        };
+        first = next;
+    }
+    matches!(
+        first,
+        "fn" | "def"
+            | "function"
+            | "class"
+            | "struct"
+            | "enum"
+            | "trait"
+            | "impl"
+            | "interface"
+            | "namespace"
+            | "module"
+            | "mod"
+            | "type"
+            | "record"
+            | "union"
+            | "macro"
+    )
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: counts real retrieval calls issued by `search_from_input`.
+    static SEARCH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Queue `n` modified (non-deleted) files via the engines queue record (WP-134).
     fn write_queue(root: &std::path::Path, n: usize) {
         let pending: std::collections::HashSet<(String, bool)> =
             (0..n).map(|i| (format!("src/f{i}.rs"), false)).collect();
         crate::engines::code_search::write_code_queue(root, &pending);
     }
 
+    fn ready_root(root: &Path) {
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let index_dir = crate::engines::code_search::index_dir(root);
+        std::fs::create_dir_all(&index_dir).unwrap();
+        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
+        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
+        write_queue(root, 1);
+    }
+
+    fn assert_soft(result: &ToolCallResult, status: &str) {
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        assert!(
+            result.error.is_none(),
+            "soft result must resolve: {result:?}"
+        );
+        let data = result.data.as_ref().expect("structured data");
+        assert_eq!(data["ok"], false);
+        assert_eq!(data["status"], status);
+        assert_eq!(data["hits"], serde_json::json!([]));
+    }
+
     #[test]
-    fn warming_returns_immediately_without_sleeping() {
+    fn warming_returns_immediately_with_typed_soft_result() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         crate::config::workspace::enable_code_search_engine(root).unwrap();
@@ -475,156 +759,316 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(2),
             "Warming path must not block"
         );
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
-        let first = result.content.lines().next().unwrap();
-        assert_v2(first);
-        assert!(first.contains("(warming)"), "{first}");
-        assert!(result.content.contains(WARMING_BODY), "{}", result.content);
+        assert_soft(&result, STATUS_WARMING);
+        assert!(result.content.lines().next().unwrap().contains("(warming)"));
     }
 
     #[test]
-    fn indexing_wait_message_reads_job_json() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let root = dir.path();
-        crate::config::workspace::enable_code_search_engine(root).unwrap();
-        // WP-143: first build / rebuild run as a refresh job (no Building job).
-        crate::engines::code_search::begin_refreshing(root);
-        crate::engines::code_search::update_chunk_progress(root, 4, Some(8));
+    fn off_and_failed_are_typed_soft_results() {
+        let off = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(off.path().join(".litecode")).unwrap();
+        let engines = WorkspaceEngines::new();
+        engines
+            .code_search()
+            .set_workspace(off.path().to_path_buf());
+        let result = CodeSearchTool::new(engines).call_inner(serde_json::json!({ "query": "q" }));
+        assert_soft(&result, STATUS_OFF);
 
+        let failed = tempfile::TempDir::new().unwrap();
+        let root = failed.path();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        crate::engines::code_search::mark_index_job_failed(root, "embed exploded");
         let engines = WorkspaceEngines::new();
         engines.code_search().set_workspace(root.to_path_buf());
-        engines.set_state_for_test("code_search", EngineState::Warming);
-
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        let before = search_calls();
         let result = CodeSearchTool::new(engines).call_inner(serde_json::json!({ "query": "q" }));
-        let first = result.content.lines().next().unwrap().to_string();
-        assert_v2(&first);
-        // sync_pct contract v2: the exact chunk counts ride the warming line.
-        assert!(first.ends_with("% (warming) chunks 4/8"), "{first}");
+        assert_eq!(search_calls(), before, "failed must not search");
+        assert_soft(&result, STATUS_FAILED);
         assert!(
-            !result.content.contains("No matching code"),
-            "must not fake hits while warming: {}",
-            result.content
+            result.data.unwrap()["message"]
+                .as_str()
+                .unwrap()
+                .contains("embed exploded")
         );
     }
 
     #[test]
-    fn warm_failed_index_job_returns_error_not_hits() {
+    fn query_anchor_uses_relevant_source_line_and_ast_symbol() {
+        let mut source = String::from("pub fn outer() {\n");
+        for i in 0..40 {
+            source.push_str(&format!("    let filler_{i} = {i};\n"));
+        }
+        source.push_str("    let auth_token = compute_auth_token();\n");
+        source.push_str("    consume(auth_token);\n}\n");
+        let hit = result_for_source(
+            "src/auth.rs",
+            Some(&source),
+            "compute_auth_token",
+            1,
+            44,
+            "pub fn outer() {",
+        );
+        assert_eq!(hit.anchor_line, 42);
+        assert!(hit.snippet.contains("compute_auth_token"), "{hit:?}");
+        assert!((hit.end_line - hit.start_line + 1) <= SNIPPET_MAX_LINES);
+        assert!(hit.start_line <= hit.anchor_line && hit.anchor_line <= hit.end_line);
+        assert!(
+            hit.symbol
+                .as_deref()
+                .unwrap_or_default()
+                .contains("fn outer")
+        );
+    }
+
+    #[test]
+    fn long_ast_scope_is_centered_on_the_relevant_anchor_and_capped() {
+        let mut source = String::from("pub fn wide() {\n");
+        for i in 0..80 {
+            source.push_str(&format!("    let filler_{i} = {i};\n"));
+        }
+        source.push_str("    let requested_anchor = auth_middleware();\n");
+        source.push_str("}\n");
+        let hit = result_for_source(
+            "src/wide.rs",
+            Some(&source),
+            "auth_middleware",
+            1,
+            83,
+            "pub fn wide() {",
+        );
+        assert_eq!(hit.anchor_line, 82);
+        assert!((hit.end_line - hit.start_line + 1) <= SNIPPET_MAX_LINES);
+        assert!(hit.start_line <= hit.anchor_line && hit.anchor_line <= hit.end_line);
+        assert!(hit.snippet.contains("auth_middleware"));
+        assert!(!hit.snippet.starts_with("pub fn wide() {"));
+    }
+
+    #[test]
+    fn short_ast_scope_is_emitted_complete() {
+        let mut source = String::new();
+        for _ in 0..20 {
+            source.push_str("// preface\n");
+        }
+        source.push_str("fn short_scope() {\n    let needle = 1;\n    needle + 1\n}\n");
+        source.push_str("fn other() {\n    let other_needle = 2;\n    other_needle\n}\n");
+        let hit = result_for_source(
+            "src/short.rs",
+            Some(&source),
+            "needle",
+            1,
+            25,
+            "fn short_scope() {",
+        );
+        assert_eq!(hit.anchor_line, 22);
+        assert_eq!((hit.start_line, hit.end_line), (21, 24));
+        assert_eq!(hit.symbol.as_deref(), Some("fn short_scope"));
+        assert!(hit.snippet.starts_with("fn short_scope()"));
+    }
+
+    #[test]
+    fn overlong_source_lines_are_capped_without_losing_the_anchor() {
+        let source = format!("needle {}\n", "x".repeat(2_000));
+        let hit = result_for_source("src/long.rs", Some(&source), "needle", 1, 1, "");
+        assert!(hit.snippet.starts_with("needle "));
+        assert!(hit.snippet.ends_with("..."));
+        assert!(hit.snippet.chars().count() <= SNIPPET_MAX_LINE_CHARS + 3);
+    }
+
+    #[test]
+    fn missing_source_falls_back_to_summary_and_never_uses_first_line_as_snippet() {
+        let hit = result_for_source("gone.rs", None, "target", 10, 20, "summary fallback");
+        assert_eq!(hit.snippet, "summary fallback");
+        assert_eq!(hit.anchor_line, 10);
+        assert_eq!((hit.start_line, hit.end_line), (10, 20));
+    }
+
+    #[test]
+    fn no_term_and_no_ast_picks_first_informative_non_symbol_line() {
+        let source = "\n{\n// path notes\nfn declared_but_not_ast() {}\nplain informational line\n";
+        let hit = result_for_source("README.txt", Some(source), "unrelated words", 1, 5, "");
+        assert_eq!(hit.anchor_line, 5);
+        assert!(hit.snippet.contains("plain informational line"));
+        assert!(hit.symbol.is_none());
+    }
+
+    #[test]
+    fn success_at_one_hundred_percent_has_no_sync_noise() {
+        let sync = crate::engines::progress::CorpusProgress::ready(7, 0);
+        assert_eq!(super::unfinished_sync_line(Some(&sync)), None);
+        let sync = crate::engines::progress::CorpusProgress::ready(7, 1);
+        assert!(
+            super::unfinished_sync_line(Some(&sync))
+                .unwrap()
+                .starts_with("sync_pct:")
+        );
+    }
+
+    #[test]
+    fn schema_is_single_query_with_bounded_scores_and_no_paging() {
+        assert_eq!((DEFAULT_TOP_K, MAX_TOP_K), (8, 20));
+        let schema = CodeSearchTool::new(WorkspaceEngines::new()).schema();
+        let properties = schema["properties"].as_object().unwrap();
+        assert!(properties.contains_key("query"));
+        assert!(!properties.contains_key("offset"));
+        assert!(!properties.contains_key("cursor"));
+        assert!(!properties.contains_key("page"));
+        assert_eq!(properties["top_k"]["maximum"], MAX_TOP_K);
+        assert_eq!(properties["min_score"]["minimum"], 0.0);
+        assert_eq!(properties["min_score"]["maximum"], 1.0);
+        assert_eq!(parse_min_score(&serde_json::json!({})), Ok(Some(0.8)));
+        assert_eq!(
+            parse_min_score(&serde_json::json!({"min_score": 0})),
+            Ok(None)
+        );
+        assert!(parse_min_score(&serde_json::json!({"min_score": 1.1})).is_err());
+    }
+
+    #[test]
+    fn data_schema_requires_structured_soft_and_hit_shapes() {
+        let schema = data_schema();
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["ok", "status", "hits"])
+        );
+        let hit = schema["properties"]["hits"]["items"].as_object().unwrap();
+        assert_eq!(
+            hit["required"],
+            serde_json::json!(["path", "anchor_line", "start_line", "end_line", "snippet"])
+        );
+
+        let success = CodeSearchData::success(
+            vec![result_for_source(
+                "src/a.rs",
+                Some("fn a() {}\nlet needle = 1;\n"),
+                "needle",
+                1,
+                2,
+                "fn a() {}",
+            )],
+            None,
+        );
+        assert!(
+            crate::tool::schema_validate(
+                &schema,
+                &serde_json::to_value(&success).expect("serialize success")
+            )
+            .is_ok(),
+            "success data must match the generated code contract"
+        );
+        let soft = CodeSearchData::soft(STATUS_WARMING, WARMING_MESSAGE);
+        assert!(
+            crate::tool::schema_validate(
+                &schema,
+                &serde_json::to_value(&soft).expect("serialize soft")
+            )
+            .is_ok(),
+            "soft data must match the generated code contract"
+        );
+    }
+
+    #[test]
+    fn busy_worker_queue_waits_for_the_lock_then_returns_a_typed_outcome() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
-        crate::config::workspace::enable_code_search_engine(root).unwrap();
-        crate::engines::code_search::mark_index_job_failed(root, "embed exploded");
-
+        ready_root(root);
         let engines = WorkspaceEngines::new();
         engines.code_search().set_workspace(root.to_path_buf());
         engines.set_state_for_test("code_search", EngineState::Warm);
 
+        let holder_engine = engines.code_search();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let guard = holder_engine.hold_client_for_test();
+            locked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            drop(guard);
+        });
+        locked_rx.recv().unwrap();
+
         let tool = CodeSearchTool::new(engines);
-        let before = search_calls();
-        let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
-        assert_eq!(search_calls(), before, "failed must not search");
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
-        let first = result.content.lines().next().unwrap();
-        assert_v2(first);
-        assert!(first.starts_with("sync_pct: failed ("), "{first}");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let search = std::thread::spawn(move || {
+            runtime.block_on(tool.execute(
+                serde_json::json!({ "query": "auth" }),
+                crate::tool::trait_::ToolExecutionContext {
+                    path_mode: crate::workspace::ToolPathMode::All,
+                    workspace_root: dir.path().to_path_buf(),
+                    call_id: String::new(),
+                    cancel: tokio_util::sync::CancellationToken::new(),
+                    output_limit: usize::MAX,
+                    session_id: String::new(),
+                    session: None,
+                },
+            ))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        let result = search.join().unwrap();
         assert!(
-            result.content.contains("embed exploded"),
-            "{}",
-            result.content
+            started.elapsed() >= std::time::Duration::from_millis(100),
+            "the search should have queued rather than reported busy immediately"
         );
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        let data = result.data.expect("typed data");
+        assert_eq!(data["ok"], false);
+        assert_eq!(data["status"], STATUS_FAILED);
     }
 
-    const V2: &str = r"^sync_pct: (?:(\d{1,3})%|(scanning|failed|unknown))(?: \(([^()\n]+)\))?(?: chunks (\d+)\/(\d+))?$";
-
-    fn assert_v2(line: &str) {
+    #[test]
+    fn cancelled_worker_queue_wait_returns_quickly() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        ready_root(root);
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        let code_engine = engines.code_search();
+        let guard = code_engine.hold_client_for_test();
+        let tool = CodeSearchTool::new(engines.clone());
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_thread = cancel.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            cancel_thread.cancel();
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let result = runtime.block_on(tool.execute(
+            serde_json::json!({ "query": "auth" }),
+            crate::tool::trait_::ToolExecutionContext {
+                path_mode: crate::workspace::ToolPathMode::All,
+                workspace_root: root.to_path_buf(),
+                call_id: String::new(),
+                cancel,
+                output_limit: usize::MAX,
+                session_id: String::new(),
+                session: None,
+            },
+        ));
+        drop(guard);
+        canceller.join().unwrap();
         assert!(
-            regex::Regex::new(V2).unwrap().is_match(line),
-            "v2: {line:?}"
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "cancelled queue wait must not park the runtime"
+        );
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Error);
+        assert_eq!(
+            result.error.as_ref().unwrap().kind,
+            ToolErrorKind::Cancelled
         );
     }
 
     fn search_calls() -> usize {
-        SEARCH_CALLS.with(|c| c.get())
-    }
-
-    /// Ready-ish index (gate Ready when Warm) with desired=true.
-    fn ready_root(root: &Path) {
-        crate::config::workspace::enable_code_search_engine(root).unwrap();
-        let index_dir = crate::engines::code_search::index_dir(root);
-        std::fs::create_dir_all(&index_dir).unwrap();
-        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
-        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
-        write_queue(root, 1);
-    }
-
-    #[test]
-    fn not_ready_issues_no_search() {
-        let off = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(off.path().join(".litecode")).unwrap();
-        let on = tempfile::TempDir::new().unwrap();
-        crate::config::workspace::enable_code_search_engine(on.path()).unwrap();
-        for (root, state) in [
-            (off.path(), EngineState::Warm),
-            (on.path(), EngineState::Warming),
-            (on.path(), EngineState::Failed),
-        ] {
-            let e = WorkspaceEngines::new();
-            e.code_search().set_workspace(root.to_path_buf());
-            e.set_state_for_test("code_search", state);
-            let before = search_calls();
-            let r = CodeSearchTool::new(e).call_inner(serde_json::json!({ "query": "q" }));
-            assert_eq!(search_calls(), before, "{state:?} must not search");
-            assert_eq!(r.level, crate::types::ToolSignalLevel::Ok);
-            assert_eq!(r.content.lines().count(), 2, "empty result: {}", r.content);
-        }
-        // Control: ready path does issue exactly one search.
-        let ready = tempfile::TempDir::new().unwrap();
-        ready_root(ready.path());
-        let e = WorkspaceEngines::new();
-        e.code_search().set_workspace(ready.path().to_path_buf());
-        e.set_state_for_test("code_search", EngineState::Warm);
-        let before = search_calls();
-        let _ = CodeSearchTool::new(e).call_inner(serde_json::json!({ "query": "q" }));
-        assert_eq!(search_calls(), before + 1);
-    }
-
-    #[test]
-    fn warm_stale_is_searchable_without_warm_wait() {
-        // WP-057/060: Warm + Stale ⇒ gate Ready (silent refresh). Tools visibility /
-        // result-head sync% remain WP-061; this test only tracks the engine gate.
-        let dir = tempfile::TempDir::new().unwrap();
-        let root = dir.path();
-        crate::engines::code_search::init_workspace_index(root).unwrap();
-        let mut meta = crate::engines::code_search::IndexMeta::shell();
-        meta.indexed_files = 1;
-        meta.indexed_chunks = 1;
-        crate::engines::code_search::write_meta(root, &meta).unwrap();
-        let index_dir = crate::engines::code_search::index_dir(root);
-        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
-        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
-        write_queue(root, 2);
-
-        let engines = WorkspaceEngines::new();
-        engines.code_search().set_workspace(root.to_path_buf());
-        engines.set_state_for_test("code_search", EngineState::Warm);
-        assert_eq!(
-            engines.code_search_call_gate(),
-            crate::engines::CodeSearchCallGate::Ready
-        );
-        assert!(engines.is_searchable("code_search"));
-
-        let started = std::time::Instant::now();
-        let tool = CodeSearchTool::new(engines);
-        let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(2),
-            "stale Warm must not burn the 30s warm-wait budget"
-        );
-        // No live worker → search errors; must not be the old Stale-Wait warning path.
-        assert!(
-            result.level != crate::types::ToolSignalLevel::Warning
-                || !result.content.contains("Try again shortly"),
-            "must not Wait on Stale: {}",
-            result.content
-        );
+        SEARCH_CALLS.with(|calls| calls.get())
     }
 }
