@@ -162,7 +162,7 @@ fn operation_error(
             None,
             &crate::context_pipeline::ContextMeter::default(),
             &crate::context_pipeline::ContextEnvelope::default(),
-            false,
+            Default::default(),
         )
     });
     project::operation_result(

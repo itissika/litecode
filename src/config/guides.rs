@@ -21,6 +21,7 @@ pub enum GuideTopic {
     Excludes,
     Mcp,
     CustomTools,
+    Apps,
 }
 
 impl GuideTopic {
@@ -29,6 +30,7 @@ impl GuideTopic {
             Self::Excludes => "excludes",
             Self::Mcp => "mcp",
             Self::CustomTools => "custom_tools",
+            Self::Apps => "apps",
         }
     }
 
@@ -38,6 +40,7 @@ impl GuideTopic {
             "excludes" => Some(Self::Excludes),
             "mcp" => Some(Self::Mcp),
             "custom_tools" => Some(Self::CustomTools),
+            "apps" => Some(Self::Apps),
             _ => None,
         }
     }
@@ -48,6 +51,7 @@ const EDITABLE: &str = include_str!("guides/editable.md");
 const EXCLUDES: &str = include_str!("guides/excludes.md");
 const MCP: &str = include_str!("guides/mcp.md");
 const CUSTOM_TOOLS: &str = include_str!("guides/custom_tools.md");
+const APPS: &str = include_str!("guides/apps.md");
 const READONLY: &str = include_str!("guides/readonly.md");
 const QUICKREF: &str = include_str!("guides/quickref.md");
 
@@ -63,6 +67,8 @@ pub const WORKSPACE_README: &str = concat!(
     "\n---\n\n",
     include_str!("guides/custom_tools.md"),
     "\n---\n\n",
+    include_str!("guides/apps.md"),
+    "\n---\n\n",
     include_str!("guides/readonly.md"),
     "\n---\n\n",
     include_str!("guides/quickref.md"),
@@ -75,6 +81,8 @@ pub const GUIDE_INDEX: &str = concat!(
     "- `guide excludes` — path / file excludes (`.litecode/excludes.json`)\n",
     "- `guide mcp` — MCP servers (`.litecode/mcp.json`)\n",
     "- `guide custom_tools` — custom tools (`.litecode/custom_tools.json`)\n",
+    "- `guide apps` — local apps (`.litecode/apps.json`)\n",
+    "\nLive app state: `apps [id]` lists built-in and custom apps, status, URL, and last error.\n",
     "\nThese topics are also in `.litecode/README.md` \
      (product-owned, rewritten on every open).\n",
     "\nBoundaries: this tool does not write files or flip switches. \
@@ -88,6 +96,7 @@ pub fn topic(topic: GuideTopic) -> &'static str {
         GuideTopic::Excludes => EXCLUDES,
         GuideTopic::Mcp => MCP,
         GuideTopic::CustomTools => CUSTOM_TOOLS,
+        GuideTopic::Apps => APPS,
     }
 }
 
@@ -98,6 +107,7 @@ pub const FRAGMENTS: &[(&str, &str)] = &[
     ("excludes", EXCLUDES),
     ("mcp", MCP),
     ("custom_tools", CUSTOM_TOOLS),
+    ("apps", APPS),
     ("readonly", READONLY),
     ("quickref", QUICKREF),
 ];

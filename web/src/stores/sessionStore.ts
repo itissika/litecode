@@ -78,7 +78,7 @@ function sessionControlsLocked(sessionId: string): boolean {
   const slice = useTurnStore.getState().byId.get(sessionId);
   const run = slice?.runState;
   return (
-    run === "running" || run === "cancelling" || slice?.compacting === true
+    run === "running" || run === "cancelling" || slice?.manualCompacting === true
   );
 }
 

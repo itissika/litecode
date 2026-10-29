@@ -370,6 +370,82 @@ type CommandData = {
 };
 type KillData = CommandData;
 
+type MemoryDeleteInput = {
+  // Entry ids to delete (m1, m2, ...).
+  ids: Array<string>;
+};
+
+type MemoryDeleteData = {
+  ok: true;
+  // Entries after the batch.
+  count: Integer;
+  // Deleted ids.
+  deleted: Array<string>;
+  rejected: Array<{
+    // 0-based input item index.
+    index: Integer;
+    // empty_text | text_too_long | invalid_kind | invalid_id | unknown_id | limit_exceeded.
+    reason: string;
+    id?: string;
+  }>;
+};
+
+type MemoryListInput = {
+  // Optional kind filter.
+  kind?: "fact" | "preference" | "decision" | "constraint";
+  // Optional case-insensitive substring; matches entry text only. Max 100 characters.
+  query?: string;
+};
+
+type MemoryListData = {
+  ok: true;
+  // Returned (filtered) entries.
+  count: Integer;
+  // Current entries, in insertion order.
+  entries: Array<{
+    kind: "fact" | "preference" | "decision" | "constraint";
+    id: string;
+    text: string;
+    updated_at: Integer;
+  }>;
+  // Maximum entries the session can hold.
+  limit: Integer;
+  // Entries in the whole session memory.
+  total: Integer;
+  // Characters across all entry texts.
+  total_chars: Integer;
+};
+
+type MemoryUpsertInput = {
+  entries: Array<{
+    // Optional: fact, preference, decision, constraint. Defaults to fact for new entries; keeps the current kind on update.
+    kind?: string;
+    // Fact/preference/decision/constraint, trimmed. 1-200 characters; duplicate text updates the existing entry.
+    text: string;
+    // Optional existing id (m1, m2, ...). Omit to add, or to update the entry with the same text.
+    id?: string;
+  }>;
+};
+
+type MemoryUpsertData = {
+  ok: true;
+  // New ids.
+  added: Array<string>;
+  // Entries after the batch.
+  count: Integer;
+  rejected: Array<{
+    // 0-based input item index.
+    index: Integer;
+    // empty_text | text_too_long | invalid_kind | invalid_id | unknown_id | limit_exceeded.
+    reason: string;
+    id?: string;
+  }>;
+  // Characters after the batch.
+  total_chars: Integer;
+  // Updated ids.
+  updated: Array<string>;
+};
+
 type ReadInput = {
   // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\...; Unix-style /paths map under Git for Windows when installed. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`.
   path: string;
@@ -583,6 +659,43 @@ declare const tools: {
   // }
   // return { exit_code: job.exit_code };
   readonly ["kill"]: (args: KillInput) => Promise<KillData | ToolFailure>;
+  readonly ["memory"]: {
+    // Delete entries by id from the current session's working memory.
+    //
+    // Use it when a fact is no longer true, a preference changed, or an entry was superseded. Unknown ids are reported per item; the rest of the batch still applies.
+    //
+    // Prefer deleting or merging stale entries over letting memory grow past its 32-entry / 4000-character budget. Ids are never reused.
+    readonly ["delete"]: (args: MemoryDeleteInput) => Promise<MemoryDeleteData | ToolFailure>;
+    // List the current session's working memory: small facts, preferences, decisions, and constraints that must survive compaction.
+    //
+    // Use it when you need to check what was already recorded before writing; after a compaction the snapshot is restored automatically. The result includes entry ids for `memory.upsert` / `memory.delete`.
+    //
+    // Optional `query` is a case-insensitive substring over entry text. Optional `kind` filters by `fact`, `preference`, `decision`, or `constraint`. The result reports both the returned count and the total stored count.
+    readonly ["list"]: (args: MemoryListInput) => Promise<MemoryListData | ToolFailure>;
+    // Add or update small, durable session memory entries. This memory survives compaction and is shown to you again after a compaction; it is not a transcript or a long-term store.
+    //
+    // Write only:
+    // - explicit user preferences or corrections ("use pnpm", "don't touch X")
+    // - decisions already made, with the reason if it matters
+    // - hard constraints / environment quirks that change how you work
+    // - unresolved key questions that must survive compaction
+    //
+    // Do not write:
+    // - task progress or step lists -> `todo`
+    // - code structure or where things live -> `code_search`
+    // - repo conventions/architecture -> `knowledge` / `AGENTS.md`
+    // - raw history or quotes -> `session_search`
+    // - one-off command output, secrets, or credentials
+    //
+    // Rules:
+    // - `text` is trimmed; at most 200 characters. Total across entries at most 4000 characters; at most 32 entries.
+    // - Omit `id` to add. If an entry with the same text already exists, it is updated instead of duplicated.
+    // - Pass `id` to update an existing entry; an unknown id is rejected, never created.
+    // - `kind` is `fact` (default), `preference`, `decision`, or `constraint`.
+    // - A batch is atomic per item: rejected items are reported, and the rest still apply.
+    // - Keep it small. Delete stale entries with `memory.delete`; merge variants instead of appending them.
+    readonly ["upsert"]: (args: MemoryUpsertInput) => Promise<MemoryUpsertData | ToolFailure>;
+  };
   // Read one workspace file. Pass `path`, optional `start_line` (1-based, default 1), and `limit` (default 2000, max 5000). Resolves `{ path, start_line, lines, message }`—`lines` is a string array; continue with a later `start_line`. Empty files, past-EOF pages, and hit-the-limit pages still resolve; `message` says which case. Missing path resolves `ok: false` `not_found`; non-text rejects `ToolError` `unsupported`.
   // Example:
   // const page = await tools.read({ path: "src/a.rs", start_line: 1 });

@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use super::kinds::{
-    CustomToolSettledEntry, PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild,
-    TodoSnap,
+    CustomToolSettledEntry, MemorySnap, PlanPointer, Reminder, ReminderKind, RunningBash,
+    SettledChild, TodoSnap,
 };
 use super::sources;
 
@@ -79,6 +79,11 @@ pub struct TaskFacts {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct MemoryFacts {
+    pub entries: Vec<MemorySnap>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct BackgroundFacts {
     pub running_bash: Vec<RunningBash>,
     pub children_running: usize,
@@ -89,6 +94,7 @@ pub struct BackgroundFacts {
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
     pub tasks: TaskFacts,
+    pub memory: MemoryFacts,
     pub background: BackgroundFacts,
     pub bash_exits: Vec<super::kinds::BashExitEntry>,
     pub bash_running: Vec<RunningBash>,
@@ -106,6 +112,9 @@ pub fn sync(ctx: &SeamCtx, view: &SpineReminderView, facts: &Facts) -> Vec<Remin
         out.push(reminder);
     }
     if let Some(reminder) = sources::tasks(view, &facts.tasks) {
+        out.push(reminder);
+    }
+    if let Some(reminder) = sources::memory(view, &facts.memory) {
         out.push(reminder);
     }
     if let Some(reminder) = sources::background(view, &facts.background) {

@@ -1,6 +1,7 @@
 import type { DockviewApi, IDockviewPanel } from "dockview-react";
 
 import { joinPopoutWindow, movePanelToMain, popoutPanel } from "../workbench/commands";
+import { kindForComponent } from "../workbench/kinds";
 import { bindDockview } from "../workbench/host";
 import { getWindows } from "../workbench/windows";
 import {
@@ -108,6 +109,9 @@ export function bindTabDrag(api: DockviewApi): () => void {
 
   const arm = (nativeEvent: Event, panel: IDockviewPanel) => {
     if (tabClass(panel.api.location?.type, panel.api.component) !== "center") return;
+    // A center panel that may not pop out still docks normally; only the
+    // release-outside-a-window path is suppressed.
+    if (kindForComponent(panel.api.component)?.canPopout === false) return;
     const view = hostView(nativeEvent);
 
     let placed = false;

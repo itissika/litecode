@@ -70,6 +70,7 @@ pub fn router(state: ServeState, web_dist: PathBuf) -> Router {
         .route("/health", get(health))
         .route("/ws", get(ws::ws_handler))
         .nest("/api/workspace", workspace_router())
+        .nest("/api/workspace/apps", crate::apps::routes::router())
         .nest("/api/settings", settings::router())
         .nest("/api/media", crate::serve::media::router())
         .fallback_service(ServeDir::new(web_dist))
@@ -248,6 +249,7 @@ pub async fn listen(
         });
     }
     let snapshot_upkeep_state = state.clone();
+    let apps = state.apps.clone();
     let app = router(state, web_dist);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     // WP-166 (P1): snapshot-repo warm, then snapshot maintenance, in the
@@ -265,6 +267,7 @@ pub async fn listen(
             mcp_pool.stop_all().await;
             engine_manager.stop_all();
             workspace_engines.stop_all();
+            apps.stop_all();
         })
         .await?;
     Ok(())

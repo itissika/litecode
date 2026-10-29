@@ -401,6 +401,23 @@ pub struct TurnSnapshot {
     pub awaiting_permission: bool,
 }
 
+/// One authoritative compaction state per session. `revision` is monotonic;
+/// clients drop a value older than the one they already applied. `active`
+/// covers manual compaction and the automatic background branch alike.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompactionStateWire {
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<CompactionTrigger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSnapshot {
     /// New session contract. Legacy flattened fields remain only while all
@@ -438,9 +455,12 @@ pub struct SessionSnapshot {
     /// Server decision for manual compaction (inclusive 30% gate).
     #[serde(default)]
     pub compact_eligible: bool,
-    /// Standalone manual compaction owns the session (not part of `turn`).
+    /// Legacy bool mirror of `compaction.active`; kept for older clients.
     #[serde(default)]
     pub compacting: bool,
+    /// The one compaction state both snapshots and lifecycle events project.
+    #[serde(default)]
+    pub compaction: CompactionStateWire,
     /// Last-known provider usage for this session (ring / cache hit rate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_turn_token_stats: Option<TurnTokenStats>,

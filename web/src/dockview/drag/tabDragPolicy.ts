@@ -66,6 +66,9 @@ export function rejectsDockTarget(
 ): boolean {
   const source = tabClass(sourceType, component);
   if (!source) return false;
+  if (targetType === "popout" && kindForComponent(component)?.canPopout === false) {
+    return true;
+  }
   return decideDockTarget(source, dockTarget(targetType)) === "reject";
 }
 

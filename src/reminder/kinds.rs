@@ -15,6 +15,7 @@ pub enum Visibility {
 pub enum ReminderKind {
     Env,
     Tasks,
+    Memory,
     Background,
     PlanChanged,
     FilesChanged,
@@ -32,6 +33,7 @@ impl ReminderKind {
         match self {
             Self::Env => "env",
             Self::Tasks => "tasks",
+            Self::Memory => "memory",
             Self::Background => "background",
             Self::PlanChanged => "plan_changed",
             Self::FilesChanged => "files_changed",
@@ -47,6 +49,7 @@ impl ReminderKind {
         match self {
             Self::Env => "reminder/env",
             Self::Tasks => "reminder/tasks",
+            Self::Memory => "reminder/memory",
             Self::Background => "reminder/background",
             Self::PlanChanged => "reminder/plan_changed",
             Self::FilesChanged => "reminder/files_changed",
@@ -62,6 +65,7 @@ impl ReminderKind {
         Some(match value {
             "reminder/env" => Self::Env,
             "reminder/tasks" => Self::Tasks,
+            "reminder/memory" => Self::Memory,
             "reminder/background" => Self::Background,
             "reminder/plan_changed" => Self::PlanChanged,
             "reminder/files_changed" => Self::FilesChanged,
@@ -83,6 +87,7 @@ impl ReminderKind {
             Self::BashExit | Self::SubagentSettled | Self::CustomToolSettled => Visibility::Visible,
             Self::Env
             | Self::Tasks
+            | Self::Memory
             | Self::Background
             | Self::PlanChanged
             | Self::FilesChanged
@@ -124,6 +129,20 @@ pub struct TasksBody {
     pub todos: Vec<TodoSnap>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_plan: Option<PlanPointer>,
+    pub text: String,
+}
+
+/// One memory entry frozen into the post-compaction reminder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemorySnap {
+    pub id: String,
+    pub text: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryBody {
+    pub entries: Vec<MemorySnap>,
     pub text: String,
 }
 
@@ -236,6 +255,7 @@ pub struct KnowledgeStatusBody {
 pub enum Reminder {
     Env(EnvBody),
     Tasks(TasksBody),
+    Memory(MemoryBody),
     Background(BackgroundBody),
     PlanChanged(PlanChangedBody),
     FilesChanged(FilesChangedBody),
@@ -251,6 +271,7 @@ impl Reminder {
         match self {
             Self::Env(_) => ReminderKind::Env,
             Self::Tasks(_) => ReminderKind::Tasks,
+            Self::Memory(_) => ReminderKind::Memory,
             Self::Background(_) => ReminderKind::Background,
             Self::PlanChanged(_) => ReminderKind::PlanChanged,
             Self::FilesChanged(_) => ReminderKind::FilesChanged,
@@ -266,6 +287,7 @@ impl Reminder {
         match self {
             Self::Env(body) => &body.text,
             Self::Tasks(body) => &body.text,
+            Self::Memory(body) => &body.text,
             Self::Background(body) => &body.text,
             Self::PlanChanged(body) => &body.text,
             Self::FilesChanged(body) => &body.text,

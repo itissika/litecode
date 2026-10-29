@@ -232,6 +232,18 @@ impl SessionData {
         }
     }
 
+    pub fn memory_blocking(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::memory::SessionMemory> {
+        match self.read_blocking(SessionRead::Memory {
+            session_id: session_id.to_string(),
+        })? {
+            ReadValue::Memory(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage("unexpected memory".into())),
+        }
+    }
+
     pub fn meter_blocking(
         &self,
         session_id: &str,
@@ -634,6 +646,18 @@ impl SessionDataReader {
         })? {
             ReadValue::Meta(v) => Ok(v),
             _ => Err(LitecodeError::SessionStorage("unexpected meta".into())),
+        }
+    }
+
+    pub fn memory_blocking(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::memory::SessionMemory> {
+        match self.read_blocking(SessionRead::Memory {
+            session_id: session_id.to_string(),
+        })? {
+            ReadValue::Memory(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage("unexpected memory".into())),
         }
     }
 

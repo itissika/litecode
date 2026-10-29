@@ -836,7 +836,9 @@ impl AgentRuntime {
     /// Other reminder writes are fail-open so a decoration cannot abort the turn.
     fn append_seam_reminders(&mut self, step: u64) -> Result<bool> {
         use crate::reminder::{BashExitEntry, PlanPointer, RunningBash, SettledChild, TodoSnap};
-        use crate::reminder::{Facts, ReminderKind, SeamCtx, TaskFacts, sync};
+        use crate::reminder::{
+            Facts, MemoryFacts, MemorySnap, ReminderKind, SeamCtx, TaskFacts, sync,
+        };
         use crate::terminal::display_output_path;
 
         let mut stages = latency::Stages::new("seam.sources", Some(step));
@@ -975,6 +977,19 @@ impl AgentRuntime {
             .collect::<Vec<_>>();
         stages.mark("settled_and_custom_format");
 
+        let memory = match self.sessions.load_memory(&self.session_id) {
+            Ok(memory) => memory,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    error = %error,
+                    "failed to load session memory for reminder"
+                );
+                Default::default()
+            }
+        };
+        stages.mark("session_memory");
+
         let view = match self.sessions.spine_reminder_view(&self.session_id) {
             Ok(view) => view,
             Err(error) => {
@@ -1015,6 +1030,17 @@ impl AgentRuntime {
                     .active_plan
                     .as_ref()
                     .and_then(|plan| plan.revision.clone()),
+            },
+            memory: MemoryFacts {
+                entries: memory
+                    .entries
+                    .iter()
+                    .map(|entry| MemorySnap {
+                        id: entry.id.clone(),
+                        text: entry.text.clone(),
+                        kind: entry.kind.as_str().to_string(),
+                    })
+                    .collect(),
             },
             background: crate::reminder::BackgroundFacts {
                 running_bash: running_bash.clone(),

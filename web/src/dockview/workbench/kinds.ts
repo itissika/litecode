@@ -25,6 +25,15 @@ export interface PanelKindSpec {
 
 export const PANEL_KINDS: readonly PanelKindSpec[] = [
   {
+    component: "apps",
+    tabComponent: "edge",
+    zone: "edge",
+    rail: "left",
+    canPopout: false,
+    singletonId: "apps",
+    title: "Apps",
+  },
+  {
     component: "filetree",
     tabComponent: "edge",
     zone: "edge",
@@ -116,12 +125,28 @@ export const PANEL_KINDS: readonly PanelKindSpec[] = [
     placement: "document",
   },
   {
+    component: "appview",
+    tabComponent: "app",
+    zone: "center",
+    canPopout: false,
+    placement: "document",
+  },
+  {
     component: "about",
     tabComponent: "default",
     zone: "center",
     canPopout: false,
     placement: "document",
     title: "About",
+  },
+  {
+    component: "gallery",
+    tabComponent: "default",
+    zone: "center",
+    canPopout: false,
+    singletonId: "gallery",
+    placement: "document",
+    title: "Gallery",
   },
 ];
 

@@ -1,8 +1,8 @@
 use crate::config::resolved::ResolvedConfig;
 use crate::platform_knobs::{ContextMode, effective_context_window};
 use crate::runtime::observer::{
-    CompactionFailKind, CompactionStage, CompactionTrigger, FailReason, InternalEvent,
-    TurnEndReason, TurnErrorKind, TurnPhase,
+    CompactionFailKind, CompactionStage, FailReason, InternalEvent, TurnEndReason, TurnErrorKind,
+    TurnPhase,
 };
 use crate::session::live::{LifecycleEvent, TurnProgress};
 use crate::session::manager::SessionManager;
@@ -411,10 +411,9 @@ fn project_with(
             telemetry,
             at,
         } => {
+            // The state transition already happened before the emitter published
+            // this event, so this snapshot is the post-transition authority.
             let snapshot = snapshot?;
-            let mut started_snapshot = snapshot.clone();
-            started_snapshot.compacting =
-                *trigger == CompactionTrigger::Manual && *stage == CompactionStage::Started;
             let error = if *stage == CompactionStage::Failed {
                 Some(StructuredError {
                     code: compact_fail_code(*fail_kind),
@@ -434,7 +433,7 @@ fn project_with(
                     "error": error,
                     "telemetry": telemetry,
                     "at": at,
-                    "snapshot": started_snapshot,
+                    "snapshot": snapshot,
                 }),
             ))
         }
@@ -1278,6 +1277,23 @@ pub fn pending_records_to_wire(
     recs.iter().map(pending_record_to_wire).collect()
 }
 
+/// Project the session-level compaction state onto the wire type. Snapshots
+/// and lifecycle events both read the same record, so they cannot disagree.
+pub fn compaction_state_wire(
+    state: &crate::session::manager::CompactionStateSnapshot,
+) -> super::protocol::CompactionStateWire {
+    super::protocol::CompactionStateWire {
+        revision: state.revision,
+        active: state.active.is_some(),
+        operation_id: state
+            .active
+            .as_ref()
+            .map(|active| active.operation_id.clone()),
+        trigger: state.active.as_ref().map(|active| active.trigger),
+        at: state.active.as_ref().and_then(|active| active.at),
+    }
+}
+
 pub fn buffer_snapshot(
     session_id: &str,
     project: &str,
@@ -1290,7 +1306,7 @@ pub fn buffer_snapshot(
     cumulative_token_stats: Option<TurnTokenStats>,
     context_meter: &crate::context_pipeline::ContextMeter,
     context_envelope: &crate::context_pipeline::ContextEnvelope,
-    compacting: bool,
+    compaction: super::protocol::CompactionStateWire,
 ) -> SessionSnapshot {
     SessionSnapshot {
         meta: super::protocol::SessionMetaWire {
@@ -1331,7 +1347,8 @@ pub fn buffer_snapshot(
         context_meter: context_meter.clone(),
         context_envelope: context_envelope.clone(),
         compact_eligible: context_meter.manual_eligible(),
-        compacting,
+        compacting: compaction.active,
+        compaction,
         last_turn_token_stats,
         cumulative_token_stats,
         provider_billed_tokens: None,
@@ -1469,6 +1486,7 @@ mod wp186_pending_permissions_tests {
             context_envelope: Default::default(),
             compact_eligible: false,
             compacting: false,
+            compaction: Default::default(),
             last_turn_token_stats: None,
             cumulative_token_stats: None,
             provider_billed_tokens: None,

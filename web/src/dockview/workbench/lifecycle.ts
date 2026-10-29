@@ -236,6 +236,9 @@ export function startWorkbench(api: DockviewApi): void {
     }
   } else {
     finishChromeAndSettle(api);
+    // A fresh workspace opens on Apps; a restored layout keeps its own active
+    // tab and only gets the rail added inert by recoverDefaultLayout.
+    api.getPanel("apps")?.api.setActive();
   }
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;

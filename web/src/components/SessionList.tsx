@@ -6,7 +6,13 @@ import {
   type DragEvent,
   type MouseEvent,
 } from "react";
-import { FolderPlus, Info, StackSimple } from "@phosphor-icons/react";
+import {
+  CaretDown,
+  CaretRight,
+  FolderPlus,
+  Info,
+  StackSimple,
+} from "@phosphor-icons/react";
 
 import type { SessionInfo } from "../api/types";
 import { useConnectionStore } from "../stores/connectionStore";
@@ -22,6 +28,15 @@ import i18n from "../i18n";
 
 const COLLAPSED_KEY = "litecode.sessionFolders.collapsed";
 const UNGROUPED_KEY = "__ungrouped__";
+/**
+ * Grouped rows sit under their header's name. A folder header's label starts at
+ * 43px (px-2 8 + caret 10 + gap 6 + folder glyph 13 + gap 6); a session row
+ * leads with its 2px status bar plus an 8px gap, so padding the row by 33px
+ * lands its text on the folder name. The flat, headerless list keeps 12px.
+ */
+const FOLDER_LABEL_INSET_PX = 43;
+const SESSION_ROW_LEADING_PX = 15;
+const GROUPED_ROW_INDENT_PX = FOLDER_LABEL_INSET_PX - SESSION_ROW_LEADING_PX;
 
 type MenuState =
   | { kind: "session"; id: string; x: number; y: number }
@@ -83,7 +98,11 @@ function UngroupedHeader({
           : "hover:bg-(--_dk-ix-bg-hover)"
       }`}
     >
-      <span className="w-[10px] shrink-0" aria-hidden />
+      {collapsed ? (
+        <CaretRight size={10} className="shrink-0 text-(--_dk-text-muted)" />
+      ) : (
+        <CaretDown size={10} className="shrink-0 text-(--_dk-text-muted)" />
+      )}
       <StackSimple size={13} className="shrink-0 text-(--_dk-text-muted)" />
       <span className="min-w-0 flex-1 truncate">
         {i18n.t("session.ungrouped")}
@@ -251,11 +270,12 @@ export function SessionList() {
     setNewFolderName("");
   };
 
-  const renderSession = (session: SessionInfo) => (
+  const renderSession = (session: SessionInfo, grouped = false) => (
     <SessionItem
       key={session.id}
       session={session}
       now={now}
+      indentPx={grouped ? GROUPED_ROW_INDENT_PX : undefined}
       onOpen={handleSessionClick}
       onDelete={deleteSession}
       onContextMenu={(event: MouseEvent) => {
@@ -454,9 +474,12 @@ export function SessionList() {
               />
               {!isCollapsed &&
                 (folderSessions.length > 0 ? (
-                  folderSessions.map(renderSession)
+                  folderSessions.map((session) => renderSession(session, true))
                 ) : (
-                  <p className="px-6 py-1 text-[10px] text-(--_dk-text-disabled)">
+                  <p
+                    className="py-1 pr-2 text-[10px] text-(--_dk-text-disabled)"
+                    style={{ paddingLeft: FOLDER_LABEL_INSET_PX }}
+                  >
                     {i18n.t("session.emptyFolder")}
                   </p>
                 ))}
@@ -474,10 +497,12 @@ export function SessionList() {
               onDragLeave={(event) => handleDragLeave(event, UNGROUPED_KEY)}
               onDrop={(event) => handleDrop(event, null)}
             />
-            {!collapsed[UNGROUPED_KEY] && ungrouped.map(renderSession)}
+            {!collapsed[UNGROUPED_KEY] &&
+              ungrouped.map((session) => renderSession(session, true))}
           </div>
         )}
-        {orderedFolders.length === 0 && roots.map(renderSession)}
+        {orderedFolders.length === 0 &&
+          roots.map((session) => renderSession(session))}
       </div>
     );
   };

@@ -111,6 +111,23 @@ fn config_global_db_migration_and_seed() {
         "default seed must bind run"
     );
     assert!(
+        default_tools.contains_key("memory"),
+        "default seed must bind the memory card"
+    );
+    assert!(
+        !default_tools.contains_key("memory.list"),
+        "memory members are not separate bindings"
+    );
+    assert!(
+        !settings
+            .agents
+            .get("explore")
+            .unwrap()
+            .tools
+            .contains_key("memory"),
+        "memory is primary-root-only"
+    );
+    assert!(
         !default_tools.contains_key("bash"),
         "default seed must not bind bash"
     );

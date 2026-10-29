@@ -123,6 +123,48 @@ export async function readBytes(path: string): Promise<Blob> {
   return res.blob();
 }
 
+export type MediaKind = "image" | "video" | "audio";
+
+export interface MediaEntry {
+  path: string;
+  name: string;
+  /** Parent directory, / separated; empty at the workspace root. */
+  folder: string;
+  kind: MediaKind;
+  size: number;
+  /** Unix milliseconds; also the thumbnail cache key. */
+  mtime: number;
+}
+
+export interface MediaListing {
+  entries: MediaEntry[];
+  truncated: boolean;
+}
+
+/** One workspace walk over image / video / audio files for the Gallery panel. */
+export async function fetchMedia(): Promise<MediaListing> {
+  const res = await apiFetch("/api/workspace/media");
+  if (!res.ok) throw await errorFromResponse(res);
+  return parseJson<MediaListing>(res);
+}
+
+/** Cached JPEG thumbnail. `mtime` and `size` make the URL self-invalidating. */
+export async function fetchMediaThumb(
+  path: string,
+  mtime: number,
+  size: number,
+  edge = 320,
+): Promise<Blob> {
+  const params = new URLSearchParams({
+    path,
+    w: String(edge),
+    v: `${mtime}-${size}`,
+  });
+  const res = await apiFetch(`/api/workspace/media/thumb?${params}`);
+  if (!res.ok) throw await errorFromResponse(res);
+  return res.blob();
+}
+
 export interface SqlitePreview {
   path: string;
   tables: string[];

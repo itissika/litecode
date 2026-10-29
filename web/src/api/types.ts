@@ -519,6 +519,17 @@ export interface TurnSnapshot {
   awaiting_permission?: boolean;
 }
 
+export interface CompactionState {
+  /** Monotonic per session. A lower revision must not overwrite local state. */
+  revision: number;
+  /** Manual compaction and the automatic background branch alike. */
+  active: boolean;
+  operation_id?: string | null;
+  trigger?: "manual" | "auto" | "overflow" | null;
+  /** Tail seq the cut froze at; the transient marker sits here. */
+  at?: number | null;
+}
+
 export interface SessionSnapshot {
   session_id: string;
   project: string;
@@ -539,7 +550,10 @@ export interface SessionSnapshot {
   context_envelope?: ContextEnvelope;
   /** Server manual-compaction decision (inclusive 30% gate). */
   compact_eligible?: boolean;
+  /** Legacy mirror of `compaction.active`; old servers only send this. */
   compacting?: boolean;
+  /** One authoritative compaction state; absent only from old servers. */
+  compaction?: CompactionState;
   /** Last-known provider usage for context ring hydrate after refresh. */
   last_turn_token_stats?: TurnTokenStats | null;
   /** Session-total provider usage (Σ per-request; whole-session hit rate). */

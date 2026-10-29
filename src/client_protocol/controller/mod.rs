@@ -482,7 +482,9 @@ impl Projection {
             self.cumulative_token_stats.clone(),
             &meter,
             &envelope,
-            self.sessions.is_compacting_blocking(&self.session_id),
+            project::compaction_state_wire(
+                &self.sessions.compaction_state_blocking(&self.session_id),
+            ),
         );
         snap.context_token_breakdown = self.context_token_breakdown.clone();
         if self.provider_billed_requests == 0 {

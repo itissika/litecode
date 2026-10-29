@@ -34,6 +34,9 @@ interface PopoverProps {
   /** Hover mode: grace period (ms) before closing after the pointer leaves
    *  both the trigger and the panel - lets the pointer travel between them. */
   hoverCloseDelay?: number;
+  /** Approximate panel height in px, used only to choose the flip direction.
+   *  Defaults to the compact panel estimate; tall panels can pass their cap. */
+  estimatedHeight?: number;
   /** Classes for the relative wrapper (e.g. "block" for full-width rows). */
   className?: string;
   /** Classes for the panel shell; merged after the default shell. */
@@ -112,6 +115,7 @@ export function Popover({
   gap = DEFAULT_GAP,
   hoverOpenDelay = 150,
   hoverCloseDelay = 150,
+  estimatedHeight = PANEL_MAX_H,
   className = "",
   panelClassName = "",
   trigger,
@@ -153,8 +157,8 @@ export function Popover({
 
     // Vertical: honor the requested direction, flip when the estimated panel
     // would run off the viewport (same policy as Dropdown).
-    const fitsDown = vh - rect.bottom >= PANEL_MAX_H + VIEWPORT_MARGIN;
-    const fitsUp = rect.top >= PANEL_MAX_H + VIEWPORT_MARGIN;
+    const fitsDown = vh - rect.bottom >= estimatedHeight + VIEWPORT_MARGIN;
+    const fitsUp = rect.top >= estimatedHeight + VIEWPORT_MARGIN;
     if (placement.startsWith("up")) {
       if (fitsUp) next.bottom = vh - rect.top + gap;
       else next.top = rect.bottom + gap; // flip down
@@ -177,7 +181,7 @@ export function Popover({
     }
 
     setPos((prev) => (samePos(prev, next) ? prev : next));
-  }, [placement, gap, width]);
+  }, [placement, gap, width, estimatedHeight]);
 
   useLayoutEffect(() => {
     if (!open) {

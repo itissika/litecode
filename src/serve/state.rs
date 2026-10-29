@@ -3,6 +3,7 @@ use std::sync::{Arc, RwLock};
 use axum::extract::FromRef;
 use tokio::sync::Mutex;
 
+use crate::apps::AppService;
 use crate::config::settings_writer::SettingsChangedEvent;
 use crate::config::{ResolvedConfig, SettingsWriter, TurnGuard, WorkspaceState};
 use crate::engines::WorkspaceEngines;
@@ -25,6 +26,7 @@ pub struct ServeState {
     pub session_id: Option<String>,
     pub auth_token: Option<String>,
     pub workspace: Arc<WorkspaceService>,
+    pub apps: Arc<AppService>,
     pub turn_guard: Arc<TurnGuard>,
     pub sessions: Arc<SessionManager>,
     pub settings_writer: Arc<SettingsWriter>,
@@ -97,6 +99,13 @@ impl ServeState {
         // background after bind, under workspace_snapshot_lock — see
         // `serve::router::spawn_snapshot_upkeep`.
         let workspace = WorkspaceService::new(project.clone())?;
+        let app_global_data = settings_writer
+            .db_path()
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| project.join(".litecode").join("apps-global"));
+        let apps = AppService::new(project.clone(), app_global_data);
         let terminal_hub = Arc::new(TerminalHub::new());
         install_hub(Arc::clone(&terminal_hub));
         let ide = IdeBaseHandle::new(
@@ -115,6 +124,7 @@ impl ServeState {
             settings_revision,
             settings_writer.db_path().to_path_buf(),
         );
+        runtime.set_apps(Arc::clone(&apps));
         let subagent_hub = Arc::clone(&runtime.subagent_hub);
         let runtime = Arc::new(RwLock::new(runtime));
         settings_writer.set_runtime(Arc::clone(&runtime));
@@ -172,6 +182,7 @@ impl ServeState {
             session_id,
             auth_token,
             workspace,
+            apps,
             turn_guard: turn_guard.clone(),
             sessions,
             settings_writer,

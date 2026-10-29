@@ -30,6 +30,7 @@ use crate::tools::{
     litecode_workspace::LitecodeWorkspaceTool,
     lsp,
     mcp_tool::McpTool,
+    memory::{MemoryDeleteTool, MemoryListTool, MemoryUpsertTool},
     plan::PlanTool,
     read::ReadTool,
     run::RunTool,
@@ -61,6 +62,9 @@ fn builtin_tool(
         "knowledge" => Arc::new(KnowledgeTool::new(Arc::clone(&ide))),
         "glob" => Arc::new(GlobTool),
         "todo" => Arc::new(TodoWriteTool::new(Arc::clone(&sessions))),
+        "memory.list" => Arc::new(MemoryListTool::new(Arc::clone(&sessions))),
+        "memory.upsert" => Arc::new(MemoryUpsertTool::new(Arc::clone(&sessions))),
+        "memory.delete" => Arc::new(MemoryDeleteTool::new(Arc::clone(&sessions))),
         "ask_user" => Arc::new(AskUserTool::new()),
         "plan" => Arc::new(PlanTool::new(Arc::clone(&sessions))),
         _ => return None,
@@ -589,6 +593,11 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
             Arc::new(std::sync::RwLock::new(None)),
             Arc::new(std::sync::RwLock::new(None)),
         )),
+        // Session-scoped memory is Code-only; cold tools carry contracts for
+        // settings admission and the generated SDK.
+        Arc::new(MemoryListTool::cold()),
+        Arc::new(MemoryUpsertTool::cold()),
+        Arc::new(MemoryDeleteTool::cold()),
     ];
     // WP-210 I: the seven LSP navigation tools are Code-surface too (cold
     // engines; admission only needs their contracts).
@@ -766,6 +775,9 @@ mod tests {
         assert!(names.contains(&"wait"));
         assert!(names.contains(&"kill"));
         assert!(names.contains(&"todo"));
+        assert!(names.contains(&"memory.list"));
+        assert!(names.contains(&"memory.upsert"));
+        assert!(names.contains(&"memory.delete"));
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"subagent_launch"));
         assert!(names.contains(&"subagent_send"));
@@ -777,6 +789,17 @@ mod tests {
         // engine is cold; the tool itself falls back to lexical search.
         assert!(names.contains(&"session_search"));
         assert!(names.contains(&"litecode_workspace"));
+    }
+
+    #[test]
+    fn memory_tools_are_on_the_code_surface() {
+        let specs = builtin_code_specs();
+        for name in ["memory.list", "memory.upsert", "memory.delete"] {
+            assert!(
+                specs.iter().any(|spec| spec.name == name),
+                "missing code spec {name}"
+            );
+        }
     }
 
     #[test]
@@ -798,6 +821,7 @@ mod tests {
             .collect();
         assert!(!subagent_names.contains(&"subagent_launch"));
         assert!(!subagent_names.contains(&"plan"));
+        assert!(!subagent_names.contains(&"memory.list"));
         assert!(subagent_names.contains(&"read"));
 
         let deep_primary_tools = list_tools(&primary, 1);

@@ -105,10 +105,10 @@ import {
 } from "./ssh-session";
 import { SshTargets, type SavedSshTarget } from "./ssh-targets";
 import { readUiTheme, writeUiTheme, type UiThemeName } from "./ui-theme";
-import { isAllowedLoadUrl } from "./url-policy";
+import { httpOrigin, isAllowedExternalUrl, isAllowedLoadUrl, isLoopbackHttpUrl, sameAppHttpOrigin } from "./url-policy";
 import { senderOwnedWindow } from "./window-guard";
 import { BrowserHost } from "./browser-host";
-import { createBrowserHost } from "./browser-view";
+import { configureAppSession, createAppViewHost, createBrowserHost } from "./browser-view";
 import { createBrowserAutomation } from "./browser-automation";
 import {
   BrowserBridgeError,
@@ -127,6 +127,9 @@ const DESKTOP_DEV_APP_ID = `${DESKTOP_APP_ID}.dev`;
 const liveTurnToasts: Notification[] = [];
 const MAX_LIVE_TOASTS = 5;
 let browserHost: BrowserHost | null = null;
+let appViewHost: BrowserHost | null = null;
+const appViewOrigins = new Map<string, string>();
+const appViewPartitions = new Map<string, string>();
 let browserBridge: BrowserBridge | null = null;
 /**
  * OS handles for popout windows, keyed by the dock id in `/popout.html?dock=`.
@@ -199,9 +202,17 @@ function hubPagePath(): string {
   return path.join(app.getPath("userData"), "hub-index.html");
 }
 
+function disposeAppViewHost(): void {
+  appViewHost?.destroyAll();
+  appViewHost = null;
+  appViewOrigins.clear();
+  appViewPartitions.clear();
+}
+
 function disposeBrowserHost(): void {
   browserHost?.destroyAll();
   browserHost = null;
+  disposeAppViewHost();
 }
 
 function ensureBrowserHost(): BrowserHost | null {
@@ -212,6 +223,32 @@ function ensureBrowserHost(): BrowserHost | null {
     browserHost.setObscured(browserObscured);
   }
   return browserHost;
+}
+
+function appViewPartition(viewKey: string): string {
+  const clean = viewKey.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 120);
+  if (!clean) throw new Error("Invalid app view key");
+  return `persist:litecode-app-${clean}`;
+}
+
+function ensureAppViewHost(): BrowserHost | null {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return null;
+  if (!appViewHost) {
+    appViewHost = createAppViewHost(win, {
+      partitionFor: (id) =>
+        appViewPartitions.get(id) ?? "persist:litecode-app-unknown",
+      isAllowedUrl: (url, id) => {
+        const origin = appViewOrigins.get(id);
+        return origin !== undefined && sameAppHttpOrigin(url, origin);
+      },
+      onExternal: (url) => {
+        if (isAllowedExternalUrl(url)) void shell.openExternal(url);
+      },
+    });
+    appViewHost.setObscured(browserObscured);
+  }
+  return appViewHost;
 }
 
 function sendToWorkbench(channel: string, payload: unknown): void {
@@ -1650,12 +1687,90 @@ function registerBrowserIpc(): void {
   onTrusted("litecode:browser-set-obscured", "workbench", (event, obscured: unknown) => {
     browserObscured = obscured === true;
     browserHost?.setObscured(browserObscured);
+    appViewHost?.setObscured(browserObscured);
     event.returnValue = undefined;
+  });
+}
+
+function registerAppViewIpc(): void {
+  handleTrusted("litecode:app-view-create", "workbench", (_event, payload: unknown) => {
+    const body = asRecord(payload);
+    const id = typeof body.id === "string" ? body.id : "";
+    const viewKey = typeof body.viewKey === "string" ? body.viewKey : "";
+    const url = typeof body.url === "string" ? body.url : "";
+    if (!isLoopbackHttpUrl(url)) throw new Error("App view URL must be loopback http");
+    const origin = httpOrigin(url);
+    if (!origin) throw new Error("App view URL is invalid");
+    const partition = appViewPartition(viewKey);
+    const permissions = Array.isArray(body.permissions)
+      ? body.permissions.filter((value): value is string => typeof value === "string")
+      : [];
+    configureAppSession(partition, permissions);
+    appViewPartitions.set(id, partition);
+    appViewOrigins.set(id, origin);
+    const host = ensureAppViewHost();
+    if (!host) throw new Error("App view is unavailable");
+    try {
+      host.create(id, body.backgroundColor);
+      return host.navigate(id, url);
+    } catch (error) {
+      host.destroy(id);
+      appViewPartitions.delete(id);
+      appViewOrigins.delete(id);
+      throw error;
+    }
+  });
+
+  handleTrusted("litecode:app-view-go-back", "workbench", (_event, id: unknown) => {
+    const host = ensureAppViewHost();
+    if (!host) throw new Error("App view is unavailable");
+    return host.goBack(typeof id === "string" ? id : "");
+  });
+
+  handleTrusted("litecode:app-view-go-forward", "workbench", (_event, id: unknown) => {
+    const host = ensureAppViewHost();
+    if (!host) throw new Error("App view is unavailable");
+    return host.goForward(typeof id === "string" ? id : "");
+  });
+
+  handleTrusted("litecode:app-view-reload", "workbench", (_event, id: unknown) => {
+    const host = ensureAppViewHost();
+    if (!host) throw new Error("App view is unavailable");
+    return host.reload(typeof id === "string" ? id : "");
+  });
+
+  handleTrusted("litecode:app-view-stop", "workbench", (_event, id: unknown) => {
+    const host = ensureAppViewHost();
+    if (!host) throw new Error("App view is unavailable");
+    return host.stop(typeof id === "string" ? id : "");
+  });
+
+  onTrusted("litecode:app-view-set-bounds", "workbench", (_event, payload: unknown) => {
+    const body = asRecord(payload);
+    appViewHost?.setBounds(body.id, body.bounds, "main");
+  });
+
+  onTrusted("litecode:app-view-set-visible", "workbench", (_event, payload: unknown) => {
+    const body = asRecord(payload);
+    appViewHost?.setVisible(body.id, body.visible === true);
+  });
+
+  onTrusted("litecode:app-view-set-active", "workbench", (_event, payload: unknown) => {
+    const body = asRecord(payload);
+    appViewHost?.setActive(body.id, body.active === true);
+  });
+
+  onTrusted("litecode:app-view-destroy", "workbench", (_event, id: unknown) => {
+    const key = typeof id === "string" ? id : "";
+    appViewHost?.destroy(key);
+    appViewPartitions.delete(key);
+    appViewOrigins.delete(key);
   });
 }
 
 function registerIpc(): void {
   registerBrowserIpc();
+  registerAppViewIpc();
 
   onTrusted("litecode:get-auth-token", "workbench", (event) => {
     event.returnValue = authToken || undefined;

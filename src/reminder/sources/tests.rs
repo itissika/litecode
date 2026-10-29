@@ -2,10 +2,8 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::reminder::engine::{SeamCtx, SpineReminderView, TaskFacts};
-use crate::reminder::kinds::{
-    PlanPointer, Reminder, ReminderKind, TodoSnap,
-};
+use crate::reminder::engine::{MemoryFacts, SeamCtx, SpineReminderView, TaskFacts};
+use crate::reminder::kinds::{MemorySnap, PlanPointer, Reminder, ReminderKind, TodoSnap};
 
 fn ctx() -> SeamCtx {
     SeamCtx {
@@ -52,6 +50,36 @@ fn tasks_restore_only_after_compaction_and_once() {
     assert!(tasks(&v, &facts).is_none(), "already restored after head");
     assert!(
         tasks(&compacted(), &TaskFacts::default()).is_none(),
+        "nothing to restore"
+    );
+}
+
+#[test]
+fn memory_restores_only_after_compaction_and_once() {
+    let facts = MemoryFacts {
+        entries: vec![MemorySnap {
+            id: "m1".into(),
+            text: "use pnpm".into(),
+            kind: "preference".into(),
+        }],
+    };
+    assert!(
+        memory(&SpineReminderView::default(), &facts).is_none(),
+        "no compacted head => no restore"
+    );
+    assert!(ReminderKind::Memory.hidden());
+    let r = memory(&compacted(), &facts).expect("restore after compaction");
+    let Reminder::Memory(b) = r else { panic!() };
+    assert!(b.text.contains("Session memory"));
+    assert!(b.text.contains("[preference] use pnpm (m1)"));
+    let mut view = compacted();
+    view.kinds_after_compacted.insert(ReminderKind::Memory);
+    assert!(
+        memory(&view, &facts).is_none(),
+        "already restored after head"
+    );
+    assert!(
+        memory(&compacted(), &MemoryFacts::default()).is_none(),
         "nothing to restore"
     );
 }

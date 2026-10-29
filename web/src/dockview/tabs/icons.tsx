@@ -7,6 +7,8 @@ import {
   GitBranch,
   BookOpen,
   Globe,
+  Images,
+  SquaresFour,
 } from "@phosphor-icons/react";
 import type React from "react";
 
@@ -18,6 +20,7 @@ type IconComponent = React.FC<{
 /** Maps panel component name → phosphor icon. Fallback: File. */
 const ICON_MAP: Record<string, IconComponent> = {
   filetree: FolderSimple,
+  gallery: Images,
   search: MagnifyingGlass,
   git: GitBranch,
   editor: File,
@@ -26,6 +29,8 @@ const ICON_MAP: Record<string, IconComponent> = {
   knowledge: BookOpen,
   knowledgeGraph: BookOpen,
   browser: Globe,
+  apps: SquaresFour,
+  appview: SquaresFour,
 };
 
 export function getPanelIcon(component: string): IconComponent {

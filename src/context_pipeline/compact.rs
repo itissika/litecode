@@ -2323,12 +2323,25 @@ fn emit_compact_lifecycle_with_telemetry(
     telemetry: CompactionTelemetry,
     at: Option<Seq>,
 ) {
+    // The lifecycle emitter is the single writer of the session's compaction
+    // state. A snapshot built after this call therefore always agrees with the
+    // stage it carries; clients project the state instead of re-deriving it.
+    let operation_id = match stage {
+        CompactionStage::Started => {
+            let (_, id) = sessions.begin_compaction_blocking(session_id, operation_id, trigger, at);
+            Some(id)
+        }
+        CompactionStage::Succeeded | CompactionStage::Failed | CompactionStage::Abandoned => {
+            let (_, id) = sessions.end_compaction_blocking(session_id, operation_id, trigger);
+            id.or_else(|| operation_id.map(str::to_string))
+        }
+    };
     sessions.publish_internal(
         session_id,
         InternalEvent::CompactionLifecycle {
             trigger,
             stage,
-            operation_id: operation_id.map(str::to_string),
+            operation_id,
             fail_kind,
             error,
             telemetry,

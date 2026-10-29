@@ -1,6 +1,7 @@
 //! TerminalHub — process-scoped PTY session registry (foundation).
 
 mod agent_jobs;
+pub(crate) use agent_jobs::kill_process_tree;
 mod ansi;
 pub mod decode;
 mod error;

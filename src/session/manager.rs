@@ -11,11 +11,14 @@ use crate::config::TurnGuard;
 use crate::llm::reconnect::{LlmReconnect, LlmReconnectPhase};
 use crate::runtime::RuntimeHandle;
 use crate::runtime::TurnHandle;
-use crate::runtime::observer::{InternalEnvelope, InternalEvent, TurnEndReason, TurnPhase};
+use crate::runtime::observer::{
+    CompactionTrigger, InternalEnvelope, InternalEvent, TurnEndReason, TurnPhase,
+};
 use crate::session::data::command::{MutationId, ReadValue, SessionMutation, SessionRead};
 use crate::session::data::{SessionData, SessionDataReader};
 use crate::session::event::{EventDraft, EventType};
 use crate::session::live::{LifecycleEvent, TurnProgress};
+use crate::session::memory::SessionMemory;
 use crate::session::store::{
     ProviderUsage, ProviderUsageRollup, ProviderUsageSeries, Session, SessionApply,
     SessionContextMeter, WorkspaceUsage,
@@ -254,6 +257,26 @@ impl Drop for SessionOperationLease {
     }
 }
 
+/// One in-flight compaction episode. Manual compaction and the automatic
+/// background branch both write this one record; snapshots and lifecycle
+/// events project it instead of each deriving their own flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveCompaction {
+    pub operation_id: String,
+    pub trigger: CompactionTrigger,
+    /// Tail seq the cut froze at; `None` before a plan picks its cut.
+    pub at: Option<u64>,
+}
+
+/// Session-level compaction state. `revision` is monotonic and bumps on every
+/// transition, so a client can drop a snapshot older than the event it has
+/// already applied.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompactionStateSnapshot {
+    pub revision: u64,
+    pub active: Option<ActiveCompaction>,
+}
+
 /// One session: exclusive activity + L2 subscription fanout + committed revision.
 pub struct SessionRecord {
     pub revision: u64,
@@ -294,6 +317,10 @@ pub struct SessionRecord {
     file_tracker: crate::reminder::FileTracker,
     /// Last reconnect bubble that should survive a refresh. Not a log row.
     llm_reconnect: Option<LlmReconnect>,
+    /// Process-lifetime compaction state; the lifecycle emitter is the single
+    /// writer and every transition bumps `compaction_revision`.
+    compaction: Option<ActiveCompaction>,
+    compaction_revision: u64,
 }
 
 impl SessionRecord {
@@ -326,6 +353,8 @@ impl SessionRecord {
             last_permission_sink: None,
             file_tracker: crate::reminder::FileTracker::default(),
             llm_reconnect: None,
+            compaction: None,
+            compaction_revision: 0,
         }
     }
 
@@ -904,6 +933,41 @@ impl SessionManager {
             state,
         })?;
         Ok(())
+    }
+
+    /// Load the current session-scoped memory document.
+    pub fn load_memory(&self, session_id: &str) -> Result<SessionMemory> {
+        self.data.memory_blocking(session_id)
+    }
+
+    /// Read-modify-write memory under the durable revision CAS. A conflict
+    /// means another writer (for example a parallel tool call) got there first,
+    /// so re-read and re-apply instead of overwriting their entries.
+    pub fn update_memory<F, T>(&self, session_id: &str, mut apply: F) -> Result<(SessionMemory, T)>
+    where
+        F: FnMut(&mut SessionMemory) -> Result<T>,
+    {
+        for attempt in 0..3 {
+            // Read the CAS revision before the snapshot. If a writer commits
+            // between the two reads, the snapshot is newer than `expected` and
+            // the save conflicts instead of overwriting that writer.
+            let expected = self.expected_revision(session_id);
+            let mut memory = self.load_memory(session_id)?;
+            let value = apply(&mut memory)?;
+            match self.mutate_blocking(SessionMutation::SaveMemory {
+                session_id: session_id.to_string(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+                memory: memory.clone(),
+            }) {
+                Ok(_) => return Ok((memory, value)),
+                Err(LitecodeError::SessionConflict { .. }) if attempt < 2 => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(LitecodeError::SessionStorage(
+            "session memory update conflicted repeatedly".into(),
+        ))
     }
 
     /// Workspace-owned plan directory for this manager's `.litecode` root.
@@ -2195,6 +2259,72 @@ impl SessionManager {
             .is_some_and(|r| r.activity.is_busy())
     }
 
+    /// Enter the session's single compaction state. Background branches pass
+    /// `None` and get a generated id, so every episode has one identity.
+    pub fn begin_compaction_blocking(
+        &self,
+        session_id: &str,
+        operation_id: Option<&str>,
+        trigger: CompactionTrigger,
+        at: Option<u64>,
+    ) -> (u64, String) {
+        let operation_id = operation_id
+            .map(str::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return (0, operation_id);
+        };
+        record.compaction = Some(ActiveCompaction {
+            operation_id: operation_id.clone(),
+            trigger,
+            at,
+        });
+        record.compaction_revision = record.compaction_revision.saturating_add(1);
+        (record.compaction_revision, operation_id)
+    }
+
+    /// Leave the compaction state. A terminal transition only clears the
+    /// episode it belongs to: a manual id never clears an auto episode, and an
+    /// auto terminal never clears a manual one.
+    pub fn end_compaction_blocking(
+        &self,
+        session_id: &str,
+        operation_id: Option<&str>,
+        trigger: CompactionTrigger,
+    ) -> (u64, Option<String>) {
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return (0, None);
+        };
+        let Some(active) = record.compaction.as_ref() else {
+            return (record.compaction_revision, None);
+        };
+        let matches =
+            operation_id.map_or(active.trigger == trigger, |id| active.operation_id == id);
+        if !matches {
+            return (record.compaction_revision, None);
+        }
+        let cleared = record.compaction.take().map(|active| active.operation_id);
+        record.compaction_revision = record.compaction_revision.saturating_add(1);
+        (record.compaction_revision, cleared)
+    }
+
+    /// Read the one compaction state a snapshot/event should project.
+    pub fn compaction_state_blocking(&self, session_id: &str) -> CompactionStateSnapshot {
+        let records = self.records.lock().unwrap();
+        match records.get(session_id) {
+            Some(record) => CompactionStateSnapshot {
+                revision: record.compaction_revision,
+                active: record.compaction.clone(),
+            },
+            None => CompactionStateSnapshot::default(),
+        }
+    }
+
+    /// Whether a manual compaction currently holds the exclusive session
+    /// lease. This is admission/ownership, not the episode state projected to
+    /// clients; use [`Self::compaction_state_blocking`] for that.
     pub fn is_compacting_blocking(&self, session_id: &str) -> bool {
         let records = self.records.lock().unwrap();
         records.get(session_id).is_some_and(|r| {
@@ -4722,5 +4852,136 @@ mod pending_message_tests {
         assert!(mgr.has_pending_messages(&sid));
         drop(lease);
         assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod compaction_state_tests {
+    use super::*;
+
+    #[test]
+    fn compaction_state_has_one_id_and_a_monotonic_revision() {
+        let manager = SessionManager::ephemeral_registry();
+        let sid = manager.open_session_sync("", "default", None).unwrap();
+        assert_eq!(
+            manager.compaction_state_blocking(&sid),
+            CompactionStateSnapshot::default()
+        );
+
+        let (revision, id) =
+            manager.begin_compaction_blocking(&sid, None, CompactionTrigger::Auto, Some(41));
+        assert_eq!(revision, 1);
+        assert!(!id.is_empty());
+        let state = manager.compaction_state_blocking(&sid);
+        assert_eq!(state.revision, 1);
+        let active = state.active.expect("started state must be visible");
+        assert_eq!(active.operation_id, id);
+        assert_eq!(active.trigger, CompactionTrigger::Auto);
+        assert_eq!(active.at, Some(41));
+
+        let (revision, _) = manager.begin_compaction_blocking(
+            &sid,
+            Some("manual-1"),
+            CompactionTrigger::Manual,
+            Some(7),
+        );
+        assert_eq!(revision, 2);
+
+        // An auto terminal must not steal a manual episode.
+        let (revision, cleared) =
+            manager.end_compaction_blocking(&sid, None, CompactionTrigger::Auto);
+        assert_eq!(revision, 2);
+        assert_eq!(cleared, None);
+        assert!(manager.compaction_state_blocking(&sid).active.is_some());
+
+        let (revision, cleared) =
+            manager.end_compaction_blocking(&sid, Some("manual-1"), CompactionTrigger::Manual);
+        assert_eq!(revision, 3);
+        assert_eq!(cleared.as_deref(), Some("manual-1"));
+        assert!(manager.compaction_state_blocking(&sid).active.is_none());
+
+        // A terminal for an already-idle session is a no-op.
+        let (revision, cleared) =
+            manager.end_compaction_blocking(&sid, None, CompactionTrigger::Auto);
+        assert_eq!(revision, 3);
+        assert_eq!(cleared, None);
+    }
+
+    #[test]
+    fn unknown_session_reads_idle() {
+        let manager = SessionManager::ephemeral_registry();
+        assert_eq!(
+            manager.compaction_state_blocking("missing"),
+            CompactionStateSnapshot::default()
+        );
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    use crate::session::memory::MemoryUpsertRequest;
+
+    #[test]
+    fn update_memory_does_not_overwrite_a_concurrent_write() {
+        let manager = SessionManager::ephemeral_registry();
+        let sid = manager.open_session_sync("", "default", None).unwrap();
+        let injected = std::cell::Cell::new(false);
+        let request = |text: &str| MemoryUpsertRequest {
+            id: None,
+            text: text.into(),
+            kind: None,
+        };
+
+        let (memory, _) = manager
+            .update_memory(&sid, |memory| {
+                if !injected.replace(true) {
+                    // Commit a different writer's snapshot after the outer
+                    // read. The outer save must conflict, not overwrite it.
+                    manager.update_memory(&sid, |other| {
+                        Ok(other.apply_upsert(&[request("other")], 2))
+                    })?;
+                }
+                Ok(memory.apply_upsert(&[request("outer")], 1))
+            })
+            .unwrap();
+
+        assert!(memory.entry("m1").is_some());
+        assert!(memory.entry("m2").is_some());
+        let loaded = manager.load_memory(&sid).unwrap();
+        assert!(loaded.entries.iter().any(|entry| entry.text == "other"));
+        assert!(loaded.entries.iter().any(|entry| entry.text == "outer"));
+    }
+
+    #[test]
+    fn memory_round_trips_and_updates() {
+        let manager = SessionManager::ephemeral_registry();
+        let sid = manager.open_session_sync("", "default", None).unwrap();
+        assert!(manager.load_memory(&sid).unwrap().entries.is_empty());
+
+        let (memory, result) = manager
+            .update_memory(&sid, |memory| {
+                Ok(memory.apply_upsert(
+                    &[MemoryUpsertRequest {
+                        id: None,
+                        text: "use pnpm".into(),
+                        kind: Some("preference".into()),
+                    }],
+                    1,
+                ))
+            })
+            .unwrap();
+        assert_eq!(result.added, ["m1"]);
+        assert_eq!(memory.entries[0].kind.as_str(), "preference");
+
+        let loaded = manager.load_memory(&sid).unwrap();
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(loaded.entries[0].text, "use pnpm");
+
+        let (_, result) = manager
+            .update_memory(&sid, |memory| Ok(memory.apply_delete(&["m1".into()])))
+            .unwrap();
+        assert_eq!(result.deleted, ["m1"]);
+        assert!(manager.load_memory(&sid).unwrap().entries.is_empty());
     }
 }

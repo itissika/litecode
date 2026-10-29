@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { isAllowedExternalUrl, isAllowedLoadUrl } from "./url-policy";
+import { isAllowedExternalUrl, isAllowedLoadUrl, sameAppHttpOrigin } from "./url-policy";
 
 describe("isAllowedExternalUrl (openExternal whitelist)", () => {
   it("allows http and https links", () => {
@@ -25,6 +25,19 @@ describe("isAllowedExternalUrl (openExternal whitelist)", () => {
     assert.equal(isAllowedExternalUrl(""), false);
     assert.equal(isAllowedExternalUrl("not a url"), false);
     assert.equal(isAllowedExternalUrl("http://"), false);
+  });
+});
+
+describe("sameAppHttpOrigin (local app navigation)", () => {
+  it("treats equivalent loopback spellings on one port as the same app", () => {
+    assert.equal(sameAppHttpOrigin("http://127.0.0.1:5123/a", "http://localhost:5123/b"), true);
+    assert.equal(sameAppHttpOrigin("http://[::1]:5123/", "http://127.0.0.1:5123/"), true);
+  });
+
+  it("keeps other ports, hosts, and schemes outside the app", () => {
+    assert.equal(sameAppHttpOrigin("http://127.0.0.1:5124/", "http://127.0.0.1:5123/"), false);
+    assert.equal(sameAppHttpOrigin("https://127.0.0.1:5123/", "http://127.0.0.1:5123/"), false);
+    assert.equal(sameAppHttpOrigin("http://example.com:5123/", "http://127.0.0.1:5123/"), false);
   });
 });
 

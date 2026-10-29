@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
+use crate::apps::service::{AppList, AppView};
 use crate::config::global_db::tools::mcp_catalog_id;
 use crate::config::guides::{self, GuideTopic};
 use crate::config::schema::{CallSurface, CustomToolDefinition, McpServerDefinition, ToolOrigin};
@@ -85,8 +86,17 @@ const COMMANDS: &[CommandSpec] = &[
                list (default: 10 running, 5 idle).",
     },
     CommandSpec {
+        name: "apps",
+        usage: "apps [id]",
+        summary: "built-in and custom apps, state, URL, and last error",
+        help: "`apps` lists every app in this workspace with its source, install kind, status, \
+               URL, data dir, and last install/runtime error. `apps <id>` prints one app. \
+               Read-only: install, trust, and start stay with the human in the Apps panel. \
+               Use `guide apps` for the registry format.",
+    },
+    CommandSpec {
         name: "guide",
-        usage: "guide [excludes|mcp|custom_tools]",
+        usage: "guide [excludes|mcp|custom_tools|apps]",
         summary: "how to edit that file, and who has to act",
         help: "`guide` lists topics. `guide <topic>` prints that topic.",
     },
@@ -122,6 +132,9 @@ enum Action {
         /// Rows per list; `None` keeps the panel defaults (10 running / 5 recent).
         limit: Option<usize>,
     },
+    Apps {
+        id: Option<String>,
+    },
     Guide(Option<GuideTopic>),
     Refresh(Option<RefreshTarget>),
 }
@@ -138,7 +151,8 @@ topics:\n\
 \n\
 - `excludes`\n\
 - `mcp`\n\
-- `custom_tools`";
+- `custom_tools`\n\
+- `apps`";
 
 fn call_surface_label(surface: CallSurface) -> &'static str {
     match surface {
@@ -157,11 +171,7 @@ fn effective_custom_definition(
     suites: &std::collections::HashMap<String, crate::config::schema::CustomSuiteDefinition>,
 ) -> CustomToolDefinition {
     let mut effective = def.clone();
-    if let Some(suite) = def
-        .suite
-        .as_deref()
-        .and_then(|suite| suites.get(suite))
-    {
+    if let Some(suite) = def.suite.as_deref().and_then(|suite| suites.get(suite)) {
         effective.surface = Some(suite.surface);
         effective.rules = suite.rules.clone();
     }
@@ -249,6 +259,13 @@ fn parse_action(raw: &str) -> Result<Action, String> {
             }
         }
         "sessions" => parse_sessions(&rest),
+        "apps" => match rest.as_slice() {
+            [] => Ok(Action::Apps { id: None }),
+            [id] => Ok(Action::Apps {
+                id: Some((*id).to_string()),
+            }),
+            _ => Err(usage_error("apps")),
+        },
         "guide" => match rest.as_slice() {
             [] => Ok(Action::Guide(None)),
             [topic] => GuideTopic::parse(topic)
@@ -316,6 +333,171 @@ fn parse_sessions(rest: &[&str]) -> Result<Action, String> {
         }
     }
     Ok(Action::Sessions { all, limit })
+}
+
+fn format_apps(list: &AppList, only: Option<&str>) -> Result<String, String> {
+    let selected: Vec<&AppView> = match only {
+        Some(id) => match list.apps.iter().find(|app| app.id == id) {
+            Some(app) => vec![app],
+            None => {
+                let ids = list
+                    .apps
+                    .iter()
+                    .map(|app| format!("'{}'", app.id))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(format!("unknown app id '{id}'.\n\nKnown ids: {ids}\n"));
+            }
+        },
+        None => list.apps.iter().collect(),
+    };
+
+    let builtin = list
+        .apps
+        .iter()
+        .filter(|app| !app.source.is_custom())
+        .count();
+    let custom = list.apps.len() - builtin;
+    let mut out = String::new();
+    out.push_str(&format!(
+        "- registry: workspace '{}' · global '{}'\n",
+        list.registry_paths.workspace, list.registry_paths.global
+    ));
+    out.push_str(&format!(
+        "- apps: {} (built-in {builtin}, custom {custom})\n",
+        list.apps.len()
+    ));
+    if list.registry_errors.is_empty() {
+        out.push_str("- registry errors: none\n");
+    } else {
+        out.push_str("- registry errors:\n");
+        for error in &list.registry_errors {
+            let app = error
+                .app_id
+                .as_deref()
+                .map(|id| format!(" app '{}'", id))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "  - {}{}: {} ({})\n",
+                error.source, app, error.message, error.file
+            ));
+        }
+    }
+
+    for app in selected {
+        out.push_str(&format!("\n## {} ('{}')\n", app.name, app.id));
+        let install = if app.builtin_view.is_some() {
+            "no install"
+        } else if app.required_bytes.is_some() {
+            "auto-install"
+        } else {
+            "external install"
+        };
+        out.push_str(&format!(
+            "- source: {} · {install} · status: {}\n",
+            app.source.as_str(),
+            app.status.as_str()
+        ));
+        if !app.description.is_empty() {
+            out.push_str(&format!("- {}\n", app.description));
+        }
+        if !app.summary.is_empty() {
+            out.push_str(&format!("- note: {}\n", app.summary));
+        }
+        if let Some(url) = app.url.as_deref() {
+            out.push_str(&format!("- url: {url}\n"));
+        }
+        if let Some(view) = app.builtin_view {
+            out.push_str(&format!("- launch: built-in panel ('{view}')\n"));
+        }
+        out.push_str(&format!("- data: {} ({})\n", app.data_dir, app.data_scope));
+        if app.builtin_view.is_none() {
+            out.push_str(&format!("- install dir: {}\n", app.install_dir));
+        }
+        if !app.permissions.is_empty() {
+            out.push_str(&format!("- permissions: {}\n", app.permissions.join(", ")));
+        }
+        if !app.trusted {
+            out.push_str("- trust: waiting for human confirmation\n");
+        }
+        if let Some(progress) = &app.install_progress {
+            let percent = progress
+                .percent
+                .map(|p| format!(" {p}%"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "- install progress:{percent} {}{}\n",
+                progress.phase,
+                progress
+                    .message
+                    .as_deref()
+                    .map(|message| format!(" — {message}"))
+                    .unwrap_or_default()
+            ));
+        }
+        if let Some(error) = &app.install_error {
+            out.push_str(&format!("- install error: {}\n", error.message));
+            if let Some(path) = error.log_path.as_deref() {
+                out.push_str(&format!("- install log: {path}\n"));
+            }
+            if let Some(tail) = error.tail.as_deref() {
+                let excerpt = tail_excerpt(tail);
+                if !excerpt.is_empty() {
+                    out.push_str("- install log tail:\n");
+                    for line in excerpt.lines() {
+                        out.push_str(&format!("  {line}\n"));
+                    }
+                }
+            }
+        }
+        if let Some(error) = &app.runtime_error {
+            out.push_str(&format!("- runtime error: {error}\n"));
+        }
+        out.push_str(&format!("- next: {}\n", human_next(app)));
+    }
+    Ok(out)
+}
+
+fn human_next(app: &AppView) -> String {
+    if !app.trusted {
+        return "human confirms trust in the Apps detail, then installs or starts".into();
+    }
+    if app.builtin_view.is_some() {
+        return "human opens the built-in panel from Apps".into();
+    }
+    if matches!(app.status, crate::apps::schema::AppStatus::Installing) {
+        return "installing; wait for it to finish".into();
+    }
+    if !app.installed {
+        if app.can_install {
+            return "human clicks Install in Apps".into();
+        }
+        return format!(
+            "external install: put files/runtime under '{}/app' (see note), then human clicks Start",
+            app.install_dir
+        );
+    }
+    if app.running {
+        return "human opens it from Apps; use the url above".into();
+    }
+    if app.can_start {
+        return "human clicks Start in Apps".into();
+    }
+    "no action available; report the status and error".into()
+}
+
+fn tail_excerpt(tail: &str) -> String {
+    const MAX_LINES: usize = 12;
+    const MAX_CHARS: usize = 1400;
+    let mut lines: Vec<&str> = tail.lines().rev().take(MAX_LINES).collect();
+    lines.reverse();
+    let mut out = lines.join("\n");
+    let chars = out.chars().count();
+    if chars > MAX_CHARS {
+        out = out.chars().skip(chars - MAX_CHARS).collect();
+        out.insert(0, '…');
+    }
+    out
 }
 
 fn usage_error(command: &str) -> String {
@@ -448,11 +630,25 @@ impl LitecodeWorkspaceTool {
                     Err(error) => ToolCallResult::error(error),
                 }
             }
+            Ok(Action::Apps { id }) => self.apps_section(id.as_deref()),
             Ok(Action::Guide(topic)) => match topic {
                 Some(topic) => ToolCallResult::ok(guides::topic(topic)),
                 None => ToolCallResult::ok(guides::GUIDE_INDEX),
             },
             Ok(Action::Refresh(target)) => self.refresh(target),
+        }
+    }
+
+    /// Read-only app snapshot: definitions, install state, URLs, and last errors.
+    fn apps_section(&self, id: Option<&str>) -> ToolCallResult {
+        let Some(service) = self.runtime.apps() else {
+            return ToolCallResult::ok(
+                "# apps\n\n- The app service is attached only in the LiteCode workbench; this CLI session has none.\n- 'guide apps' explains the registry, and built-in apps appear in the workbench Apps panel.\n",
+            );
+        };
+        match format_apps(&service.list_brief(), id) {
+            Ok(body) => ToolCallResult::ok(format!("# apps\n\n{body}")),
+            Err(message) => ToolCallResult::error(format!("# apps\n\n{message}")),
         }
     }
 
@@ -1248,9 +1444,7 @@ fn one_line_preview(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{
-        AgentProfile, AgentToolBinding, GlobalSettings, ToolSchema,
-    };
+    use crate::config::schema::{AgentProfile, AgentToolBinding, GlobalSettings, ToolSchema};
     use crate::config::{ConfigManager, WorkspaceState};
 
     fn def(name: &str) -> CustomToolDefinition {
@@ -1291,12 +1485,10 @@ mod tests {
         profile.tools.insert("foo__bar".into(), binding());
         global.agents.insert("default".into(), profile);
         global.custom_tools.push(def("foo__bar"));
-        let resolved = ConfigManager::resolve_without_catalog(
-            global,
-            WorkspaceState::new(dir.path()),
-        );
+        let resolved =
+            ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
         let reason = code_composition_error(&resolved, "default", &def("foo_bar"))
-        .expect("same PascalCase type must collide");
+            .expect("same PascalCase type must collide");
         assert!(reason.contains("collides"), "{reason}");
     }
 
@@ -1309,8 +1501,33 @@ mod tests {
             GlobalSettings::default(),
             WorkspaceState::new(dir.path()),
         );
-        assert!(
-            code_composition_error(&resolved, "default", &def).is_none()
+        assert!(code_composition_error(&resolved, "default", &def).is_none());
+    }
+
+    #[test]
+    fn apps_command_parses_optional_id() {
+        assert_eq!(parse_action("apps"), Ok(Action::Apps { id: None }));
+        assert_eq!(
+            parse_action("apps gallery"),
+            Ok(Action::Apps {
+                id: Some("gallery".into())
+            })
         );
+        assert!(parse_action("apps one two").is_err());
+    }
+
+    #[test]
+    fn apps_command_lists_builtins_and_rejects_unknown_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let service =
+            crate::apps::AppService::new(dir.path().join("workspace"), dir.path().join("global"));
+        let list = service.list_brief();
+        let body = format_apps(&list, None).expect("apps list");
+        assert!(body.contains("Gallery"));
+        assert!(body.contains("built-in panel"));
+        let gallery = format_apps(&list, Some("gallery")).expect("gallery");
+        assert!(gallery.contains("Gallery"));
+        assert!(!gallery.contains("NocoDB"));
+        assert!(format_apps(&list, Some("no-such-app")).is_err());
     }
 }

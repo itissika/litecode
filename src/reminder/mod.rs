@@ -12,14 +12,15 @@ pub mod migrate;
 mod sources;
 
 pub use engine::{
-    BackgroundFacts, Facts, SeamCtx, SpineNode, SpineReminderView, TaskFacts, sync, view_from_spine,
+    BackgroundFacts, Facts, MemoryFacts, SeamCtx, SpineNode, SpineReminderView, TaskFacts, sync,
+    view_from_spine,
 };
 pub use file_tracker::FileTracker;
 pub use kinds::{
     BackgroundBody, BashExitBody, BashExitEntry, ChildCountsBody, CustomToolSettledBody,
-    CustomToolSettledEntry, EnvBody, FilesChangedBody, KnowledgeStatusBody, MentionRef,
-    MentionsBody, PlanChangedBody, PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild,
-    SubagentSettledBody, TasksBody, TodoSnap, Visibility,
+    CustomToolSettledEntry, EnvBody, FilesChangedBody, KnowledgeStatusBody, MemoryBody,
+    MemorySnap, MentionRef, MentionsBody, PlanChangedBody, PlanPointer, Reminder, ReminderKind,
+    RunningBash, SettledChild, SubagentSettledBody, TasksBody, TodoSnap, Visibility,
 };
 
 use crate::types::{Item, user_text};

@@ -46,6 +46,11 @@ describe("decideDockTarget", () => {
     expect(rejectsDockTarget("edge", undefined)).toBe(true);
   });
 
+  it("refuses a popout target for a center tab that cannot pop out", () => {
+    expect(rejectsDockTarget("grid", "popout", "appview")).toBe(true);
+    expect(rejectsDockTarget("grid", "grid", "appview")).toBe(false);
+  });
+
   it("leaves an unknown drag to dockview", () => {
     expect(rejectsDockTarget(undefined, "edge")).toBe(false);
     expect(rejectsDockTarget("floating", "grid")).toBe(false);

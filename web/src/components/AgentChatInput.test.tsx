@@ -163,7 +163,15 @@ describe("AgentChatInput silent send", () => {
     act(() => {
       useTurnStore.setState({
         byId: new Map([
-          ["session-1", { ...EMPTY_SLICE, runState: "idle", compacting: true }],
+          [
+            "session-1",
+            {
+              ...EMPTY_SLICE,
+              runState: "idle",
+              compacting: true,
+              manualCompacting: true,
+            },
+          ],
         ]),
       });
     });
@@ -173,6 +181,19 @@ describe("AgentChatInput silent send", () => {
     expect(screen.queryByTitle("Queue for the next step")).toBeNull();
     pressComposerKey(COMPOSER, "Enter");
     expect(sendRpc).not.toHaveBeenCalledWith("agent/run", expect.anything());
+
+    // An automatic branch that outlives the turn keeps the marker but does not
+    // own the manual lease, so the next send stays available.
+    act(() => {
+      useTurnStore.setState({
+        byId: new Map([
+          ["session-1", { ...EMPTY_SLICE, runState: "idle", compacting: true }],
+        ]),
+      });
+    });
+    setComposerText(COMPOSER, "after auto");
+    const sendAfterAuto = screen.getByTitle("Send") as HTMLButtonElement;
+    expect(sendAfterAuto.disabled).toBe(false);
   });
 
   it("stacks the three glyphs in one box and scales the live one in", () => {
@@ -556,7 +577,17 @@ describe("composer placeholder", () => {
 
     act(() => {
       useTurnStore.setState({
-        byId: new Map([["session-1", { ...EMPTY_SLICE, runState: "idle", compacting: true }]]),
+        byId: new Map([
+          [
+            "session-1",
+            {
+              ...EMPTY_SLICE,
+              runState: "idle",
+              compacting: true,
+              manualCompacting: true,
+            },
+          ],
+        ]),
       });
     });
     expect(shownPlaceholder()).toBe("Compacting context…");

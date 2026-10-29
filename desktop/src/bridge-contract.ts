@@ -17,6 +17,7 @@
 export const REMOTE_PROGRESS_CHANNEL = "litecode:remote-progress";
 export const COMPONENT_PROGRESS_CHANNEL = "litecode:component-progress";
 export const BROWSER_STATE_CHANNEL = "litecode:browser-state";
+export const APP_VIEW_STATE_CHANNEL = "litecode:app-view-state";
 /** main -> renderer: open a visible browser panel. */
 export const BROWSER_OPEN_CHANNEL = "litecode:browser-open";
 /** main -> renderer: close one browser panel. */
@@ -127,6 +128,16 @@ export type BrowserState = {
   loading: boolean;
 };
 
+export type AppViewState = BrowserState;
+export type AppViewCreateInput = {
+  id: string;
+  appId?: string;
+  viewKey: string;
+  url: string;
+  backgroundColor: string;
+  permissions: string[];
+};
+
 export type BrowserOpenRequest = { id: string; url: string };
 export type BrowserCloseRequest = { id: string };
 export type BrowserAgentActivityEvent = { id: string; busy: boolean };
@@ -222,6 +233,16 @@ export type LitecodeDesktopBridge = {
   browserSetActive(input: { id: string; active: boolean }): void;
   browserDestroy(id: string): void;
   browserSetObscured(obscured: boolean): void;
+  appViewCreate(input: AppViewCreateInput): Promise<AppViewState>;
+  appViewGoBack(id: string): Promise<AppViewState>;
+  appViewGoForward(id: string): Promise<AppViewState>;
+  appViewReload(id: string): Promise<AppViewState>;
+  appViewStop(id: string): Promise<AppViewState>;
+  appViewSetBounds(input: { id: string; bounds: BrowserBounds }): void;
+  appViewSetVisible(input: { id: string; visible: boolean }): void;
+  appViewSetActive(input: { id: string; active: boolean }): void;
+  appViewDestroy(id: string): void;
+  onAppViewState(handler: (state: AppViewState) => void): Unsubscribe;
   onBrowserState(handler: (state: BrowserState) => void): Unsubscribe;
   onBrowserOpenRequest(handler: (event: BrowserOpenRequest) => void): Unsubscribe;
   onBrowserCloseRequest(handler: (event: BrowserCloseRequest) => void): Unsubscribe;

@@ -176,6 +176,9 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               // Clear the local record so each AgentPanel re-subscribes
               // itself on (re)connect via its own connection-state effect.
               set({ state: connection, subscribedSessions: new Set() });
+              // A restarted sidecar numbers compaction states from zero again;
+              // drop the old baseline so its first snapshot is not ignored.
+              siblingStores.turn?.getState().resetCompactionRevisions();
               // WP-184 / WP-176: never auto-send agent/permission deny on
               // disconnect. Keep local permissionQueue as optimistic UI;
               // the next session snapshot's pending_permissions overwrites it.

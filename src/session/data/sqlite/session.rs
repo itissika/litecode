@@ -21,6 +21,7 @@ use crate::session::event::{
     skip_empty_assistant_item, spine_working_payload, working_payload_with_item,
 };
 use crate::session::media::item_has_media;
+use crate::session::memory::SessionMemory;
 use crate::session::model::{CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION};
 use crate::session::snapshot;
 use crate::session::surface::{
@@ -2115,6 +2116,16 @@ impl Session {
         Self::write_task_state(self.conn(), &self.id, state)
     }
 
+    /// Load session-scoped working memory.
+    pub fn load_memory(&self) -> Result<SessionMemory> {
+        Self::load_memory_on(self.conn(), &self.id)
+    }
+
+    /// Replace the whole memory document. Bounded by the tool layer.
+    pub fn save_memory(&self, memory: &SessionMemory) -> Result<()> {
+        Self::write_memory(self.conn(), &self.id, memory)
+    }
+
     /// Load last-known provider usage meter (empty if never written).
     pub fn load_context_meter(&self) -> Result<SessionContextMeter> {
         load_context_meter_on(self.conn(), &self.id)
@@ -2171,6 +2182,36 @@ impl Session {
                AND provider_usage IS NULL",
             rusqlite::params![usage_json, self.id, seq as i64],
         )?;
+        Ok(())
+    }
+
+    pub fn load_memory_on(conn: &Connection, session_id: &str) -> Result<SessionMemory> {
+        let raw: String = conn
+            .query_row(
+                "SELECT COALESCE(memory_json, '{\"next_id\":1,\"entries\":[]}') FROM sessions WHERE id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| LitecodeError::SessionNotFound(session_id.to_string()))?;
+        let mut memory: SessionMemory = serde_json::from_str(&raw)
+            .map_err(|e| LitecodeError::SessionStorage(format!("parse session memory: {e}")))?;
+        memory.normalize();
+        Ok(memory)
+    }
+
+    fn write_memory(conn: &Connection, session_id: &str, memory: &SessionMemory) -> Result<()> {
+        let mut memory = memory.clone();
+        memory.normalize();
+        let json = serde_json::to_string(&memory)?;
+        let changed = conn
+            .execute(
+                "UPDATE sessions SET memory_json = ?1 WHERE id = ?2",
+                rusqlite::params![json, session_id],
+            )
+            .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
+        if changed == 0 {
+            return Err(LitecodeError::SessionNotFound(session_id.to_string()));
+        }
         Ok(())
     }
 

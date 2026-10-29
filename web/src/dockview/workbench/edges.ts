@@ -1,5 +1,6 @@
 import type { DockviewApi } from "dockview-react";
 
+import { appsAvailable } from "../../lib/appsAvailability";
 import { dockview } from "./host";
 import { edgeKinds, kindForComponent, type EdgeRail } from "./kinds";
 
@@ -28,12 +29,16 @@ export function ensureEdgePanel(component: string, api?: DockviewApi | null): vo
   const spec = kindForComponent(component);
   if (!live || !spec?.singletonId || spec.zone !== "edge" || !spec.rail) return;
   if (live.getPanel(spec.singletonId)) return;
+  const referenceGroup = ensureEdge(live, spec.rail);
   live.addPanel({
     id: spec.singletonId,
     component: spec.component,
     title: spec.title ?? spec.component,
     tabComponent: spec.tabComponent,
-    position: { referenceGroup: ensureEdge(live, spec.rail) },
+    position:
+      spec.component === "apps"
+        ? { referenceGroup, index: 0 }
+        : { referenceGroup },
   });
 }
 
@@ -48,6 +53,17 @@ export function revealEdgePanel(component: string): boolean {
   panel.api.group?.api.expand?.();
   panel.api.setActive();
   return true;
+}
+
+/** The Gallery moved from the left rail into an Apps panel; drop the old edge tab. */
+function removeLegacyGalleryPanel(api: DockviewApi): void {
+  const legacy = api.getPanel("workspace-gallery");
+  if (!legacy) return;
+  try {
+    legacy.api.close();
+  } catch {
+    // The panel may already be gone.
+  }
 }
 
 function removeLegacyTerminalPanels(api: DockviewApi): void {
@@ -66,12 +82,20 @@ function removeLegacyTerminalPanels(api: DockviewApi): void {
 export function ensureDefaultEdges(api?: DockviewApi | null): void {
   const live = liveApi(api);
   if (!live) return;
-  for (const kind of edgeKinds()) ensureEdgePanel(kind.component, live);
+  if (!appsAvailable()) {
+    live.getPanel("apps")?.api.close();
+  }
+  for (const kind of edgeKinds()) {
+    if (kind.component === "apps" && !appsAvailable()) continue;
+    ensureEdgePanel(kind.component, live);
+  }
+  removeLegacyGalleryPanel(live);
   removeLegacyTerminalPanels(live);
 }
 
 function hasRequiredRails(api: DockviewApi): boolean {
   return !!(
+    (!appsAvailable() || api.getPanel("apps")) &&
     api.getPanel("filetree") &&
     api.getPanel("sessions") &&
     api.getPanel("workspace-terminal")

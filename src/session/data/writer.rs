@@ -995,6 +995,24 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 CommitKind::MetaUpdated,
             )
         }
+        SessionMutation::SaveMemory {
+            session_id,
+            expected_revision,
+            operation_id,
+            memory,
+        } => {
+            {
+                let session = ensure_live(state, &session_id)?;
+                session.save_memory(&memory)?;
+            }
+            bump_receipt_receipt_only(
+                state,
+                &session_id,
+                &operation_id.0,
+                expected_revision,
+                CommitKind::MetaUpdated,
+            )
+        }
         SessionMutation::SaveContextMeter {
             session_id,
             expected_revision,

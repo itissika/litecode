@@ -59,7 +59,7 @@ function revokeImages(images: ComposerImage[]) {
 }
 
 /** Empty-composer hint. Blocked states win; a live turn (including auto
- *  compaction) stays on the queue hint. Manual compaction is idle + compacting. */
+ *  compaction) stays on the queue hint. Manual compaction is idle + blocked. */
 export function composerPlaceholder(input: {
   connected: boolean;
   hasModel: boolean;
@@ -236,8 +236,10 @@ export function AgentChatInput({
   const runState = useTurnStore(
     (s) => s.byId.get(sessionId)?.runState ?? "idle",
   );
-  const compacting = useTurnStore(
-    (s) => s.byId.get(sessionId)?.compacting ?? false,
+  // Standalone only: an automatic branch inside a live turn must not block
+  // queueing, and one that outlives the turn must not block the next send.
+  const manualCompacting = useTurnStore(
+    (s) => s.byId.get(sessionId)?.manualCompacting ?? false,
   );
   const replaying = useTurnStore(
     (s) => s.byId.get(sessionId)?.replaying ?? false,
@@ -426,7 +428,7 @@ export function AgentChatInput({
   // all the turn really cannot run — stay blocked.
   const hasModel = Boolean(sessionModelId) || availableModels.length > 0;
   const connBlocked =
-    connection !== "connected" || isRunning || compacting || replaying;
+    connection !== "connected" || isRunning || manualCompacting || replaying;
   // Stop is the one control that must survive a live turn: `connBlocked`
   // folds in `isRunning`, which is exactly the state a stop exists to
   // interrupt. Only a dead connection blocks the cancel RPC.
@@ -435,7 +437,7 @@ export function AgentChatInput({
   // While a turn is live, the composer queues instead of starting: the server
   // owns the queue (memory-only) and injects it at the next request seam.
   //
-  // `compacting` is deliberately not part of this gate: an auto compaction runs
+  // `manualCompacting` is deliberately not part of this gate: an auto compaction runs
   // *inside* a live turn and the queue is drained at the next seam — i.e. after
   // the compaction — so the message lands in the fresh transcript and the turn
   // keeps stepping to answer it. A standalone compaction (idle session) is
@@ -447,7 +449,7 @@ export function AgentChatInput({
   const placeholder = composerPlaceholder({
     connected: connection === "connected",
     hasModel,
-    manualCompacting: compacting && !isRunning,
+    manualCompacting: manualCompacting && !isRunning,
     queuing: canQueue,
   });
   // One button, three skins: send while idle, queue while a turn runs and a

@@ -7,6 +7,7 @@ use crate::session::data::sqlite::session::{
     ProviderUsageRollup, ProviderUsageSeries, SessionApply, SessionContextMeter,
 };
 use crate::session::event::{EventDraft, Seq};
+use crate::session::memory::SessionMemory;
 use crate::session::task_state::TaskReminders;
 use crate::session::working::WorkingRow;
 use crate::types::Item;
@@ -248,6 +249,14 @@ pub enum SessionMutation {
         operation_id: MutationId,
         state: TaskReminders,
     },
+    /// Receipt-only side state, like `SaveTaskState`: bounded memory entries
+    /// never produce transcript rows.
+    SaveMemory {
+        session_id: String,
+        expected_revision: u64,
+        operation_id: MutationId,
+        memory: SessionMemory,
+    },
     SaveContextMeter {
         session_id: String,
         expected_revision: u64,
@@ -346,6 +355,7 @@ impl SessionMutation {
             | Self::Compact { operation_id, .. }
             | Self::ReplaceSurface { operation_id, .. }
             | Self::SaveTaskState { operation_id, .. }
+            | Self::SaveMemory { operation_id, .. }
             | Self::SaveContextMeter { operation_id, .. }
             | Self::RecordProviderUsage { operation_id, .. }
             | Self::SavePendingPermissions { operation_id, .. }
@@ -381,6 +391,7 @@ impl SessionMutation {
             | Self::Compact { session_id, .. }
             | Self::ReplaceSurface { session_id, .. }
             | Self::SaveTaskState { session_id, .. }
+            | Self::SaveMemory { session_id, .. }
             | Self::SaveContextMeter { session_id, .. }
             | Self::RecordProviderUsage { session_id, .. }
             | Self::SavePendingPermissions { session_id, .. }
@@ -442,6 +453,9 @@ impl SessionMutation {
             | Self::SaveTaskState {
                 expected_revision, ..
             }
+            | Self::SaveMemory {
+                expected_revision, ..
+            }
             | Self::SaveContextMeter {
                 expected_revision, ..
             }
@@ -497,6 +511,10 @@ pub enum SessionRead {
         session_id: String,
     },
     ContextMeter {
+        session_id: String,
+    },
+    /// Session-scoped working memory document.
+    Memory {
         session_id: String,
     },
     ListSessions,
@@ -624,6 +642,7 @@ pub enum ReadValue {
     },
     TruncateEpoch(u64),
     Meter(SessionContextMeter),
+    Memory(crate::session::memory::SessionMemory),
     List(Vec<SessionListRow>),
     Folders(Vec<SessionFolderRow>),
     Ids(Vec<String>),

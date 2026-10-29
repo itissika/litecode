@@ -27,7 +27,8 @@ const RETRY_BASE_DELAY: std::time::Duration = std::time::Duration::from_millis(5
 /// Cap for the doubling backoff — long waits stop helping once a link is gone.
 const RETRY_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(8);
 /// Retries after the first attempt (total attempts = `RETRY_MAX + 1`).
-const RETRY_MAX: usize = 5;
+/// Long agent turns can afford to wait out an outage, so the budget is wide.
+const RETRY_MAX: usize = 50;
 
 /// Attempts already started against the shared connect + empty-stream budget.
 pub(super) struct ReconnectBudget {
@@ -82,7 +83,7 @@ fn notify(phase: LlmReconnectPhase, attempt: u32, delay_ms: u64) {
 /// to [`RETRY_MAX`] times with a doubling backoff; a non-clonable body is sent
 /// once. Nothing has reached the model server on these paths, so a retry cannot
 /// duplicate a generation. `budget` is shared with a later empty-stream loss so
-/// both paths spend the same six attempts.
+/// both paths spend the same attempt budget.
 pub(super) async fn send_cancellable(
     request: reqwest::RequestBuilder,
     cancel: &CancellationToken,
@@ -462,7 +463,7 @@ mod tests {
         assert_eq!(got.len(), 3);
         assert_eq!(got[0].phase, LlmReconnectPhase::Waiting);
         assert_eq!(got[0].attempt, 2);
-        assert_eq!(got[0].max_attempts, 6);
+        assert_eq!(got[0].max_attempts, ReconnectBudget::max_attempts());
         assert_eq!(got[0].delay_ms, 500);
         assert_eq!(got[1].phase, LlmReconnectPhase::Connecting);
         assert_eq!(got[1].attempt, 2);
@@ -534,6 +535,6 @@ mod tests {
         let got = notices.lock().unwrap().clone();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].phase, LlmReconnectPhase::Failed);
-        assert_eq!(got[0].attempt, 6);
+        assert_eq!(got[0].attempt, (RETRY_MAX + 1) as u32);
     }
 }

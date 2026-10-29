@@ -1,5 +1,8 @@
 //! Core tool id sets shared by seed (CONFIG §2.5).
 
+/// Model-facing code members behind the `memory` capability card.
+pub const MEMORY_TOOL_IDS: &[&str] = &["memory.list", "memory.upsert", "memory.delete"];
+
 pub fn core_configurable_tools() -> &'static [&'static str] {
     &[
         "read",
@@ -21,6 +24,7 @@ pub fn core_none_tools() -> &'static [&'static str] {
     &[
         "plan",
         "todo",
+        "memory",
         "ask_user",
         "knowledge",
         crate::config::schema::SUBAGENT_CAPABILITY_ID,
@@ -42,6 +46,7 @@ pub fn is_core_tool(id: &str) -> bool {
         || network_core_tools().contains(&id)
         // Members are no longer cards, but their model names stay reserved.
         || crate::config::schema::SUBAGENT_MEMBER_TOOL_IDS.contains(&id)
+        || MEMORY_TOOL_IDS.contains(&id)
 }
 
 pub fn optional_builtin_ids() -> &'static [&'static str] {

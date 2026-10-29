@@ -5,7 +5,7 @@ import {
   type WebContents,
 } from "electron";
 
-import { BROWSER_STATE_CHANNEL } from "./bridge-contract";
+import { APP_VIEW_STATE_CHANNEL, BROWSER_STATE_CHANNEL } from "./bridge-contract";
 import {
   BROWSER_PARTITION,
   BrowserHost,
@@ -16,24 +16,90 @@ import { t } from "./i18n";
 import { isAllowedLoadUrl } from "./url-policy";
 
 let guestSessionReady = false;
+const downloadPolicyPartitions = new Set<string>();
+
+function mediaAllowed(
+  permissions: readonly string[],
+  mediaTypes: readonly ("audio" | "video")[] | undefined,
+): boolean {
+  if (!mediaTypes || mediaTypes.length === 0) {
+    // Chromium sometimes performs a generic media check before the concrete
+    // request. Keep the configured device family available.
+    return permissions.includes("microphone") || permissions.includes("camera");
+  }
+  return mediaTypes.every((type) =>
+    type === "audio"
+      ? permissions.includes("microphone")
+      : permissions.includes("camera"),
+  );
+}
+
+function permissionAllowed(
+  permission: string,
+  permissions: readonly string[],
+  mediaTypes?: readonly ("audio" | "video")[],
+): boolean {
+  if (permission === "media") {
+    return mediaAllowed(permissions, mediaTypes);
+  }
+  if (permission === "clipboard-sanitized-write") {
+    return permissions.includes("clipboard-write");
+  }
+  return permissions.includes(permission);
+}
+
+function prepareSession(
+  partition: string,
+  permissions: readonly string[],
+  allowDownloads: boolean,
+): void {
+  const ses = session.fromPartition(partition);
+  ses.setPermissionCheckHandler((_wc, permission, _origin, details) => {
+    const mediaTypes =
+      permission === "media" &&
+      "mediaType" in details &&
+      (details.mediaType === "audio" || details.mediaType === "video")
+        ? [details.mediaType]
+        : undefined;
+    return permissionAllowed(permission, permissions, mediaTypes);
+  });
+  ses.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    const mediaTypes =
+      permission === "media" &&
+      "mediaTypes" in details &&
+      Array.isArray(details.mediaTypes)
+        ? details.mediaTypes
+        : undefined;
+    callback(permissionAllowed(permission, permissions, mediaTypes));
+  });
+  // A partition is long-lived and app views may be recreated; register the
+  // download policy once, not once per view.
+  if (!downloadPolicyPartitions.has(partition)) {
+    downloadPolicyPartitions.add(partition);
+    ses.on("will-download", (event) => {
+      if (!allowDownloads) event.preventDefault();
+    });
+  }
+}
 
 /** One persistent browser profile, separate from the workbench session. */
 function prepareGuestSession(): void {
   if (guestSessionReady) return;
-  const ses = session.fromPartition(BROWSER_PARTITION);
-  ses.setPermissionCheckHandler(() => false);
-  ses.setPermissionRequestHandler((_wc, _permission, callback) => {
-    callback(false);
-  });
-  ses.on("will-download", (event) => {
-    event.preventDefault();
-  });
+  prepareSession(BROWSER_PARTITION, [], false);
   guestSessionReady = true;
 }
 
-function guardGuestNavigation(wc: WebContents): void {
+function guardGuestNavigation(
+  wc: WebContents,
+  allowUrl: (url: string) => boolean,
+  onExternal?: (url: string) => void,
+): void {
   const guard = (event: Electron.Event, url: string) => {
-    if (!isAllowedLoadUrl(url)) event.preventDefault();
+    if (allowUrl(url)) return;
+    event.preventDefault();
+    if (onExternal && (url.startsWith("http://") || url.startsWith("https://"))) {
+      onExternal(url);
+    }
   };
   wc.on("will-navigate", guard);
   wc.on("will-redirect", guard);
@@ -96,16 +162,21 @@ function wrapPage(wc: WebContents): BrowserPage {
   };
 }
 
-function mountGuest(win: BrowserWindow): BrowserViewHandle {
+function mountGuest(
+  win: BrowserWindow,
+  partition: string,
+  allowUrl: (url: string) => boolean,
+  onExternal?: (url: string) => void,
+): BrowserViewHandle {
   const view = new WebContentsView({
     webPreferences: {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-      partition: BROWSER_PARTITION,
+      partition,
     },
   });
-  guardGuestNavigation(view.webContents);
+  guardGuestNavigation(view.webContents, allowUrl, onExternal);
   const page = wrapPage(view.webContents);
   let hostWindow = win;
   let attached = false;
@@ -178,7 +249,7 @@ export function createBrowserHost(
       if (win.isDestroyed()) return;
       win.webContents.send(BROWSER_STATE_CHANNEL, state);
     },
-    createView: () => mountGuest(win),
+    createView: () => mountGuest(win, BROWSER_PARTITION, isAllowedLoadUrl),
     fallbackTitle: t("browser.title"),
     moveView: (view, popoutId) => {
       if (popoutId === null) return view.reparent(win);
@@ -186,5 +257,45 @@ export function createBrowserHost(
       if (!target || target.isDestroyed()) return false;
       return view.reparent(target);
     },
+  });
+}
+
+export const APP_VIEW_ID_PATTERN = /^app-[a-z0-9][a-z0-9-]{0,63}$/;
+
+const appSessionPermissions = new Map<string, readonly string[]>();
+
+/** App views keep their own persistent partition, permission allowlist, and
+ * downloads. The partition is derived from the workspace/app view key. */
+export function configureAppSession(partition: string, permissions: readonly string[]): void {
+  appSessionPermissions.set(partition, permissions);
+  prepareSession(partition, permissions, true);
+}
+
+export type AppViewHostOptions = {
+  partitionFor: (id: string) => string;
+  isAllowedUrl: (url: string, id: string) => boolean;
+  onExternal: (url: string) => void;
+};
+
+/** A second BrowserHost for local app pages. It has no popout host movement. */
+export function createAppViewHost(win: BrowserWindow, options: AppViewHostOptions): BrowserHost {
+  return new BrowserHost({
+    idPattern: APP_VIEW_ID_PATTERN,
+    isAllowedUrl: options.isAllowedUrl,
+    createView: (id) => {
+      const partition = options.partitionFor(id);
+      prepareSession(partition, appSessionPermissions.get(partition) ?? [], true);
+      return mountGuest(
+        win,
+        partition,
+        (url) => options.isAllowedUrl(url, id),
+        options.onExternal,
+      );
+    },
+    onWindowOpen: (_id, url) => options.onExternal(url),
+    onState: (state) => {
+      if (!win.isDestroyed()) win.webContents.send(APP_VIEW_STATE_CHANNEL, state);
+    },
+    fallbackTitle: "App",
   });
 }

@@ -74,8 +74,8 @@ export interface BrowserViewHandle {
 }
 
 export interface BrowserHostOptions {
-  isAllowedUrl: (url: string) => boolean;
-  createView: () => BrowserViewHandle;
+  isAllowedUrl: (url: string, id: string) => boolean;
+  createView: (id: string) => BrowserViewHandle;
   onState: (state: BrowserState) => void;
   /**
    * Move a view onto the main window (`null`) or a registered popout.
@@ -85,6 +85,10 @@ export interface BrowserHostOptions {
   moveView?: (view: BrowserViewHandle, popoutId: string | null) => boolean;
   /** Title used while a page has no title of its own. */
   fallbackTitle?: string;
+  /** Restrict ids accepted by this host. Defaults to browser panel ids. */
+  idPattern?: RegExp;
+  /** Replaces the default "load in this page" window-open behavior. */
+  onWindowOpen?: (id: string, url: string) => void;
 }
 
 type Entry = {
@@ -138,18 +142,21 @@ function isZeroArea(value: unknown): boolean {
 
 export class BrowserHost {
   private readonly pages = new Map<string, Entry>();
+  private readonly idPattern: RegExp;
   private readonly agentOwned = new Set<string>();
   private activePanelId: string | null = null;
   private obscured = false;
 
-  constructor(private readonly options: BrowserHostOptions) {}
+  constructor(private readonly options: BrowserHostOptions) {
+    this.idPattern = options.idPattern ?? BROWSER_ID_PATTERN;
+  }
 
   create(id: string, backgroundColor: unknown): BrowserState {
     const panelId = this.requireId(id);
     const existing = this.pages.get(panelId);
     if (existing) return this.snapshot(panelId, existing);
 
-    const view = this.options.createView();
+    const view = this.options.createView(panelId);
     view.setBackgroundColor(normalizeBrowserBackground(backgroundColor));
     view.setVisible(false);
     const entry: Entry = {
@@ -393,7 +400,7 @@ export class BrowserHost {
     if (typeof url !== "string" || url.length === 0 || url.length > MAX_URL_LENGTH) {
       throw new Error("Only http and https URLs can be opened");
     }
-    if (!this.options.isAllowedUrl(url)) {
+    if (!this.options.isAllowedUrl(url, id)) {
       throw new Error("Only http and https URLs can be opened");
     }
     entry.loading = true;
@@ -422,6 +429,10 @@ export class BrowserHost {
     page.setWindowOpenHandler((url) => {
       const current = this.pages.get(id);
       if (!current) return;
+      if (this.options.onWindowOpen) {
+        this.options.onWindowOpen(id, url);
+        return;
+      }
       try {
         this.startLoad(id, current, url);
       } catch {
@@ -493,7 +504,9 @@ export class BrowserHost {
   }
 
   private readId(id: unknown): string | null {
-    if (typeof id !== "string" || !BROWSER_ID_PATTERN.test(id)) return null;
+    if (typeof id !== "string") return null;
+    this.idPattern.lastIndex = 0;
+    if (!this.idPattern.test(id)) return null;
     return id;
   }
 }

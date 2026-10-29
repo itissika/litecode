@@ -16,6 +16,7 @@ pub mod litecode_workspace;
 pub mod lsp;
 pub mod lsp_feedback;
 pub mod mcp_tool;
+pub mod memory;
 pub mod plan;
 pub mod read;
 pub mod run;

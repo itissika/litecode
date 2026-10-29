@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::config::binding_scope::{scope_of, BindingScope};
 use crate::config::global_db::tools::{
-    core_configurable_tools, core_none_tools, mcp_catalog_id, network_core_tools,
-    optional_builtin_ids,
+    MEMORY_TOOL_IDS, core_configurable_tools, core_none_tools, mcp_catalog_id,
+    network_core_tools, optional_builtin_ids,
 };
 use crate::config::resolved::ResolvedConfig;
 use crate::config::schema::{
@@ -124,7 +124,7 @@ fn member(id: &str) -> MemberSpec {
 fn builtin_surface(id: &str) -> CallSurface {
     match id {
         "read" | "grep" | "glob" | "write" | "edit" | "apply_edits" | "run" | "wait" | "kill"
-        | "webfetch" | "websearch" | BROWSER_CARD_ID => CallSurface::Code,
+        | "webfetch" | "websearch" | "memory" | BROWSER_CARD_ID => CallSurface::Code,
         _ => CallSurface::Direct,
     }
 }
@@ -380,6 +380,15 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
                     label: None,
                 },
             );
+        } else if *id == "memory" {
+            push_builtin(
+                &mut catalog,
+                resolved,
+                "memory",
+                MEMORY_TOOL_IDS,
+                CapabilityKind::Core,
+                ToolOrigin::Builtin,
+            );
         } else {
             push_builtin(
                 &mut catalog,
@@ -519,6 +528,7 @@ mod tests {
             "run",
             "edit",
             "read",
+            "memory",
             "subagent_tools",
             "lsp",
             "code_search",
@@ -534,6 +544,17 @@ mod tests {
         );
         assert_eq!(catalog.member_capability_id("wait"), Some("run"));
         assert_eq!(catalog.member_capability_id("apply_edits"), Some("edit"));
+        let memory = catalog.get("memory").expect("memory");
+        assert_eq!(
+            memory.member_ids().collect::<Vec<_>>(),
+            ["memory.list", "memory.upsert", "memory.delete"]
+        );
+        assert_eq!(memory.surface, CallSurface::Code);
+        assert_eq!(
+            catalog.member_capability_id("memory.upsert"),
+            Some("memory")
+        );
+        assert!(catalog.get("memory.list").is_none());
         assert_eq!(catalog.member_capability_id("browser_open"), Some("browser"));
         assert_eq!(
             catalog.member_capability_id("subagent_launch"),

@@ -47,6 +47,12 @@ interface SessionItemProps {
   session: SessionInfo;
   /** Shared wall-clock tick (ms) from the parent's 1s timer. */
   now: number;
+  /**
+   * Left padding of the row in px. Rows grouped under a folder header pass a
+   * deeper inset so they read as children of that header; the flat list keeps
+   * the default.
+   */
+  indentPx?: number;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
   onContextMenu?: (event: React.MouseEvent) => void;
@@ -71,6 +77,7 @@ interface SessionItemProps {
 export const SessionItem = memo(function SessionItem({
   session,
   now,
+  indentPx = 12,
   onOpen,
   onDelete,
   onContextMenu,
@@ -140,7 +147,8 @@ export const SessionItem = memo(function SessionItem({
   return (
     <div className="group relative h-9">
       <div
-        className="flex h-9 cursor-pointer items-center gap-2 pl-3 pr-12 text-(--_dk-ix-fg) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) active:bg-(--_dk-ix-bg-pressed) focus-visible:shadow-[0_0_0_2px_var(--_dk-ix-ring)]"
+        className="flex h-9 cursor-pointer items-center gap-2 pr-12 text-(--_dk-ix-fg) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) active:bg-(--_dk-ix-bg-pressed) focus-visible:shadow-[0_0_0_2px_var(--_dk-ix-ring)]"
+        style={{ paddingLeft: indentPx }}
         draggable={!renaming}
         onDragStart={(event) => {
           event.dataTransfer.effectAllowed = "move";

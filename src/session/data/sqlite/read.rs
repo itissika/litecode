@@ -20,6 +20,9 @@ pub fn execute(
 ) -> Result<ReadValue> {
     match query {
         SessionRead::Meta { session_id } => Ok(ReadValue::Meta(load_meta(conn, &session_id)?)),
+        SessionRead::Memory { session_id } => Ok(ReadValue::Memory(
+            session::Session::load_memory_on(conn, &session_id)?,
+        )),
         SessionRead::PendingPermissions { session_id } => Ok(ReadValue::PendingPermissions(
             super::pending::list_pending(conn, &session_id)?,
         )),

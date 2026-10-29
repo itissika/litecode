@@ -241,6 +241,9 @@ describe("turnStore convergence", () => {
       snapshot: { ...snap, compacting: false },
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(true);
+    expect(useTurnStore.getState().byId.get(sessionId)?.manualCompacting).toBe(
+      false,
+    );
     expect(useTurnStore.getState().byId.get(sessionId)?.turnPhase).toBe(
       "compacting",
     );
@@ -252,6 +255,26 @@ describe("turnStore convergence", () => {
       snapshot: { ...snap, compacting: false },
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
+
+    // Old servers only mark the manual lease; it still blocks the composer.
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "manual",
+      stage: "started",
+      snapshot: { ...snap, compacting: false },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.manualCompacting).toBe(
+      true,
+    );
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "manual",
+      stage: "succeeded",
+      snapshot: { ...snap, compacting: false },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.manualCompacting).toBe(
+      false,
+    );
   });
 
   it("keeps the frozen cut anchor on started and drops it on succeeded", () => {
@@ -369,6 +392,108 @@ describe("turnStore convergence", () => {
       snapshot: { ...snap, compacting: false },
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
+  });
+
+  it("keeps an auto compaction marker across turn_finished and ignores stale revisions", () => {
+    const sessionId = "s-compaction-turn-end";
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          { ...EMPTY_SLICE, runState: "running", currentTurnId: "t1" },
+        ],
+      ]),
+    });
+    useTurnStore.getState().onTurnFinished({
+      session_id: sessionId,
+      turn_id: "t1",
+      reason: "completed",
+      final_text: "done",
+      error: null,
+      snapshot: {
+        ...snapshot(sessionId),
+        compaction: { revision: 5, active: true, trigger: "auto", at: 41 },
+      },
+    });
+    let slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.runState).toBe("idle");
+    expect(slice.compacting).toBe(true);
+    expect(slice.compactingAt).toBe(41);
+    expect(slice.manualCompacting).toBe(false);
+
+    // A snapshot built before Started must not roll the marker back.
+    useTurnStore.getState().applySnapshotMeter(sessionId, {
+      ...snapshot(sessionId),
+      compaction: { revision: 4, active: false },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)!.compacting).toBe(true);
+
+    // The terminal lifecycle carries the post-transition snapshot.
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "auto",
+      stage: "succeeded",
+      snapshot: {
+        ...snapshot(sessionId),
+        compaction: { revision: 6, active: false },
+      },
+    });
+    slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.compacting).toBe(false);
+    expect(slice.compactingAt).toBeNull();
+  });
+
+  it("drops the revision baseline when the socket closes", () => {
+    const sessionId = "s-revision-reset";
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          { ...EMPTY_SLICE, compactionRevision: 9, compacting: true },
+        ],
+      ]),
+    });
+    useTurnStore.getState().resetCompactionRevisions();
+    expect(
+      useTurnStore.getState().byId.get(sessionId)!.compactionRevision,
+    ).toBe(0);
+
+    // A restarted server's first transition (revision 1) is applied again.
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "auto",
+      stage: "succeeded",
+      snapshot: {
+        ...snapshot(sessionId),
+        compaction: { revision: 1, active: false },
+      },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)!.compacting).toBe(false);
+  });
+
+  it("marks only a manual compaction as blocking and applies its lifecycle snapshot", () => {
+    const sessionId = "s-compaction-manual";
+    useTurnStore.setState({
+      byId: new Map([[sessionId, { ...EMPTY_SLICE }]]),
+    });
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "manual",
+      stage: "started",
+      snapshot: {
+        ...snapshot(sessionId),
+        compaction: {
+          revision: 2,
+          active: true,
+          trigger: "manual",
+          at: 9,
+        },
+      },
+    });
+    const slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.compacting).toBe(true);
+    expect(slice.manualCompacting).toBe(true);
+    expect(slice.compactingAt).toBe(9);
   });
 
   it("shouldApplyTurnEnd skips duplicate idle and a newer live turn", () => {

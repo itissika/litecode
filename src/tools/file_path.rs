@@ -41,8 +41,9 @@ pub fn workspace_error(error: crate::workspace::WorkspaceError) -> ToolCallResul
         Kind::NotFile(_) | Kind::IsDir(_) | Kind::AlreadyExists(_) | Kind::InvalidMove(_) => {
             "invalid_input"
         }
-        Kind::Binary | Kind::Utf16 | Kind::NotUtf8 => "unsupported",
+        Kind::Binary | Kind::Utf16 | Kind::NotUtf8 | Kind::MediaUnsupported(_) => "unsupported",
         Kind::TooLarge | Kind::Io(_) | Kind::Sqlite(_) | Kind::OpenFailed(_) => "io",
+        Kind::MediaFailed(_) => "internal",
         Kind::PreviewTooLarge
         | Kind::NotSqlite
         | Kind::UnknownTable

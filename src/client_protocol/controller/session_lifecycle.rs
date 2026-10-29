@@ -441,8 +441,18 @@ impl SessionController {
             ),
         };
         let snapshot = project::buffer_snapshot(
-            &sid, &project, &binding, last_seq, next_seq, 0, None, None, None, &meter, &envelope,
-            false,
+            &sid,
+            &project,
+            &binding,
+            last_seq,
+            next_seq,
+            0,
+            None,
+            None,
+            None,
+            &meter,
+            &envelope,
+            Default::default(),
         );
         let mut operation_msg =
             project::operation_result(OperationKind::NewSession, true, None, snapshot.clone());
@@ -497,7 +507,7 @@ impl SessionController {
             None,
             &crate::context_pipeline::ContextMeter::default(),
             &crate::context_pipeline::ContextEnvelope::default(),
-            false,
+            Default::default(),
         );
         self._workspace_outgoing.push(project::operation_result(
             OperationKind::DeleteSession,

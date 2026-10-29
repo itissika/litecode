@@ -16,14 +16,37 @@
 //! - Unix: the stdio pipe already provides the tie (the child sees stdin
 //!   EOF when this process dies, and language servers exit on EOF); fd
 //!   inheritance is per-descriptor, so siblings cannot keep it open.
-//!   `PR_SET_PDEATHSIG` is deliberately *not* used: it fires when the
-//!   forking *thread* exits, and spawns here happen on runtime worker
-//!   threads that may be retired while the process lives.
+//!   `PR_SET_PDEATHSIG` is deliberately *not* used for long-lived app or
+//!   helper spawns: it fires when the forking *thread* exits, and those
+//!   spawns can happen on runtime worker threads that are retired while the
+//!   process lives. Short-lived install commands do use it because their
+//!   installer thread blocks on the child until it exits.
 //!
 //! [`sweep_orphan_lsp_processes`] cleans up leftovers from instances that
 //! leaked before this binding existed: at serve startup it kills
 //! language-server processes installed under the managed `lsp` directory
 //! whose parent process is gone.
+
+/// Arrange for a child command to die when this process dies. Linux ties the
+/// child directly with PR_SET_PDEATHSIG; other platforms rely on the caller's
+/// job object or process-group cleanup. Call before spawn.
+pub fn configure_parent_death(command: &mut std::process::Command) {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(|| {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() == 1 {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = command;
+}
 
 /// Bind a freshly spawned child process so it cannot outlive this process.
 ///

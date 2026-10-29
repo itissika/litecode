@@ -18,6 +18,8 @@
 @import "./components/git-diff.css";
 @import "@xyflow/react/dist/style.css";
 @import "./components/knowledge.css";
+@import "./components/apps.css";
+@import "./components/gallery.css";
 
 @theme {
   /* === dk-* semantic tokens === */

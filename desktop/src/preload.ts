@@ -5,6 +5,9 @@ import type {
   BROWSER_CLOSE_CHANNEL as BrowserCloseChannel,
   BROWSER_OPEN_CHANNEL as BrowserOpenChannel,
   BROWSER_STATE_CHANNEL as BrowserStateChannel,
+  APP_VIEW_STATE_CHANNEL as AppViewStateChannel,
+  AppViewCreateInput,
+  AppViewState,
   BrowserAgentActivityEvent,
   BrowserCloseRequest,
   BrowserOpenRequest,
@@ -36,6 +39,7 @@ const REMOTE_PROGRESS_CHANNEL: typeof RemoteProgressChannel = "litecode:remote-p
 const REMOTE_DISCONNECTED_CHANNEL: typeof RemoteDisconnectedChannel = "litecode:remote-disconnected";
 const COMPONENT_PROGRESS_CHANNEL: typeof ComponentProgressChannel = "litecode:component-progress";
 const BROWSER_STATE_CHANNEL: typeof BrowserStateChannel = "litecode:browser-state";
+const APP_VIEW_STATE_CHANNEL: typeof AppViewStateChannel = "litecode:app-view-state";
 const BROWSER_OPEN_CHANNEL: typeof BrowserOpenChannel = "litecode:browser-open";
 const BROWSER_CLOSE_CHANNEL: typeof BrowserCloseChannel = "litecode:browser-close";
 const BROWSER_AGENT_ACTIVITY_CHANNEL: typeof BrowserAgentActivityChannel =
@@ -263,12 +267,46 @@ const bridge = {
   browserSetObscured: (obscured: boolean): void => {
     ipcRenderer.sendSync("litecode:browser-set-obscured", obscured);
   },
+  appViewCreate: async (input: AppViewCreateInput): Promise<AppViewState> => {
+    return (await ipcRenderer.invoke("litecode:app-view-create", input)) as AppViewState;
+  },
+  appViewGoBack: async (id: string): Promise<AppViewState> => {
+    return (await ipcRenderer.invoke("litecode:app-view-go-back", id)) as AppViewState;
+  },
+  appViewGoForward: async (id: string): Promise<AppViewState> => {
+    return (await ipcRenderer.invoke("litecode:app-view-go-forward", id)) as AppViewState;
+  },
+  appViewReload: async (id: string): Promise<AppViewState> => {
+    return (await ipcRenderer.invoke("litecode:app-view-reload", id)) as AppViewState;
+  },
+  appViewStop: async (id: string): Promise<AppViewState> => {
+    return (await ipcRenderer.invoke("litecode:app-view-stop", id)) as AppViewState;
+  },
+  appViewSetBounds: (input: { id: string; bounds: BrowserBounds }): void => {
+    ipcRenderer.send("litecode:app-view-set-bounds", input);
+  },
+  appViewSetVisible: (input: { id: string; visible: boolean }): void => {
+    ipcRenderer.send("litecode:app-view-set-visible", input);
+  },
+  appViewSetActive: (input: { id: string; active: boolean }): void => {
+    ipcRenderer.send("litecode:app-view-set-active", input);
+  },
+  appViewDestroy: (id: string): void => {
+    ipcRenderer.send("litecode:app-view-destroy", id);
+  },
   onBrowserState: (handler: (state: BrowserState) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: BrowserState) => {
       handler(payload);
     };
     ipcRenderer.on(BROWSER_STATE_CHANNEL, listener);
     return () => ipcRenderer.removeListener(BROWSER_STATE_CHANNEL, listener);
+  },
+  onAppViewState: (handler: (state: AppViewState) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: AppViewState) => {
+      handler(payload);
+    };
+    ipcRenderer.on(APP_VIEW_STATE_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(APP_VIEW_STATE_CHANNEL, listener);
   },
   onBrowserOpenRequest: (handler: (event: BrowserOpenRequest) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: BrowserOpenRequest) => {

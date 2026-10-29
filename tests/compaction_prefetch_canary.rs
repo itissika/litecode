@@ -464,6 +464,11 @@ async fn branch_commits_after_a_final_answer_without_a_next_boundary() {
         saw_started,
         "Started must be visible before the gated summary finishes"
     );
+    let active = sessions
+        .compaction_state_blocking(&sid)
+        .active
+        .expect("the background branch must own the session compaction state");
+    assert_eq!(active.trigger, CompactionTrigger::Auto);
 
     provider.release.notify_one();
 
@@ -497,6 +502,10 @@ async fn branch_commits_after_a_final_answer_without_a_next_boundary() {
         }
     }
     assert!(saw_succeeded, "the branch must emit Succeeded after commit");
+    assert!(
+        sessions.compaction_state_blocking(&sid).active.is_none(),
+        "Succeeded must clear the one compaction state"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -553,6 +562,11 @@ async fn branch_announces_the_anchor_before_the_summary_and_persists_it() {
         at >= last_seed,
         "anchor {at} must be at or after the last seeded row {last_seed}"
     );
+    let active = sessions
+        .compaction_state_blocking(&sid)
+        .active
+        .expect("the emitted Started must have entered the session state");
+    assert_eq!(active.at, Some(at));
 
     provider.release.notify_one();
     let mut committed_seq = None;

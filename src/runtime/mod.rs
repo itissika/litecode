@@ -20,14 +20,14 @@ pub use llm_resolve::{
 pub use provider_registry::ProviderRegistry;
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 use tokio::sync::mpsc;
 
 use crate::agent::{AgentDeps, TurnOutcome};
+use crate::apps::AppService;
 use crate::config::bridge::agent_config_for;
 use crate::config::workspace::set_runtime_paths;
 use crate::config::{AgentConfig, ConfigManager, ResolvedConfig, WorkspaceState, log_filter};
@@ -67,6 +67,8 @@ pub struct RuntimeHandle {
     pub workspace_engines: Arc<WorkspaceEngines>,
     /// Shared editor-facing services consumed by workspace-scoped Agent tools.
     pub ide: Arc<IdeBaseHandle>,
+    /// Workbench app service; empty in CLI-only runtimes.
+    apps: Arc<OnceLock<Arc<AppService>>>,
     /// Process-level MCP stdio connections (start / restart / stop).
     pub mcp_pool: Arc<McpConnectionPool>,
     /// Process-level subagent workers (launch / wait / stop).
@@ -105,6 +107,7 @@ impl RuntimeHandle {
             engine_manager,
             workspace_engines,
             ide,
+            apps: Arc::new(OnceLock::new()),
             mcp_pool: Arc::new(McpConnectionPool::new()),
             subagent_hub: Arc::new(crate::tools::subagent::SubagentHub::new()),
             custom_tool_hub: Arc::new(crate::tools::custom_hub::CustomToolHub::new()),
@@ -119,6 +122,16 @@ impl RuntimeHandle {
     pub fn with_test_llm_override(mut self, provider: Arc<dyn LlmProvider>) -> Self {
         self.test_llm_override = Some(provider);
         self
+    }
+
+    /// Attach the workbench app service once serve state has built it.
+    pub fn set_apps(&self, apps: Arc<AppService>) {
+        let _ = self.apps.set(apps);
+    }
+
+    /// Returns None in CLI-only runtimes, which have no app service.
+    pub fn apps(&self) -> Option<&Arc<AppService>> {
+        self.apps.get()
     }
 
     pub fn settings_revision(&self) -> u64 {
@@ -282,6 +295,7 @@ impl Clone for RuntimeHandle {
             engine_manager: Arc::clone(&self.engine_manager),
             workspace_engines: Arc::clone(&self.workspace_engines),
             ide: Arc::clone(&self.ide),
+            apps: Arc::clone(&self.apps),
             mcp_pool: Arc::clone(&self.mcp_pool),
             subagent_hub: Arc::clone(&self.subagent_hub),
             custom_tool_hub: Arc::clone(&self.custom_tool_hub),

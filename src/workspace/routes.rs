@@ -127,6 +127,13 @@ pub struct PathQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct MediaThumbQuery {
+    pub path: String,
+    #[serde(default)]
+    pub w: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct FileBody {
     pub content: String,
 }
@@ -221,6 +228,8 @@ pub fn router() -> Router<ServeState> {
         .route("/copy", post(post_copy))
         .route("/blob", post(post_blob).put(put_blob))
         .route("/bytes", get(get_bytes))
+        .route("/media", get(get_media))
+        .route("/media/thumb", get(get_media_thumb))
         .route("/sqlite", get(get_sqlite))
         .route("/open", post(post_open))
         .route("/citations", post(post_citations))
@@ -658,6 +667,46 @@ async fn get_bytes(State(state): State<ServeState>, Query(query): Query<PathQuer
         Err(e) => open_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("bytes task join: {e}"),
+        ),
+    }
+}
+
+async fn get_media(State(state): State<ServeState>) -> Response {
+    let workspace = state.workspace.clone();
+    match tokio::task::spawn_blocking(move || workspace.list_media()).await {
+        Ok(Ok(listing)) => Json(ApiOk {
+            ok: true,
+            data: listing,
+        })
+        .into_response(),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("media task join: {e}"),
+        ),
+    }
+}
+
+async fn get_media_thumb(
+    State(state): State<ServeState>,
+    Query(query): Query<MediaThumbQuery>,
+) -> Response {
+    let workspace = state.workspace.clone();
+    let MediaThumbQuery { path, w } = query;
+    let edge = w.unwrap_or(320);
+    match tokio::task::spawn_blocking(move || workspace.media_thumbnail(&path, edge)).await {
+        Ok(Ok((_path, thumb))) => (
+            [
+                (header::CONTENT_TYPE, thumb.mime),
+                (header::CACHE_CONTROL, "private, max-age=86400, immutable"),
+            ],
+            thumb.bytes,
+        )
+            .into_response(),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("media thumb task join: {e}"),
         ),
     }
 }
@@ -1118,7 +1167,12 @@ fn workspace_error(err: WorkspaceError) -> Response {
             (StatusCode::UNSUPPORTED_MEDIA_TYPE, err.to_string())
         }
         WorkspaceError::OpenUnsupported => (StatusCode::NOT_IMPLEMENTED, err.to_string()),
-        WorkspaceError::OpenFailed(_) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+        WorkspaceError::MediaUnsupported(_) => {
+            (StatusCode::UNSUPPORTED_MEDIA_TYPE, err.to_string())
+        }
+        WorkspaceError::OpenFailed(_) | WorkspaceError::MediaFailed(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+        }
         WorkspaceError::Sandbox(super::sandbox::SandboxError::Io(e)) | WorkspaceError::Io(e) => {
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         }

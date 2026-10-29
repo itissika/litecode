@@ -46,6 +46,10 @@ pub enum WorkspaceError {
     Sqlite(String),
     #[error("opening with the system app is not available on this host")]
     OpenUnsupported,
+    #[error("not an image: {0}")]
+    MediaUnsupported(String),
+    #[error("{0}")]
+    MediaFailed(String),
     #[error("{0}")]
     OpenFailed(String),
     #[error("invalid move: {0}")]
@@ -236,6 +240,35 @@ impl WorkspaceService {
                 Err(WorkspaceError::OpenFailed(message))
             }
         }
+    }
+
+    /// One workspace media listing for the Gallery panel.
+    pub fn list_media(&self) -> Result<super::media::MediaListing, WorkspaceError> {
+        Ok(super::media::list_media(self.sandbox.root())?)
+    }
+
+    /// One cached thumbnail; `edge` is clamped by the media module.
+    pub fn media_thumbnail(
+        &self,
+        path: &str,
+        edge: u32,
+    ) -> Result<(String, super::media::MediaThumb), WorkspaceError> {
+        let sandbox = self.sandbox();
+        let abs = sandbox.resolve(path)?;
+        if !abs.exists() {
+            return Err(WorkspaceError::NotFound(
+                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
+            ));
+        }
+        if !abs.is_file() {
+            return Err(WorkspaceError::NotFile(
+                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
+            ));
+        }
+        let rel = sandbox.rel_path(&abs)?;
+        let thumb =
+            super::media::thumbnail(sandbox.root(), &abs, &rel, edge).map_err(media_error)?;
+        Ok((rel, thumb))
     }
 
     /// Read a workspace file through the shared sandbox and size limits.
@@ -494,6 +527,16 @@ impl WorkspaceService {
         };
         self.emit_changed(vec![rel.clone()], kind);
         Ok(rel)
+    }
+}
+
+fn media_error(err: super::media::MediaError) -> WorkspaceError {
+    match err {
+        super::media::MediaError::NotFound(path) => WorkspaceError::NotFound(path),
+        super::media::MediaError::Io(error) => WorkspaceError::Io(error),
+        super::media::MediaError::Unsupported(path) => WorkspaceError::MediaUnsupported(path),
+        super::media::MediaError::TooLarge => WorkspaceError::PreviewTooLarge,
+        super::media::MediaError::Decode(message) => WorkspaceError::MediaFailed(message),
     }
 }
 

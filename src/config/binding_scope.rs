@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::global_db::tools::MEMORY_TOOL_IDS;
 use crate::config::schema::{
     AgentRole, PRIMARY_ONLY_TOOL_IDS, SUBAGENT_CAPABILITY_ID, SUBAGENT_MEMBER_TOOL_IDS,
 };
@@ -39,6 +40,7 @@ impl BindingScope {
 pub fn scope_of(capability_id: &str) -> BindingScope {
     if capability_id == SUBAGENT_CAPABILITY_ID
         || SUBAGENT_MEMBER_TOOL_IDS.contains(&capability_id)
+        || MEMORY_TOOL_IDS.contains(&capability_id)
         || PRIMARY_ONLY_TOOL_IDS.contains(&capability_id)
     {
         BindingScope::PrimaryRootOnly
@@ -56,6 +58,8 @@ mod tests {
         assert_eq!(scope_of("subagent_tools"), BindingScope::PrimaryRootOnly);
         assert_eq!(scope_of("subagent_launch"), BindingScope::PrimaryRootOnly);
         assert_eq!(scope_of("plan"), BindingScope::PrimaryRootOnly);
+        assert_eq!(scope_of("memory"), BindingScope::PrimaryRootOnly);
+        assert_eq!(scope_of("memory.list"), BindingScope::PrimaryRootOnly);
         assert_eq!(scope_of("subagent_foo"), BindingScope::All);
         assert_eq!(scope_of("read"), BindingScope::All);
     }

@@ -12,6 +12,7 @@ import type {
   AskOption,
   AskQuestion,
   CompactLifecycle,
+  CompactionState,
   CompactionTelemetry,
   ContextEnvelope,
   ContextMeter,
@@ -102,9 +103,14 @@ export interface TurnSlice {
   contextEnvelope: ContextEnvelope | null;
   /** Server manual-compaction decision. Never recomputed in the UI. */
   compactEligible: boolean;
+  /** Any compaction episode (manual or automatic); drives marker and ring. */
   compacting: boolean;
+  /** Standalone/manual compaction; only this blocks idle composer and controls. */
+  manualCompacting: boolean;
   /** Tail seq the running compaction froze at; null on synchronous paths. */
   compactingAt: number | null;
+  /** Server compaction revision; older writes are ignored. */
+  compactionRevision: number;
   /** Latest measured compaction lifecycle telemetry, projected from the wire. */
   lastCompactionTelemetry: CompactionTelemetry | null;
   /** Provider last-request prompt_tokens (truth). 0 = absent. */
@@ -174,7 +180,9 @@ export const EMPTY_SLICE: TurnSlice = {
   contextEnvelope: null,
   compactEligible: false,
   compacting: false,
+  manualCompacting: false,
   compactingAt: null,
+  compactionRevision: 0,
   lastCompactionTelemetry: null,
   lastTurnPromptTokens: 0,
   lastTurnCompletionTokens: 0,
@@ -374,6 +382,9 @@ interface TurnStore {
   /** Hydrate context ring fields from a session snapshot (subscribe / reload). */
   applySnapshotMeter: (sessionId: string, snap: SessionSnapshot) => void;
   resetTurn: (sessionId: string) => void;
+  /** Forget revision baselines when the socket closes; a restarted sidecar
+   *  numbers its compaction states from zero again. */
+  resetCompactionRevisions: () => void;
 }
 
 function deriveRunState(turn: TurnSnapshot | null | undefined): AgentRunState {
@@ -414,6 +425,30 @@ export const useTurnStore = create<TurnStore>((set, get) => {
     const next = { ...getSlice(byId, sessionId), ...update };
     byId.set(sessionId, next);
     set({ byId });
+  }
+
+  /** The one writer for server compaction state. A stale revision is dropped so
+   *  a snapshot built before a lifecycle transition cannot roll the marker back. */
+  function applyCompaction(sessionId: string, state: CompactionState): void {
+    const current = getSlice(get().byId, sessionId);
+    if (state.revision < current.compactionRevision) return;
+    patch(sessionId, {
+      compactionRevision: state.revision,
+      compacting: state.active,
+      manualCompacting: state.active && state.trigger === "manual",
+      compactingAt: state.active ? (state.at ?? null) : null,
+    });
+  }
+
+  /** Old servers only send the lease-derived bool; keep the dot anchored while
+   *  it is on, because that snapshot never carries the cut seq. */
+  function applyLegacyCompacting(sessionId: string, snap: SessionSnapshot): void {
+    const current = getSlice(get().byId, sessionId);
+    patch(sessionId, {
+      compacting: snap.compacting ?? false,
+      manualCompacting: snap.compacting ?? false,
+      compactingAt: snap.compacting ? (current.compactingAt ?? null) : null,
+    });
   }
 
   return {
@@ -664,12 +699,12 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       ) {
         return;
       }
-      patch(sessionId, { compacting: true });
+      patch(sessionId, { compacting: true, manualCompacting: true });
       useConnectionStore
         .getState()
         .sendRpc("session/compact", { session_id: sessionId })
         .catch((error: unknown) => {
-          patch(sessionId, { compacting: false });
+          patch(sessionId, { compacting: false, manualCompacting: false });
           useToastStore
             .getState()
             .showToast(
@@ -929,18 +964,33 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (life.telemetry) {
         patch(sessionId, { lastCompactionTelemetry: life.telemetry });
       }
-      if (life.stage === "started") {
+      if (life.snapshot?.compaction) {
+        // The event carries the post-transition snapshot, so this is the same
+        // revision-guarded state every other snapshot writes. Applying it twice
+        // is idempotent; there is no second lifecycle-owned flag.
+        applyCompaction(sessionId, life.snapshot.compaction);
+      } else if (life.stage === "started") {
+        // Old servers: only the lease bool exists, so the event is the sole
+        // writer that can see an automatic compaction.
         patch(sessionId, {
           compacting: true,
+          manualCompacting: life.trigger === "manual",
           compactingAt: typeof life.at === "number" ? life.at : null,
-          ...(life.trigger !== "manual"
-            ? { turnPhase: "compacting" as const }
-            : {}),
         });
+      } else {
+        patch(sessionId, {
+          compacting: false,
+          manualCompacting: false,
+          compactingAt: null,
+        });
+      }
+      if (life.stage === "started") {
+        if (life.trigger !== "manual") {
+          patch(sessionId, { turnPhase: "compacting" as const });
+        }
         return;
       }
       if (life.stage === "succeeded") {
-        patch(sessionId, { compacting: false, compactingAt: null });
         if (life.trigger !== "manual") {
           useNotificationStore.getState().add(sessionId, "Context compacted");
         }
@@ -949,10 +999,8 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (life.stage === "abandoned") {
         // The frozen branch no longer matched the surface. A fresh sync path
         // may still compact; never leave the wave spinner stuck.
-        patch(sessionId, { compacting: false, compactingAt: null });
         return;
       }
-      patch(sessionId, { compacting: false, compactingAt: null });
       if (life.trigger !== "manual") {
         useToastStore
           .getState()
@@ -1032,6 +1080,14 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           .loadRange(sessionId, localEnd, serverEnd);
       }
 
+      // A background compaction branch outlives the turn, so this snapshot —
+      // not the turn end — decides whether the marker stays.
+      if (snap.compaction) {
+        applyCompaction(sessionId, snap.compaction);
+      } else {
+        applyLegacyCompacting(sessionId, snap);
+      }
+
       patch(sessionId, {
         currentTurnId: null,
         turnPhase: null,
@@ -1053,10 +1109,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           snap.context_meter?.compact_eligible ??
           snap.compact_eligible ??
           false,
-        compacting: snap.compacting ?? false,
-        // A snapshot never carries the anchor; keep the live one while a
-        // compaction is still running, otherwise the dot would jump to the tail.
-        compactingAt: snap.compacting ? (current.compactingAt ?? null) : null,
         activePlanPath: snap.active_plan_path ?? null,
         llmReconnect: reconnectAfterFinish(
           retryable,
@@ -1145,6 +1197,11 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       const permissionQueue = hasPendingPermissions
         ? (snap.pending_permissions ?? []).map(toPendingPermission)
         : undefined;
+      if (snap.compaction) {
+        applyCompaction(sessionId, snap.compaction);
+      } else {
+        applyLegacyCompacting(sessionId, snap);
+      }
       // Snapshot meter is authoritative. The legacy estimate is only a
       // display fallback for older servers that omitted `context_meter`.
       patch(sessionId, {
@@ -1161,12 +1218,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           snap.context_meter?.compact_eligible ??
           snap.compact_eligible ??
           false,
-        compacting: snap.compacting ?? false,
-        // A meter-only snapshot never carries the anchor; keep the live one
-        // while a compaction is still running, or the dot would jump to the tail.
-        compactingAt: snap.compacting
-          ? (getSlice(get().byId, sessionId).compactingAt ?? null)
-          : null,
         lastTurnPromptTokens: tts?.prompt_tokens ?? 0,
         lastTurnCompletionTokens: tts?.completion_tokens ?? 0,
         lastTurnCacheHitTokens: tts?.cache_hit_tokens ?? 0,
@@ -1204,6 +1255,18 @@ export const useTurnStore = create<TurnStore>((set, get) => {
 
     resetTurn: (sessionId) => {
       patch(sessionId, emptySlice());
+    },
+
+    resetCompactionRevisions: () => {
+      const byId = get().byId;
+      let changed = false;
+      const next = new Map(byId);
+      for (const [id, slice] of byId) {
+        if (slice.compactionRevision === 0) continue;
+        next.set(id, { ...slice, compactionRevision: 0 });
+        changed = true;
+      }
+      if (changed) set({ byId: next });
     },
   };
 });

@@ -10,6 +10,8 @@ use super::conn::BUSY_TIMEOUT;
 
 pub const USER_VERSION: i32 = 8;
 
+// Additive side columns (`title`, `folder_id`, `memory_json`) are migrated
+// below, after this gate, so old databases must not list them here.
 const SESSIONS_REQUIRED_COLS: &[&str] = &[
     "schema_version",
     "id",
@@ -172,6 +174,7 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             spine_from        INTEGER NOT NULL DEFAULT 0,
             subagent_depth    INTEGER NOT NULL DEFAULT 0,
             todos_json        TEXT NOT NULL DEFAULT '[]',
+            memory_json       TEXT NOT NULL DEFAULT '{\"next_id\":1,\"entries\":[]}',
             active_plan_slug  TEXT,
             plan_revision     TEXT,
             parent_session_id TEXT,
@@ -480,6 +483,14 @@ fn migrate_optional_columns(conn: &Connection) -> Result<()> {
                 [],
             )?;
         }
+        // Agent-owned session memory. Side column, bounded by the tool layer;
+        // no `USER_VERSION` bump, like `title` / `folder_id`.
+        if !cols.iter().any(|c| c == "memory_json") {
+            conn.execute(
+                r#"ALTER TABLE sessions ADD COLUMN memory_json TEXT NOT NULL DEFAULT '{"next_id":1,"entries":[]}'"#,
+                [],
+            )?;
+        }
         // Must run after the column exists: on an old DB the batch above skips
         // `CREATE TABLE sessions`, so `folder_id` is absent until this point.
         conn.execute(
@@ -728,7 +739,16 @@ mod tests {
         let cols = table_columns(&conn, "sessions").unwrap();
         assert!(cols.iter().any(|c| c == "title"));
         assert!(cols.iter().any(|c| c == "folder_id"));
+        assert!(cols.iter().any(|c| c == "memory_json"));
         assert!(table_exists(&conn, "session_folders").unwrap());
+        let memory_json: String = conn
+            .query_row(
+                "SELECT memory_json FROM sessions WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(memory_json, r#"{"next_id":1,"entries":[]}"#);
         let (title, folder_id): (Option<String>, Option<String>) = conn
             .query_row(
                 "SELECT title, folder_id FROM sessions WHERE id = 's1'",
