@@ -471,6 +471,9 @@ pub fn spawn_turn(
 
     let handle = std::thread::spawn(move || {
         set_runtime_paths(workspace_paths);
+        // This runtime is per turn and is dropped when the turn ends. Nothing
+        // that must outlive the turn may be `tokio::spawn`ed here; background
+        // compaction owns its own worker thread (see `exec.rs`).
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -501,10 +504,11 @@ pub(crate) enum CompactionPrefetchOutcome {
     Failed,
 }
 
-/// One in-flight independent compaction branch. The branch owns its summary
-/// call and its session commit; the main loop only observes the outcome.
+/// One in-flight independent compaction branch as seen by this turn. The
+/// worker itself is session-owned (it survives the turn); this slot only holds
+/// the outcome the turn can observe at its next boundary.
 struct CompactionPrefetch {
-    handle: Option<tokio::task::JoinHandle<Result<CompactionPrefetchOutcome>>>,
+    rx: tokio::sync::oneshot::Receiver<Result<CompactionPrefetchOutcome>>,
     cancel: tokio_util::sync::CancellationToken,
     started: std::time::Instant,
     step: u64,
@@ -545,7 +549,8 @@ pub struct AgentRuntime {
     pub(crate) latency_turn_start: Option<std::time::Instant>,
     /// `LITECODE_COMPACT_PREFETCH`; On is the production default.
     pub(crate) compaction_prefetch_mode: CompactionPrefetchMode,
-    /// At most one independent compaction branch. It owns its commit.
+    /// This turn's view of at most one independent compaction branch. The
+    /// worker is session-owned; the slot only receives its outcome.
     prefetch: Mutex<Option<CompactionPrefetch>>,
     /// One compaction branch per pressure episode.
     prefetch_attempted: AtomicBool,
@@ -1125,12 +1130,9 @@ impl AgentRuntime {
         // pressure episode.
         let (has_branch, branch_finished) = {
             let slot = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
-            let finished = slot.as_ref().is_some_and(|prefetch| {
-                prefetch
-                    .handle
-                    .as_ref()
-                    .is_some_and(|handle| handle.is_finished())
-            });
+            let finished = slot
+                .as_ref()
+                .is_some_and(|prefetch| prefetch.rx.is_terminated());
             (slot.is_some(), finished)
         };
         if self.compaction_prefetch_mode != CompactionPrefetchMode::On {
@@ -1404,9 +1406,10 @@ impl AgentRuntime {
             total_items = self.context_pipeline.working_set().len(),
             "agent loop complete"
         );
-        // Normal turn end does not own the compaction branch. Leave it in
-        // flight; it commits independently when the summary is ready. A
-        // canceled turn still seals the provider call.
+        // Normal turn end does not own the compaction branch. The worker runs
+        // on its own session-owned thread and commits independently when the
+        // summary is ready, even after this turn is gone. A canceled turn
+        // still seals the provider call.
         if self.is_cancelled() {
             self.abort_compaction_prefetch().await;
         }

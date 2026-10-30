@@ -332,6 +332,7 @@ export function Popover({
           <div
             ref={panelRef}
             data-popover-panel=""
+            data-litecode-overlay="popover"
             onMouseEnter={hover ? onPointerEnter : undefined}
             onMouseLeave={hover ? onPointerLeave : undefined}
             className={`fixed z-1000 border border-(--_dk-line-visible) bg-(--_dk-overlay) shadow-[0_6px_18px_rgba(0,0,0,0.18)] ${panelClassName}`}

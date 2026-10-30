@@ -344,17 +344,18 @@ type GrepData = {
   truncated?: boolean;
 };
 
+/** One match. Context, when requested, is folded into `text` as one block. */
 type GrepHit = {
   /** Source file path. */
   path: string;
   /** 1-based match line. */
   line: Integer;
-  /** Matching line text, capped at 500 characters. */
+  /**
+   * Matching line text, capped at 500 characters. With `before`/`after` this
+   * is a whole block in ripgrep notation, newline-separated:
+   * `12- before`, `13: match`, `14+ after` (real file line numbers).
+   */
   text: string;
-  /** Exact lines before the hit, when before > 0. */
-  before?: LineText[];
-  /** Exact lines after the hit, when after > 0. */
-  after?: LineText[];
 };
 
 type GrepInput = {
@@ -392,13 +393,6 @@ type KillData = CommandData;
 type KillInput = {
   /** Command.id from a tools.process.run or tools.process.wait result whose exit_code is null. */
   id: string;
-};
-
-type LineText = {
-  /** 1-based source line. */
-  line: Integer;
-  /** Exact line text. */
-  text: string;
 };
 
 type Location = {

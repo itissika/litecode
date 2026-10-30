@@ -1,9 +1,10 @@
 //! Model-facing text for one `run_code` execution.
 //!
 //! Default agent view: head, optional logs, optional partial results (failed
-//! runs only), optional result. Result: uniform object arrays render as
-//! `[N]{a,b}:` tables (columns in the agent's key order), everything else as
-//! compact JSON (strings verbatim). Partial calls and the final result share
+//! runs only), optional result. Result: uniformly shaped object arrays render
+//! as `[N]{a,b}:` tables (columns in first-seen key order, a key a row omits
+//! renders as an empty cell), everything else as compact JSON (strings
+//! verbatim). Partial calls and the final result share
 //! [`RESULT_TOKEN_BUDGET`] cl100k tokens; structured values degrade
 //! structurally, while over-budget strings keep both a head and a tail
 //! (WP-210 C). Logs keep their head within [`SUCCESS_LOGS_TOKEN_BUDGET`] on
@@ -666,23 +667,29 @@ fn render_failure_logs(
 fn render_result_body(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
-        Value::Array(items) if is_table(items) => render_table("", items),
-        Value::Object(map)
-            if map
-                .values()
-                .any(|v| matches!(v, Value::Array(a) if is_table(a))) =>
-        {
+        Value::Array(items) => match table_columns(items) {
+            Some(columns) => render_table("", items, &columns),
+            None => compact_json(value),
+        },
+        Value::Object(map) => {
             let mut rest = serde_json::Map::new();
             let mut tables = Vec::new();
             for (key, v) in map {
-                match v {
-                    Value::Array(items) if is_table(items) => {
-                        tables.push(render_table(&table_key(key), items))
+                match v
+                    .as_array()
+                    .and_then(|items| table_columns(items).map(|columns| (items, columns)))
+                {
+                    Some((items, columns)) => {
+                        tables.push(render_table(&table_key(key), items, &columns))
                     }
-                    other => {
-                        rest.insert(key.clone(), other.clone());
+                    None => {
+                        rest.insert(key.clone(), v.clone());
                     }
                 }
+            }
+            // No table-shaped member: the JSON line is the whole object.
+            if tables.is_empty() {
+                return compact_json(value);
             }
             let mut parts = Vec::new();
             if !rest.is_empty() {
@@ -701,6 +708,10 @@ fn compact_json(value: &Value) -> String {
 
 const TABLE_MIN_ROWS: usize = 3;
 
+/// Guard against a row set whose union of keys explodes the header: a ragged
+/// array with one unique key per row would otherwise render a useless table.
+const TABLE_MAX_COLUMNS: usize = 16;
+
 /// Rows and the trailing `… N more` marker added by [`degrade`], if any.
 fn split_more(items: &[Value]) -> (&[Value], Option<usize>) {
     match items.split_last() {
@@ -712,29 +723,39 @@ fn split_more(items: &[Value]) -> (&[Value], Option<usize>) {
     }
 }
 
-/// Same key set (order ignored), all values primitive, at least 3 rows
-/// (counting rows cut by the budget).
-fn is_table(items: &[Value]) -> bool {
+/// Columns of a table-shaped array, or `None` when it is not tabular.
+///
+/// Table shape: every row is an object, at least 3 rows (counting rows cut by
+/// the budget), no row is empty, every value is primitive, and the union of
+/// keys stays within `TABLE_MAX_COLUMNS`. Rows need not share the same key
+/// set: the columns are the union in first-seen order (the first row's key
+/// order first), and a row that omits a key renders it as an empty cell.
+fn table_columns(items: &[Value]) -> Option<Vec<String>> {
     let (items, more) = split_more(items);
     if items.len() + more.unwrap_or(0) < TABLE_MIN_ROWS || items.is_empty() {
-        return false;
+        return None;
     }
-    let Some(Value::Object(first)) = items.first() else {
-        return false;
-    };
-    if first.is_empty() {
-        return false;
-    }
-    items.iter().all(|item| match item {
-        Value::Object(map) => {
-            map.len() == first.len()
-                && first.keys().all(|key| map.contains_key(key))
-                && map
-                    .values()
-                    .all(|v| !matches!(v, Value::Array(_) | Value::Object(_)))
+    let mut columns: Vec<String> = Vec::new();
+    for item in items {
+        let Value::Object(map) = item else {
+            return None;
+        };
+        if map.is_empty() {
+            return None;
         }
-        _ => false,
-    })
+        for (key, value) in map {
+            if matches!(value, Value::Array(_) | Value::Object(_)) {
+                return None;
+            }
+            if !columns.iter().any(|column| column == key) {
+                columns.push(key.clone());
+                if columns.len() > TABLE_MAX_COLUMNS {
+                    return None;
+                }
+            }
+        }
+    }
+    Some(columns)
 }
 
 fn table_key(key: &str) -> String {
@@ -749,15 +770,11 @@ fn quote(text: &str) -> String {
     serde_json::to_string(text).unwrap_or_else(|_| format!("\"{text}\""))
 }
 
-/// `key[N]{a,b,c}:` then one `v1,v2,v3` row per element. Columns follow the
-/// first element's key order, which is the agent's order (WP-210 E). Rows cut
+/// `key[N]{a,b,c}:` then one `v1,v2,v3` row per element. Columns come from
+/// `table_columns`; a row missing a column renders that cell empty. Rows cut
 /// by the budget end the block with `… N more rows`.
-fn render_table(key: &str, items: &[Value]) -> String {
+fn render_table(key: &str, items: &[Value], columns: &[String]) -> String {
     let (items, more) = split_more(items);
-    let Some(Value::Object(first)) = items.first() else {
-        return String::new();
-    };
-    let columns: Vec<&String> = first.keys().collect();
     let header: Vec<String> = columns.iter().map(|c| cell_text(c)).collect();
     let total = items.len() + more.unwrap_or(0);
     let mut out = format!("{key}[{total}]{{{}}}:", header.join(","));
@@ -1599,11 +1616,10 @@ mod tests {
     }
 
     #[test]
-    fn non_uniform_nested_or_short_arrays_fall_back_to_compact_json() {
+    fn non_tabular_arrays_fall_back_to_compact_json() {
         let cases = [
             serde_json::json!([{"a": 1}, {"a": 2}]),
-            serde_json::json!([{"a": 1}, {"a": 2}, {"b": 3}]),
-            serde_json::json!([{"a": 1}, {"a": 2}, {"a": 1, "b": 2}]),
+            serde_json::json!([{"a": 1}, {}, {"a": 3}]),
             serde_json::json!([{"a": [1]}, {"a": [2]}, {"a": [3]}]),
             serde_json::json!([{"a": {"x": 1}}, {"a": 2}, {"a": 3}]),
             serde_json::json!([1, 2, 3]),
@@ -1612,6 +1628,42 @@ mod tests {
             let text = ok_with(value.clone());
             assert_eq!(result_of(&text), serde_json::to_string(&value).unwrap());
         }
+    }
+
+    #[test]
+    fn ragged_rows_render_as_a_padded_table() {
+        let text = ok_with(serde_json::json!([
+            {"a": 1, "b": 2},
+            {"a": 3},
+            {"b": 5, "a": 4},
+        ]));
+        // Columns are the union in first-seen order; an omitted key is empty.
+        assert_eq!(result_of(&text), "[3]{a,b}:\n1,2\n3,\n4,5");
+    }
+
+    #[test]
+    fn later_row_new_key_appends_a_column() {
+        let text = ok_with(serde_json::json!([
+            {"a": 1},
+            {"a": 2},
+            {"a": 3, "b": 4},
+        ]));
+        assert_eq!(result_of(&text), "[3]{a,b}:\n1,\n2,\n3,4");
+    }
+
+    #[test]
+    fn too_many_columns_fall_back_to_compact_json() {
+        let mut rows = Vec::new();
+        for row in 0..3 {
+            let mut map = serde_json::Map::new();
+            for key in 0..17 {
+                map.insert(format!("k{key}"), serde_json::json!(row));
+            }
+            rows.push(Value::Object(map));
+        }
+        let value = Value::Array(rows);
+        let text = ok_with(value.clone());
+        assert_eq!(result_of(&text), serde_json::to_string(&value).unwrap());
     }
 
     #[test]

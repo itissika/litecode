@@ -16,6 +16,183 @@ use crate::telemetry::latency;
 
 use super::AgentRuntime;
 
+/// Seals the session episode when the worker thread ends, including on panic.
+/// Normal transitions are emitted by the branch itself; this is the last
+/// chance for any path that returns without one, so a dead worker can never
+/// leave the session projecting `compacting` forever.
+struct BackgroundCompactionGuard {
+    sessions: Arc<crate::session::manager::SessionManager>,
+    session_id: String,
+    operation_id: String,
+}
+
+impl Drop for BackgroundCompactionGuard {
+    fn drop(&mut self) {
+        if self
+            .sessions
+            .finish_background_compaction(&self.session_id, &self.operation_id)
+        {
+            crate::context_pipeline::compact::publish_compaction_abandoned(
+                &self.sessions,
+                &self.session_id,
+                &self.operation_id,
+            );
+        }
+    }
+}
+
+/// One independent auto-compaction branch. It runs on the worker thread's
+/// own current-thread runtime, never on the turn's (which dies with the
+/// turn), and owns both the summary call and its session commit.
+#[allow(clippy::too_many_arguments)]
+async fn run_background_compaction(
+    budget: crate::context_pipeline::BudgetPolicy,
+    sessions: Arc<crate::session::manager::SessionManager>,
+    session_id: String,
+    task_request: crate::llm::CompactionRequestContext,
+    task_rows: Vec<crate::session::working::WorkingRow>,
+    task_cancel: tokio_util::sync::CancellationToken,
+    data_root: std::path::PathBuf,
+    operation_id: String,
+    task_step: u64,
+    task_meter: ContextMeter,
+) -> Result<super::CompactionPrefetchOutcome> {
+    let started = Instant::now();
+    let prepared = match CompactPolicy::prepare_compaction_with_attempts(
+        &budget,
+        &sessions,
+        &session_id,
+        &task_request,
+        crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
+        &task_rows,
+        &task_cancel,
+        &data_root,
+        crate::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+        true,
+        Some(&operation_id),
+    )
+    .await
+    {
+        Ok(Some(prepared)) => prepared,
+        Ok(None) => {
+            tracing::info!(
+                step = task_step,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "compaction branch found no cut"
+            );
+            return Ok(super::CompactionPrefetchOutcome::NoCut);
+        }
+        Err(crate::types::LitecodeError::Canceled) => {
+            return Err(crate::types::LitecodeError::Canceled);
+        }
+        Err(error) => {
+            tracing::warn!(
+                step = task_step,
+                error = %error,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "compaction branch summary failed"
+            );
+            return Ok(super::CompactionPrefetchOutcome::Failed);
+        }
+    };
+    // The branch commits its own frozen plan. A concurrent append only
+    // changes the revision; retry the same plan on a fresh surface. A
+    // retry after a commit that failed during fold reload must recognize
+    // its own checkpoint instead of reporting a surface-change rejection.
+    let kept_from_seq = prepared.kept_from_seq();
+    let checkpoint_written = || -> Result<bool> {
+        let rows = sessions.data().working_set_blocking(&session_id)?;
+        Ok(rows
+            .iter()
+            .any(|row| row.checkpoint().is_some_and(|cp| cp.to == kept_from_seq)))
+    };
+    let mut last_error = None;
+    for _ in 0..3 {
+        let mut current = match sessions.data().working_set_blocking(&session_id) {
+            Ok(rows) => rows,
+            Err(error) => return Err(error.into()),
+        };
+        let baseline = crate::context_pipeline::ProviderPromptBaseline::default();
+        match CompactPolicy::compact_transcript(
+            &budget,
+            &sessions,
+            &session_id,
+            &task_request,
+            crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
+            &baseline,
+            &mut current,
+            &task_cancel,
+            crate::runtime::observer::CompactionTrigger::Auto,
+            Some(operation_id.as_str()),
+            &data_root,
+            Some(prepared.clone()),
+            1,
+        )
+        .await
+        {
+            Ok(Some(_)) => {
+                tracing::info!(
+                    step = task_step,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    used_tokens = task_meter.used_tokens,
+                    compact_at = task_meter.compact_at,
+                    "compaction branch committed at the trigger boundary"
+                );
+                return Ok(super::CompactionPrefetchOutcome::Committed);
+            }
+            Ok(None) => {
+                if checkpoint_written().unwrap_or(false) {
+                    tracing::info!(
+                        step = task_step,
+                        "compaction branch found its own committed checkpoint"
+                    );
+                    return Ok(super::CompactionPrefetchOutcome::Committed);
+                }
+                tracing::info!(
+                    step = task_step,
+                    "compaction branch rejected: frozen plan no longer matches the surface"
+                );
+                crate::context_pipeline::compact::emit_compaction_abandoned(
+                    &sessions,
+                    &session_id,
+                    Some(operation_id.as_str()),
+                );
+                return Ok(super::CompactionPrefetchOutcome::Rejected);
+            }
+            Err(crate::types::LitecodeError::Canceled) => {
+                crate::context_pipeline::compact::emit_compaction_abandoned(
+                    &sessions,
+                    &session_id,
+                    Some(operation_id.as_str()),
+                );
+                return Err(crate::types::LitecodeError::Canceled);
+            }
+            Err(crate::types::LitecodeError::TokenBudgetExceeded) => {
+                if checkpoint_written().unwrap_or(false) {
+                    return Ok(super::CompactionPrefetchOutcome::Committed);
+                }
+                return Ok(super::CompactionPrefetchOutcome::Failed);
+            }
+            Err(error) => {
+                if checkpoint_written().unwrap_or(false) {
+                    tracing::info!(
+                        step = task_step,
+                        "compaction branch recovered its committed checkpoint after a commit error"
+                    );
+                    return Ok(super::CompactionPrefetchOutcome::Committed);
+                }
+                last_error = Some(error);
+            }
+        }
+    }
+    tracing::warn!(
+        step = task_step,
+        error = ?last_error,
+        "compaction branch commit exhausted retries"
+    );
+    Ok(super::CompactionPrefetchOutcome::Failed)
+}
+
 impl AgentDeps for AgentRuntime {
     fn begin_step(&mut self, step: u64) {
         self.set_current_step(step);
@@ -46,6 +223,15 @@ impl AgentDeps for AgentRuntime {
             error = %original_error,
             "provider confirmed context overflow; attempting one forced compaction recovery"
         );
+        // A background worker owns the same session surface. A provider
+        // overflow needs the write lock now, so seal the worker first instead
+        // of racing two compactions against one revision.
+        self.abort_compaction_prefetch().await;
+        if self.sessions.has_background_compaction(&self.session_id) {
+            tracing::info!("canceling the session background compaction for overflow recovery");
+            self.sessions.cancel_background_compaction(&self.session_id);
+            self.await_session_background_compaction().await;
+        }
         let compaction_request = self.compaction_request_context()?;
         let advanced = match self
             .context_pipeline
@@ -156,7 +342,7 @@ impl AgentDeps for AgentRuntime {
                 .await;
         }
 
-        let (meter, mut rows) = self.context_pipeline.measure_working_set(
+        let (mut meter, mut rows) = self.context_pipeline.measure_working_set(
             &self.sessions,
             &self.session_id,
             &compaction_request,
@@ -217,6 +403,31 @@ impl AgentDeps for AgentRuntime {
             }
             if self.is_cancelled() {
                 return Ok(false);
+            }
+        }
+
+        // A worker started by an earlier turn still owns the session episode.
+        // At the hard line the next request cannot be sent without the
+        // checkpoint, so wait for that worker and re-measure the durable
+        // surface it may have just rewritten.
+        if hard_stop && self.sessions.has_background_compaction(&self.session_id) {
+            tracing::info!(
+                step,
+                "waiting for the session-owned compaction branch at the hard stop"
+            );
+            self.await_session_background_compaction().await;
+            self.prompt_usage_baseline.clear();
+            let (next_meter, next_rows) = self.context_pipeline.measure_working_set(
+                &self.sessions,
+                &self.session_id,
+                &compaction_request,
+                &self.prompt_usage_baseline,
+            );
+            meter = next_meter;
+            rows = next_rows;
+            if !meter.must_compact_before_send(margin) {
+                meter.enforce_prompt_limit()?;
+                return Ok(true);
             }
         }
 
@@ -431,6 +642,26 @@ impl AgentRuntime {
         self.prefetch_failed.store(false, Ordering::SeqCst);
     }
 
+    /// Wait until the session's background worker finishes. Used only at the
+    /// hard stop, where the next request cannot be sent without whatever
+    /// checkpoint the worker may be about to write.
+    async fn await_session_background_compaction(&self) {
+        let Some(mut done) = self
+            .sessions
+            .subscribe_background_compaction(&self.session_id)
+        else {
+            return;
+        };
+        loop {
+            if *done.borrow_and_update() {
+                return;
+            }
+            if done.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
     /// The branch commits from the durable surface, so the main loop must
     /// reload that surface and reattach its own unpersisted tail.
     fn reload_after_branch_commit(
@@ -509,8 +740,19 @@ impl AgentRuntime {
         if self.compaction_prefetch_mode != CompactionPrefetchMode::On
             || self.is_cancelled()
             || self.has_compaction_prefetch()
-            || self.prefetch_attempted.swap(true, Ordering::SeqCst)
         {
+            return;
+        }
+        // A worker from an earlier turn still owns the session episode. Do not
+        // start a second one; this turn will wait for it only at the hard line.
+        if self.sessions.has_background_compaction(&self.session_id) {
+            tracing::debug!(
+                step,
+                "background compaction already owns this session; not starting another"
+            );
+            return;
+        }
+        if self.prefetch_attempted.swap(true, Ordering::SeqCst) {
             return;
         }
         self.prefetch_rejected.store(false, Ordering::SeqCst);
@@ -525,139 +767,62 @@ impl AgentRuntime {
         let task_rows = rows.to_vec();
         let task_step = step;
         let task_meter = meter.clone();
-        let handle = tokio::spawn(async move {
-            let started = Instant::now();
-            let prepared = match CompactPolicy::prepare_compaction_with_attempts(
-                &budget,
-                &sessions,
-                &session_id,
-                &task_request,
-                crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
-                &task_rows,
-                &task_cancel,
-                &data_root,
-                crate::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
-                true,
-            )
-            .await
-            {
-                Ok(Some(prepared)) => prepared,
-                Ok(None) => {
-                    tracing::info!(
-                        step = task_step,
-                        elapsed_ms = started.elapsed().as_millis() as u64,
-                        "compaction branch found no cut"
-                    );
-                    return Ok(super::CompactionPrefetchOutcome::NoCut);
-                }
-                Err(crate::types::LitecodeError::Canceled) => {
-                    return Err(crate::types::LitecodeError::Canceled);
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        step = task_step,
-                        error = %error,
-                        elapsed_ms = started.elapsed().as_millis() as u64,
-                        "compaction branch summary failed"
-                    );
-                    return Ok(super::CompactionPrefetchOutcome::Failed);
-                }
-            };
-            // The branch commits its own frozen plan. A concurrent append only
-            // changes the revision; retry the same plan on a fresh surface. A
-            // retry after a commit that failed during fold reload must recognize
-            // its own checkpoint instead of reporting a surface-change rejection.
-            let kept_from_seq = prepared.kept_from_seq();
-            let checkpoint_written = || -> Result<bool> {
-                let rows = sessions.data().working_set_blocking(&session_id)?;
-                Ok(rows
-                    .iter()
-                    .any(|row| row.checkpoint().is_some_and(|cp| cp.to == kept_from_seq)))
-            };
-            let mut last_error = None;
-            for _ in 0..3 {
-                let mut current = match sessions.data().working_set_blocking(&session_id) {
-                    Ok(rows) => rows,
-                    Err(error) => return Err(error.into()),
-                };
-                let baseline = crate::context_pipeline::ProviderPromptBaseline::default();
-                match CompactPolicy::compact_transcript(
-                    &budget,
-                    &sessions,
-                    &session_id,
-                    &task_request,
-                    crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
-                    &baseline,
-                    &mut current,
-                    &task_cancel,
-                    crate::runtime::observer::CompactionTrigger::Auto,
-                    None,
-                    &data_root,
-                    Some(prepared.clone()),
-                    1,
-                )
-                .await
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let (outcome_tx, outcome_rx) =
+            tokio::sync::oneshot::channel::<Result<super::CompactionPrefetchOutcome>>();
+        let guard = BackgroundCompactionGuard {
+            sessions: Arc::clone(&sessions),
+            session_id: session_id.clone(),
+            operation_id: operation_id.clone(),
+        };
+        if !sessions.begin_background_compaction(&session_id, &operation_id, child.clone()) {
+            self.prefetch_attempted.store(false, Ordering::SeqCst);
+            return;
+        }
+        let spawned = std::thread::Builder::new()
+            .name(format!("compaction-{session_id}"))
+            .spawn(move || {
+                let _guard = guard;
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
                 {
-                    Ok(Some(_)) => {
-                        tracing::info!(
-                            step = task_step,
-                            elapsed_ms = started.elapsed().as_millis() as u64,
-                            used_tokens = task_meter.used_tokens,
-                            compact_at = task_meter.compact_at,
-                            "compaction branch committed at the trigger boundary"
-                        );
-                        return Ok(super::CompactionPrefetchOutcome::Committed);
-                    }
-                    Ok(None) => {
-                        if checkpoint_written().unwrap_or(false) {
-                            tracing::info!(
-                                step = task_step,
-                                "compaction branch found its own committed checkpoint"
-                            );
-                            return Ok(super::CompactionPrefetchOutcome::Committed);
-                        }
-                        tracing::info!(
-                            step = task_step,
-                            "compaction branch rejected: frozen plan no longer matches the surface"
-                        );
-                        crate::context_pipeline::compact::emit_compaction_abandoned(
-                            &sessions,
-                            &session_id,
-                        );
-                        return Ok(super::CompactionPrefetchOutcome::Rejected);
-                    }
-                    Err(crate::types::LitecodeError::Canceled) => {
-                        crate::context_pipeline::compact::emit_compaction_abandoned(
-                            &sessions,
-                            &session_id,
-                        );
-                        return Err(crate::types::LitecodeError::Canceled);
-                    }
-                    Err(crate::types::LitecodeError::TokenBudgetExceeded) => {
-                        if checkpoint_written().unwrap_or(false) {
-                            return Ok(super::CompactionPrefetchOutcome::Committed);
-                        }
-                        return Ok(super::CompactionPrefetchOutcome::Failed);
-                    }
+                    Ok(rt) => rt,
                     Err(error) => {
-                        if checkpoint_written().unwrap_or(false) {
-                            tracing::info!(
-                                step = task_step,
-                                "compaction branch recovered its committed checkpoint after a commit error"
-                            );
-                            return Ok(super::CompactionPrefetchOutcome::Committed);
-                        }
-                        last_error = Some(error);
+                        tracing::warn!(
+                            step = task_step,
+                            error = %error,
+                            "compaction branch runtime failed"
+                        );
+                        let _ = outcome_tx.send(Ok(super::CompactionPrefetchOutcome::Failed));
+                        return;
                     }
-                }
-            }
+                };
+                let outcome = rt.block_on(run_background_compaction(
+                    budget,
+                    sessions,
+                    session_id,
+                    task_request,
+                    task_rows,
+                    task_cancel,
+                    data_root,
+                    operation_id,
+                    task_step,
+                    task_meter,
+                ));
+                let _ = outcome_tx.send(outcome);
+            });
+        if let Err(error) = spawned {
             tracing::warn!(
-                step = task_step,
-                error = ?last_error,
-                "compaction branch commit exhausted retries"
+                step,
+                error = %error,
+                "compaction branch thread failed to spawn"
             );
-            Ok(super::CompactionPrefetchOutcome::Failed)
-        });
+            // The failed spawn dropped the closure, which dropped the guard
+            // and released the session registration; let a later step retry.
+            self.prefetch_attempted.store(false, Ordering::SeqCst);
+            return;
+        }
         let mut slot = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_some() {
             child.cancel();
@@ -665,7 +830,7 @@ impl AgentRuntime {
             return;
         }
         *slot = Some(super::CompactionPrefetch {
-            handle: Some(handle),
+            rx: outcome_rx,
             cancel: child,
             started: Instant::now(),
             step,
@@ -680,27 +845,23 @@ impl AgentRuntime {
     }
 
     async fn take_ready_compaction_prefetch(&self) -> Option<super::CompactionPrefetchOutcome> {
-        let prefetch = {
+        let (prefetch, ready) = {
             let mut slot = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
-            match slot.as_ref() {
-                Some(prefetch)
-                    if prefetch
-                        .handle
-                        .as_ref()
-                        .is_some_and(|handle| handle.is_finished()) =>
-                {
-                    slot.take()
+            let ready = {
+                let Some(prefetch) = slot.as_mut() else {
+                    return None;
+                };
+                match prefetch.rx.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return None,
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => None,
                 }
-                _ => None,
-            }
-        };
-        let Some(mut prefetch) = prefetch else {
-            return None;
+            };
+            (slot.take().expect("slot checked above"), ready)
         };
         let ready_ms = prefetch.started.elapsed().as_millis() as u64;
-        let handle = prefetch.handle.take()?;
-        match handle.await {
-            Ok(Ok(outcome)) => {
+        match ready {
+            Some(Ok(outcome)) => {
                 tracing::info!(
                     step = prefetch.step,
                     ready_ms,
@@ -709,8 +870,8 @@ impl AgentRuntime {
                 );
                 Some(outcome)
             }
-            Ok(Err(crate::types::LitecodeError::Canceled)) => None,
-            Ok(Err(error)) => {
+            Some(Err(crate::types::LitecodeError::Canceled)) => None,
+            Some(Err(error)) => {
                 tracing::warn!(
                     step = prefetch.step,
                     error = %error,
@@ -718,11 +879,10 @@ impl AgentRuntime {
                 );
                 Some(super::CompactionPrefetchOutcome::Failed)
             }
-            Err(error) => {
+            None => {
                 tracing::warn!(
                     step = prefetch.step,
-                    error = %error,
-                    "compaction branch task panicked"
+                    "compaction branch ended without a result"
                 );
                 Some(super::CompactionPrefetchOutcome::Failed)
             }
@@ -734,17 +894,16 @@ impl AgentRuntime {
             let mut slot = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
             slot.take()
         };
-        let Some(mut prefetch) = prefetch else {
+        let Some(prefetch) = prefetch else {
             return None;
         };
         let ready_ms = prefetch.started.elapsed().as_millis() as u64;
-        let handle = prefetch.handle.take()?;
         tracing::info!(
             step = prefetch.step,
             ready_ms,
             "waiting for the in-flight compaction branch at the hard stop"
         );
-        match handle.await {
+        match prefetch.rx.await {
             Ok(Ok(outcome)) => Some(outcome),
             Ok(Err(crate::types::LitecodeError::Canceled)) => None,
             Ok(Err(error)) => {
@@ -759,7 +918,7 @@ impl AgentRuntime {
                 tracing::warn!(
                     step = prefetch.step,
                     error = %error,
-                    "in-flight compaction branch task panicked"
+                    "in-flight compaction branch ended without a result"
                 );
                 Some(super::CompactionPrefetchOutcome::Failed)
             }
@@ -771,13 +930,11 @@ impl AgentRuntime {
             let mut slot = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
             slot.take()
         };
-        let Some(mut prefetch) = prefetch else {
+        let Some(prefetch) = prefetch else {
             return;
         };
         prefetch.cancel.cancel();
-        if let Some(handle) = prefetch.handle.take() {
-            let _ = handle.await;
-        }
+        let _ = prefetch.rx.await;
         tracing::debug!(step = prefetch.step, "compaction prefetch joined");
     }
 
@@ -1762,3 +1919,49 @@ fn parent_notice_reason(notice: &crate::tools::subagent::ParentNotice) -> String
 
 #[cfg(test)]
 mod request_health_tests {}
+
+#[cfg(test)]
+mod background_compaction_guard_tests {
+    use super::BackgroundCompactionGuard;
+    use crate::runtime::observer::CompactionTrigger;
+    use crate::session::manager::SessionManager;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn guard_seals_an_episode_without_a_terminal_event() {
+        let sessions = Arc::new(SessionManager::ephemeral_registry());
+        let session_id = sessions.open_session_sync("", "default", None).unwrap();
+        assert!(sessions.begin_background_compaction(
+            &session_id,
+            "bg-guard",
+            CancellationToken::new()
+        ));
+        sessions.begin_compaction_blocking(
+            &session_id,
+            Some("bg-guard"),
+            CompactionTrigger::Auto,
+            None,
+        );
+        assert!(
+            sessions
+                .compaction_state_blocking(&session_id)
+                .active
+                .is_some()
+        );
+
+        drop(BackgroundCompactionGuard {
+            sessions: Arc::clone(&sessions),
+            session_id: session_id.clone(),
+            operation_id: "bg-guard".into(),
+        });
+
+        assert!(!sessions.has_background_compaction(&session_id));
+        assert!(
+            sessions
+                .compaction_state_blocking(&session_id)
+                .active
+                .is_none()
+        );
+    }
+}

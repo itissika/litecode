@@ -669,6 +669,8 @@
     "reload": "刷新",
     "retry": "重试",
     "agentBusy": "智能体正在操作此页面…",
+    "occluded": "页面被遮挡，已暂停。",
+    "paused": "已暂停",
     "error": {
       "open": "无法打开页面",
       "history": "无法在历史记录中前进或后退",

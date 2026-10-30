@@ -57,6 +57,7 @@ describe("Popover pane bounds", () => {
       boxRect(0, 400, 0, 280),
       boxRect(100, 140, 8, 84),
     ).panel;
+    expect(panel.getAttribute("data-litecode-overlay")).toBe("popover");
     // 320px requested, pane 280px wide: shrink to 280 - 2 * 8.
     expect(panel.style.width).toBe("264px");
     expect(panel.style.left).toBe("8px");

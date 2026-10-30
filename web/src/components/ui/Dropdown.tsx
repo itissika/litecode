@@ -314,6 +314,7 @@ export function Dropdown({
           <div
             ref={panelRef}
             data-dropdown-panel
+            data-litecode-overlay="dropdown"
             className={`fixed z-[10000] overflow-x-hidden ${SHADOW[placement]} ${BORDER[placement]} ${bgClassName ?? DEFAULT_BG} ${VARIANT_PANEL[variant]} ${panelClassName}`}
             style={pos}
             onClick={autoClose ? () => setOpen(false) : undefined}

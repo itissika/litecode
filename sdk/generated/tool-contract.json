@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "0551e0a25611e10ba30359a94b422ed99f0a7791161105778d51de8b2a68cc5a",
+  "sdk_hash": "7578f4598a770dc7b4dc73775e2d4b618249e7c9e4875ee18d335dd835b3a21a",
   "tools": {
     "apply_edits": {
       "path": [
@@ -253,7 +253,6 @@
         "GrepHit",
         "GrepInput",
         "Integer",
-        "LineText",
         "Path"
       ],
       "input_schema": {
@@ -326,51 +325,7 @@
                 },
                 "text": {
                   "type": "string",
-                  "description": "Matching line text, capped at 500 characters."
-                },
-                "before": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "line": {
-                        "type": "integer",
-                        "description": "1-based source line."
-                      },
-                      "text": {
-                        "type": "string",
-                        "description": "Exact line text."
-                      }
-                    },
-                    "required": [
-                      "line",
-                      "text"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "description": "Exact lines before the hit, when before > 0."
-                },
-                "after": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "line": {
-                        "type": "integer",
-                        "description": "1-based source line."
-                      },
-                      "text": {
-                        "type": "string",
-                        "description": "Exact line text."
-                      }
-                    },
-                    "required": [
-                      "line",
-                      "text"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "description": "Exact lines after the hit, when after > 0."
+                  "description": "Matching line text, capped at 500 characters. With `before`/`after` this is a whole block in ripgrep notation, newline-separated: `12- before`, `13: match`, `14+ after` (real file line numbers)."
                 }
               },
               "required": [
@@ -378,7 +333,8 @@
                 "line",
                 "text"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "One match. Context, when requested, is folded into `text` as one block."
             }
           },
           "message": {

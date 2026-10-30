@@ -78,6 +78,8 @@ import {
   BROWSER_AGENT_ACTIVITY_CHANNEL,
   BROWSER_CLOSE_CHANNEL,
   COMPONENT_PROGRESS_CHANNEL,
+  NATIVE_VIEW_GET_SNAPSHOT_CHANNEL,
+  NATIVE_VIEW_SET_OCCLUDED_CHANNEL,
   REMOTE_DISCONNECTED_CHANNEL,
   REMOTE_PROGRESS_CHANNEL,
   TURN_NOTIFICATION_CLICK_CHANNEL,
@@ -203,6 +205,7 @@ function hubPagePath(): string {
 }
 
 function disposeAppViewHost(): void {
+  appViewHost?.dispose();
   appViewHost?.destroyAll();
   appViewHost = null;
   appViewOrigins.clear();
@@ -210,6 +213,7 @@ function disposeAppViewHost(): void {
 }
 
 function disposeBrowserHost(): void {
+  browserHost?.dispose();
   browserHost?.destroyAll();
   browserHost = null;
   disposeAppViewHost();
@@ -1620,6 +1624,26 @@ function handleTrusted(
   });
 }
 
+function registerNativeViewIpc(): void {
+  handleTrusted(NATIVE_VIEW_GET_SNAPSHOT_CHANNEL, "workbench", (_event, payload: unknown) => {
+    const body = asRecord(payload);
+    const kind = body.kind === "app" ? "app" : body.kind === "browser" ? "browser" : null;
+    const id = typeof body.id === "string" ? body.id : "";
+    if (!kind || !id) return "";
+    const host = kind === "browser" ? browserHost : appViewHost;
+    return host ? host.getSnapshot(id) : "";
+  });
+
+  onTrusted(NATIVE_VIEW_SET_OCCLUDED_CHANNEL, "workbench", (_event, payload: unknown) => {
+    const body = asRecord(payload);
+    const kind = body.kind === "app" ? "app" : body.kind === "browser" ? "browser" : null;
+    const id = typeof body.id === "string" ? body.id : "";
+    if (!kind || !id) return;
+    const host = kind === "browser" ? browserHost : appViewHost;
+    host?.setViewOccluded(id, body.occluded === true);
+  });
+}
+
 function registerBrowserIpc(): void {
   handleTrusted("litecode:browser-create", "workbench", (_event, payload: unknown) => {
     const host = ensureBrowserHost();
@@ -1771,6 +1795,7 @@ function registerAppViewIpc(): void {
 function registerIpc(): void {
   registerBrowserIpc();
   registerAppViewIpc();
+  registerNativeViewIpc();
 
   onTrusted("litecode:get-auth-token", "workbench", (event) => {
     event.returnValue = authToken || undefined;

@@ -18,6 +18,7 @@
 /// One workspace configuration topic an agent may edit directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuideTopic {
+    Setup,
     Excludes,
     Mcp,
     CustomTools,
@@ -27,6 +28,7 @@ pub enum GuideTopic {
 impl GuideTopic {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Setup => "setup",
             Self::Excludes => "excludes",
             Self::Mcp => "mcp",
             Self::CustomTools => "custom_tools",
@@ -37,6 +39,7 @@ impl GuideTopic {
     /// Canonical topic name, or `None` when the token names no topic.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim() {
+            "setup" => Some(Self::Setup),
             "excludes" => Some(Self::Excludes),
             "mcp" => Some(Self::Mcp),
             "custom_tools" => Some(Self::CustomTools),
@@ -47,6 +50,7 @@ impl GuideTopic {
 }
 
 const INTRO: &str = include_str!("guides/intro.md");
+const SETUP: &str = include_str!("guides/setup.md");
 const EDITABLE: &str = include_str!("guides/editable.md");
 const EXCLUDES: &str = include_str!("guides/excludes.md");
 const MCP: &str = include_str!("guides/mcp.md");
@@ -58,6 +62,8 @@ const QUICKREF: &str = include_str!("guides/quickref.md");
 /// The whole `.litecode/README.md`, assembled at compile time.
 pub const WORKSPACE_README: &str = concat!(
     include_str!("guides/intro.md"),
+    "\n---\n\n",
+    include_str!("guides/setup.md"),
     "\n---\n\n",
     include_str!("guides/editable.md"),
     "\n---\n\n",
@@ -78,6 +84,7 @@ pub const WORKSPACE_README: &str = concat!(
 /// panel cheap instead of dumping every fragment into the turn.
 pub const GUIDE_INDEX: &str = concat!(
     "# guide\n\n",
+    "- `guide setup` — first-run checklist: look around, tune excludes, recommend apps, suggest next steps\n",
     "- `guide excludes` — path / file excludes (`.litecode/excludes.json`)\n",
     "- `guide mcp` — MCP servers (`.litecode/mcp.json`)\n",
     "- `guide custom_tools` — custom tools (`.litecode/custom_tools.json`)\n",
@@ -93,6 +100,7 @@ pub const GUIDE_INDEX: &str = concat!(
 /// One topic's fragment, printed as-is.
 pub fn topic(topic: GuideTopic) -> &'static str {
     match topic {
+        GuideTopic::Setup => SETUP,
         GuideTopic::Excludes => EXCLUDES,
         GuideTopic::Mcp => MCP,
         GuideTopic::CustomTools => CUSTOM_TOOLS,
@@ -103,6 +111,7 @@ pub fn topic(topic: GuideTopic) -> &'static str {
 /// Every fragment, for the contract test and future consumers.
 pub const FRAGMENTS: &[(&str, &str)] = &[
     ("intro", INTRO),
+    ("setup", SETUP),
     ("editable", EDITABLE),
     ("excludes", EXCLUDES),
     ("mcp", MCP),

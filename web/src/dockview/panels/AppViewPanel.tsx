@@ -11,6 +11,7 @@ import type { IDockviewPanelProps } from "dockview-react";
 
 import type { AppView } from "../../api/apps";
 import { AppIcon } from "../../components/apps/AppIcon";
+import { NativeViewSnapshot } from "../../components/NativeViewSnapshot";
 import type { AppViewState, BrowserBounds } from "../../../../desktop/src/bridge-contract";
 import i18n from "../../i18n";
 import { useAppsStore } from "../../stores/appsStore";
@@ -392,7 +393,15 @@ function AppSurface({
           </div>
         </div>
       ) : (
-        <div ref={hostRef} className="min-h-0 flex-1" />
+        <div
+          ref={hostRef}
+          className="relative min-h-0 flex-1 overflow-hidden"
+          data-native-view-host
+          data-native-view-kind="app"
+          data-native-view-id={nativeId}
+        >
+          <NativeViewSnapshot kind="app" id={nativeId} />
+        </div>
       )}
     </div>
   );

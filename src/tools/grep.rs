@@ -11,7 +11,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Serialize;
 use serde_json::Value;
 
 use crate::engines::code_search::{LexicalQuery, lexical_search_for_agent_cancellable};
@@ -37,22 +36,21 @@ const MAX_GREP_DATA_TOKENS: usize = 8_000;
 /// at most `limit + 1`, so this fires only when a caller tightens it.
 const GREP_EXAMINE_CAP: usize = 10_000;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 struct GrepContextLine {
     line: u32,
     text: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// One match. Context never reaches the wire as its own field: it is folded
+/// into `text` (see [`hit_row`]) so every hit stays `{ path, line, text }` and
+/// a row set renders as one table instead of nested arrays.
+#[derive(Debug, Clone)]
 struct GrepHit {
     path: String,
     line: u32,
     text: String,
-    /// Empty context is omitted so a context-free hit remains exactly
-    /// `{ path, line, text }` and homogeneous hits stay table-renderable.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     before: Vec<GrepContextLine>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     after: Vec<GrepContextLine>,
 }
 
@@ -751,13 +749,13 @@ fn join_message(base: &str, detail: &str) -> String {
 fn context_guard_message(base: &str) -> String {
     join_message(
         base,
-        "Before/after context was omitted to keep the result within 8,000 cl100k tokens. Narrow pattern/path for fewer matches, or raise limit when more hits are needed.",
+        "Context was omitted to keep the result within 8,000 cl100k tokens; `text` keeps the matching line only. Narrow pattern/path for fewer matches, or raise limit when more hits are needed.",
     )
 }
 
 fn hits_guard_message(base: &str, shown: usize, total: usize, context_omitted: bool) -> String {
     let omission = if context_omitted {
-        " after before/after context was omitted"
+        " after context was omitted"
     } else {
         ""
     };
@@ -769,9 +767,51 @@ fn hits_guard_message(base: &str, shown: usize, total: usize, context_omitted: b
     )
 }
 
-fn hits_data(hits: &[GrepHit], message: &str, truncated: bool) -> Value {
+/// Wire row: `{ path, line, text }`, always. With context, `text` is one block
+/// in ripgrep notation (`12- before`, `13: match`, `14+ after`) so the hit set
+/// stays flat and table-renderable.
+fn hit_row(hit: &GrepHit, with_context: bool) -> Value {
+    let text = if with_context && !(hit.before.is_empty() && hit.after.is_empty()) {
+        context_block(hit)
+    } else {
+        hit.text.clone()
+    };
+    serde_json::json!({
+        "path": hit.path,
+        "line": hit.line,
+        "text": text,
+    })
+}
+
+/// One block row: `12- text`, `13: text`, `14+ text`. An empty line keeps the
+/// marker only (`12-`), like ripgrep, so a blank source line leaves no
+/// trailing whitespace in the cell.
+fn block_row(number: u32, marker: char, text: &str) -> String {
+    if text.is_empty() {
+        format!("{number}{marker}")
+    } else {
+        format!("{number}{marker} {text}")
+    }
+}
+
+fn context_block(hit: &GrepHit) -> String {
+    let mut out = String::new();
+    for line in &hit.before {
+        out.push_str(&block_row(line.line, '-', &line.text));
+        out.push('\n');
+    }
+    out.push_str(&block_row(hit.line, ':', &hit.text));
+    for line in &hit.after {
+        out.push('\n');
+        out.push_str(&block_row(line.line, '+', &line.text));
+    }
+    out
+}
+
+fn hits_data(hits: &[GrepHit], message: &str, truncated: bool, with_context: bool) -> Value {
+    let rows: Vec<Value> = hits.iter().map(|hit| hit_row(hit, with_context)).collect();
     let mut data = serde_json::json!({
-        "hits": hits,
+        "hits": rows,
         "message": message,
     });
     if truncated {
@@ -792,22 +832,19 @@ fn finish_hits(
     truncated: bool,
 ) -> ToolCallResult {
     let base_message = message.into();
-    let initial = hits_data(&hits, &base_message, truncated);
+    let initial = hits_data(&hits, &base_message, truncated, true);
     if data_fits(&initial) {
         // Code surface: facts in data; content empty (same as write/edit present).
         return crate::tool::outcome::ok_data(initial);
     }
 
-    // Degrade in the agreed order: strip context from every hit first.
+    // Degrade in the agreed order: re-render every hit without its context
+    // block first, so `text` keeps only the matching line.
     let had_context = hits
         .iter()
         .any(|hit| !hit.before.is_empty() || !hit.after.is_empty());
     if had_context {
-        for hit in &mut hits {
-            hit.before.clear();
-            hit.after.clear();
-        }
-        let guarded = hits_data(&hits, &context_guard_message(&base_message), true);
+        let guarded = hits_data(&hits, &context_guard_message(&base_message), true, false);
         if data_fits(&guarded) {
             return crate::tool::outcome::ok_data(guarded);
         }
@@ -821,7 +858,7 @@ fn finish_hits(
     while low < high {
         let mid = low + (high - low).div_ceil(2);
         let candidate_message = hits_guard_message(&base_message, mid, total, had_context);
-        let candidate = hits_data(&hits[..mid], &candidate_message, true);
+        let candidate = hits_data(&hits[..mid], &candidate_message, true, false);
         if data_fits(&candidate) {
             low = mid;
         } else {
@@ -830,7 +867,7 @@ fn finish_hits(
     }
     hits.truncate(low);
     let final_message = hits_guard_message(&base_message, low, total, had_context);
-    let data = hits_data(&hits, &final_message, true);
+    let data = hits_data(&hits, &final_message, true, false);
     if data_fits(&data) {
         return crate::tool::outcome::ok_data(data);
     }
@@ -841,6 +878,7 @@ fn finish_hits(
         &[],
         "Output capped at 8,000 cl100k tokens. Narrow pattern/path for fewer matches, or raise limit when more hits are needed.",
         true,
+        false,
     ))
 }
 
@@ -1134,8 +1172,8 @@ mod tests {
         assert!(data.get("cursor").is_none());
         assert!(data.get("next").is_none());
         assert!(data.get("offset").is_none());
-        // With no requested context, hits stay exactly `{ path, line, text }`
-        // so the outer formatter can still render them as a homogeneous table.
+        // Context folds into `text`, so hits stay exactly `{ path, line, text }`
+        // whether or not context was requested: one shape, one table.
         for hit in hits {
             let hit = hit.as_object().unwrap();
             let keys: Vec<&str> = hit.keys().map(String::as_str).collect();
@@ -1144,7 +1182,7 @@ mod tests {
     }
 
     #[test]
-    fn before_after_context_reports_exact_line_numbers() {
+    fn before_after_context_folds_into_one_text_block() {
         let dir = tempfile::tempdir().unwrap();
         write(
             dir.path(),
@@ -1162,20 +1200,57 @@ mod tests {
         let hit = &hits[0];
         assert_eq!(hit["path"], "a.rs");
         assert_eq!(hit["line"], 4);
+        // One block, ripgrep notation, real file line numbers.
         assert_eq!(
-            hit["before"],
-            serde_json::json!([
-                {"line": 2, "text": "line two"},
-                {"line": 3, "text": "line three"}
-            ])
+            hit["text"],
+            "2- line two\n3- line three\n4: needle\n5+ line five\n6+ line six"
         );
-        assert_eq!(
-            hit["after"],
-            serde_json::json!([
-                {"line": 5, "text": "line five"},
-                {"line": 6, "text": "line six"}
-            ])
+        let keys: Vec<&str> = hit.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["path", "line", "text"]);
+    }
+
+    #[test]
+    fn context_block_omits_missing_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.rs", "line one\nline two\nneedle\nline four\n");
+        // Match on the first line: no `-` rows.
+        let result = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": "line one", "before": 2, "after": 1}),
         );
+        let data = grep_data(&result);
+        let hit = &data["hits"].as_array().unwrap()[0];
+        assert_eq!(hit["text"], "1: line one\n2+ line two");
+        // Match on the last line: no `+` rows.
+        let result = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": "line four", "before": 1, "after": 2}),
+        );
+        let data = grep_data(&result);
+        let hit = &data["hits"].as_array().unwrap()[0];
+        assert_eq!(hit["text"], "3- needle\n4: line four");
+        // No requested context: `text` stays the bare matching line.
+        let result = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": "line two", "before": 0, "after": 0}),
+        );
+        let data = grep_data(&result);
+        let hit = &data["hits"].as_array().unwrap()[0];
+        assert_eq!(hit["text"], "line two");
+    }
+
+    #[test]
+    fn empty_context_line_keeps_marker_only() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.rs", "needle\n\nline three\n");
+        let result = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": "needle", "before": 0, "after": 2}),
+        );
+        let data = grep_data(&result);
+        let hit = &data["hits"].as_array().unwrap()[0];
+        // Blank source line: marker only, no trailing space in the cell.
+        assert_eq!(hit["text"], "1: needle\n2+\n3+ line three");
     }
 
     #[test]
@@ -1192,10 +1267,10 @@ mod tests {
         assert_eq!(schema["properties"]["after"]["maximum"], 5);
         assert!(schema["properties"].get("context").is_none());
         let data_schema = &surface.tools["grep"].output_schema;
-        assert_eq!(
-            data_schema["properties"]["hits"]["items"]["properties"]["before"]["items"]["required"],
-            serde_json::json!(["line", "text"])
-        );
+        let hit_props = &data_schema["properties"]["hits"]["items"]["properties"];
+        assert!(hit_props.get("before").is_none(), "{hit_props}");
+        assert!(hit_props.get("after").is_none(), "{hit_props}");
+        assert_eq!(hit_props["text"]["type"], "string");
         let options = parse_grep_options(&serde_json::json!({
             "pattern": "x", "before": 5, "after": 5
         }))

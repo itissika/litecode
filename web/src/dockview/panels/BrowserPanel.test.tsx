@@ -71,7 +71,12 @@ describe("BrowserPanel page actions", () => {
       browserReload: reload,
     });
 
-    render(<BrowserPanel {...panelProps()} />);
+    const { container } = render(<BrowserPanel {...panelProps()} />);
+    expect(
+      container
+        .querySelector('[data-native-view-host][data-native-view-kind="browser"]')
+        ?.getAttribute("data-native-view-id"),
+    ).toBe(PANEL_ID);
 
     fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
     expect(stop).toHaveBeenCalledWith(PANEL_ID);

@@ -198,6 +198,7 @@ export function FloatingDialog({
   return (
     <div
       ref={containerRef}
+      data-litecode-overlay="dialog"
       className="lc-dialog absolute z-[9999] flex flex-col select-none"
       style={{
         left: pos.x,

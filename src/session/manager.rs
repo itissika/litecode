@@ -3,7 +3,7 @@ use std::sync::{Arc, Condvar};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::ResolvedConfig;
@@ -257,6 +257,20 @@ impl Drop for SessionOperationLease {
     }
 }
 
+/// Who owns one compaction episode. Only `Background` episodes are paired
+/// with a session-owned worker; the projection uses this to reap an episode
+/// whose worker is already gone instead of leaving clients "compacting"
+/// forever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionOwner {
+    /// Synchronous compaction inside the turn (including a prune-only pass).
+    Turn,
+    /// The independent auto-compaction worker owned by the session.
+    Background,
+    /// User-triggered compaction holding the exclusive session lease.
+    Manual,
+}
+
 /// One in-flight compaction episode. Manual compaction and the automatic
 /// background branch both write this one record; snapshots and lifecycle
 /// events project it instead of each deriving their own flag.
@@ -266,6 +280,16 @@ pub struct ActiveCompaction {
     pub trigger: CompactionTrigger,
     /// Tail seq the cut froze at; `None` before a plan picks its cut.
     pub at: Option<u64>,
+    pub owner: CompactionOwner,
+}
+
+/// One session-owned background compaction worker. The worker owns the
+/// summary and its commit; the record owns the cancellation token and a
+/// completion signal so a later turn can wait for an episode it did not start.
+struct BackgroundCompaction {
+    operation_id: String,
+    cancel: CancellationToken,
+    done_tx: watch::Sender<bool>,
 }
 
 /// Session-level compaction state. `revision` is monotonic and bumps on every
@@ -321,6 +345,10 @@ pub struct SessionRecord {
     /// writer and every transition bumps `compaction_revision`.
     compaction: Option<ActiveCompaction>,
     compaction_revision: u64,
+    /// The live worker paired with a `CompactionOwner::Background` episode.
+    /// A registration outlives the turn that started it; only its own guard,
+    /// a session delete, or the reaper in `compaction_state_blocking` drops it.
+    background_compaction: Option<BackgroundCompaction>,
 }
 
 impl SessionRecord {
@@ -355,6 +383,7 @@ impl SessionRecord {
             llm_reconnect: None,
             compaction: None,
             compaction_revision: 0,
+            background_compaction: None,
         }
     }
 
@@ -2268,6 +2297,7 @@ impl SessionManager {
         trigger: CompactionTrigger,
         at: Option<u64>,
     ) -> (u64, String) {
+        let has_operation_id = operation_id.is_some();
         let operation_id = operation_id
             .map(str::to_string)
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -2275,10 +2305,25 @@ impl SessionManager {
         let Some(record) = records.get_mut(session_id) else {
             return (0, operation_id);
         };
+        // A background worker registers its operation id before it emits
+        // `Started`, so the registry is the owner identity. A manual episode
+        // carries its own id; a synchronous one has no id at all.
+        let owner = if record
+            .background_compaction
+            .as_ref()
+            .is_some_and(|task| task.operation_id == operation_id)
+        {
+            CompactionOwner::Background
+        } else if has_operation_id {
+            CompactionOwner::Manual
+        } else {
+            CompactionOwner::Turn
+        };
         record.compaction = Some(ActiveCompaction {
             operation_id: operation_id.clone(),
             trigger,
             at,
+            owner,
         });
         record.compaction_revision = record.compaction_revision.saturating_add(1);
         (record.compaction_revision, operation_id)
@@ -2310,15 +2355,125 @@ impl SessionManager {
         (record.compaction_revision, cleared)
     }
 
+    /// Claim the session's one background compaction worker. Returns `false`
+    /// when another worker is already live; the caller must not start a second.
+    pub fn begin_background_compaction(
+        &self,
+        session_id: &str,
+        operation_id: &str,
+        cancel: CancellationToken,
+    ) -> bool {
+        let (done_tx, _) = watch::channel(false);
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return false;
+        };
+        if record.background_compaction.is_some() {
+            return false;
+        }
+        record.background_compaction = Some(BackgroundCompaction {
+            operation_id: operation_id.to_string(),
+            cancel,
+            done_tx,
+        });
+        true
+    }
+
+    /// Cancel the live background worker, if any. Used when a turn must take
+    /// the session surface for a forced overflow compaction; the worker's
+    /// guard still emits its terminal event and releases the registration.
+    pub fn cancel_background_compaction(&self, session_id: &str) {
+        let records = self.records.lock().unwrap();
+        if let Some(task) = records
+            .get(session_id)
+            .and_then(|record| record.background_compaction.as_ref())
+        {
+            task.cancel.cancel();
+        }
+    }
+
+    /// Whether a background compaction worker is live for this session.
+    pub fn has_background_compaction(&self, session_id: &str) -> bool {
+        let records = self.records.lock().unwrap();
+        records
+            .get(session_id)
+            .is_some_and(|record| record.background_compaction.is_some())
+    }
+
+    /// Subscribe to the current worker's completion. `None` means no worker is
+    /// live; a receiver that already reads `true` means it finished before the
+    /// subscription. A later turn uses this to wait for an episode it did not
+    /// start (the worker still owns its commit).
+    pub fn subscribe_background_compaction(
+        &self,
+        session_id: &str,
+    ) -> Option<watch::Receiver<bool>> {
+        let records = self.records.lock().unwrap();
+        records
+            .get(session_id)
+            .and_then(|record| record.background_compaction.as_ref())
+            .map(|task| task.done_tx.subscribe())
+    }
+
+    /// Release one background worker. Returns `true` when this call also
+    /// cleared the matching active episode, so the caller can publish its
+    /// terminal event. Clearing is keyed by operation id, not by the task slot:
+    /// a terminal written by the branch itself already removed the episode and
+    /// this is then only a registration cleanup.
+    pub fn finish_background_compaction(&self, session_id: &str, operation_id: &str) -> bool {
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return false;
+        };
+        let owns_task = record
+            .background_compaction
+            .as_ref()
+            .is_some_and(|task| task.operation_id == operation_id);
+        let task = if owns_task {
+            record.background_compaction.take()
+        } else {
+            None
+        };
+        let clears_active = record
+            .compaction
+            .as_ref()
+            .is_some_and(|active| active.operation_id == operation_id);
+        if clears_active {
+            record.compaction = None;
+            record.compaction_revision = record.compaction_revision.saturating_add(1);
+        }
+        drop(records);
+        if let Some(task) = task {
+            let _ = task.done_tx.send(true);
+        }
+        clears_active
+    }
+
     /// Read the one compaction state a snapshot/event should project.
     pub fn compaction_state_blocking(&self, session_id: &str) -> CompactionStateSnapshot {
-        let records = self.records.lock().unwrap();
-        match records.get(session_id) {
-            Some(record) => CompactionStateSnapshot {
-                revision: record.compaction_revision,
-                active: record.compaction.clone(),
-            },
-            None => CompactionStateSnapshot::default(),
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return CompactionStateSnapshot::default();
+        };
+        // Last-resort reaper: a background episode whose worker registration
+        // is gone can never produce a terminal event. Projecting it as active
+        // would leave clients "compacting" forever; clear it here so no
+        // snapshot can resurrect a dead episode. Normal transitions are still
+        // written once by the lifecycle emitter.
+        let leaked = record.compaction.as_ref().is_some_and(|active| {
+            active.owner == CompactionOwner::Background
+                && !record
+                    .background_compaction
+                    .as_ref()
+                    .is_some_and(|task| task.operation_id == active.operation_id)
+        });
+        if leaked {
+            record.compaction = None;
+            record.compaction_revision = record.compaction_revision.saturating_add(1);
+        }
+        CompactionStateSnapshot {
+            revision: record.compaction_revision,
+            active: record.compaction.clone(),
         }
     }
 
@@ -2597,6 +2752,13 @@ impl SessionManager {
                     pending_turn_ends += 1;
                 }
                 record.activity = SessionActivity::Idle;
+                // The worker is outside the turn machinery; cancel it before
+                // the record disappears so it cannot commit into a deleted
+                // session. Its guard then finds no record and stays silent.
+                if let Some(task) = record.background_compaction.take() {
+                    task.cancel.cancel();
+                    let _ = task.done_tx.send(true);
+                }
             }
         }
         for id in &remove_ids {
@@ -4980,5 +5142,86 @@ mod memory_tests {
             .unwrap();
         assert_eq!(result.deleted, ["m1"]);
         assert!(manager.load_memory(&sid).unwrap().entries.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod background_compaction_tests {
+    use super::*;
+
+    #[test]
+    fn background_episode_is_session_owned_and_released_by_its_worker() {
+        let manager = SessionManager::ephemeral_registry();
+        let session_id = manager.open_session_sync("", "default", None).unwrap();
+        let cancel = CancellationToken::new();
+        assert!(manager.begin_background_compaction(&session_id, "bg-1", cancel.clone()));
+        assert!(!manager.begin_background_compaction(
+            &session_id,
+            "bg-2",
+            CancellationToken::new()
+        ));
+
+        let (_, started) = manager.begin_compaction_blocking(
+            &session_id,
+            Some("bg-1"),
+            CompactionTrigger::Auto,
+            None,
+        );
+        assert_eq!(started, "bg-1");
+        let state = manager.compaction_state_blocking(&session_id);
+        let active = state.active.expect("episode is active");
+        assert_eq!(active.owner, CompactionOwner::Background);
+
+        let mut done = manager
+            .subscribe_background_compaction(&session_id)
+            .expect("worker registration");
+        assert!(manager.finish_background_compaction(&session_id, "bg-1"));
+        assert!(*done.borrow_and_update(), "finish must wake a later turn");
+        assert!(!manager.has_background_compaction(&session_id));
+        assert!(
+            manager
+                .compaction_state_blocking(&session_id)
+                .active
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn projection_reaps_a_background_episode_whose_worker_vanished() {
+        let manager = SessionManager::ephemeral_registry();
+        let session_id = manager.open_session_sync("", "default", None).unwrap();
+        manager.begin_background_compaction(&session_id, "bg-lost", CancellationToken::new());
+        manager.begin_compaction_blocking(
+            &session_id,
+            Some("bg-lost"),
+            CompactionTrigger::Auto,
+            None,
+        );
+        // Simulate a worker registration that disappeared without a terminal
+        // event (e.g. a bug in a future drop path).
+        manager
+            .records
+            .lock()
+            .unwrap()
+            .get_mut(&session_id)
+            .unwrap()
+            .background_compaction = None;
+
+        let state = manager.compaction_state_blocking(&session_id);
+        assert!(
+            state.active.is_none(),
+            "a background episode without a worker must not project as active"
+        );
+        assert!(state.revision > 0);
+    }
+
+    #[test]
+    fn deleting_a_session_cancels_its_background_worker() {
+        let manager = SessionManager::ephemeral_registry();
+        let session_id = manager.open_session_sync("", "default", None).unwrap();
+        let cancel = CancellationToken::new();
+        assert!(manager.begin_background_compaction(&session_id, "bg-del", cancel.clone()));
+        manager.remove_session(&session_id).unwrap();
+        assert!(cancel.is_cancelled());
     }
 }

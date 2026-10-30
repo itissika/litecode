@@ -59,6 +59,7 @@ describe("Dropdown sizing", () => {
       boxRect(vh - 80, vh - 60),
       boxRect(0, vh, 0, window.innerWidth),
     );
+    expect(panel.getAttribute("data-litecode-overlay")).toBe("dropdown");
     expect(panel.style.bottom).not.toBe("");
     expect(panel.style.maxHeight).toBe("480px");
   });

@@ -54,6 +54,8 @@ export interface BrowserPage {
   executeJavaScript(code: string): Promise<unknown>;
   /** Block page keyboard/mouse input without hiding the page. */
   setInputBlocked(blocked: boolean): void;
+  /** JPEG data URL used as the still frame while the native view is hidden. */
+  captureSnapshot(): Promise<string>;
   close(): void;
   isDestroyed(): boolean;
   onNavigate(listener: () => void): void;
@@ -87,6 +89,8 @@ export interface BrowserHostOptions {
   fallbackTitle?: string;
   /** Restrict ids accepted by this host. Defaults to browser panel ids. */
   idPattern?: RegExp;
+  /** How often visible pages refresh their still frame. 0 disables the timer. */
+  snapshotIntervalMs?: number;
   /** Replaces the default "load in this page" window-open behavior. */
   onWindowOpen?: (id: string, url: string) => void;
 }
@@ -97,6 +101,11 @@ type Entry = {
   shown: boolean;
   bounds: BrowserBounds | null;
   loading: boolean;
+  /** Hidden by an overlapping workbench surface, not by the page itself. */
+  occluded: boolean;
+  /** Last JPEG data URL captured while the page was visible. */
+  lastSnapshot: string;
+  snapshotRequest: Promise<string> | null;
   /** `"main"` or the popout dock id the view is attached to. */
   place: string;
 };
@@ -146,9 +155,19 @@ export class BrowserHost {
   private readonly agentOwned = new Set<string>();
   private activePanelId: string | null = null;
   private obscured = false;
+  private snapshotInFlight = false;
+  private snapshotTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly options: BrowserHostOptions) {
     this.idPattern = options.idPattern ?? BROWSER_ID_PATTERN;
+    const interval = options.snapshotIntervalMs ?? 0;
+    if (interval > 0) {
+      const timer = setInterval(() => {
+        void this.captureVisibleSnapshots();
+      }, interval);
+      if (typeof timer === "object" && "unref" in timer) timer.unref();
+      this.snapshotTimer = timer;
+    }
   }
 
   create(id: string, backgroundColor: unknown): BrowserState {
@@ -165,6 +184,9 @@ export class BrowserHost {
       shown: false,
       bounds: null,
       loading: false,
+      occluded: false,
+      lastSnapshot: "",
+      snapshotRequest: null,
       place: "main",
     };
     this.pages.set(panelId, entry);
@@ -326,6 +348,31 @@ export class BrowserHost {
     for (const entry of this.pages.values()) this.apply(entry);
   }
 
+  /** Hide one page while a workbench surface overlaps its rectangle. */
+  setViewOccluded(id: unknown, occluded: boolean): void {
+    const panelId = this.readId(id);
+    if (!panelId) return;
+    const entry = this.pages.get(panelId);
+    if (!entry || entry.occluded === occluded) return;
+    entry.occluded = occluded;
+    this.apply(entry);
+  }
+
+  /** Latest still frame, captured on demand when the cache is still empty. */
+  getSnapshot(id: unknown): Promise<string> {
+    const panelId = this.readId(id);
+    if (!panelId) return Promise.resolve("");
+    const entry = this.pages.get(panelId);
+    if (!entry || entry.view.webContents.isDestroyed()) return Promise.resolve("");
+    if (entry.lastSnapshot) return Promise.resolve(entry.lastSnapshot);
+    return this.captureSnapshot(panelId, entry);
+  }
+
+  dispose(): void {
+    if (this.snapshotTimer) clearInterval(this.snapshotTimer);
+    this.snapshotTimer = null;
+  }
+
   /**
    * Hang the view on a popout window, or back on the main window when
    * `popoutId` is null. A failed popout hides the view instead of leaving a
@@ -375,6 +422,8 @@ export class BrowserHost {
     this.agentOwned.delete(panelId);
     if (this.activePanelId === panelId) this.activePanelId = null;
     entry.shown = false;
+    entry.lastSnapshot = "";
+    entry.snapshotRequest = null;
     entry.view.webContents.setInputBlocked(false);
     entry.view.detach();
     entry.view.webContents.close();
@@ -458,7 +507,8 @@ export class BrowserHost {
 
   /** Show only a visible, unobscured page that has a real rectangle. */
   private apply(entry: Entry): void {
-    const show = entry.wantsVisible && !this.obscured && entry.bounds !== null;
+    const show =
+      entry.wantsVisible && !this.obscured && !entry.occluded && entry.bounds !== null;
     if (show && entry.bounds) {
       entry.view.setBounds(entry.bounds);
       if (!entry.shown) {
@@ -471,6 +521,39 @@ export class BrowserHost {
       entry.view.setVisible(false);
       entry.shown = false;
     }
+  }
+
+  private async captureVisibleSnapshots(): Promise<void> {
+    if (this.snapshotInFlight) return;
+    this.snapshotInFlight = true;
+    try {
+      for (const [id, entry] of this.pages) {
+        if (!entry.shown || entry.occluded) continue;
+        await this.captureSnapshot(id, entry);
+      }
+    } finally {
+      this.snapshotInFlight = false;
+    }
+  }
+
+  private captureSnapshot(id: string, entry: Entry): Promise<string> {
+    if (entry.snapshotRequest) return entry.snapshotRequest;
+    if (!entry.shown || entry.view.webContents.isDestroyed()) {
+      return Promise.resolve(entry.lastSnapshot);
+    }
+    const request = entry.view.webContents
+      .captureSnapshot()
+      .then((dataUrl) => {
+        if (this.pages.get(id) !== entry || entry.view.webContents.isDestroyed()) return "";
+        if (typeof dataUrl === "string" && dataUrl.length > 0) entry.lastSnapshot = dataUrl;
+        return entry.lastSnapshot;
+      })
+      .catch(() => entry.lastSnapshot);
+    entry.snapshotRequest = request;
+    void request.finally(() => {
+      if (entry.snapshotRequest === request) entry.snapshotRequest = null;
+    });
+    return request;
   }
 
   private emit(id: string, entry: Entry): void {

@@ -18,6 +18,10 @@ export const REMOTE_PROGRESS_CHANNEL = "litecode:remote-progress";
 export const COMPONENT_PROGRESS_CHANNEL = "litecode:component-progress";
 export const BROWSER_STATE_CHANNEL = "litecode:browser-state";
 export const APP_VIEW_STATE_CHANNEL = "litecode:app-view-state";
+/** renderer -> main: hide/show one native view behind a workbench surface. */
+export const NATIVE_VIEW_SET_OCCLUDED_CHANNEL = "litecode:native-view-set-occluded";
+/** renderer -> main: latest still frame for a native view. */
+export const NATIVE_VIEW_GET_SNAPSHOT_CHANNEL = "litecode:native-view-get-snapshot";
 /** main -> renderer: open a visible browser panel. */
 export const BROWSER_OPEN_CHANNEL = "litecode:browser-open";
 /** main -> renderer: close one browser panel. */
@@ -129,6 +133,9 @@ export type BrowserState = {
 };
 
 export type AppViewState = BrowserState;
+export type NativeViewKind = "browser" | "app";
+export type NativeViewRef = { kind: NativeViewKind; id: string };
+export type NativeViewOccludedInput = NativeViewRef & { occluded: boolean };
 export type AppViewCreateInput = {
   id: string;
   appId?: string;
@@ -233,6 +240,8 @@ export type LitecodeDesktopBridge = {
   browserSetActive(input: { id: string; active: boolean }): void;
   browserDestroy(id: string): void;
   browserSetObscured(obscured: boolean): void;
+  nativeViewSetOccluded(input: NativeViewOccludedInput): void;
+  nativeViewGetSnapshot(input: NativeViewRef): Promise<string>;
   appViewCreate(input: AppViewCreateInput): Promise<AppViewState>;
   appViewGoBack(id: string): Promise<AppViewState>;
   appViewGoForward(id: string): Promise<AppViewState>;

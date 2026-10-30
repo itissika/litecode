@@ -63,6 +63,9 @@ class FakePage implements BrowserPage {
   setInputBlocked(blocked: boolean): void {
     this.inputBlocked = blocked;
   }
+  captureSnapshot(): Promise<string> {
+    return Promise.resolve("");
+  }
   close(): void {
     this.destroyed = true;
   }
@@ -106,6 +109,7 @@ function setup(
       return latestView;
     },
     onState: () => undefined,
+    snapshotIntervalMs: 0,
   });
   const send = (channel: string, payload: unknown) => {
     if (channel === BROWSER_AGENT_ACTIVITY_CHANNEL) {

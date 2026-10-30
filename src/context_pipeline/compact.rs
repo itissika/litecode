@@ -1111,6 +1111,7 @@ impl CompactPolicy {
     ) -> Result<Option<PreparedCompaction>> {
         Self::prepare_compaction_with_attempts(
             budget, sessions, session_id, request, max_tokens, rows, cancel, _data_root, 1, false,
+            None,
         )
         .await
     }
@@ -1129,6 +1130,7 @@ impl CompactPolicy {
         data_root: &std::path::Path,
         max_attempts: u8,
         emit_started: bool,
+        operation_id: Option<&str>,
     ) -> Result<Option<PreparedCompaction>> {
         if cancel.is_cancelled() {
             return Ok(None);
@@ -1152,7 +1154,7 @@ impl CompactPolicy {
                 session_id,
                 CompactionTrigger::Auto,
                 CompactionStage::Started,
-                None,
+                operation_id,
                 None,
                 None,
                 compaction_telemetry(
@@ -1178,13 +1180,13 @@ impl CompactPolicy {
         .map_err(|failure| {
             if emit_started {
                 if matches!(&failure.error, LitecodeError::Canceled) {
-                    emit_compaction_abandoned(sessions, session_id);
+                    emit_compaction_abandoned(sessions, session_id, operation_id);
                 } else {
                     emit_compact_failed_with_telemetry(
                         sessions,
                         session_id,
                         CompactionTrigger::Auto,
-                        None,
+                        operation_id,
                         &failure.error,
                         compaction_telemetry(
                             CompactionTrigger::Auto,
@@ -2350,17 +2352,43 @@ fn emit_compact_lifecycle_with_telemetry(
     );
 }
 
-pub(crate) fn emit_compaction_abandoned(sessions: &SessionManager, session_id: &str) {
+pub(crate) fn emit_compaction_abandoned(
+    sessions: &SessionManager,
+    session_id: &str,
+    operation_id: Option<&str>,
+) {
     emit_compact_lifecycle_with_telemetry(
         sessions,
         session_id,
         CompactionTrigger::Auto,
         CompactionStage::Abandoned,
-        None,
+        operation_id,
         None,
         None,
         CompactionTelemetry::default(),
         None,
+    );
+}
+
+/// Publish the terminal event after [`SessionManager::finish_background_compaction`]
+/// already cleared the episode. Used only by the worker's drop guard, which is
+/// the last chance to seal a branch that died without a terminal event.
+pub(crate) fn publish_compaction_abandoned(
+    sessions: &SessionManager,
+    session_id: &str,
+    operation_id: &str,
+) {
+    sessions.publish_internal(
+        session_id,
+        InternalEvent::CompactionLifecycle {
+            trigger: CompactionTrigger::Auto,
+            stage: CompactionStage::Abandoned,
+            operation_id: Some(operation_id.to_string()),
+            fail_kind: None,
+            error: None,
+            telemetry: CompactionTelemetry::default(),
+            at: None,
+        },
     );
 }
 

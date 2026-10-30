@@ -668,6 +668,8 @@
     "stop": "Stop",
     "reload": "Reload",
     "agentBusy": "Agent is working on this page…",
+    "occluded": "Page is paused while covered.",
+    "paused": "Paused",
     "error": {
       "open": "Could not open the page",
       "history": "Could not move through history",

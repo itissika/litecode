@@ -93,9 +93,11 @@ const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "guide",
-        usage: "guide [excludes|mcp|custom_tools|apps]",
-        summary: "how to edit that file, and who has to act",
-        help: "`guide` lists topics. `guide <topic>` prints that topic.",
+        usage: "guide [setup|excludes|mcp|custom_tools|apps]",
+        summary: "how to start here, or how to edit that file",
+        help: "`guide` lists topics. `guide setup` is the first-run checklist: look around, \
+               tune excludes, recommend 1–2 apps, and suggest next steps. `guide <topic>` \
+               prints that topic.",
     },
     CommandSpec {
         name: "refresh",
@@ -146,6 +148,7 @@ enum RefreshTarget {
 const TOPICS: &str = "\
 topics:\n\
 \n\
+- `setup`\n\
 - `excludes`\n\
 - `mcp`\n\
 - `custom_tools`\n\
@@ -1485,6 +1488,16 @@ mod tests {
         let mut def = def("direct_probe");
         def.surface = Some(CallSurface::Direct);
         assert!(dynamic_contract_error(&def).is_none());
+    }
+
+    #[test]
+    fn guide_setup_is_a_topic() {
+        assert_eq!(
+            parse_action("guide setup"),
+            Ok(Action::Guide(Some(GuideTopic::Setup)))
+        );
+        assert!(guides::topic(GuideTopic::Setup).contains("首次上手"));
+        assert!(guides::GUIDE_INDEX.contains("`guide setup`"));
     }
 
     #[test]

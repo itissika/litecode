@@ -12,6 +12,7 @@ import {
   type BrowserPanelState,
 } from "../../lib/browserPanel";
 import i18n from "../../i18n";
+import { NativeViewSnapshot } from "../../components/NativeViewSnapshot";
 import { dockIdFromLocation } from "../popout/location";
 
 const ZERO_BOUNDS: BrowserBounds = { x: 0, y: 0, width: 0, height: 0 };
@@ -365,7 +366,15 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
       {error ? (
         <p className="shrink-0 px-2 py-1 text-xs text-(--_dk-amber-500)">{error}</p>
       ) : null}
-      <div ref={hostRef} className="min-h-0 flex-1" />
+      <div
+        ref={hostRef}
+        className="relative min-h-0 flex-1 overflow-hidden"
+        data-native-view-host
+        data-native-view-kind="browser"
+        data-native-view-id={api.id}
+      >
+        <NativeViewSnapshot kind="browser" id={api.id} />
+      </div>
     </div>
   );
 }

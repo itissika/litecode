@@ -24,6 +24,8 @@ class FakePage implements BrowserPage {
   stops = 0;
   jsCalls: string[] = [];
   inputBlocked = false;
+  snapshotCalls = 0;
+  snapshot = "data:image/jpeg;base64,c25hcHNob3Q=";
   private navigateListeners: Array<() => void> = [];
   private loadingListeners: Array<(loading: boolean) => void> = [];
   private openHandler: ((url: string) => void) | null = null;
@@ -78,6 +80,11 @@ class FakePage implements BrowserPage {
 
   setInputBlocked(blocked: boolean): void {
     this.inputBlocked = blocked;
+  }
+
+  captureSnapshot(): Promise<string> {
+    this.snapshotCalls += 1;
+    return Promise.resolve(this.snapshot);
   }
 
   close(): void {
@@ -144,6 +151,7 @@ function hostWith(view: FakeView): BrowserHost {
     isAllowedUrl: isAllowedLoadUrl,
     createView: () => view,
     onState: () => undefined,
+    snapshotIntervalMs: 0,
   });
 }
 
@@ -210,6 +218,56 @@ describe("BrowserHost", () => {
     host.setBounds(PANEL_ID, { x: 1, y: 2, width: 30, height: 40 });
     assert.deepEqual(view.bounds, []);
     assert.equal(view.visible.at(-1), false);
+  });
+
+  it("hides only the occluded page and restores its neighbour", async () => {
+    const first = new FakeView();
+    const second = new FakeView();
+    let created = 0;
+    const host = new BrowserHost({
+      isAllowedUrl: isAllowedLoadUrl,
+      createView: () => (created++ === 0 ? first : second),
+      onState: () => undefined,
+      snapshotIntervalMs: 0,
+    });
+    host.create(PANEL_ID, "#0a0a0a");
+    host.create(OTHER_ID, "#0a0a0a");
+    host.setBounds(PANEL_ID, RECT);
+    host.setVisible(PANEL_ID, true);
+    host.setBounds(OTHER_ID, { x: 820, y: 40, width: 400, height: 600 });
+    host.setVisible(OTHER_ID, true);
+
+    assert.equal(await host.getSnapshot(PANEL_ID), first.webContents.snapshot);
+    assert.equal(first.webContents.snapshotCalls, 1);
+    assert.equal(await host.getSnapshot(PANEL_ID), first.webContents.snapshot);
+    assert.equal(first.webContents.snapshotCalls, 1);
+
+    host.setViewOccluded(PANEL_ID, true);
+    assert.equal(first.visible.at(-1), false);
+    assert.equal(second.visible.at(-1), true);
+    assert.equal(host.isShown(PANEL_ID), false);
+    assert.equal(host.isShown(OTHER_ID), true);
+
+    host.setViewOccluded(PANEL_ID, false);
+    assert.equal(first.visible.at(-1), true);
+    assert.equal(host.isShown(PANEL_ID), true);
+  });
+
+  it("keeps the global obscured lease above per-view occlusion", () => {
+    const view = new FakeView();
+    const host = hostWith(view);
+    host.create(PANEL_ID, "#0a0a0a");
+    host.setBounds(PANEL_ID, RECT);
+    host.setVisible(PANEL_ID, true);
+    host.setViewOccluded(PANEL_ID, true);
+    host.setObscured(true);
+    host.setViewOccluded(PANEL_ID, false);
+    assert.equal(host.isShown(PANEL_ID), false);
+    assert.equal(view.visible.at(-1), false);
+
+    host.setObscured(false);
+    assert.equal(host.isShown(PANEL_ID), true);
+    assert.equal(view.visible.at(-1), true);
   });
 
   it("hides a zero-area rectangle and destroys once", () => {

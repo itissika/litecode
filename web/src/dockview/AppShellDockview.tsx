@@ -20,7 +20,8 @@ import { useSettingsStore } from "../stores/settingsStore";
 import { AboutContent } from "./panels/AboutPanel";
 import { Logo } from "../components/Logo";
 import { foreignDropIntent, previewForeignDrop } from "../lib/externalDrop";
-import { installBrowserChromeObscure, pushBrowserObscure } from "../lib/browserObscure";
+import { installBrowserChromeObscure } from "../lib/browserObscure";
+import { installNativeViewOcclusion } from "../lib/nativeViewOcclusion";
 import { BrowserHeaderAction } from "./shell/BrowserHeaderAction";
 import "../lib/litecodeTerminal";
 
@@ -42,19 +43,9 @@ export function AppShellDockview() {
   );
 
   const openSettings = useSettingsStore((s) => s.openSettings);
-  const settingsOpen = useSettingsStore((s) => s.open);
 
   useEffect(() => installBrowserChromeObscure(), []);
-
-  useEffect(() => {
-    if (!dialogVisible) return;
-    return pushBrowserObscure();
-  }, [dialogVisible]);
-
-  useEffect(() => {
-    if (!settingsOpen) return;
-    return pushBrowserObscure();
-  }, [settingsOpen]);
+  useEffect(() => installNativeViewOcclusion(), []);
 
   useEffect(() => {
     setSessionMode(readSessionMode());

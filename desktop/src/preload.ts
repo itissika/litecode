@@ -6,6 +6,10 @@ import type {
   BROWSER_OPEN_CHANNEL as BrowserOpenChannel,
   BROWSER_STATE_CHANNEL as BrowserStateChannel,
   APP_VIEW_STATE_CHANNEL as AppViewStateChannel,
+  NATIVE_VIEW_GET_SNAPSHOT_CHANNEL as NativeViewGetSnapshotChannel,
+  NATIVE_VIEW_SET_OCCLUDED_CHANNEL as NativeViewSetOccludedChannel,
+  NativeViewOccludedInput,
+  NativeViewRef,
   AppViewCreateInput,
   AppViewState,
   BrowserAgentActivityEvent,
@@ -40,6 +44,10 @@ const REMOTE_DISCONNECTED_CHANNEL: typeof RemoteDisconnectedChannel = "litecode:
 const COMPONENT_PROGRESS_CHANNEL: typeof ComponentProgressChannel = "litecode:component-progress";
 const BROWSER_STATE_CHANNEL: typeof BrowserStateChannel = "litecode:browser-state";
 const APP_VIEW_STATE_CHANNEL: typeof AppViewStateChannel = "litecode:app-view-state";
+const NATIVE_VIEW_GET_SNAPSHOT_CHANNEL: typeof NativeViewGetSnapshotChannel =
+  "litecode:native-view-get-snapshot";
+const NATIVE_VIEW_SET_OCCLUDED_CHANNEL: typeof NativeViewSetOccludedChannel =
+  "litecode:native-view-set-occluded";
 const BROWSER_OPEN_CHANNEL: typeof BrowserOpenChannel = "litecode:browser-open";
 const BROWSER_CLOSE_CHANNEL: typeof BrowserCloseChannel = "litecode:browser-close";
 const BROWSER_AGENT_ACTIVITY_CHANNEL: typeof BrowserAgentActivityChannel =
@@ -266,6 +274,12 @@ const bridge = {
   },
   browserSetObscured: (obscured: boolean): void => {
     ipcRenderer.sendSync("litecode:browser-set-obscured", obscured);
+  },
+  nativeViewSetOccluded: (input: NativeViewOccludedInput): void => {
+    ipcRenderer.send(NATIVE_VIEW_SET_OCCLUDED_CHANNEL, input);
+  },
+  nativeViewGetSnapshot: async (input: NativeViewRef): Promise<string> => {
+    return (await ipcRenderer.invoke(NATIVE_VIEW_GET_SNAPSHOT_CHANNEL, input)) as string;
   },
   appViewCreate: async (input: AppViewCreateInput): Promise<AppViewState> => {
     return (await ipcRenderer.invoke("litecode:app-view-create", input)) as AppViewState;

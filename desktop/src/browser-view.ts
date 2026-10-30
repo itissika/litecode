@@ -139,6 +139,12 @@ function wrapPage(wc: WebContents): BrowserPage {
     setInputBlocked: (blocked) => {
       inputBlocked = blocked;
     },
+    captureSnapshot: async () => {
+      if (wc.isDestroyed()) return "";
+      const image = await wc.capturePage();
+      if (image.isEmpty()) return "";
+      return `data:image/jpeg;base64,${image.toJPEG(80).toString("base64")}`;
+    },
     close: () => {
       if (!wc.isDestroyed()) wc.close();
     },
@@ -250,6 +256,7 @@ export function createBrowserHost(
       win.webContents.send(BROWSER_STATE_CHANNEL, state);
     },
     createView: () => mountGuest(win, BROWSER_PARTITION, isAllowedLoadUrl),
+    snapshotIntervalMs: 1000,
     fallbackTitle: t("browser.title"),
     moveView: (view, popoutId) => {
       if (popoutId === null) return view.reparent(win);
@@ -293,6 +300,7 @@ export function createAppViewHost(win: BrowserWindow, options: AppViewHostOption
       );
     },
     onWindowOpen: (_id, url) => options.onExternal(url),
+    snapshotIntervalMs: 1000,
     onState: (state) => {
       if (!win.isDestroyed()) win.webContents.send(APP_VIEW_STATE_CHANNEL, state);
     },
