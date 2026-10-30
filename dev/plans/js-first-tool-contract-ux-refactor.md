@@ -1,6 +1,6 @@
-﻿# JS-first Code SDK v2 - API UX / contract consistency refactor
+# JS-first Code SDK v2 - API UX / contract consistency refactor
 
-Status: accepted, executing
+Status: accepted, implemented
 Base branch: `refactor/js-first-tool-contract`
 Current implementation commit: `945dcbd4` (`refactor: make run_code SDK JS-first and contract-driven`)
 
@@ -93,7 +93,8 @@ type ToolFailure = {
     | "io"
     | "conflict"
     | "stale"
-    | "unavailable";
+    | "unavailable"
+    | "still_alive";
   message: string;
 };
 ```
@@ -109,8 +110,8 @@ Rules:
 - `code_search` engine not-ready is `unavailable`, not a successful empty hit
   list;
 - command `ok` no longer means command exit success; `exit_code` carries the
-  process status. A still-alive kill is `ToolFailure` / `still_alive` if it
-  cannot be represented as a successful command result.
+  process status. A still-alive kill resolves `ToolFailure` with reason
+  `still_alive`; an exited/killed command remains successful command data.
 
 The exact `ToolError` vs `ToolFailure` policy goes next to the types in
 `prelude.d.ts`, not in a long prelude paragraph.
@@ -323,3 +324,20 @@ Move semantics next to types:
 - `src/session/manager.rs`
 - `tests/code_surface.rs`
 - `tests/run_code_model_view.rs`
+
+## 8. Verification
+
+- `cargo build` passes.
+- `cargo check` passes.
+- `cargo test --no-run` passes.
+- Full `cargo test --no-fail-fast` with the four environment-sensitive tests
+  filtered reports 76 targets and 1209 passed, 0 failed, 2 ignored.
+  Filtered:
+  - `subagent::spawn_contract`
+  - `non_event_stream_content_type_surfaces_the_proxy_body`
+  - `websocket_terminals_are_owner_isolated_and_disconnect_cleaned`
+  - `code_search_lifecycle_rebuild_stale_consume_stop`
+- `tsc -p sdk/tsconfig.json --noEmit` passes.
+- `tsc -p sdk/tsconfig.generated.json --noEmit` passes.
+- `node sdk/scripts/generate-contract.mjs --check` passes with no drift.
+- The combined commands are what `pnpm --dir sdk check` runs in CI.
