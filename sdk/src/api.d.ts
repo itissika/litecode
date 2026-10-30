@@ -4,6 +4,9 @@ type Integer = number;
 /** Workspace-relative path, or an absolute path when explicitly allowed. */
 type Path = string;
 
+/** Empty input for tools that take no arguments. */
+type NoArgs = {};
+
 type LineText = {
   /** 1-based source line. */
   line: Integer;
@@ -78,7 +81,6 @@ type ReadInput = {
 };
 
 type ReadData = {
-  ok: true;
   /** Line contents for this page, in file order. */
   lines: string[];
   message: string;
@@ -93,7 +95,7 @@ type WriteInput = {
   path: Path;
   /** If true, refuse to overwrite an existing file. @default false */
   create_only?: boolean;
-  /** sha256 of the current file bytes. Omit to skip the check. A mismatch resolves ok:false reason stale. */
+  /** sha256 of the current file bytes. Omit to skip the check. A mismatch is ToolFailure reason stale. */
   expected_hash?: string;
 };
 
@@ -109,7 +111,6 @@ type FileRef = {
 };
 
 type WriteData = {
-  ok: true;
   /** True when the file did not exist before. */
   created: boolean;
   /** File identity after the write. */
@@ -135,7 +136,14 @@ type EditFailureReason =
   | "permission"
   | "io";
 
+/** Successful single-edit payload. Failures use ToolFailure. */
 type EditData = {
+  message: string;
+  path: string;
+};
+
+/** One item in a serial apply_edits batch. Item failures stay item-level. */
+type EditResult = {
   message: string;
   ok: boolean;
   path: string;
@@ -148,9 +156,8 @@ type ApplyEditsInput = {
 };
 
 type ApplyEditsData = {
-  ok: true;
   /** Same length and order as edits. */
-  results: EditData[];
+  results: EditResult[];
 };
 
 type GlobInput = {
@@ -163,7 +170,6 @@ type GlobInput = {
 };
 
 type GlobData = {
-  ok: true;
   message: string;
   /** Matching paths sorted by depth, then parent directory, then name. */
   paths: string[];
@@ -202,14 +208,11 @@ type GrepHit = {
 };
 
 type GrepData = {
-  ok: true;
   hits: GrepHit[];
   message: string;
   /** True when a limit or the 8K-token data guard removed results or context. */
   truncated?: boolean;
 };
-
-type CodeSearchStatus = "ok" | "off" | "warming" | "failed" | "busy";
 
 type CodeSearchHit = {
   /** Source file path. */
@@ -238,9 +241,7 @@ type CodeSearchInput = {
 };
 
 type CodeSearchData = {
-  ok: boolean;
-  /** ok is true only for status ok; off/warming/failed/busy are soft domain failures. */
-  status: CodeSearchStatus;
+  /** Empty if the search completed but found no matching chunks. */
   hits: CodeSearchHit[];
   message?: string;
 };
@@ -257,21 +258,21 @@ type RunInput = {
 };
 
 type WaitInput = {
-  /** Command.id from a tools.run result whose exit_code is null. */
+  /** Command.id from a tools.process.run result whose exit_code is null. */
   id: string;
   /** Seconds to block waiting for exit. Values above 300 are clamped to 300. @minimum 1 */
   sec: Integer;
 };
 
 type KillInput = {
-  /** Command.id from a tools.run or tools.wait result whose exit_code is null. */
+  /** Command.id from a tools.process.run or tools.process.wait result whose exit_code is null. */
   id: string;
 };
 
 type CommandData = {
   /** Process exit code when finished; null when still running or unavailable. */
   exit_code: Integer | null;
-  /** While exit_code is null, use with tools.wait / tools.kill in this session. */
+  /** While exit_code is null, use with tools.process.wait / tools.process.kill in this session. */
   id: string;
   /** Stdout plus truncation notes, spill path, or status line. Always present, may be empty. */
   output: string;
@@ -281,19 +282,11 @@ type CommandData = {
   stderr: string;
   /** True when wait observes a kill. */
   killed?: boolean;
-  /** Warning about the command itself. */
+  /** Warning about the command itself or a still-alive signal. */
   message?: string;
-  /**
-   * True when the tool call itself completed; this is not command success.
-   * Check exit_code === 0 for process success. False on soft failures such as
-   * an unreaped kill.
-   */
-  ok?: boolean;
-  /** Present with ok:false; unreaped kill uses still_alive. */
-  reason?: string;
 };
 
-/** run returns ok for a resolved call; exit_code carries the command status. */
+/** Command payload shared by run, wait, and kill; exit_code carries command status. */
 type RunData = CommandData;
 type WaitData = CommandData;
 type KillData = CommandData;
@@ -309,7 +302,6 @@ type WebfetchInput = {
 
 type WebfetchData = {
   message: string;
-  ok: boolean;
   body?: string;
   format?: WebfetchFormat;
   status?: Integer;
@@ -332,41 +324,30 @@ type WebsearchInput = {
 
 type WebsearchData = {
   message: string;
-  ok: boolean;
   /** At most top_k hits, best first. */
   results: WebsearchHit[];
   query?: string;
 };
 
-type MemoryKind = "fact" | "preference" | "decision" | "constraint";
-
 type MemoryEntry = {
-  kind: MemoryKind;
   id: string;
   text: string;
+  /** Milliseconds since Unix epoch. */
   updated_at: Integer;
 };
 
 type RejectedItem = {
   /** 0-based input item index. */
   index: Integer;
-  /** empty_text | text_too_long | invalid_kind | invalid_id | unknown_id | limit_exceeded. */
+  /** empty_text | text_too_long | invalid_id | unknown_id | limit_exceeded. */
   reason: string;
   id?: string;
 };
 
-type MemoryListInput = {
-  /** Optional kind filter. */
-  kind?: MemoryKind;
-  /** Optional case-insensitive substring over entry text. Max 100 characters. */
-  query?: string;
-};
-
 type MemoryListData = {
-  ok: true;
-  /** Returned filtered entries. */
+  /** Number of entries in this snapshot. */
   count: Integer;
-  /** Current entries, in insertion order. */
+  /** Authoritative current entries, in insertion order. */
   entries: MemoryEntry[];
   /** Maximum entries the session can hold. */
   limit: Integer;
@@ -377,8 +358,6 @@ type MemoryListData = {
 };
 
 type MemoryUpsertEntry = {
-  /** Optional kind; defaults to fact for new entries and keeps the current kind on update. */
-  kind?: string;
   /** Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry. */
   text: string;
   /** Optional existing id. Omit to add or update by text. */
@@ -391,7 +370,6 @@ type MemoryUpsertInput = {
 };
 
 type MemoryUpsertData = {
-  ok: true;
   /** New ids. */
   added: string[];
   /** Entries after the batch. */
@@ -409,7 +387,6 @@ type MemoryDeleteInput = {
 };
 
 type MemoryDeleteData = {
-  ok: true;
   /** Entries after the batch. */
   count: Integer;
   /** Deleted ids. */
@@ -440,9 +417,7 @@ type BrowserOpenInput = {
   url: string;
 };
 
-type BrowserOpenData = BrowserPage & {
-  ok: true;
-};
+type BrowserOpenData = BrowserPage;
 
 type BrowserCloseInput = {
   /** Browser page id from browser_open or browser_list. */
@@ -450,16 +425,12 @@ type BrowserCloseInput = {
 };
 
 type BrowserCloseData = {
-  ok: true;
   closed: boolean;
   id: string;
   fallback?: boolean;
 };
 
-type BrowserListInput = {};
-
 type BrowserListData = {
-  ok: true;
   active_id: string;
   pages: BrowserPage[];
 };
@@ -472,7 +443,6 @@ type BrowserReadInput = {
 };
 
 type BrowserReadData = {
-  ok: true;
   elements: BrowserElement[];
   page_id: string;
   text: string;
@@ -489,7 +459,6 @@ type BrowserClickInput = {
 };
 
 type BrowserClickData = {
-  ok: true;
   page_id: string;
   ref: string;
   tag: string;
@@ -508,7 +477,6 @@ type BrowserTypeInput = {
 };
 
 type BrowserTypeData = {
-  ok: true;
   page_id: string;
   ref: string;
   tag: string;
@@ -529,13 +497,11 @@ type WorkspaceSymbolInput = {
 };
 
 type DiagnosticsData = {
-  ok: true;
   items: DiagnosticItem[];
   message: string;
 };
 
 type SymbolsData = {
-  ok: true;
   message: string;
   symbols: SymbolInfo[];
 };
@@ -544,7 +510,6 @@ type DocumentSymbolData = SymbolsData;
 type WorkspaceSymbolData = SymbolsData;
 
 type LocationsData = {
-  ok: true;
   locations: Location[];
   message: string;
 };
@@ -554,24 +519,12 @@ type GoToDefinitionData = LocationsData;
 type GoToImplementationData = LocationsData;
 
 type HoverData = {
-  ok: true;
   /** Flattened hover text, not raw LSP JSON. */
   markdown: string;
   message: string;
 };
 
-interface MemoryTools {
-  /** List the current session's working memory. @tool memory.list @suite memory @input MemoryListInput @output MemoryListData */
-  list(args: MemoryListInput): Promise<ToolResult<MemoryListData>>;
-
-  /** Add or update small, durable session memory entries. @tool memory.upsert @suite memory @input MemoryUpsertInput @output MemoryUpsertData */
-  upsert(args: MemoryUpsertInput): Promise<ToolResult<MemoryUpsertData>>;
-
-  /** Delete entries by id from the current session's working memory. @tool memory.delete @suite memory @input MemoryDeleteInput @output MemoryDeleteData */
-  delete(args: MemoryDeleteInput): Promise<ToolResult<MemoryDeleteData>>;
-}
-
-interface Tools {
+interface FileTools {
   /** Read lines from one file or archived session transcript. @tool read @suite file @input ReadInput @output ReadData */
   read(args: ReadInput): Promise<ToolResult<ReadData>>;
 
@@ -589,10 +542,14 @@ interface Tools {
 
   /** Search file contents. @tool grep @suite file @input GrepInput @output GrepData */
   grep(args: GrepInput): Promise<ToolResult<GrepData>>;
+}
 
+interface SearchTools {
   /** Semantic search over the workspace code index. @tool code_search @suite search @input CodeSearchInput @output CodeSearchData */
   code_search(args: CodeSearchInput): Promise<ToolResult<CodeSearchData>>;
+}
 
+interface ProcessTools {
   /** Start one shell command; use run_in_background for a non-blocking job. @tool run @suite process @input RunInput @output RunData */
   run(args: RunInput): Promise<ToolResult<RunData>>;
 
@@ -601,34 +558,37 @@ interface Tools {
 
   /** Terminate a command job in this session. @tool kill @suite process @input KillInput @output KillData */
   kill(args: KillInput): Promise<ToolResult<KillData>>;
+}
 
+interface WebTools {
   /** Fetch one http(s) URL. @tool webfetch @suite web @input WebfetchInput @output WebfetchData */
-  webfetch(args: WebfetchInput): Promise<ToolResult<WebfetchData>>;
+  fetch(args: WebfetchInput): Promise<ToolResult<WebfetchData>>;
 
   /** Search the web. @tool websearch @suite web @input WebsearchInput @output WebsearchData */
-  websearch(args: WebsearchInput): Promise<ToolResult<WebsearchData>>;
+  search(args: WebsearchInput): Promise<ToolResult<WebsearchData>>;
+}
 
-  /** Workspace memory namespace. */
-  memory: MemoryTools;
-
+interface BrowserTools {
   /** Open a visible browser tab. @tool browser_open @suite browser @input BrowserOpenInput @output BrowserOpenData */
-  browser_open(args: BrowserOpenInput): Promise<ToolResult<BrowserOpenData>>;
+  open(args: BrowserOpenInput): Promise<ToolResult<BrowserOpenData>>;
 
   /** Close an agent-owned browser tab. @tool browser_close @suite browser @input BrowserCloseInput @output BrowserCloseData */
-  browser_close(args: BrowserCloseInput): Promise<ToolResult<BrowserCloseData>>;
+  close(args: BrowserCloseInput): Promise<ToolResult<BrowserCloseData>>;
 
-  /** List open browser tabs. @tool browser_list @suite browser @input BrowserListInput @output BrowserListData */
-  browser_list(args: BrowserListInput): Promise<ToolResult<BrowserListData>>;
+  /** List open browser tabs. @tool browser_list @suite browser @input NoArgs @output BrowserListData */
+  list(args?: NoArgs): Promise<ToolResult<BrowserListData>>;
 
   /** Read the current visible browser page. @tool browser_read @suite browser @input BrowserReadInput @output BrowserReadData */
-  browser_read(args: BrowserReadInput): Promise<ToolResult<BrowserReadData>>;
+  read(args: BrowserReadInput): Promise<ToolResult<BrowserReadData>>;
 
   /** Click one interactive element on the visible page. @tool browser_click @suite browser @input BrowserClickInput @output BrowserClickData */
-  browser_click(args: BrowserClickInput): Promise<ToolResult<BrowserClickData>>;
+  click(args: BrowserClickInput): Promise<ToolResult<BrowserClickData>>;
 
   /** Type text into one input on the visible page. @tool browser_type @suite browser @input BrowserTypeInput @output BrowserTypeData */
-  browser_type(args: BrowserTypeInput): Promise<ToolResult<BrowserTypeData>>;
+  type(args: BrowserTypeInput): Promise<ToolResult<BrowserTypeData>>;
+}
 
+interface LspTools {
   /** List diagnostics for one source file. @tool diagnostics @suite lsp @input DiagnosticsInput @output DiagnosticsData */
   diagnostics(args: DiagnosticsInput): Promise<ToolResult<DiagnosticsData>>;
 
@@ -649,6 +609,27 @@ interface Tools {
 
   /** Jump to implementations at a file position. @tool go_to_implementation @suite lsp @input GoToImplementationInput @output GoToImplementationData */
   go_to_implementation(args: GoToImplementationInput): Promise<ToolResult<GoToImplementationData>>;
+}
+
+interface MemoryTools {
+  /** Return the authoritative current session memory snapshot; memory survives compaction and is re-injected. @tool memory.list @suite memory @input NoArgs @output MemoryListData */
+  list(args?: NoArgs): Promise<ToolResult<MemoryListData>>;
+
+  /** Add or update small, durable session memory entries. @tool memory.upsert @suite memory @input MemoryUpsertInput @output MemoryUpsertData */
+  upsert(args: MemoryUpsertInput): Promise<ToolResult<MemoryUpsertData>>;
+
+  /** Delete entries by id from the current session's working memory. @tool memory.delete @suite memory @input MemoryDeleteInput @output MemoryDeleteData */
+  delete(args: MemoryDeleteInput): Promise<ToolResult<MemoryDeleteData>>;
+}
+
+interface Tools {
+  file: FileTools;
+  search: SearchTools;
+  process: ProcessTools;
+  web: WebTools;
+  browser: BrowserTools;
+  lsp: LspTools;
+  memory: MemoryTools;
 }
 
 declare const tools: Tools;

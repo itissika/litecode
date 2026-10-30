@@ -136,6 +136,18 @@ fn root_is_object(schema: &Value) -> bool {
     }
 }
 
+fn strip_ok_field(mut schema: Value) -> Value {
+    if let Value::Object(object) = &mut schema {
+        if let Some(Value::Object(properties)) = object.get_mut("properties") {
+            properties.remove("ok");
+        }
+        if let Some(Value::Array(required)) = object.get_mut("required") {
+            required.retain(|item| item.as_str() != Some("ok"));
+        }
+    }
+    schema
+}
+
 fn ensure_ok_field(schema: Value) -> Value {
     let Value::Object(mut object) = schema else {
         return schema;
@@ -146,16 +158,14 @@ fn ensure_ok_field(schema: Value) -> Value {
     else {
         return Value::Object(object);
     };
-    if !properties.contains_key("ok") {
-        properties.insert(
-            "ok".into(),
-            serde_json::json!({
-                "type": "boolean",
-                "const": true,
-                "description": "The host adds ok:true to a successful result."
-            }),
-        );
-    }
+    properties.insert(
+        "ok".into(),
+        serde_json::json!({
+            "type": "boolean",
+            "const": true,
+            "description": "The host adds ok:true to a successful result."
+        }),
+    );
     let required = object
         .entry("required")
         .or_insert_with(|| Value::Array(Vec::new()));
@@ -388,7 +398,8 @@ pub fn build_dynamic_tool(
         ));
     }
     let (input_type, data_type) = select_type_names(name, reserved_types);
-    let output_schema = ensure_ok_field(spec.output_schema);
+    let payload_output_schema = strip_ok_field(spec.output_schema);
+    let output_schema = ensure_ok_field(payload_output_schema.clone());
     let mut types = BTreeMap::new();
     types.insert(
         input_type.clone(),
@@ -399,7 +410,10 @@ pub fn build_dynamic_tool(
     );
     types.insert(
         data_type.clone(),
-        format!("type {data_type} = {};", schema_to_ts(&output_schema, 0)),
+        format!(
+            "type {data_type} = {};",
+            schema_to_ts(&payload_output_schema, 0)
+        ),
     );
     let path: Vec<String> = name.split('.').map(str::to_string).collect();
     let method = path

@@ -21,7 +21,6 @@ fn run_code_result(content: &str) -> Value {
     serde_json::from_str(rest.trim()).unwrap_or_else(|_| Value::String(rest.trim().to_string()))
 }
 
-
 #[tokio::test(flavor = "current_thread")]
 async fn code_tool_captures_logs_and_enforces_output_ledger() {
     let dir = tempfile::tempdir().unwrap();
@@ -84,8 +83,16 @@ return { ok: true };
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
     // WP-210 D: success keeps the head of the logs within 3k tokens.
-    assert!(result.content.contains("[log] hello 42"), "{}", result.content);
-    assert!(!result.content.contains("logs omitted"), "{}", result.content);
+    assert!(
+        result.content.contains("[log] hello 42"),
+        "{}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("logs omitted"),
+        "{}",
+        result.content
+    );
     assert_eq!(run_code_result(&result.content), json!({ "ok": true }));
 
     let failing = FunctionToolCall {
@@ -112,8 +119,16 @@ return { ok: true };
         None,
     )
     .await;
-    assert!(result.content.contains("[log] hello 42"), "{}", result.content);
-    assert!(result.content.contains("[error] warn"), "{}", result.content);
+    assert!(
+        result.content.contains("[log] hello 42"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("[error] warn"),
+        "{}",
+        result.content
+    );
 
     let oversized = format!(
         "return \"x\".repeat({});",
@@ -148,7 +163,11 @@ return { ok: true };
         result.error.expect("typed output-limit result").kind,
         ToolErrorKind::OutputLimit
     );
-    assert!(result.content.contains("output limit"), "{}", result.content);
+    assert!(
+        result.content.contains("output limit"),
+        "{}",
+        result.content
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

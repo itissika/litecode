@@ -86,13 +86,9 @@ impl KillTool {
         if !still_alive {
             present_command(job_id, exit_code, output, None)
         } else {
-            command_job::present_command_full(
-                job_id,
-                None,
-                output,
-                Some("kill signal sent but the process was still alive after the reap wait".into()),
-                Some("still_alive"),
-                None,
+            coded_error(
+                "still_alive",
+                "kill signal sent but the process was still alive after the reap wait",
             )
         }
     }
@@ -383,9 +379,13 @@ mod tests {
                 test_execution(dir.path(), session),
             )
             .await;
-        let data = result.data.as_ref().unwrap();
-        assert_eq!(data["reason"], "still_alive", "{data}");
-        assert!(data["exit_code"].is_null(), "{data}");
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some("still_alive"),
+            "{result:?}"
+        );
+        assert!(result.data.is_none(), "{result:?}");
+        assert!(result.content.contains("still alive"), "{}", result.content);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -4930,7 +4930,6 @@ mod memory_tests {
         let request = |text: &str| MemoryUpsertRequest {
             id: None,
             text: text.into(),
-            kind: None,
         };
 
         let (memory, _) = manager
@@ -4959,20 +4958,18 @@ mod memory_tests {
         let sid = manager.open_session_sync("", "default", None).unwrap();
         assert!(manager.load_memory(&sid).unwrap().entries.is_empty());
 
-        let (memory, result) = manager
+        let (_, result) = manager
             .update_memory(&sid, |memory| {
                 Ok(memory.apply_upsert(
                     &[MemoryUpsertRequest {
                         id: None,
                         text: "use pnpm".into(),
-                        kind: Some("preference".into()),
                     }],
                     1,
                 ))
             })
             .unwrap();
         assert_eq!(result.added, ["m1"]);
-        assert_eq!(memory.entries[0].kind.as_str(), "preference");
 
         let loaded = manager.load_memory(&sid).unwrap();
         assert_eq!(loaded.entries.len(), 1);

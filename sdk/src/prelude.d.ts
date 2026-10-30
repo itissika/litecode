@@ -7,7 +7,10 @@ declare class ToolError extends Error {
   readonly seq: number;
 }
 
-/** Any tool call resolves this when the tool did not get the job done. */
+/**
+ * A resolved domain failure. ToolError is thrown for protocol and hard
+ * execution failures; this shape is the normal failure branch of ToolResult.
+ */
 type ToolFailure = {
   ok: false;
   reason:
@@ -18,8 +21,13 @@ type ToolFailure = {
     | "permission"
     | "io"
     | "conflict"
-    | "stale";
+    | "stale"
+    | "unavailable"
+    | "still_alive";
   message: string;
 };
 
-type ToolResult<T> = T | ToolFailure;
+/** A successful tool result. The host adds this envelope; payloads omit ok. */
+type ToolSuccess<T> = T & { ok: true };
+
+type ToolResult<T> = ToolSuccess<T> | ToolFailure;

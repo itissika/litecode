@@ -16,12 +16,6 @@ use crate::types::ToolCallResult;
 /// Sole success shape for `run` / `wait` / `kill`.
 #[derive(Debug, Serialize)]
 pub(crate) struct CommandData {
-    /// Set only on a soft failure. Absent on ordinary success so
-    /// `with_ok_flag` fills `ok: true`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ok: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
     pub id: String,
     pub exit_code: Option<i32>,
     /// Stdout only, plus stdout notes / status lines (WP-210 F).
@@ -243,29 +237,25 @@ pub(crate) fn present_command(
     output: JobOutput,
     message: Option<String>,
 ) -> ToolCallResult {
-    present_command_full(id, exit_code, output, message, None, None)
+    present_command_full(id, exit_code, output, message, None)
 }
 
-/// Soft-fail / killed presentation shared by run / wait / kill.
+/// Killed-command presentation shared by wait.
 ///
-/// `soft_reason` sets `ok: false`; it never rewrites the observed exit code.
-/// `killed` is only set by wait when the exit was a kill.
+/// `killed` is only set when the exit was a kill. Command payloads do not
+/// carry an `ok` field; the ToolSuccess envelope owns success.
 pub(crate) fn present_command_full(
     id: impl Into<String>,
     exit_code: Option<i32>,
     output: JobOutput,
     message: Option<String>,
-    soft_reason: Option<&str>,
     killed: Option<bool>,
 ) -> ToolCallResult {
     let id = id.into();
-    let soft = soft_reason.is_some();
     let shown = exit_code
         .map(|code| code.to_string())
         .unwrap_or_else(|| "null".into());
     crate::tool::outcome::ToolOutcome::ok(CommandData {
-        ok: soft.then_some(false),
-        reason: soft_reason.map(str::to_string),
         id: id.clone(),
         exit_code,
         output: output.stdout,
@@ -426,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn still_alive_soft_fail_presents_ok_false_with_null_exit_code() {
+    fn command_message_is_forwarded_without_ok() {
         let result = present_command_full(
             "bg_stuck",
             None,
@@ -435,13 +425,15 @@ mod tests {
                 stderr: "err".into(),
             },
             Some("kill signal sent but process still alive after reap wait".into()),
-            Some("still_alive"),
             None,
         );
         assert!(result.error.is_none(), "{result:?}");
         let data = result.data.as_ref().expect("data");
-        assert_eq!(data["ok"], false, "{data}");
-        assert_eq!(data["reason"], "still_alive", "{data}");
+        assert!(data["ok"].is_null(), "{data}");
+        assert_eq!(
+            data["message"], "kill signal sent but process still alive after reap wait",
+            "{data}"
+        );
         assert!(data["exit_code"].is_null(), "{data}");
         assert!(
             data.get("killed").is_none() || data["killed"].is_null(),

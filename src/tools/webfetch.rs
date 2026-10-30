@@ -90,8 +90,6 @@ enum FetchOutcome {
         body: String,
     },
     Soft {
-        url: String,
-        status: Option<u16>,
         message: String,
     },
     Hard {
@@ -121,29 +119,19 @@ fn fetch_hops(start_url: String) -> FetchOutcome {
                 return FetchOutcome::Hard { code, message };
             }
             Err(GateError::Soft { message }) => {
-                return FetchOutcome::Soft {
-                    url: current,
-                    status: None,
-                    message,
-                };
+                return FetchOutcome::Soft { message };
             }
         };
         let client = match client_for_validated_hop(&parsed, &pinned) {
             Ok(c) => c,
             Err(message) => {
-                return FetchOutcome::Soft {
-                    url: current,
-                    status: None,
-                    message,
-                };
+                return FetchOutcome::Soft { message };
             }
         };
         let response = match client.get(parsed.clone()).send() {
             Ok(r) => r,
             Err(e) => {
                 return FetchOutcome::Soft {
-                    url: current,
-                    status: None,
                     message: format!("request failed: {e}"),
                 };
             }
@@ -157,8 +145,6 @@ fn fetch_hops(start_url: String) -> FetchOutcome {
                 Ok(next) => next.to_string(),
                 Err(e) => {
                     return FetchOutcome::Soft {
-                        url: current,
-                        status: Some(response.status().as_u16()),
                         message: format!("bad redirect: {e}"),
                     };
                 }
@@ -169,8 +155,6 @@ fn fetch_hops(start_url: String) -> FetchOutcome {
         let status_code = status.as_u16();
         if !status.is_success() {
             return FetchOutcome::Soft {
-                url: current,
-                status: Some(status_code),
                 message: format!("http error: {status}"),
             };
         }
@@ -181,15 +165,11 @@ fn fetch_hops(start_url: String) -> FetchOutcome {
                 body,
             },
             Err(e) => FetchOutcome::Soft {
-                url: current,
-                status: Some(status_code),
                 message: format!("read body: {e}"),
             },
         };
     }
     FetchOutcome::Soft {
-        url: current,
-        status: None,
         message: "too many redirects".to_string(),
     }
 }
@@ -360,7 +340,6 @@ fn is_ipv4_benchmarking(ip: &std::net::Ipv4Addr) -> bool {
 
 #[derive(Debug, Clone, Serialize)]
 struct WebFetchData {
-    ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -437,7 +416,6 @@ impl Tool for WebFetchTool {
                 };
                 let truncated = truncate_body(formatted);
                 present_webfetch(WebFetchData {
-                    ok: true,
                     url: Some(url),
                     status: Some(status),
                     format: Some(format),
@@ -445,18 +423,7 @@ impl Tool for WebFetchTool {
                     message: "Fetched.".to_string(),
                 })
             }
-            FetchOutcome::Soft {
-                url,
-                status,
-                message,
-            } => present_webfetch(WebFetchData {
-                ok: false,
-                url: Some(url),
-                status,
-                format: Some(format),
-                body: None,
-                message,
-            }),
+            FetchOutcome::Soft { message } => coded_error("io", message),
             FetchOutcome::Hard { code, message } => coded_error(code, message),
         }
     }
@@ -646,12 +613,7 @@ mod tests {
         let result = tool.call_inner(serde_json::json!({ "url": "http://127.0.0.1/" }));
         assert_eq!(result.level, ToolSignalLevel::Error);
         assert_eq!(result.error_code.as_deref(), Some("permission_denied"));
-        let data_ok = result
-            .data
-            .as_ref()
-            .and_then(|d| d.get("ok"))
-            .and_then(|v| v.as_bool());
-        assert_ne!(data_ok, Some(false), "SSRF must be ToolError, not ok:false");
+        assert!(result.data.is_none(), "SSRF must be ToolError, not data");
     }
 
     #[test]
@@ -664,22 +626,9 @@ mod tests {
     }
 
     #[test]
-    fn soft_fail_shape_has_ok_false_without_error_level() {
-        // Present helper: soft path must resolve (level != Error) with ok:false.
-        let result = present_webfetch(WebFetchData {
-            ok: false,
-            url: Some("https://example.com/missing".into()),
-            status: Some(404),
-            format: Some("markdown".into()),
-            body: None,
-            message: "http error: 404 Not Found".into(),
-        });
-        assert_ne!(result.level, ToolSignalLevel::Error);
-        assert!(result.error.is_none());
-        let data = result.data.expect("data");
-        assert_eq!(data["ok"], false);
-        assert_eq!(data["status"], 404);
-        assert_eq!(data["url"], "https://example.com/missing");
-        assert!(data.get("body").is_none() || data["body"].is_null());
+    fn soft_http_error_is_io_failure() {
+        let result = coded_error("io", "http error: 404 Not Found");
+        assert_eq!(result.error_code.as_deref(), Some("io"));
+        assert!(result.data.is_none(), "{result:?}");
     }
 }

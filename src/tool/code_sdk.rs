@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use crate::tool::code_contract::{SdkFragments, SdkToolFragment};
 
 const SUITE_ORDER: &[&str] = &[
-    "file", "search", "process", "web", "memory", "browser", "lsp",
+    "file", "search", "process", "web", "browser", "lsp", "memory",
 ];
 
 fn sort_fragments<'a>(
@@ -63,21 +63,35 @@ fn render_tool(tool: &SdkToolFragment, indent: &str) -> String {
 
 fn render_tools_interface(entries: &[&SdkToolFragment]) -> Result<String, String> {
     let mut out = String::from("interface Tools {\n");
-    let flat: Vec<&&SdkToolFragment> = entries.iter().filter(|tool| tool.path.len() == 1).collect();
     let mut flat_by_suite: std::collections::BTreeMap<&str, Vec<&&SdkToolFragment>> =
         std::collections::BTreeMap::new();
-    for tool in &flat {
-        flat_by_suite
-            .entry(tool.suite.as_str())
-            .or_default()
-            .push(*tool);
+    let mut nested_by_suite: std::collections::BTreeMap<&str, Vec<&&SdkToolFragment>> =
+        std::collections::BTreeMap::new();
+    for tool in entries {
+        if tool.path.len() == 1 {
+            flat_by_suite
+                .entry(tool.suite.as_str())
+                .or_default()
+                .push(tool);
+        } else if tool.path.len() == 2 {
+            nested_by_suite
+                .entry(tool.path[0].as_str())
+                .or_default()
+                .push(tool);
+        } else {
+            return Err(format!(
+                "dynamic SDK paths deeper than one suite level are not supported: {}",
+                tool.path.join(".")
+            ));
+        }
     }
-    let mut emitted = std::collections::BTreeSet::new();
+
+    let mut emitted_flat = std::collections::BTreeSet::new();
     for suite in SUITE_ORDER {
         let Some(group) = flat_by_suite.get(suite) else {
             continue;
         };
-        emitted.insert(*suite);
+        emitted_flat.insert(*suite);
         out.push_str("  // ");
         out.push_str(suite);
         out.push('\n');
@@ -87,7 +101,7 @@ fn render_tools_interface(entries: &[&SdkToolFragment]) -> Result<String, String
         out.push('\n');
     }
     for (suite, group) in flat_by_suite {
-        if emitted.contains(suite) {
+        if emitted_flat.contains(suite) {
             continue;
         }
         out.push_str("  // ");
@@ -98,45 +112,40 @@ fn render_tools_interface(entries: &[&SdkToolFragment]) -> Result<String, String
         }
         out.push('\n');
     }
-    let mut memory: Vec<&&SdkToolFragment> = entries
-        .iter()
-        .filter(|tool| tool.path.len() == 2 && tool.path[0] == "memory")
-        .collect();
-    memory.sort_by(|left, right| left.path[1].cmp(&right.path[1]));
-    if !memory.is_empty() {
-        out.push_str("  // memory\n");
-        out.push_str("  memory: {\n");
-        for tool in memory {
-            out.push_str(&render_tool(tool, "    "));
-        }
-        out.push_str("  };\n\n");
-    }
-    // Runtime-defined custom suites are one level deep: suite.member.
-    // Render them after the static memory block without changing the built-in
-    // memory formatting.
-    let mut dynamic_suites: std::collections::BTreeMap<&str, Vec<&&SdkToolFragment>> =
-        std::collections::BTreeMap::new();
-    for tool in entries {
-        if tool.path.len() == 2 && tool.path[0] != "memory" {
-            dynamic_suites
-                .entry(tool.path[0].as_str())
-                .or_default()
-                .push(tool);
-        } else if tool.path.len() > 2 {
-            return Err(format!(
-                "dynamic SDK paths deeper than one suite level are not supported: {}",
-                tool.path.join(".")
-            ));
-        }
-    }
-    for (suite, group) in dynamic_suites {
-        out.push_str(&format!("  // {suite}\n"));
-        out.push_str(&format!("  {suite}: {{\n"));
+
+    let mut emitted_nested = std::collections::BTreeSet::new();
+    for suite in SUITE_ORDER {
+        let Some(group) = nested_by_suite.get(suite) else {
+            continue;
+        };
+        emitted_nested.insert(*suite);
+        out.push_str("  // ");
+        out.push_str(suite);
+        out.push('\n');
+        out.push_str("  ");
+        out.push_str(suite);
+        out.push_str(": {\n");
         for tool in group {
             out.push_str(&render_tool(tool, "    "));
         }
         out.push_str("  };\n\n");
     }
+    for (suite, group) in nested_by_suite {
+        if emitted_nested.contains(suite) {
+            continue;
+        }
+        out.push_str("  // ");
+        out.push_str(suite);
+        out.push('\n');
+        out.push_str("  ");
+        out.push_str(suite);
+        out.push_str(": {\n");
+        for tool in group {
+            out.push_str(&render_tool(tool, "    "));
+        }
+        out.push_str("  };\n\n");
+    }
+
     while out.ends_with('\n') {
         out.pop();
     }

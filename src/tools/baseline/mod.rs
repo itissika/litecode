@@ -447,14 +447,9 @@ async fn run_case(case: &Live, root: &Path, data_root: &Path) -> ToolCallResult 
 fn expect_shape(case: &Live, result: &ToolCallResult) {
     let label = format!("{}/{}", case.tool, case.scenario);
     match (case.tool, case.scenario) {
-        ("edit", "empty") => {
-            // WP-198: empty-file miss resolves ok=false with guidance in message.
-            assert!(
-                result.error.is_none() && result.data.is_some(),
-                "{label} empty file should resolve with data: {}",
-                describe(result)
-            );
-            assert_eq!(result.data.as_ref().unwrap()["ok"], false, "{label}");
+        ("edit", "empty" | "partial_failure") => {
+            assert_kind(result, ToolErrorKind::InvalidInput, &label);
+            assert!(result.data.is_none(), "{label} data={}", describe(result));
         }
         (_, "invalid_input") => {
             assert_kind(result, ToolErrorKind::InvalidInput, &label);
@@ -467,13 +462,6 @@ fn expect_shape(case: &Live, result: &ToolCallResult) {
         (_, "cancelled") => {
             assert_kind(result, ToolErrorKind::Cancelled, &label);
             assert!(result.data.is_none(), "{label} data={}", describe(result));
-        }
-        ("edit", "partial_failure") => {
-            assert!(
-                result.error.is_none() && result.data.is_some(),
-                "{label} partial edit still returns data: {}",
-                describe(result)
-            );
         }
         (_, "success" | "empty" | "truncation") => {
             assert!(

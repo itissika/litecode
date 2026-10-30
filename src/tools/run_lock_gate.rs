@@ -173,7 +173,7 @@ async fn four_parallel_write_runs_finish_in_about_one_second() {
     ));
     let bundle: Vec<Arc<dyn Tool>> = vec![Arc::new(RunTool::new(Arc::new(AgentJobRegistry::new())))];
     let tool = CodeTool::new(bundle, host);
-    let code = "const rs = await Promise.all([1,2,3,4].map(i => tools.run({command:`sleep 1 && touch f${i}`}))); return rs.map(r => r.exit_code);";
+    let code = "const rs = await Promise.all([1,2,3,4].map(i => tools.process.run({command:`sleep 1 && touch f${i}`}))); return rs.map(r => r.exit_code);";
     let started = Instant::now();
     let result = tool
         .execute(

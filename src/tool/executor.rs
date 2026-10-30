@@ -1563,7 +1563,7 @@ mod code_caller_contract_tests {
         std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
         let result = run_program(
             dir.path(),
-            "return await tools.read({ path: \"a.txt\", nope: true });",
+            "return await tools.file.read({ path: \"a.txt\", nope: true });",
         )
         .await;
         assert!(

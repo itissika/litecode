@@ -113,7 +113,6 @@ enum SearchOutcome {
 
 #[derive(Debug, Clone, Serialize)]
 struct WebSearchData {
-    ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     query: Option<String>,
     results: Vec<SearchHit>,
@@ -267,18 +266,12 @@ impl Tool for WebSearchTool {
                     format!("{} results.", results.len())
                 };
                 present_websearch(WebSearchData {
-                    ok: true,
                     query: Some(query),
                     results,
                     message,
                 })
             }
-            SearchOutcome::Soft { message } => present_websearch(WebSearchData {
-                ok: false,
-                query: Some(query),
-                results: Vec::new(),
-                message,
-            }),
+            SearchOutcome::Soft { message } => coded_error("io", message),
             SearchOutcome::Hard { code, message } => coded_error(code, message),
         }
     }
@@ -316,20 +309,10 @@ mod tests {
     }
 
     #[test]
-    fn soft_fail_shape_resolves_ok_false() {
-        let result = present_websearch(WebSearchData {
-            ok: false,
-            query: Some("rust".into()),
-            results: Vec::new(),
-            message: "exa http 500".into(),
-        });
-        assert_ne!(result.level, ToolSignalLevel::Error);
-        assert!(result.error.is_none());
-        let data = result.data.expect("data");
-        assert_eq!(data["ok"], false);
-        assert_eq!(data["query"], "rust");
-        assert_eq!(data["message"], "exa http 500");
-        assert_eq!(data["results"], serde_json::json!([]));
+    fn soft_search_error_is_io_failure() {
+        let result = coded_error("io", "exa http 500");
+        assert_eq!(result.error_code.as_deref(), Some("io"));
+        assert!(result.data.is_none(), "{result:?}");
     }
 
     #[test]

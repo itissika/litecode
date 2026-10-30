@@ -70,7 +70,10 @@ pub struct CodeToolContract {
 pub struct CodeSurface {
     pub sdk: String,
     pub sdk_hash: String,
+    /// Runtime tool name -> generated input/output contract.
     pub tools: BTreeMap<String, CodeToolContract>,
+    /// JavaScript binding path (`suite.member`) -> runtime tool name.
+    pub bindings: BTreeMap<String, String>,
 }
 
 impl CodeSurface {
@@ -151,6 +154,7 @@ pub fn build_surface(tools: &[Arc<dyn Tool>]) -> Result<CodeSurface, String> {
     let builtins = builtins();
     let mut fragments = builtins.fragments.clone();
     let mut contracts = BTreeMap::new();
+    let mut bindings = BTreeMap::new();
     let mut selected = BTreeSet::new();
     let mut reserved_types: BTreeSet<String> = fragments.types.keys().cloned().collect();
 
@@ -166,6 +170,10 @@ pub fn build_surface(tools: &[Arc<dyn Tool>]) -> Result<CodeSurface, String> {
                     ));
                 }
                 reserved_types.insert(type_name);
+            }
+            let sdk_path = dynamic.fragment.path.join(".");
+            if bindings.insert(sdk_path.clone(), name.clone()).is_some() {
+                return Err(format!("duplicate SDK binding path '{sdk_path}'"));
             }
             fragments.tools.insert(name.clone(), dynamic.fragment);
             contracts.insert(
@@ -189,6 +197,10 @@ pub fn build_surface(tools: &[Arc<dyn Tool>]) -> Result<CodeSurface, String> {
             .tools
             .get(&name)
             .ok_or_else(|| format!("code tool '{name}' has no built-in SDK fragment"))?;
+        let sdk_path = fragment.path.join(".");
+        if bindings.insert(sdk_path.clone(), name.clone()).is_some() {
+            return Err(format!("duplicate SDK binding path '{sdk_path}'"));
+        }
         fragments.tools.insert(name.clone(), fragment.clone());
         contracts.insert(
             name.clone(),
@@ -206,6 +218,7 @@ pub fn build_surface(tools: &[Arc<dyn Tool>]) -> Result<CodeSurface, String> {
         sdk,
         sdk_hash,
         tools: contracts,
+        bindings,
     })
 }
 
@@ -226,6 +239,26 @@ mod tests {
         let surface = build_surface(&tools).expect("assemble full builtin SDK");
         let expected = include_str!("../../sdk/generated/all-code-sdk.txt");
         assert_eq!(surface.sdk, expected);
+    }
+
+    #[test]
+    fn builtin_bindings_and_noarg_contracts_are_consistent() {
+        let tools = crate::tool::registry::builtin_code_surface_tools();
+        let surface = build_surface(&tools).expect("assemble full builtin SDK");
+        assert_eq!(
+            surface.bindings.get("file.read").map(String::as_str),
+            Some("read")
+        );
+        assert_eq!(
+            surface.bindings.get("memory.list").map(String::as_str),
+            Some("memory.list")
+        );
+        for path in ["browser.list", "memory.list"] {
+            let tool = &surface.tools[surface.bindings[path].as_str()];
+            assert_eq!(tool.input_schema["type"], "object", "{path}");
+            assert_eq!(tool.input_schema["additionalProperties"], false, "{path}");
+            assert_eq!(tool.output_schema["required"][0], "ok", "{path}");
+        }
     }
 
     #[test]

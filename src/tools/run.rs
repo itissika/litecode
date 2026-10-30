@@ -86,7 +86,7 @@ impl RunTool {
         message: Option<String>,
     ) -> ToolCallResult {
         let notes: &[&str] = if running {
-            &["still running; use tools.wait or tools.kill"]
+            &["still running; use tools.process.wait or tools.process.kill"]
         } else {
             &[]
         };

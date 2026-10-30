@@ -537,20 +537,30 @@ impl CodeTool {
         ledger: Arc<CallLedger>,
         execution: &ToolExecutionContext,
     ) -> Vec<HostBinding> {
-        self.bundle
+        self.surface
+            .bindings
             .iter()
-            .map(|tool| {
-                let name = tool.name().to_string();
+            .filter_map(|(sdk_path, runtime_name)| {
+                if !self
+                    .bundle
+                    .iter()
+                    .any(|tool| tool.name() == runtime_name.as_str())
+                {
+                    return None;
+                }
+                let sdk_path = sdk_path.clone();
+                let runtime_name = runtime_name.clone();
                 let bundle = Arc::clone(&self.bundle);
                 let host = Arc::clone(&self.host);
                 let surface = Arc::clone(&self.surface);
                 let ledger = Arc::clone(&ledger);
                 let session_id = execution.session_id.clone();
                 let parent_call_id = execution.call_id.clone();
-                HostBinding {
-                    name: name.clone(),
+                Some(HostBinding {
+                    name: sdk_path.clone(),
                     function: HostFn::new(move |args, cancel, pause, info: CallInfo| {
-                        let name = name.clone();
+                        let sdk_path = sdk_path.clone();
+                        let runtime_name = runtime_name.clone();
                         let bundle = Arc::clone(&bundle);
                         let host = Arc::clone(&host);
                         let surface = Arc::clone(&surface);
@@ -561,7 +571,8 @@ impl CodeTool {
                         let deadline = tokio::time::Instant::now() + info.remaining;
                         async move {
                             invoke_binding(
-                                name,
+                                runtime_name,
+                                sdk_path,
                                 seq,
                                 deadline,
                                 args,
@@ -577,7 +588,7 @@ impl CodeTool {
                             .await
                         }
                     }),
-                }
+                })
             })
             .collect()
     }
@@ -626,7 +637,8 @@ impl CodeTool {
 
 #[allow(clippy::too_many_arguments)]
 async fn invoke_binding(
-    name: String,
+    tool_name: String,
+    sdk_name: String,
     seq: u64,
     deadline: tokio::time::Instant,
     args: Json,
@@ -645,7 +657,7 @@ async fn invoke_binding(
     let (arguments, summary) = match decoded {
         Ok(decoded) => (decoded.arguments, decoded.summary),
         Err(DecodeFail::ExtraArgument { summary }) => {
-            ledger.begin(seq, &name, &summary);
+            ledger.begin(seq, &sdk_name, &summary);
             let index = seq;
             ledger.record(
                 index,
@@ -656,30 +668,30 @@ async fn invoke_binding(
             ));
         }
         Err(DecodeFail::Illegal(illegal)) => {
-            ledger.begin(seq, &name, &illegal.summary);
+            ledger.begin(seq, &sdk_name, &illegal.summary);
             let index = seq;
             ledger.record(index, &protocol_failure(&illegal.message));
             return Err(crate::ptc::HostError::type_error(illegal.message));
         }
     };
-    ledger.begin(seq, &name, &summary);
+    ledger.begin(seq, &sdk_name, &summary);
     let index = seq;
 
-    if !bundle.iter().any(|tool| tool.name() == name) {
-        let message = format!("tool '{name}' not found");
+    if !bundle.iter().any(|tool| tool.name() == tool_name.as_str()) {
+        let message = format!("tool '{sdk_name}' not found");
         ledger.record(index, &protocol_failure(&message));
         return Err(crate::ptc::HostError::type_error(message));
     }
     let input_value: Value = match serde_json::from_str(&arguments) {
         Ok(value) => value,
         Err(error) => {
-            let message = format!("tool arguments for '{name}' are not valid JSON: {error}");
+            let message = format!("tool arguments for '{sdk_name}' are not valid JSON: {error}");
             ledger.record(index, &protocol_failure(&message));
             return Err(crate::ptc::HostError::type_error(message));
         }
     };
-    if let Err(error) = surface.validate_input(&name, &input_value) {
-        let failure = protocol_failure(&format!("invalid input for '{name}': {error}"));
+    if let Err(error) = surface.validate_input(&tool_name, &input_value) {
+        let failure = protocol_failure(&format!("invalid input for '{sdk_name}': {error}"));
         ledger.record(index, &failure);
         return Ok(
             outcome::program_result(&failure).expect("invalid input is a resolved domain failure")
@@ -690,7 +702,7 @@ async fn invoke_binding(
         arguments,
         call_id: format!("{parent_call_id}:code:{index}"),
         namespace: None,
-        name: name.clone(),
+        name: tool_name.clone(),
         id: None,
         status: None,
     };
@@ -716,11 +728,11 @@ async fn invoke_binding(
         );
     if success
         && let Ok(program_value) = outcome::program_result(&result)
-        && let Err(error) = surface.validate_output(&name, &program_value)
+        && let Err(error) = surface.validate_output(&tool_name, &program_value)
     {
         let mut invalid = ToolCallResult::error_with_kind(
             ToolErrorKind::Internal,
-            format!("tool '{name}' returned data that does not match its JS contract: {error}"),
+            format!("tool '{sdk_name}' returned data that does not match its JS contract: {error}"),
             false,
         );
         invalid.error_code = Some("invalid_output".into());
@@ -761,6 +773,12 @@ enum DecodeFail {
 /// exactly one argument.
 fn decode_invocation(payload: &Json) -> Result<DecodedInvocation, DecodeFail> {
     let value = payload.as_value();
+    if value.is_null() || matches!(value, Value::Array(items) if items.is_empty()) {
+        return Ok(DecodedInvocation {
+            arguments: "{}".to_string(),
+            summary: String::new(),
+        });
+    }
     if let Value::Array(items) = value
         && items.len() >= 2
     {
@@ -1322,6 +1340,14 @@ mod outcome_tests {
         }
         let one = Json::new(json!({"path": "a.txt"}));
         assert!(decode_invocation(&one).is_ok());
+    }
+
+    #[test]
+    fn zero_javascript_arguments_are_normalized_to_an_empty_object() {
+        for payload in [Json::new(json!([])), Json::new(json!(null))] {
+            let decoded = decode_invocation(&payload).expect("zero args");
+            assert_eq!(decoded.arguments, "{}");
+        }
     }
 
     #[test]

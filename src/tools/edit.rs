@@ -1,10 +1,10 @@
 //! Code-surface single-file replacement (`edit`).
 //!
 //! Contract (WP-198):
-//! `tools.edit({ path, old_string, new_string }) -> EditResult{ok,path,message}`
+//! `tools.file.edit({ path, old_string, new_string }) -> ToolResult<EditData>`
 //! Unique match required. Empty `new_string` deletes `old_string`. No
 //! `replace_all`, `expected_hash`, multi-block `edits[]`, or structured
-//! blocks/applied/failed report. Failures resolve with `ok: false`.
+//! blocks/applied/failed report. Domain failures resolve as ToolFailure.
 
 use std::sync::Arc;
 

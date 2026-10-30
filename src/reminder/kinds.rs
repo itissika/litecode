@@ -137,7 +137,6 @@ pub struct TasksBody {
 pub struct MemorySnap {
     pub id: String,
     pub text: String,
-    pub kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

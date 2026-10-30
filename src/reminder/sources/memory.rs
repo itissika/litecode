@@ -23,10 +23,7 @@ fn render(facts: &MemoryFacts) -> String {
         "Session memory (survives compaction; update with memory.upsert, remove stale with memory.delete):",
     );
     for entry in &facts.entries {
-        out.push_str(&format!(
-            "\n- [{}] {} ({})",
-            entry.kind, entry.text, entry.id
-        ));
+        out.push_str(&format!("\n- {} ({})", entry.text, entry.id));
     }
     out
 }

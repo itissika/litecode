@@ -68,14 +68,7 @@ impl WaitTool {
         ) else {
             return coded_error("io", "wait lost the job logs");
         };
-        command_job::present_command_full(
-            job_id,
-            exit_code,
-            output,
-            None,
-            None,
-            killed.then_some(true),
-        )
+        command_job::present_command_full(job_id, exit_code, output, None, killed.then_some(true))
     }
 
     async fn run(&self, input: Value, execution: ToolExecutionContext) -> ToolCallResult {

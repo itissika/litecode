@@ -43,7 +43,7 @@ pub use media_tokens::{
     AUDIO_FALLBACK_TOKENS, FILE_FALLBACK_TOKENS, IMAGE_BASE_TOKENS, IMAGE_FALLBACK_TOKENS,
     IMAGE_TILE_TOKENS, VIDEO_FALLBACK_TOKENS, input_content_media_tokens,
 };
-pub use memory::{MemoryEntry, MemoryKind, SessionMemory};
+pub use memory::{MemoryEntry, SessionMemory};
 pub use model::{
     CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION, SessionKind, SessionLogRow, SessionMeta,
 };

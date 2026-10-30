@@ -408,6 +408,7 @@ mod projection {
             sdk: "sdk".into(),
             sdk_hash: "test".into(),
             tools: std::collections::BTreeMap::new(),
+            bindings: std::collections::BTreeMap::new(),
         });
         let transport = litecode::tools::code::CodeTool::from_surface(Vec::new(), surface, host);
         assert!(transport.is_code_transport());
@@ -927,9 +928,9 @@ null"
         };
         let code = format!(
             r#"
-            const started = await tools.run({{ command: {command:?}, run_in_background: true }});
-            const waited = await tools.wait({{ id: started.id, sec: 1 }});
-            const killed = await tools.kill({{ id: started.id }});
+            const started = await tools.process.run({{ command: {command:?}, run_in_background: true }});
+            const waited = await tools.process.wait({{ id: started.id, sec: 1 }});
+            const killed = await tools.process.kill({{ id: started.id }});
             return {{
                 started_exit: started.exit_code,
                 waited_exit: waited.exit_code,
@@ -1015,10 +1016,10 @@ null"
         );
 
         let script = r#"
-    const read = await tools.read({ path: "probe.txt" });
-    const glob = await tools.glob({ pattern: "probe.txt" });
-    const grep = await tools.grep({ pattern: "zz", path: "probe.txt" });
-    const write = await tools.write({ path: "nested.txt", content: "ok" });
+    const read = await tools.file.read({ path: "probe.txt" });
+    const glob = await tools.file.glob({ pattern: "probe.txt" });
+    const grep = await tools.file.grep({ pattern: "zz", path: "probe.txt" });
+    const write = await tools.file.write({ path: "nested.txt", content: "ok" });
     return {
       read: read.path && Array.isArray(read.lines) ? "ok" : "missing",
       glob: Array.isArray(glob.paths) ? "ok" : "missing",
@@ -1169,7 +1170,7 @@ null"
             &hosted,
             "run_code",
             json!({
-                "code": "const read = await tools.read({ path: \"probe.txt\" }); return read.path && read.lines ? \"ok\" : \"missing\";",
+                "code": "const read = await tools.file.read({ path: \"probe.txt\" }); return read.path && read.lines ? \"ok\" : \"missing\";",
                 "timeout_ms": 600
             }),
             sink.as_ref(),
@@ -1251,6 +1252,29 @@ null"
             &hosted,
             "run_code",
             json!({ "code": "return await tools.deck.only({});" }),
+            sink.as_ref(),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(result.error.is_none(), "{}", result.content);
+        let value = run_code_result(&result.content);
+        assert_eq!(value["ok"], true, "{value}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn noarg_custom_tool_can_be_called_without_braces() {
+        let root = tempfile::tempdir().unwrap();
+        let sink = litecode::permission::deny_permission_sink();
+        let hosted = hosted(
+            root.path(),
+            vec![Arc::new(GateTool::fast("noargs"))],
+            PermissionAction::Allow,
+            sink.clone(),
+        );
+        let result = execute(
+            &hosted,
+            "run_code",
+            json!({ "code": "return await tools.noargs();" }),
             sink.as_ref(),
             CancellationToken::new(),
         )
@@ -1544,7 +1568,7 @@ mod edit_write {
         let script = r#"
     let status = "ok";
     try {
-      const written = await tools.write({ path: "nope.txt", content: "secret-nope" });
+      const written = await tools.file.write({ path: "nope.txt", content: "secret-nope" });
       if (written.ok === false) status = "error";
     } catch (e) {
       status = "error";
@@ -1596,7 +1620,7 @@ mod edit_write {
             r#"
     let status = "ok";
     try {{
-      const written = await tools.write({{ path: {target:?}, content: "no" }});
+      const written = await tools.file.write({{ path: {target:?}, content: "no" }});
       if (written.ok === false) status = "error";
     }} catch (e) {{
       status = "error";
@@ -1636,12 +1660,12 @@ mod edit_write {
         let sink = RecordingPermissionSink::from_reply(true, false);
         let script = r#"
     await Promise.allSettled([
-      tools.write({ path: "same.txt", content: "AAAA" }),
-      tools.write({ path: "same.txt", content: "BBBB" }),
-      tools.write({ path: "other.txt", content: "CCCC" })
+      tools.file.write({ path: "same.txt", content: "AAAA" }),
+      tools.file.write({ path: "same.txt", content: "BBBB" }),
+      tools.file.write({ path: "other.txt", content: "CCCC" })
     ]);
-    await tools.write({ path: "seq.txt", content: "one" });
-    await tools.write({ path: "seq.txt", content: "two" });
+    await tools.file.write({ path: "seq.txt", content: "one" });
+    await tools.file.write({ path: "seq.txt", content: "two" });
     return "done";
     "#;
         let result = execute(
@@ -1681,8 +1705,8 @@ mod edit_write {
         let cancel = CancellationToken::new();
         let sink = RecordingPermissionSink::from_reply(true, false);
         let script = r#"
-    await tools.write({ path: "seal.txt", content: "x".repeat(80000) });
-    await tools.edit({
+    await tools.file.write({ path: "seal.txt", content: "x".repeat(80000) });
+    await tools.file.edit({
       path: "seal.txt",
       old_string: "x",
       new_string: "y",
@@ -1899,8 +1923,8 @@ mod edit_write {
     const bodyY = "y".repeat(512 * 1024);
     async function race(name, a, b) {
       const results = await Promise.allSettled([
-        tools.write({ path: a, content: bodyX, create_only: true }),
-        tools.write({ path: b, content: bodyY, create_only: true })
+        tools.file.write({ path: a, content: bodyX, create_only: true }),
+        tools.file.write({ path: b, content: bodyY, create_only: true })
       ]);
       // WP-211: create_only conflict resolves { ok: false } instead of rejecting.
       return {
@@ -1932,13 +1956,13 @@ mod edit_write {
     }
     async function markerText(path) {
       try {
-        return await lineText(must(await tools.read({ path })));
+        return await lineText(must(await tools.file.read({ path })));
       } catch (e) {
         return "";
       }
     }
     async function readsDuringWrite(paths) {
-      const writing = tools.write({
+      const writing = tools.file.write({
         path: "./held.txt",
         content: "exclusive-body\n",
         create_only: true
@@ -1952,7 +1976,7 @@ mod edit_write {
       }
       const reads = await Promise.all(paths.map(async (path) => {
         try {
-          const result = must(await tools.read({ path }));
+          const result = must(await tools.file.read({ path }));
           return { path, status: "ok", text: await lineText(result), message: "" };
         } catch (e) {
           return { path, status: "error", text: "", message: (e && e.message) || "" };
@@ -1968,12 +1992,12 @@ mod edit_write {
       }
       let after = { status: "error", text: "" };
       try {
-        after = { status: "ok", text: await lineText(must(await tools.read({ path: "held.txt" }))) };
+        after = { status: "ok", text: await lineText(must(await tools.file.read({ path: "held.txt" }))) };
       } catch (e) {}
       return { saw, write, writeMessage, reads, after };
     }
     async function readAfterWrite(writePath, readPath, marker, prior) {
-      const writing = tools.write({ path: writePath, content: "exclusive-body\n" });
+      const writing = tools.file.write({ path: writePath, content: "exclusive-body\n" });
       let saw = "";
       for (let i = 0; i < 80; i++) {
         const text = await markerText(marker);
@@ -1984,7 +2008,7 @@ mod edit_write {
       }
       let during = { status: "error", text: "" };
       try {
-        during = { status: "ok", text: await lineText(must(await tools.read({ path: readPath }))) };
+        during = { status: "ok", text: await lineText(must(await tools.file.read({ path: readPath }))) };
       } catch (e) {}
       let write = "ok";
       let writeMessage = "";
@@ -1996,7 +2020,7 @@ mod edit_write {
       }
       let after = { status: "error", text: "" };
       try {
-        after = { status: "ok", text: await lineText(must(await tools.read({ path: readPath }))) };
+        after = { status: "ok", text: await lineText(must(await tools.file.read({ path: readPath }))) };
       } catch (e) {}
       return {
         saw: saw !== "",
@@ -2350,7 +2374,7 @@ mod approval_locks {
         let cancel = CancellationToken::new();
         let script = r#"
     try {
-      await tools.write({ path: "same.txt", content: "from-nested" });
+      await tools.file.write({ path: "same.txt", content: "from-nested" });
     } catch (e) {}
     return "done";
     "#;
@@ -2374,14 +2398,14 @@ mod approval_locks {
         );
         let other = r#"
     try {
-      const probe = await tools.read({ path: "same.txt" });
+      const probe = await tools.file.read({ path: "same.txt" });
       if (probe.ok !== false) {
         throw new Error("read saw a file before the pending write was approved");
       }
     } catch (e) {
       if (!(e instanceof ToolError)) throw e;
     }
-    const write = await tools.write({ path: "same.txt", content: "from-direct" });
+    const write = await tools.file.write({ path: "same.txt", content: "from-direct" });
     if (!write.file) {
       throw new Error("write failed while approval was pending");
     }
@@ -2437,7 +2461,7 @@ mod approval_locks {
         let cancel = CancellationToken::new();
         let cancel_run = cancel.clone();
         let script = r#"
-    await tools.write({ path: "gone.txt", content: "later" });
+    await tools.file.write({ path: "gone.txt", content: "later" });
     return "done";
     "#;
         let run = tokio::spawn(async move {
@@ -2488,7 +2512,7 @@ mod approval_locks {
         let cancel = CancellationToken::new();
         let cancel_run = cancel.clone();
         let script = r#"
-    await tools.write({ path: "late.txt", content: "maybe" });
+    await tools.file.write({ path: "late.txt", content: "maybe" });
     return "done";
     "#;
         let run = tokio::spawn(async move {
@@ -2755,7 +2779,7 @@ mod approval_concurrency {
             execute(
                 &pending,
                 "phase5-pending",
-                r#"try { await tools.write({ path: "pending.txt", content: "wait" }); } catch (e) {} return "done";"#,
+                r#"try { await tools.file.write({ path: "pending.txt", content: "wait" }); } catch (e) {} return "done";"#,
                 &litecode::permission::DenyPermissionSink,
                 cancel,
             )
@@ -2774,8 +2798,8 @@ mod approval_concurrency {
                 &allow,
                 "phase5-other",
                 r#"
-    const page = await tools.read({ path: "other.txt" });
-    const found = await tools.grep({ pattern: "OTHER_NEEDLE", path: "other.txt" });
+    const page = await tools.file.read({ path: "other.txt" });
+    const found = await tools.file.grep({ pattern: "OTHER_NEEDLE", path: "other.txt" });
     return { line: page.lines[0], hits: found.hits.length };
     "#,
                 &litecode::permission::DenyPermissionSink,

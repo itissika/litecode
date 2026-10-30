@@ -182,7 +182,7 @@ async fn code_mode_tool_list_prefix_stays_stable_across_the_turn() {
     assert!(sdk.contains("declare const tools"), "{sdk}");
     assert!(sdk.contains("declare class ToolError"), "{sdk}");
     assert!(
-        sdk.contains("type ToolResult<T> = T | ToolFailure;"),
+        sdk.contains("type ToolResult<T> = ToolSuccess<T> | ToolFailure;"),
         "{sdk}"
     );
     assert!(!sdk.contains("status: \"partial\""), "{sdk}");

@@ -1038,7 +1038,6 @@ impl AgentRuntime {
                     .map(|entry| MemorySnap {
                         id: entry.id.clone(),
                         text: entry.text.clone(),
-                        kind: entry.kind.as_str().to_string(),
                     })
                     .collect(),
             },

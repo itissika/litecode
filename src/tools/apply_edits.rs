@@ -1,7 +1,7 @@
 //! Code-surface serial batch replacements (`apply_edits`).
 //!
 //! Contract (WP-198):
-//! `tools.apply_edits(edits: Array<{path,old_string,new_string}>) -> { results: EditResult[] }`
+//! `tools.file.apply_edits(edits: Array<{path,old_string,new_string}>) -> ToolResult<ApplyEditsData>`
 //! Serial; item failure skips and continues; `results` matches input length.
 //! Companion of `edit` (injected when `edit` is bound). Shares the edit dial
 //! for permission / path_mode.

@@ -11,10 +11,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use crate::session::manager::SessionManager;
-use crate::session::memory::{
-    MEMORY_MAX_BATCH, MEMORY_MAX_QUERY_CHARS, MemoryEntry, MemoryKind, MemoryReject,
-    MemoryUpsertRequest,
-};
+use crate::session::memory::{MEMORY_MAX_BATCH, MemoryEntry, MemoryReject, MemoryUpsertRequest};
 use crate::tool::Tool;
 use crate::tool::outcome::ok_data;
 use crate::tool::trait_::ToolExecutionContext;
@@ -23,8 +20,6 @@ use crate::types::ToolCallResult;
 pub const MEMORY_LIST_TOOL: &str = "memory.list";
 pub const MEMORY_UPSERT_TOOL: &str = "memory.upsert";
 pub const MEMORY_DELETE_TOOL: &str = "memory.delete";
-
-const KIND_NAMES: &[&str] = &["fact", "preference", "decision", "constraint"];
 
 #[derive(Clone)]
 struct SessionHandle {
@@ -200,12 +195,9 @@ impl Tool for MemoryDeleteTool {
 
 fn run_list(
     sessions: Option<Arc<SessionManager>>,
-    input: Value,
+    _input: Value,
     execution: ToolExecutionContext,
 ) -> ToolCallResult {
-    if let Err(error) = validate_list_input(&input) {
-        return coded("invalid_input", error);
-    }
     let Some(manager) = sessions else {
         return coded(
             "unavailable",
@@ -220,21 +212,7 @@ fn run_list(
         Ok(memory) => memory,
         Err(error) => return coded("io", format!("load session memory: {error}")),
     };
-    let query = input
-        .get("query")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|query| !query.is_empty());
-    let kind = input
-        .get("kind")
-        .and_then(Value::as_str)
-        .and_then(MemoryKind::parse);
-    let entries: Vec<Value> = memory
-        .entries
-        .iter()
-        .filter(|entry| entry.matches(query, kind))
-        .map(entry_json)
-        .collect();
+    let entries: Vec<Value> = memory.entries.iter().map(entry_json).collect();
     ok_data(json!({
         "entries": entries,
         "count": entries.len(),
@@ -315,24 +293,6 @@ fn run_delete(
     }))
 }
 
-fn validate_list_input(input: &Value) -> std::result::Result<(), String> {
-    if let Some(value) = input.get("query") {
-        let query = crate::tool::require_string_value(value, "query")?;
-        if query.trim().chars().count() > MEMORY_MAX_QUERY_CHARS {
-            return Err(format!(
-                "query must be at most {MEMORY_MAX_QUERY_CHARS} characters"
-            ));
-        }
-    }
-    if let Some(value) = input.get("kind") {
-        let kind = crate::tool::require_string_value(value, "kind")?;
-        if MemoryKind::parse(kind).is_none() {
-            return Err(crate::tool::must_be_one_of("kind", KIND_NAMES, kind));
-        }
-    }
-    Ok(())
-}
-
 fn validate_upsert_input(input: &Value) -> std::result::Result<(), String> {
     let entries = match input.get("entries") {
         None => return Err(crate::tool::missing_parameter("entries")),
@@ -361,9 +321,6 @@ fn validate_upsert_input(input: &Value) -> std::result::Result<(), String> {
         }
         if let Some(value) = item.get("id") {
             crate::tool::require_string_value(value, &format!("{path}.id"))?;
-        }
-        if let Some(value) = item.get("kind") {
-            crate::tool::require_string_value(value, &format!("{path}.kind"))?;
         }
     }
     Ok(())
@@ -396,7 +353,6 @@ fn parse_upsert_requests(input: &Value) -> Vec<MemoryUpsertRequest> {
         .map(|item| MemoryUpsertRequest {
             id: item.get("id").and_then(Value::as_str).map(str::to_string),
             text: item["text"].as_str().unwrap_or_default().to_string(),
-            kind: item.get("kind").and_then(Value::as_str).map(str::to_string),
         })
         .collect()
 }
@@ -405,7 +361,6 @@ fn entry_json(entry: &MemoryEntry) -> Value {
     json!({
         "id": entry.id,
         "text": entry.text,
-        "kind": entry.kind.as_str(),
         "updated_at": entry.updated_at,
     })
 }
@@ -474,10 +429,7 @@ mod tests {
         let delete = MemoryDeleteTool::new(Arc::clone(&manager));
 
         let result = upsert
-            .execute(
-                json!({"entries": [{"text": "use pnpm", "kind": "preference"}]}),
-                ctx(&session_id),
-            )
+            .execute(json!({"entries": [{"text": "use pnpm"}]}), ctx(&session_id))
             .await;
         assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
         let data = result.data.expect("upsert data");
@@ -493,12 +445,7 @@ mod tests {
         assert_eq!(data["updated"], json!(["m1"]));
         assert_eq!(data["count"], 1);
 
-        let result = list
-            .execute(
-                json!({"query": "pnpm", "kind": "preference"}),
-                ctx(&session_id),
-            )
-            .await;
+        let result = list.execute(json!({}), ctx(&session_id)).await;
         let data = result.data.expect("list data");
         assert_eq!(data["count"], 1);
         assert_eq!(data["entries"][0]["id"], "m1");
@@ -514,6 +461,12 @@ mod tests {
         assert_eq!(data["added"], json!(["m2"]));
         assert_eq!(data["rejected"][0]["reason"], "empty_text");
         assert_eq!(data["count"], 2);
+
+        let result = list.execute(json!({}), ctx(&session_id)).await;
+        let data = result.data.expect("full list data");
+        assert_eq!(data["count"], 2);
+        assert_eq!(data["total"], 2);
+        assert_eq!(data["entries"].as_array().unwrap().len(), 2);
 
         let result = delete
             .execute(json!({"ids": ["m1", "m9"]}), ctx(&session_id))
@@ -537,10 +490,5 @@ mod tests {
         assert!(validate_delete_input(&json!({"ids": []})).is_err());
         assert!(validate_delete_input(&json!({"ids": [1]})).is_err());
         assert!(validate_delete_input(&json!({"ids": ["m1"]})).is_ok());
-        assert!(
-            validate_list_input(&json!({"query": "x".repeat(MEMORY_MAX_QUERY_CHARS + 1)})).is_err()
-        );
-        assert!(validate_list_input(&json!({"kind": "nope"})).is_err());
-        assert!(validate_list_input(&json!({"kind": "fact"})).is_ok());
     }
 }

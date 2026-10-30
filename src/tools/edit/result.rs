@@ -42,9 +42,22 @@ impl EditResult {
     }
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct EditSuccessData {
+    path: String,
+    message: String,
+}
+
 pub fn present_edit(result: EditResult) -> ToolCallResult {
-    // Code surface: facts live in data (EditResult.message); content is not the contract.
-    ToolOutcome::ok(result).into_call_result("")
+    if result.ok {
+        return ToolOutcome::ok(EditSuccessData {
+            path: result.path,
+            message: result.message,
+        })
+        .into_call_result("");
+    }
+    let code = result.reason.unwrap_or("io");
+    crate::tools::file_path::coded_error(code, result.message)
 }
 
 pub fn present_apply_edits(results: Vec<EditResult>) -> ToolCallResult {

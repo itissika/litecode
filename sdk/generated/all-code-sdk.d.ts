@@ -7,7 +7,10 @@ declare class ToolError extends Error {
   readonly seq: number;
 }
 
-/** Any tool call resolves this when the tool did not get the job done. */
+/**
+ * A resolved domain failure. ToolError is thrown for protocol and hard
+ * execution failures; this shape is the normal failure branch of ToolResult.
+ */
 type ToolFailure = {
   ok: false;
   reason:
@@ -18,11 +21,16 @@ type ToolFailure = {
     | "permission"
     | "io"
     | "conflict"
-    | "stale";
+    | "stale"
+    | "unavailable"
+    | "still_alive";
   message: string;
 };
 
-type ToolResult<T> = T | ToolFailure;
+/** A successful tool result. The host adds this envelope; payloads omit ok. */
+type ToolSuccess<T> = T & { ok: true };
+
+type ToolResult<T> = ToolSuccess<T> | ToolFailure;
 
 type CsvOptions = {
   /** Field separator; one character. Default ",". */
@@ -88,9 +96,8 @@ declare const fs: {
 };
 
 type ApplyEditsData = {
-  ok: true;
   /** Same length and order as edits. */
-  results: EditData[];
+  results: EditResult[];
 };
 
 type ApplyEditsInput = {
@@ -99,7 +106,6 @@ type ApplyEditsInput = {
 };
 
 type BrowserClickData = {
-  ok: true;
   page_id: string;
   ref: string;
   tag: string;
@@ -116,7 +122,6 @@ type BrowserClickInput = {
 };
 
 type BrowserCloseData = {
-  ok: true;
   closed: boolean;
   id: string;
   fallback?: boolean;
@@ -137,16 +142,11 @@ type BrowserElement = {
 };
 
 type BrowserListData = {
-  ok: true;
   active_id: string;
   pages: BrowserPage[];
 };
 
-type BrowserListInput = {};
-
-type BrowserOpenData = BrowserPage & {
-  ok: true;
-};
+type BrowserOpenData = BrowserPage;
 
 type BrowserOpenInput = {
   /** http(s) URL to open in a visible browser tab. */
@@ -163,7 +163,6 @@ type BrowserPage = {
 };
 
 type BrowserReadData = {
-  ok: true;
   elements: BrowserElement[];
   page_id: string;
   text: string;
@@ -180,7 +179,6 @@ type BrowserReadInput = {
 };
 
 type BrowserTypeData = {
-  ok: true;
   page_id: string;
   ref: string;
   tag: string;
@@ -198,9 +196,7 @@ type BrowserTypeInput = {
 };
 
 type CodeSearchData = {
-  ok: boolean;
-  /** ok is true only for status ok; off/warming/failed/busy are soft domain failures. */
-  status: CodeSearchStatus;
+  /** Empty if the search completed but found no matching chunks. */
   hits: CodeSearchHit[];
   message?: string;
 };
@@ -231,12 +227,10 @@ type CodeSearchInput = {
   top_k?: Integer;
 };
 
-type CodeSearchStatus = "ok" | "off" | "warming" | "failed" | "busy";
-
 type CommandData = {
   /** Process exit code when finished; null when still running or unavailable. */
   exit_code: Integer | null;
-  /** While exit_code is null, use with tools.wait / tools.kill in this session. */
+  /** While exit_code is null, use with tools.process.wait / tools.process.kill in this session. */
   id: string;
   /** Stdout plus truncation notes, spill path, or status line. Always present, may be empty. */
   output: string;
@@ -246,16 +240,8 @@ type CommandData = {
   stderr: string;
   /** True when wait observes a kill. */
   killed?: boolean;
-  /** Warning about the command itself. */
+  /** Warning about the command itself or a still-alive signal. */
   message?: string;
-  /**
-   * True when the tool call itself completed; this is not command success.
-   * Check exit_code === 0 for process success. False on soft failures such as
-   * an unreaped kill.
-   */
-  ok?: boolean;
-  /** Present with ok:false; unreaped kill uses still_alive. */
-  reason?: string;
 };
 
 type DiagnosticItem = {
@@ -272,7 +258,6 @@ type DiagnosticItem = {
 };
 
 type DiagnosticsData = {
-  ok: true;
   items: DiagnosticItem[];
   message: string;
 };
@@ -283,11 +268,10 @@ type DocumentSymbolData = SymbolsData;
 
 type DocumentSymbolInput = PathInput;
 
+/** Successful single-edit payload. Failures use ToolFailure. */
 type EditData = {
   message: string;
-  ok: boolean;
   path: string;
-  reason?: EditFailureReason;
 };
 
 type EditFailureReason =
@@ -307,6 +291,14 @@ type EditInput = {
   path: Path;
 };
 
+/** One item in a serial apply_edits batch. Item failures stay item-level. */
+type EditResult = {
+  message: string;
+  ok: boolean;
+  path: string;
+  reason?: EditFailureReason;
+};
+
 type FileRef = {
   /** File size in bytes. */
   bytes: Integer;
@@ -323,7 +315,6 @@ type FindReferencesData = LocationsData;
 type FindReferencesInput = RangeInput;
 
 type GlobData = {
-  ok: true;
   message: string;
   /** Matching paths sorted by depth, then parent directory, then name. */
   paths: string[];
@@ -347,7 +338,6 @@ type GoToImplementationData = LocationsData;
 type GoToImplementationInput = RangeInput;
 
 type GrepData = {
-  ok: true;
   hits: GrepHit[];
   message: string;
   /** True when a limit or the 8K-token data guard removed results or context. */
@@ -387,7 +377,6 @@ type GrepInput = {
 };
 
 type HoverData = {
-  ok: true;
   /** Flattened hover text, not raw LSP JSON. */
   markdown: string;
   message: string;
@@ -401,7 +390,7 @@ type Integer = number;
 type KillData = CommandData;
 
 type KillInput = {
-  /** Command.id from a tools.run or tools.wait result whose exit_code is null. */
+  /** Command.id from a tools.process.run or tools.process.wait result whose exit_code is null. */
   id: string;
 };
 
@@ -426,13 +415,11 @@ type Location = {
 };
 
 type LocationsData = {
-  ok: true;
   locations: Location[];
   message: string;
 };
 
 type MemoryDeleteData = {
-  ok: true;
   /** Entries after the batch. */
   count: Integer;
   /** Deleted ids. */
@@ -446,19 +433,16 @@ type MemoryDeleteInput = {
 };
 
 type MemoryEntry = {
-  kind: MemoryKind;
   id: string;
   text: string;
+  /** Milliseconds since Unix epoch. */
   updated_at: Integer;
 };
 
-type MemoryKind = "fact" | "preference" | "decision" | "constraint";
-
 type MemoryListData = {
-  ok: true;
-  /** Returned filtered entries. */
+  /** Number of entries in this snapshot. */
   count: Integer;
-  /** Current entries, in insertion order. */
+  /** Authoritative current entries, in insertion order. */
   entries: MemoryEntry[];
   /** Maximum entries the session can hold. */
   limit: Integer;
@@ -468,15 +452,7 @@ type MemoryListData = {
   total_chars: Integer;
 };
 
-type MemoryListInput = {
-  /** Optional kind filter. */
-  kind?: MemoryKind;
-  /** Optional case-insensitive substring over entry text. Max 100 characters. */
-  query?: string;
-};
-
 type MemoryUpsertData = {
-  ok: true;
   /** New ids. */
   added: string[];
   /** Entries after the batch. */
@@ -489,8 +465,6 @@ type MemoryUpsertData = {
 };
 
 type MemoryUpsertEntry = {
-  /** Optional kind; defaults to fact for new entries and keeps the current kind on update. */
-  kind?: string;
   /** Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry. */
   text: string;
   /** Optional existing id. Omit to add or update by text. */
@@ -501,6 +475,9 @@ type MemoryUpsertInput = {
   /** Memory entries to add or update. */
   entries: MemoryUpsertEntry[];
 };
+
+/** Empty input for tools that take no arguments. */
+type NoArgs = {};
 
 /** Workspace-relative path, or an absolute path when explicitly allowed. */
 type Path = string;
@@ -520,7 +497,6 @@ type RangeInput = {
 };
 
 type ReadData = {
-  ok: true;
   /** Line contents for this page, in file order. */
   lines: string[];
   message: string;
@@ -540,12 +516,12 @@ type ReadInput = {
 type RejectedItem = {
   /** 0-based input item index. */
   index: Integer;
-  /** empty_text | text_too_long | invalid_kind | invalid_id | unknown_id | limit_exceeded. */
+  /** empty_text | text_too_long | invalid_id | unknown_id | limit_exceeded. */
   reason: string;
   id?: string;
 };
 
-/** run returns ok for a resolved call; exit_code carries the command status. */
+/** Command payload shared by run, wait, and kill; exit_code carries command status. */
 type RunData = CommandData;
 
 type RunInput = {
@@ -577,7 +553,6 @@ type SymbolInfo = {
 };
 
 type SymbolsData = {
-  ok: true;
   message: string;
   symbols: SymbolInfo[];
 };
@@ -585,7 +560,7 @@ type SymbolsData = {
 type WaitData = CommandData;
 
 type WaitInput = {
-  /** Command.id from a tools.run result whose exit_code is null. */
+  /** Command.id from a tools.process.run result whose exit_code is null. */
   id: string;
   /** Seconds to block waiting for exit. Values above 300 are clamped to 300. @minimum 1 */
   sec: Integer;
@@ -593,7 +568,6 @@ type WaitInput = {
 
 type WebfetchData = {
   message: string;
-  ok: boolean;
   body?: string;
   format?: WebfetchFormat;
   status?: Integer;
@@ -611,7 +585,6 @@ type WebfetchInput = {
 
 type WebsearchData = {
   message: string;
-  ok: boolean;
   /** At most top_k hits, best first. */
   results: WebsearchHit[];
   query?: string;
@@ -639,7 +612,6 @@ type WorkspaceSymbolInput = {
 };
 
 type WriteData = {
-  ok: true;
   /** True when the file did not exist before. */
   created: boolean;
   /** File identity after the write. */
@@ -655,122 +627,134 @@ type WriteInput = {
   path: Path;
   /** If true, refuse to overwrite an existing file. @default false */
   create_only?: boolean;
-  /** sha256 of the current file bytes. Omit to skip the check. A mismatch resolves ok:false reason stale. */
+  /** sha256 of the current file bytes. Omit to skip the check. A mismatch is ToolFailure reason stale. */
   expected_hash?: string;
 };
 
 interface Tools {
   // file
-  /**
-   * Apply several edit replacements serially.
-   */
-  apply_edits(args: ApplyEditsInput): Promise<ToolResult<ApplyEditsData>>;
-  /**
-   * Apply one exact-string replacement.
-   */
-  edit(args: EditInput): Promise<ToolResult<EditData>>;
-  /**
-   * Find files by path glob.
-   */
-  glob(args: GlobInput): Promise<ToolResult<GlobData>>;
-  /**
-   * Search file contents.
-   */
-  grep(args: GrepInput): Promise<ToolResult<GrepData>>;
-  /**
-   * Read lines from one file or archived session transcript.
-   */
-  read(args: ReadInput): Promise<ToolResult<ReadData>>;
-  /**
-   * Replace a file's contents; optional hash and create-only guards.
-   */
-  write(args: WriteInput): Promise<ToolResult<WriteData>>;
+  file: {
+    /**
+     * Apply several edit replacements serially.
+     */
+    apply_edits(args: ApplyEditsInput): Promise<ToolResult<ApplyEditsData>>;
+    /**
+     * Apply one exact-string replacement.
+     */
+    edit(args: EditInput): Promise<ToolResult<EditData>>;
+    /**
+     * Find files by path glob.
+     */
+    glob(args: GlobInput): Promise<ToolResult<GlobData>>;
+    /**
+     * Search file contents.
+     */
+    grep(args: GrepInput): Promise<ToolResult<GrepData>>;
+    /**
+     * Read lines from one file or archived session transcript.
+     */
+    read(args: ReadInput): Promise<ToolResult<ReadData>>;
+    /**
+     * Replace a file's contents; optional hash and create-only guards.
+     */
+    write(args: WriteInput): Promise<ToolResult<WriteData>>;
+  };
 
   // search
-  /**
-   * Semantic search over the workspace code index.
-   */
-  code_search(args: CodeSearchInput): Promise<ToolResult<CodeSearchData>>;
+  search: {
+    /**
+     * Semantic search over the workspace code index.
+     */
+    code_search(args: CodeSearchInput): Promise<ToolResult<CodeSearchData>>;
+  };
 
   // process
-  /**
-   * Terminate a command job in this session.
-   */
-  kill(args: KillInput): Promise<ToolResult<KillData>>;
-  /**
-   * Start one shell command; use run_in_background for a non-blocking job.
-   */
-  run(args: RunInput): Promise<ToolResult<RunData>>;
-  /**
-   * Wait for a still-running command job; exit_code is the command status.
-   */
-  wait(args: WaitInput): Promise<ToolResult<WaitData>>;
+  process: {
+    /**
+     * Terminate a command job in this session.
+     */
+    kill(args: KillInput): Promise<ToolResult<KillData>>;
+    /**
+     * Start one shell command; use run_in_background for a non-blocking job.
+     */
+    run(args: RunInput): Promise<ToolResult<RunData>>;
+    /**
+     * Wait for a still-running command job; exit_code is the command status.
+     */
+    wait(args: WaitInput): Promise<ToolResult<WaitData>>;
+  };
 
   // web
-  /**
-   * Fetch one http(s) URL.
-   */
-  webfetch(args: WebfetchInput): Promise<ToolResult<WebfetchData>>;
-  /**
-   * Search the web.
-   */
-  websearch(args: WebsearchInput): Promise<ToolResult<WebsearchData>>;
+  web: {
+    /**
+     * Fetch one http(s) URL.
+     */
+    fetch(args: WebfetchInput): Promise<ToolResult<WebfetchData>>;
+    /**
+     * Search the web.
+     */
+    search(args: WebsearchInput): Promise<ToolResult<WebsearchData>>;
+  };
 
   // browser
-  /**
-   * Click one interactive element on the visible page.
-   */
-  browser_click(args: BrowserClickInput): Promise<ToolResult<BrowserClickData>>;
-  /**
-   * Close an agent-owned browser tab.
-   */
-  browser_close(args: BrowserCloseInput): Promise<ToolResult<BrowserCloseData>>;
-  /**
-   * List open browser tabs.
-   */
-  browser_list(args: BrowserListInput): Promise<ToolResult<BrowserListData>>;
-  /**
-   * Open a visible browser tab.
-   */
-  browser_open(args: BrowserOpenInput): Promise<ToolResult<BrowserOpenData>>;
-  /**
-   * Read the current visible browser page.
-   */
-  browser_read(args: BrowserReadInput): Promise<ToolResult<BrowserReadData>>;
-  /**
-   * Type text into one input on the visible page.
-   */
-  browser_type(args: BrowserTypeInput): Promise<ToolResult<BrowserTypeData>>;
+  browser: {
+    /**
+     * Click one interactive element on the visible page.
+     */
+    click(args: BrowserClickInput): Promise<ToolResult<BrowserClickData>>;
+    /**
+     * Close an agent-owned browser tab.
+     */
+    close(args: BrowserCloseInput): Promise<ToolResult<BrowserCloseData>>;
+    /**
+     * List open browser tabs.
+     */
+    list(args?: NoArgs): Promise<ToolResult<BrowserListData>>;
+    /**
+     * Open a visible browser tab.
+     */
+    open(args: BrowserOpenInput): Promise<ToolResult<BrowserOpenData>>;
+    /**
+     * Read the current visible browser page.
+     */
+    read(args: BrowserReadInput): Promise<ToolResult<BrowserReadData>>;
+    /**
+     * Type text into one input on the visible page.
+     */
+    type(args: BrowserTypeInput): Promise<ToolResult<BrowserTypeData>>;
+  };
 
   // lsp
-  /**
-   * List diagnostics for one source file.
-   */
-  diagnostics(args: DiagnosticsInput): Promise<ToolResult<DiagnosticsData>>;
-  /**
-   * List symbols in one source file.
-   */
-  document_symbol(args: DocumentSymbolInput): Promise<ToolResult<DocumentSymbolData>>;
-  /**
-   * List references at a file position.
-   */
-  find_references(args: FindReferencesInput): Promise<ToolResult<FindReferencesData>>;
-  /**
-   * Jump to definition at a file position.
-   */
-  go_to_definition(args: GoToDefinitionInput): Promise<ToolResult<GoToDefinitionData>>;
-  /**
-   * Jump to implementations at a file position.
-   */
-  go_to_implementation(args: GoToImplementationInput): Promise<ToolResult<GoToImplementationData>>;
-  /**
-   * Fetch hover docs or type information at a file position.
-   */
-  hover(args: HoverInput): Promise<ToolResult<HoverData>>;
-  /**
-   * Search symbols across the workspace.
-   */
-  workspace_symbol(args: WorkspaceSymbolInput): Promise<ToolResult<WorkspaceSymbolData>>;
+  lsp: {
+    /**
+     * List diagnostics for one source file.
+     */
+    diagnostics(args: DiagnosticsInput): Promise<ToolResult<DiagnosticsData>>;
+    /**
+     * List symbols in one source file.
+     */
+    document_symbol(args: DocumentSymbolInput): Promise<ToolResult<DocumentSymbolData>>;
+    /**
+     * List references at a file position.
+     */
+    find_references(args: FindReferencesInput): Promise<ToolResult<FindReferencesData>>;
+    /**
+     * Jump to definition at a file position.
+     */
+    go_to_definition(args: GoToDefinitionInput): Promise<ToolResult<GoToDefinitionData>>;
+    /**
+     * Jump to implementations at a file position.
+     */
+    go_to_implementation(args: GoToImplementationInput): Promise<ToolResult<GoToImplementationData>>;
+    /**
+     * Fetch hover docs or type information at a file position.
+     */
+    hover(args: HoverInput): Promise<ToolResult<HoverData>>;
+    /**
+     * Search symbols across the workspace.
+     */
+    workspace_symbol(args: WorkspaceSymbolInput): Promise<ToolResult<WorkspaceSymbolData>>;
+  };
 
   // memory
   memory: {
@@ -779,9 +763,9 @@ interface Tools {
      */
     delete(args: MemoryDeleteInput): Promise<ToolResult<MemoryDeleteData>>;
     /**
-     * List the current session's working memory.
+     * Return the authoritative current session memory snapshot; memory survives compaction and is re-injected.
      */
-    list(args: MemoryListInput): Promise<ToolResult<MemoryListData>>;
+    list(args?: NoArgs): Promise<ToolResult<MemoryListData>>;
     /**
      * Add or update small, durable session memory entries.
      */

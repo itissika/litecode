@@ -29,8 +29,15 @@ fn single_success_reports_edit_result() {
     let result = call_edit(&path, "fn main() {}", "fn start() {}");
     assert!(result.error.is_none());
     let data = result.data.expect("edit data");
-    assert_eq!(data["ok"], true);
-    assert_eq!(data["message"].as_str().unwrap().split('\n').next().unwrap(), "replaced");
+    assert_eq!(
+        data["message"]
+            .as_str()
+            .unwrap()
+            .split('\n')
+            .next()
+            .unwrap(),
+        "replaced"
+    );
     assert!(data.get("blocks").is_none());
     assert!(data.get("applied").is_none());
     assert!(data.get("file").is_none());
@@ -40,13 +47,11 @@ fn single_success_reports_edit_result() {
 fn edit_tool_rejects_nul_bytes() {
     let (_dir, path) = write_temp("bin.txt", b"ok\x00still-utf8");
     let result = call_edit(&path, "ok", "no");
-    let data = result.data.expect("edit data");
-    assert_eq!(data["ok"], false);
+    assert!(result.error.is_some(), "{result:?}");
     assert!(
-        data["message"].as_str().unwrap().to_lowercase().contains("binary")
-            || result.content.to_lowercase().contains("binary"),
+        result.content.to_lowercase().contains("binary"),
         "{}",
-        data["message"]
+        result.content
     );
     assert_eq!(std::fs::read(&path).unwrap(), b"ok\x00still-utf8");
 }
@@ -55,9 +60,8 @@ fn edit_tool_rejects_nul_bytes() {
 fn edit_tool_wire_multiple_matches() {
     let (_dir, path) = write_temp("a.rs", "foo\nbar\nfoo\n");
     let result = call_edit(&path, "foo", "FOO");
-    let data = result.data.expect("edit data");
-    assert_eq!(data["ok"], false);
-    let msg = data["message"].as_str().unwrap();
+    assert!(result.error.is_some(), "{result:?}");
+    let msg = result.content.as_str();
     assert!(msg.contains("more than once"), "{msg}");
     assert!(msg.contains("1") && msg.contains("3"), "{msg}");
     assert!(!msg.contains("replace_all"), "{msg}");
@@ -139,13 +143,8 @@ fn edit_tool_cancel_before_write() {
 fn unmatched_reports_no_match_without_applying() {
     let (_dir, path) = write_temp("a.rs", "fn keep() {}\n");
     let result = call_edit(&path, "totally_unrelated_identifier_xyz", "nope");
-    let data = result.data.expect("data");
-    assert_eq!(data["ok"], false);
-    assert!(
-        data["message"].as_str().unwrap().contains("not found"),
-        "{}",
-        data["message"]
-    );
+    assert!(result.error.is_some(), "{result:?}");
+    assert!(result.content.contains("not found"), "{}", result.content);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "fn keep() {}\n");
 }
 
@@ -153,8 +152,7 @@ fn unmatched_reports_no_match_without_applying() {
 fn empty_new_string_deletes_old() {
     let (_dir, path) = write_temp("a.rs", "keep\nremove\n");
     let result = call_edit(&path, "remove\n", "");
-    let data = result.data.expect("data");
-    assert_eq!(data["ok"], true);
+    assert!(result.error.is_none(), "{result:?}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep\n");
 }
 
@@ -200,7 +198,8 @@ mod failure_message_tests {
     }
 
     fn allow_engine(root: &Path) -> PermissionEngine {
-        let resolved = resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new(root));
+        let resolved =
+            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new(root));
         PermissionEngine::resolver(resolved, "default", 0)
     }
 
@@ -262,12 +261,12 @@ mod failure_message_tests {
                 "new_string": "A"
             }),
         );
-        assert!(result.error.is_none(), "failures resolve: {}", result.content);
-        let data = result.data.as_ref().unwrap();
-        assert_eq!(data["ok"], false);
-        assert!(data["message"].as_str().unwrap().contains("not found"));
-        assert!(data.get("blocks").is_none());
+        assert!(
+            result.error.is_some(),
+            "failures reject: {}",
+            result.content
+        );
+        assert!(result.content.contains("not found"), "{}", result.content);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep\n");
     }
-
 }

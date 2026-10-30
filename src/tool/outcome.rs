@@ -96,11 +96,7 @@ impl<T> ToolOutcome<T> {
         }
     }
 
-    pub fn failure(
-        code: impl Into<String>,
-        message: impl Into<String>,
-        retryable: bool,
-    ) -> Self {
+    pub fn failure(code: impl Into<String>, message: impl Into<String>, retryable: bool) -> Self {
         let message = message.into();
         Self {
             data: None,
@@ -160,10 +156,10 @@ impl<T: Serialize> ToolOutcome<T> {
 
 pub fn kind_for_code(code: &str) -> ToolErrorKind {
     match code {
-        "invalid_input" | "invalid_regex" => ToolErrorKind::InvalidInput,
+        "invalid_input" | "invalid_regex" | "no_match" | "empty" => ToolErrorKind::InvalidInput,
         "not_found" => ToolErrorKind::NotFound,
         "permission_denied" => ToolErrorKind::PermissionDenied,
-        "conflict" | "stale" | "stale_cursor" => ToolErrorKind::Conflict,
+        "conflict" | "stale" | "stale_cursor" | "still_alive" => ToolErrorKind::Conflict,
         "unavailable" | "unsupported" => ToolErrorKind::Unavailable,
         "timeout" => ToolErrorKind::Timeout,
         "cancelled" => ToolErrorKind::Cancelled,
@@ -217,9 +213,8 @@ pub fn program_result(result: &ToolCallResult) -> Result<Value, HostError> {
     program_error(result, code)
 }
 
-/// Domain codes that resolve `{ok:false}` (WP-210 G + WP-211). Everything
-/// else (stale_cursor, timeout, cancelled, unavailable, internal, …) still
-/// rejects `ToolError`.
+/// Domain codes that resolve `{ok:false}`. Everything else (stale_cursor,
+/// timeout, cancelled, internal, …) still rejects `ToolError`.
 pub fn soft_failure_reason(code: &str) -> Option<&'static str> {
     match code {
         "not_found" => Some("not_found"),
@@ -230,18 +225,24 @@ pub fn soft_failure_reason(code: &str) -> Option<&'static str> {
         "empty" => Some("empty"),
         "conflict" => Some("conflict"),
         "stale" => Some("stale"),
+        "unavailable" => Some("unavailable"),
+        "still_alive" => Some("still_alive"),
         _ => None,
     }
 }
 
-/// Every resolved object carries a leading `ok`. Tools that already set it
-/// (edit, webfetch, …) keep their own value.
+/// Every resolved object carries a leading `ok`. Payloads own the other
+/// fields; the host owns this envelope.
 fn with_ok_flag(data: Value) -> Value {
     match data {
-        Value::Object(map) if !map.contains_key("ok") => {
+        Value::Object(map) => {
             let mut out = serde_json::Map::with_capacity(map.len() + 1);
             out.insert("ok".into(), Value::Bool(true));
-            out.extend(map);
+            for (key, value) in map {
+                if key != "ok" {
+                    out.insert(key, value);
+                }
+            }
             Value::Object(out)
         }
         other => other,
@@ -266,10 +267,7 @@ fn program_error(result: &ToolCallResult, code: String) -> Result<Value, HostErr
         .filter(|message| !message.is_empty())
         .unwrap_or_else(|| result.content.clone());
     let retryable = matches!(code.as_str(), "conflict" | "timeout")
-        && result
-            .error
-            .as_ref()
-            .is_some_and(|error| error.retryable);
+        && result.error.as_ref().is_some_and(|error| error.retryable);
     Err(HostError::tool(
         code,
         message,
@@ -296,7 +294,11 @@ mod tests {
             (ToolErrorKind::NotFound, "not_found", "not_found"),
             (ToolErrorKind::InvalidInput, "invalid_regex", "invalid_args"),
             (ToolErrorKind::InvalidInput, "invalid_input", "invalid_args"),
-            (ToolErrorKind::PermissionDenied, "permission_denied", "permission"),
+            (
+                ToolErrorKind::PermissionDenied,
+                "permission_denied",
+                "permission",
+            ),
             (ToolErrorKind::Io, "io", "io"),
         ] {
             let value = program_result(&coded(kind, code)).expect("resolves, not rejects");
@@ -304,10 +306,12 @@ mod tests {
             assert_eq!(value["reason"], reason, "{code}");
             assert_eq!(value["message"], format!("{code} happened"));
         }
-        // write conflict/stale resolve ok:false (WP-211); stale_cursor still rejects.
+        // write conflict/stale and unavailable engine states resolve ok:false.
         for (kind, code, reason) in [
             (ToolErrorKind::Conflict, "conflict", "conflict"),
             (ToolErrorKind::Conflict, "stale", "stale"),
+            (ToolErrorKind::Unavailable, "unavailable", "unavailable"),
+            (ToolErrorKind::Conflict, "still_alive", "still_alive"),
         ] {
             let value = program_result(&coded(kind, code)).expect("resolves, not rejects");
             assert_eq!(value["ok"], false, "{code}");
@@ -317,16 +321,23 @@ mod tests {
         for (kind, code) in [
             (ToolErrorKind::Conflict, "stale_cursor"),
             (ToolErrorKind::Timeout, "timeout"),
-            (ToolErrorKind::Unavailable, "unavailable"),
             (ToolErrorKind::Internal, "internal"),
         ] {
             assert!(program_result(&coded(kind, code)).is_err(), "{code}");
         }
-        // Success gains a leading ok:true; a tool's own ok (edit miss) is kept.
-        let value = program_result(&ok_data(serde_json::json!({"paths": [], "message": "no match"}))).unwrap();
-        assert_eq!(serde_json::to_string(&value).unwrap(), r#"{"ok":true,"paths":[],"message":"no match"}"#);
-        let value = program_result(&ok_data(serde_json::json!({"ok": false, "path": "a", "message": "old_string was not found", "reason": "no_match"}))).unwrap();
-        assert_eq!(value["ok"], false);
-        assert_eq!(value["reason"], "no_match");
+        // Success gains a leading ok:true; the host owns the envelope.
+        let value = program_result(&ok_data(
+            serde_json::json!({"paths": [], "message": "no match"}),
+        ))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_string(&value).unwrap(),
+            r#"{"ok":true,"paths":[],"message":"no match"}"#
+        );
+        let value = program_result(&ok_data(
+            serde_json::json!({"ok": false, "path": "a", "message": "payload ok"}),
+        ))
+        .unwrap();
+        assert_eq!(value["ok"], true);
     }
 }

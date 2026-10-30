@@ -1769,7 +1769,7 @@ mod tests {
             column: 14,
         });
         report.source =
-            "const a = await tools.read({path:'a'});\nconst b = 2;\nreturn null.x;".into();
+            "const a = await tools.file.read({path:'a'});\nconst b = 2;\nreturn null.x;".into();
         report.failure_stack = Some(
             "    at boom (program.js:4:14)\n    at <anonymous> (libs.js:9:1)\n    at <eval> (program.js:1:1)".into(),
         );

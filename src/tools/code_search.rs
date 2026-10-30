@@ -8,6 +8,7 @@ use crate::engines::{
 };
 use crate::tool::Tool;
 use crate::tool::outcome::ToolOutcome;
+use crate::tools::file_path::coded_error;
 use crate::types::{ToolCallResult, ToolErrorKind};
 use serde::Serialize;
 use serde_json::Value;
@@ -20,12 +21,6 @@ const SNIPPET_MAX_LINES: u32 = 24;
 /// Guard against minified/generated lines blowing up one snippet.
 const SNIPPET_MAX_LINE_CHARS: usize = 500;
 
-const STATUS_OK: &str = "ok";
-const STATUS_OFF: &str = "off";
-const STATUS_WARMING: &str = "warming";
-const STATUS_FAILED: &str = "failed";
-const STATUS_BUSY: &str = "busy";
-
 const ENGINE_OFF_MESSAGE: &str = "Code search engine is off. Enable it in Settings.";
 const WARMING_MESSAGE: &str = "Code search engine is warming; no results yet.";
 const BUSY_MESSAGE: &str = "Code search is busy; try again shortly.";
@@ -36,8 +31,6 @@ pub struct CodeSearchTool {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct CodeSearchData {
-    ok: bool,
-    status: String,
     hits: Vec<CodeSearchHit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
@@ -55,22 +48,8 @@ struct CodeSearchHit {
 }
 
 impl CodeSearchData {
-    fn soft(status: &str, message: impl Into<String>) -> Self {
-        Self {
-            ok: false,
-            status: status.to_string(),
-            hits: Vec::new(),
-            message: Some(message.into()),
-        }
-    }
-
     fn success(hits: Vec<CodeSearchHit>, message: Option<String>) -> Self {
-        Self {
-            ok: true,
-            status: STATUS_OK.to_string(),
-            hits,
-            message,
-        }
+        Self { hits, message }
     }
 }
 
@@ -103,21 +82,14 @@ impl CodeSearchTool {
     }
 
     fn not_ready_result(&self) -> Option<ToolCallResult> {
-        use crate::tools::{SyncLineLabel, format_sync_pct_line_labeled};
-
         let root = self.engines.code_search().workspace_root();
         let desired = root.as_deref().is_some_and(|root| {
             crate::config::workspace::workspace_engine_desired(root, "code_search")
         });
         if !desired {
-            let line = format_sync_pct_line_labeled(None, Some(SyncLineLabel::EngineOff));
-            return Some(Self::present(
-                CodeSearchData::soft(STATUS_OFF, ENGINE_OFF_MESSAGE),
-                format!("{line}\n{ENGINE_OFF_MESSAGE}"),
-            ));
+            return Some(coded_error("unavailable", ENGINE_OFF_MESSAGE));
         }
 
-        let sync = crate::tools::sync_pct_for_workspace(&self.engines, root.as_deref());
         let gate = self.engines.code_search_call_gate();
         let failed_detail = match (&gate, self.engines.state("code_search")) {
             (_, Some(EngineState::Failed)) => Some(
@@ -130,22 +102,13 @@ impl CodeSearchTool {
         };
         if let Some(detail) = failed_detail {
             let clean = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-            let line =
-                format_sync_pct_line_labeled(sync.as_ref(), Some(SyncLineLabel::Failed(&clean)));
-            return Some(Self::present(
-                CodeSearchData::soft(STATUS_FAILED, clean.clone()),
-                format!("{line}\n{clean}"),
-            ));
+            return Some(coded_error("unavailable", clean));
         }
 
         let searchable = matches!(self.engines.state("code_search"), Some(EngineState::Warm))
             && matches!(gate, CodeSearchCallGate::Ready);
         if !searchable {
-            let line = format_sync_pct_line_labeled(sync.as_ref(), Some(SyncLineLabel::Warming));
-            return Some(Self::present(
-                CodeSearchData::soft(STATUS_WARMING, WARMING_MESSAGE),
-                format!("{line}\n{WARMING_MESSAGE}"),
-            ));
+            return Some(coded_error("unavailable", WARMING_MESSAGE));
         }
 
         None
@@ -232,30 +195,14 @@ impl CodeSearchTool {
                 .with_error_code("cancelled")
             }
             Err(error) if crate::engines::is_search_worker_busy(&error) => {
-                let data = CodeSearchData::soft(STATUS_BUSY, BUSY_MESSAGE);
-                Self::present(
-                    data,
-                    Self::soft_progress_content(sync.as_ref(), BUSY_MESSAGE),
-                )
+                coded_error("unavailable", BUSY_MESSAGE)
             }
-            Err(error) => {
-                let message = error.to_string();
-                let data = CodeSearchData::soft(STATUS_FAILED, message.clone());
-                Self::present(data, Self::soft_progress_content(sync.as_ref(), &message))
-            }
+            Err(error) => coded_error("unavailable", error.to_string()),
         }
     }
 
     fn success_progress_content(sync: Option<&crate::engines::progress::CorpusProgress>) -> String {
         unfinished_sync_line(sync).unwrap_or_default()
-    }
-
-    fn soft_progress_content(
-        sync: Option<&crate::engines::progress::CorpusProgress>,
-        message: &str,
-    ) -> String {
-        let line = crate::tools::format_sync_pct_line(sync);
-        format!("{line}\n{message}")
     }
 }
 
@@ -660,20 +607,14 @@ mod tests {
         write_queue(root, 1);
     }
 
-    fn assert_soft(result: &ToolCallResult, status: &str) {
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
-        assert!(
-            result.error.is_none(),
-            "soft result must resolve: {result:?}"
-        );
-        let data = result.data.as_ref().expect("structured data");
-        assert_eq!(data["ok"], false);
-        assert_eq!(data["status"], status);
-        assert_eq!(data["hits"], serde_json::json!([]));
+    fn assert_unavailable(result: &ToolCallResult) {
+        assert_eq!(result.error_code.as_deref(), Some("unavailable"));
+        assert!(result.data.is_none(), "{result:?}");
+        assert!(result.error.is_some(), "{result:?}");
     }
 
     #[test]
-    fn warming_returns_immediately_with_typed_soft_result() {
+    fn warming_returns_immediately_as_unavailable() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         crate::config::workspace::enable_code_search_engine(root).unwrap();
@@ -687,12 +628,12 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(2),
             "Warming path must not block"
         );
-        assert_soft(&result, STATUS_WARMING);
-        assert!(result.content.lines().next().unwrap().contains("(warming)"));
+        assert_unavailable(&result);
+        assert!(result.content.contains("warming"));
     }
 
     #[test]
-    fn off_and_failed_are_typed_soft_results() {
+    fn off_and_failed_are_unavailable() {
         let off = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(off.path().join(".litecode")).unwrap();
         let engines = WorkspaceEngines::new();
@@ -700,7 +641,7 @@ mod tests {
             .code_search()
             .set_workspace(off.path().to_path_buf());
         let result = CodeSearchTool::new(engines).call_inner(serde_json::json!({ "query": "q" }));
-        assert_soft(&result, STATUS_OFF);
+        assert_unavailable(&result);
 
         let failed = tempfile::TempDir::new().unwrap();
         let root = failed.path();
@@ -712,12 +653,13 @@ mod tests {
         let before = search_calls();
         let result = CodeSearchTool::new(engines).call_inner(serde_json::json!({ "query": "q" }));
         assert_eq!(search_calls(), before, "failed must not search");
-        assert_soft(&result, STATUS_FAILED);
+        assert_unavailable(&result);
         assert!(
-            result.data.unwrap()["message"]
-                .as_str()
-                .unwrap()
-                .contains("embed exploded")
+            result
+                .error
+                .as_ref()
+                .is_some_and(|error| error.message.contains("embed exploded")),
+            "{result:?}"
         );
     }
 
@@ -860,13 +802,26 @@ mod tests {
     }
 
     #[test]
-    fn generated_output_schema_requires_structured_soft_and_hit_shapes() {
+    fn zero_hits_are_success_payload_not_a_soft_failure() {
+        let surface = code_search_surface();
+        let data =
+            CodeSearchData::success(Vec::new(), Some("No matching code chunks found.".into()));
+        let mut value = serde_json::to_value(&data).expect("serialize empty success");
+        assert!(value.get("ok").is_none(), "{value}");
+        assert!(value.get("status").is_none(), "{value}");
+        value["ok"] = serde_json::json!(true);
+        assert!(
+            crate::tool::schema_validate(&surface.tools["code_search"].output_schema, &value)
+                .is_ok(),
+            "{value}"
+        );
+    }
+
+    #[test]
+    fn generated_output_schema_requires_envelope_and_hit_shapes() {
         let surface = code_search_surface();
         let schema = &surface.tools["code_search"].output_schema;
-        assert_eq!(
-            schema["required"],
-            serde_json::json!(["ok", "status", "hits"])
-        );
+        assert_eq!(schema["required"], serde_json::json!(["ok", "hits"]));
         let hit = schema["properties"]["hits"]["items"].as_object().unwrap();
         assert_eq!(
             hit["required"],
@@ -884,22 +839,11 @@ mod tests {
             )],
             None,
         );
+        let mut value = serde_json::to_value(&success).expect("serialize success");
+        value["ok"] = serde_json::json!(true);
         assert!(
-            crate::tool::schema_validate(
-                schema,
-                &serde_json::to_value(&success).expect("serialize success")
-            )
-            .is_ok(),
+            crate::tool::schema_validate(schema, &value).is_ok(),
             "success data must match the generated code contract"
-        );
-        let soft = CodeSearchData::soft(STATUS_WARMING, WARMING_MESSAGE);
-        assert!(
-            crate::tool::schema_validate(
-                schema,
-                &serde_json::to_value(&soft).expect("serialize soft")
-            )
-            .is_ok(),
-            "soft data must match the generated code contract"
         );
     }
 
@@ -951,10 +895,12 @@ mod tests {
             started.elapsed() >= std::time::Duration::from_millis(100),
             "the search should have queued rather than reported busy immediately"
         );
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
-        let data = result.data.expect("typed data");
-        assert_eq!(data["ok"], false);
-        assert_eq!(data["status"], STATUS_FAILED);
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some("unavailable"),
+            "{result:?}"
+        );
+        assert!(result.data.is_none(), "{result:?}");
     }
 
     #[test]

@@ -60,7 +60,6 @@ fn memory_restores_only_after_compaction_and_once() {
         entries: vec![MemorySnap {
             id: "m1".into(),
             text: "use pnpm".into(),
-            kind: "preference".into(),
         }],
     };
     assert!(
@@ -71,7 +70,7 @@ fn memory_restores_only_after_compaction_and_once() {
     let r = memory(&compacted(), &facts).expect("restore after compaction");
     let Reminder::Memory(b) = r else { panic!() };
     assert!(b.text.contains("Session memory"));
-    assert!(b.text.contains("[preference] use pnpm (m1)"));
+    assert!(b.text.contains("use pnpm (m1)"));
     let mut view = compacted();
     view.kinds_after_compacted.insert(ReminderKind::Memory);
     assert!(

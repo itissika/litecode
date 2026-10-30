@@ -93,7 +93,7 @@ pub struct ExitNotice {
     pub command_preview: String,
     /// True when the human stopped the job from the bash card (not a natural exit).
     pub user_killed: bool,
-    /// True when `tools.kill` stopped the job (no human reminder mailbox).
+    /// True when `tools.process.kill` stopped the job (no human reminder mailbox).
     pub tool_killed: bool,
 }
 
@@ -562,7 +562,7 @@ impl AgentJobRegistry {
         }
     }
 
-    /// Latch a Code-surface `tools.kill` so wait can distinguish it from a
+    /// Latch a Code-surface `tools.process.kill` so wait can distinguish it from a
     /// natural exit without setting `user_killed` (no human reminder).
     pub fn mark_tool_kill(&self, id: &str) {
         let mut g = self.inner.lock().expect("jobs lock");

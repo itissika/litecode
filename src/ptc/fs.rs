@@ -3,7 +3,7 @@
 //! `fs.ls(path)`, `fs.stat(path)` and `fs.exists(path)` are synchronous,
 //! workspace-confined, and never write. There is deliberately no `rm`, `mv`,
 //! or write: several agents share one workspace and `libs`/`fs` stay
-//! read-only by invariant. Writes go through `tools.write` / `tools.edit`.
+//! read-only by invariant. Writes go through `tools.file.write` / `tools.file.edit`.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -107,7 +107,7 @@ pub fn ls(root: &Path, raw: &str) -> Value {
     if total > LS_CAP {
         out.insert(
             "message".into(),
-            Value::String(format!("showing {LS_CAP} of {total} entries; use tools.glob to filter")),
+            Value::String(format!("showing {LS_CAP} of {total} entries; use tools.file.glob to filter")),
         );
     }
     Value::Object(out)

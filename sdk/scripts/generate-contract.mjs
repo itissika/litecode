@@ -20,7 +20,7 @@ const allSdkPath = path.join(generatedDir, "all-code-sdk.d.ts");
 const allPromptPath = path.join(generatedDir, "all-code-sdk.txt");
 const check = process.argv.includes("--check");
 
-const suiteOrder = ["file", "search", "process", "web", "memory", "browser", "lsp"];
+const suiteOrder = ["file", "search", "process", "web", "browser", "lsp", "memory"];
 const project = new Project({ tsConfigFilePath: tsconfigPath });
 const apiSource = project.getSourceFileOrThrow(apiPath);
 const toolsInterface = apiSource.getInterfaceOrThrow("Tools");
@@ -148,6 +148,22 @@ function schemaFor(typeName) {
   return inlineRefs(schema, schema.definitions ?? {});
 }
 
+function outputSchemaFor(typeName) {
+  const schema = schemaFor(typeName);
+  if (!schema || typeof schema !== "object" || (!schema.properties && !schema.type)) {
+    throw new Error(`output type ${typeName} must project to a JSON object`);
+  }
+  const properties = {
+    ...(schema.properties ?? {}),
+    ok: { type: "boolean", const: true },
+  };
+  const required = [
+    "ok",
+    ...(schema.required ?? []).filter((name) => name !== "ok"),
+  ];
+  return { ...schema, properties, required };
+}
+
 const tools = {};
 for (const method of methods) {
   const deps = new Set();
@@ -163,7 +179,7 @@ for (const method of methods) {
     output_type: method.output_type,
     type_deps: [...deps].sort(),
     input_schema: schemaFor(method.input_type),
-    output_schema: schemaFor(method.output_type),
+    output_schema: outputSchemaFor(method.output_type),
   };
 }
 
@@ -179,28 +195,53 @@ function renderToolEntry(tool, indent) {
 }
 
 function renderToolsInterface(entries) {
-  const flat = entries.filter((tool) => tool.path.length === 1);
-  const memory = entries.filter((tool) => tool.path.length === 2 && tool.path[0] === "memory");
   const lines = ["interface Tools {"];
-  const bySuite = new Map();
-  for (const tool of flat) {
-    if (!bySuite.has(tool.suite)) bySuite.set(tool.suite, []);
-    bySuite.get(tool.suite).push(tool);
+  const flatBySuite = new Map();
+  const nestedBySuite = new Map();
+
+  for (const tool of entries) {
+    if (tool.path.length === 1) {
+      if (!flatBySuite.has(tool.suite)) flatBySuite.set(tool.suite, []);
+      flatBySuite.get(tool.suite).push(tool);
+      continue;
+    }
+    if (tool.path.length !== 2) {
+      throw new Error(`unsupported SDK path depth: ${tool.path.join(".")}`);
+    }
+    const suite = tool.path[0];
+    if (!nestedBySuite.has(suite)) nestedBySuite.set(suite, []);
+    nestedBySuite.get(suite).push(tool);
   }
+
+  const orderedSuites = [
+    ...suiteOrder.filter((suite) => nestedBySuite.has(suite)),
+    ...[...nestedBySuite.keys()]
+      .filter((suite) => !suiteOrder.includes(suite))
+      .sort((left, right) => left.localeCompare(right)),
+  ];
+
   for (const suite of suiteOrder) {
-    const group = bySuite.get(suite);
+    const group = flatBySuite.get(suite);
     if (!group || group.length === 0) continue;
     lines.push(`  // ${suite}`);
     for (const tool of group) lines.push(renderToolEntry(tool, "  "));
     lines.push("");
   }
-  if (memory.length > 0) {
-    lines.push("  // memory");
-    lines.push("  memory: {");
-    for (const tool of memory) lines.push(renderToolEntry(tool, "    "));
+  for (const suite of [...flatBySuite.keys()].filter((suite) => !suiteOrder.includes(suite)).sort()) {
+    const group = flatBySuite.get(suite);
+    lines.push(`  // ${suite}`);
+    for (const tool of group) lines.push(renderToolEntry(tool, "  "));
+    lines.push("");
+  }
+
+  for (const suite of orderedSuites) {
+    lines.push(`  // ${suite}`);
+    lines.push(`  ${suite}: {`);
+    for (const tool of nestedBySuite.get(suite)) lines.push(renderToolEntry(tool, "    "));
     lines.push("  };");
     lines.push("");
   }
+
   if (lines[lines.length - 1] === "") lines.pop();
   lines.push("}");
   return lines.join("\n");

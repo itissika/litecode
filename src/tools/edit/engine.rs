@@ -18,7 +18,7 @@ impl EditEngine {
         Self { ide }
     }
 
-    /// Attempt one replacement. Match/IO/path failures become `ok: false` with
+    /// Attempt one replacement. Match/IO/path failures become typed failures with
     /// guidance in `message`. Only cancellation is `Err` so a batch can abort.
     pub(crate) async fn apply_one(
         &self,

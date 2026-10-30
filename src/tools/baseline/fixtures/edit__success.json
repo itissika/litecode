@@ -1,13 +1,12 @@
 {
-  "content_historical": "Edited <ws>a.txt (1 applied / 0 warning / 0 failed). File updated.\n\n[1] applied: exact, 1 replacement (L1)",
-  "covered": true,
-  "data": {
-    "ok": true,
-    "path": "a.txt",
-    "message": "replaced"
-  },
-  "error": null,
-  "gap": null,
-  "scenario": "success",
-  "tool": "edit"
+    "content_historical":  "Edited \u003cws\u003ea.txt (1 applied / 0 warning / 0 failed). File updated.\n\n[1] applied: exact, 1 replacement (L1)",
+    "covered":  true,
+    "data":  {
+                 "path":  "a.txt",
+                 "message":  "replaced"
+             },
+    "error":  null,
+    "gap":  null,
+    "scenario":  "success",
+    "tool":  "edit"
 }
