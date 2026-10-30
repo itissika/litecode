@@ -76,7 +76,7 @@ pub async fn authorize(
     };
     tool.prepare_input(&mut input);
     let schema_input = tool.schema_arguments(&input);
-    if let Err(msg) = check_tool_input(tool, &schema_input) {
+    if let Err(msg) = check_tool_input(tool, ctx, &schema_input) {
         return AuthResult::Denied(invalid_input_for(&name, msg));
     }
 

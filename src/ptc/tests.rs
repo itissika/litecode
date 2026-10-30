@@ -9,8 +9,8 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    CallState, ExecuteRequest, FailureKind, HostBinding, HostError, HostFn, Limits,
-    Namespace, Outcome, ResourceKind, execute,
+    CallState, ExecuteRequest, FailureKind, HostBinding, HostError, HostFn, Limits, Namespace,
+    Outcome, ResourceKind, execute,
 };
 
 fn limits() -> Limits {
@@ -322,7 +322,11 @@ async fn memory_exhaustion_stays_sealed_when_the_program_catches_it() {
         CancellationToken::new(),
     )
     .await;
-    assert!(outcome.value.is_none(), "program returned {:?}", outcome.value);
+    assert!(
+        outcome.value.is_none(),
+        "program returned {:?}",
+        outcome.value
+    );
     let failure = outcome.failure.expect("out of memory is not catchable");
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
     assert_eq!(failure.resource, Some(ResourceKind::Memory), "{failure:?}");
@@ -349,7 +353,11 @@ async fn caught_allocation_failure_is_memory_when_the_stack_watch_is_disarmed() 
         CancellationToken::new(),
     )
     .await;
-    assert!(outcome.value.is_none(), "program returned {:?}", outcome.value);
+    assert!(
+        outcome.value.is_none(),
+        "program returned {:?}",
+        outcome.value
+    );
     let failure = outcome.failure.expect("memory fault overrides success");
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
     assert_eq!(failure.resource, Some(ResourceKind::Memory), "{failure:?}");
@@ -395,7 +403,11 @@ async fn stack_overflow_caught_then_immediate_return_is_still_sealed() {
         CancellationToken::new(),
     )
     .await;
-    assert!(outcome.value.is_none(), "program returned {:?}", outcome.value);
+    assert!(
+        outcome.value.is_none(),
+        "program returned {:?}",
+        outcome.value
+    );
     let failure = outcome.failure.expect("stack overflow is not catchable");
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
     assert_eq!(failure.resource, Some(ResourceKind::Stack), "{failure:?}");
@@ -421,7 +433,11 @@ async fn stack_overflow_stays_sealed_when_the_program_catches_it() {
         CancellationToken::new(),
     )
     .await;
-    assert!(outcome.value.is_none(), "program returned {:?}", outcome.value);
+    assert!(
+        outcome.value.is_none(),
+        "program returned {:?}",
+        outcome.value
+    );
     let failure = outcome.failure.expect("stack overflow is not catchable");
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
     assert_eq!(failure.resource, Some(ResourceKind::Stack), "{failure:?}");
@@ -497,9 +513,6 @@ async fn output_limit_counts_final_value() {
 #[tokio::test]
 async fn illegal_output_values() {
     let cases = [
-        ("return NaN;", "non-finite number"),
-        ("return Infinity;", "non-finite number"),
-        ("return -Infinity;", "non-finite number"),
         ("return 1n;", "bigint at $"),
         ("return { a: { b: 1n } };", "bigint at $.a.b"),
         ("return [1, Symbol('s')];", "symbol at $[1]"),
@@ -528,6 +541,40 @@ async fn illegal_output_values() {
         );
         assert!(outcome.value.is_none());
     }
+}
+
+#[tokio::test]
+async fn non_finite_output_is_nulled_with_paths() {
+    let outcome = run(
+        "return { n: NaN, nested: [Infinity, -Infinity] };",
+        Vec::new(),
+    )
+    .await;
+    assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
+    assert_eq!(
+        value_of(&outcome),
+        &json!({"n": null, "nested": [null, null]})
+    );
+    let line = outcome
+        .dropped_undefined
+        .non_finite_head_line()
+        .expect("coercion warning");
+    assert!(line.contains("n"), "{line}");
+    assert!(line.contains("nested[0]"), "{line}");
+    assert!(line.contains("nested[1]"), "{line}");
+    assert!(outcome.dropped_undefined.head_line().is_none());
+}
+
+#[tokio::test]
+async fn unknown_tool_type_error_names_the_tool() {
+    let outcome = run("return await tools.nope({});", tools(vec![])).await;
+    let failure = outcome.failure.as_ref().expect("unknown tool must fail");
+    assert_eq!(failure.kind, FailureKind::Exception);
+    assert!(failure.uncaught_type_error, "{failure:?}");
+    assert!(
+        failure.message.contains("tool 'nope' not found"),
+        "{failure:?}"
+    );
 }
 
 #[tokio::test]
@@ -1064,7 +1111,11 @@ async fn deep_nest_child() {
         .await;
         let failure = illegal.failure.as_ref().expect("illegal sibling");
         assert_eq!(failure.kind, FailureKind::IllegalOutput, "{failure:?}");
-        assert!(failure.message.contains("bigint at $[1]"), "{}", failure.message);
+        assert!(
+            failure.message.contains("bigint at $[1]"),
+            "{}",
+            failure.message
+        );
         assert!(illegal.value.is_none());
     }
 
@@ -1119,16 +1170,30 @@ async fn host_receives_extra_arguments_as_a_json_array() {
     );
 }
 
-
 // WP-206 #7: undefined tolerance.
 #[tokio::test]
 async fn undefined_in_result_is_stripped_or_nulled_and_reported() {
     let cases: [(&str, Value, &[&str], usize); 5] = [
         ("return undefined;", json!(null), &["$"], 1),
         ("return { a: 1, b: undefined };", json!({"a": 1}), &["b"], 1),
-        ("return { a: { b: undefined } };", json!({"a": {}}), &["a.b"], 1),
-        ("return { list: [1, undefined] };", json!({"list": [1, null]}), &["list[1]"], 1),
-        ("return { 'a-b': undefined };", json!({}), &[r#"["a-b"]"#], 1),
+        (
+            "return { a: { b: undefined } };",
+            json!({"a": {}}),
+            &["a.b"],
+            1,
+        ),
+        (
+            "return { list: [1, undefined] };",
+            json!({"list": [1, null]}),
+            &["list[1]"],
+            1,
+        ),
+        (
+            "return { 'a-b': undefined };",
+            json!({}),
+            &[r#"["a-b"]"#],
+            1,
+        ),
     ];
     for (source, want, paths, total) in cases {
         let outcome = run(source, Vec::new()).await;
@@ -1156,7 +1221,10 @@ async fn dropped_undefined_list_is_capped_with_more_count() {
     .await;
     assert_eq!(value_of(&outcome), &json!({"keep": 1}));
     assert_eq!(outcome.dropped_undefined.total, 25);
-    assert_eq!(outcome.dropped_undefined.paths.len(), crate::ptc::DROPPED_CAP);
+    assert_eq!(
+        outcome.dropped_undefined.paths.len(),
+        crate::ptc::DROPPED_CAP
+    );
     let line = outcome.dropped_undefined.head_line().unwrap();
     assert!(line.starts_with("dropped undefined at k0, k1"), "{line}");
     assert!(line.ends_with(" +15 more"), "{line}");
@@ -1176,7 +1244,10 @@ async fn undefined_in_arguments_is_dropped_silently() {
     )
     .await;
     assert_eq!(value_of(&outcome), &json!("done"));
-    assert!(outcome.dropped_undefined.is_empty(), "args are not reported");
+    assert!(
+        outcome.dropped_undefined.is_empty(),
+        "args are not reported"
+    );
     let seen = seen.lock().unwrap();
     assert_eq!(seen[0], json!({"a": 1, "c": [null, 2]}));
     assert_eq!(seen[1], json!(null));
@@ -1184,10 +1255,16 @@ async fn undefined_in_arguments_is_dropped_silently() {
 
 #[tokio::test]
 async fn runtime_exception_reports_line_column_and_stack() {
-    let outcome = run("const a = 1;\nfunction boom() {\n  throw new Error('bad');\n}\nboom();", Vec::new()).await;
+    let outcome = run(
+        "const a = 1;\nfunction boom() {\n  throw new Error('bad');\n}\nboom();",
+        Vec::new(),
+    )
+    .await;
     let failure = outcome.failure.as_ref().expect("exception");
     assert_eq!(failure.kind, FailureKind::Exception);
-    let location = failure.location.expect("runtime exceptions carry a location");
+    let location = failure
+        .location
+        .expect("runtime exceptions carry a location");
     assert_eq!((location.line, location.column), (3, 13), "{failure:?}");
     let stack = failure.stack.as_deref().unwrap_or("");
     assert!(stack.contains("program.js:"), "{stack}");
@@ -1202,6 +1279,8 @@ async fn object_keys_keep_agent_order_across_the_bridge() {
     )
     .await;
     let text = serde_json::to_string(value_of(&outcome)).unwrap();
-    assert_eq!(text, r#"{"z":1,"a":{"zeta":1,"alpha":2,"mid":{"y":1,"b":2}},"m":3}"#);
+    assert_eq!(
+        text,
+        r#"{"z":1,"a":{"zeta":1,"alpha":2,"mid":{"y":1,"b":2}},"m":3}"#
+    );
 }
-

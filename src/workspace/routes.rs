@@ -83,11 +83,6 @@ struct SqliteQuery {
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenBody {
-    path: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct RevealBody {
     path: String,
 }
@@ -245,7 +240,6 @@ pub fn router() -> Router<ServeState> {
         .route("/media", get(get_media))
         .route("/media/thumb", get(get_media_thumb))
         .route("/sqlite", get(get_sqlite))
-        .route("/open", post(post_open))
         .route("/reveal", post(post_reveal))
         .route("/citations", post(post_citations))
         .route("/symbols", get(get_symbols))
@@ -881,23 +875,6 @@ async fn post_citations(
     }
 }
 
-async fn post_open(State(state): State<ServeState>, Json(body): Json<OpenBody>) -> Response {
-    let workspace = state.workspace.clone();
-    let path = body.path;
-    match tokio::task::spawn_blocking(move || workspace.open_with_default_app(&path)).await {
-        Ok(Ok(())) => Json(ApiOk {
-            ok: true,
-            data: serde_json::json!({ "opened": true }),
-        })
-        .into_response(),
-        Ok(Err(e)) => workspace_error(e),
-        Err(e) => open_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("open task join: {e}"),
-        ),
-    }
-}
-
 async fn post_reveal(State(state): State<ServeState>, Json(body): Json<RevealBody>) -> Response {
     let workspace = state.workspace.clone();
     let path = body.path;
@@ -1208,15 +1185,11 @@ fn workspace_error(err: WorkspaceError) -> Response {
         WorkspaceError::Binary | WorkspaceError::Utf16 | WorkspaceError::NotUtf8 => {
             (StatusCode::UNSUPPORTED_MEDIA_TYPE, err.to_string())
         }
-        WorkspaceError::OpenUnsupported | WorkspaceError::RevealUnsupported => {
-            (StatusCode::NOT_IMPLEMENTED, err.to_string())
-        }
+        WorkspaceError::RevealUnsupported => (StatusCode::NOT_IMPLEMENTED, err.to_string()),
         WorkspaceError::MediaUnsupported(_) => {
             (StatusCode::UNSUPPORTED_MEDIA_TYPE, err.to_string())
         }
-        WorkspaceError::OpenFailed(_)
-        | WorkspaceError::RevealFailed(_)
-        | WorkspaceError::MediaFailed(_) => {
+        WorkspaceError::RevealFailed(_) | WorkspaceError::MediaFailed(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
         }
         WorkspaceError::Sandbox(super::sandbox::SandboxError::Io(e)) | WorkspaceError::Io(e) => {

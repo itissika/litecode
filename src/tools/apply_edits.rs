@@ -11,14 +11,12 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::context_pipeline::Context;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::ResourceKey;
 use crate::tools::edit::engine::{Cancelled, EditEngine};
-use crate::tools::edit::planner::{self, EditSpec, CANCELLED_MESSAGE};
+use crate::tools::edit::planner::{self, CANCELLED_MESSAGE, EditSpec};
 use crate::tools::edit::result::present_apply_edits;
-use crate::tools::edit::edit_result_schema;
 use crate::tools::file_path::coded_error;
 use crate::types::{ToolCallResult, ToolErrorKind};
 
@@ -73,14 +71,18 @@ impl ApplyEditsTool {
         for (i, item) in items.iter().enumerate() {
             let prefix = format!("edits[{i}]");
             let path = match item.get("path").or_else(|| item.get("file_path")) {
-                Some(value) => crate::tool::require_string_value(value, &format!("{prefix}.path"))?
-                    .to_string(),
+                Some(value) => {
+                    crate::tool::require_string_value(value, &format!("{prefix}.path"))?.to_string()
+                }
                 None => {
                     return Err(crate::tool::missing_parameter(&format!("{prefix}.path")));
                 }
             };
             if path.trim().is_empty() {
-                return Err(crate::tool::must_be(&format!("{prefix}.path"), "a non-empty string"));
+                return Err(crate::tool::must_be(
+                    &format!("{prefix}.path"),
+                    "a non-empty string",
+                ));
             }
             let spec = planner::parse_spec(item, &prefix, &["path", "file_path"])?;
             out.push((path, spec));
@@ -105,7 +107,11 @@ impl ApplyEditsTool {
             if execution.cancel.is_cancelled() {
                 return cancelled_apply();
             }
-            match self.engine.apply_one(&execution, path, spec, "applied").await {
+            match self
+                .engine
+                .apply_one(&execution, path, spec, "applied")
+                .await
+            {
                 Ok(result) => results.push(result),
                 Err(Cancelled) => return cancelled_apply(),
             }
@@ -115,11 +121,7 @@ impl ApplyEditsTool {
 }
 
 fn cancelled_apply() -> ToolCallResult {
-    ToolCallResult::error_with_kind(
-        ToolErrorKind::Cancelled,
-        CANCELLED_MESSAGE,
-        false,
-    )
+    ToolCallResult::error_with_kind(ToolErrorKind::Cancelled, CANCELLED_MESSAGE, false)
 }
 
 impl Default for ApplyEditsTool {
@@ -135,57 +137,6 @@ impl Tool for ApplyEditsTool {
 
     fn surface(&self) -> crate::tool::ToolSurface {
         crate::tool::ToolSurface::Code
-    }
-
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "edits": {
-                    "type": "array",
-                    "minItems": 1,
-                    "description": "Replacements to apply serially. A failed item is skipped; later items still run. results matches this array length.",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": crate::tools::file_path::FILE_PATH_SCHEMA_HINT
-                            },
-                            "old_string": {
-                                "type": "string",
-                                "description": format!(
-                                    "Exact file text to find. Do not include {}. Must match exactly one place.",
-                                    crate::tool::FILE_LINE_PREFIX_HINT
-                                )
-                            },
-                            "new_string": {
-                                "type": "string",
-                                "description": "Replacement text. Use an empty string to delete old_string."
-                            }
-                        },
-                        "required": ["path", "old_string", "new_string"]
-                    }
-                }
-            },
-            "required": ["edits"]
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "results": {
-                    "type": "array",
-                    "items": edit_result_schema()
-                }
-            },
-            "required": ["results"]
-        }))
     }
 
     fn timeout(&self) -> Option<std::time::Duration> {
@@ -271,12 +222,7 @@ impl Tool for ApplyEditsTool {
             .expect("test runtime");
         rt.block_on(self.call_for_execution(input, execution))
     }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/apply_edits.md"))
-    }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -343,11 +289,7 @@ mod tests {
                 {"path": "a.txt", "old_string": "A", "new_string": "AA"}
             ]
         });
-        let effects = tool().effects(
-            &input,
-            crate::workspace::ToolPathMode::Safe,
-            dir.path(),
-        );
+        let effects = tool().effects(&input, crate::workspace::ToolPathMode::Safe, dir.path());
         let paths: Vec<&str> = effects
             .writes
             .iter()

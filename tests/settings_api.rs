@@ -552,7 +552,7 @@ async fn available_tools_stamps_a_code_surface_custom_tool() {
 }
 
 #[tokio::test]
-async fn custom_tools_payload_exposes_code_sdk_collisions() {
+async fn custom_tools_payload_accepts_names_that_map_to_the_same_pascal_case() {
     use litecode::config::schema::{CallSurface, CustomToolDefinition, ToolSchema};
 
     let ws = TempDir::new().expect("ws");
@@ -599,11 +599,14 @@ async fn custom_tools_payload_exposes_code_sdk_collisions() {
     let rejected = payload["code_rejections"]
         .as_array()
         .expect("code rejections array");
-    assert_eq!(rejected.len(), 2, "{payload}");
+    assert!(rejected.is_empty(), "{payload}");
+    let cards = payload["global"].as_array().expect("global tools array");
     assert!(
-        rejected.iter().all(|item| item["reason"]
-            .as_str()
-            .is_some_and(|reason| reason.contains("collides"))),
+        cards.iter().any(|tool| tool["name"] == "foo_bar"),
+        "{payload}"
+    );
+    assert!(
+        cards.iter().any(|tool| tool["name"] == "foo__bar"),
         "{payload}"
     );
 }

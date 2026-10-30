@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use crate::types::{ToolCallResult, ToolErrorKind};
 
-use crate::context_pipeline::Context;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::ResourceKey;
@@ -115,59 +114,6 @@ impl Tool for WriteTool {
         crate::tool::ToolSurface::Code
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": crate::tools::file_path::FILE_PATH_SCHEMA_HINT
-                },
-                "content": {
-                    "type": "string",
-                    "description": "Content to write to the file"
-                },
-                "expected_hash": {
-                    "type": "string",
-                    "description": "sha256 of the current file bytes. Omit to skip the check. A mismatch resolves ok:false reason stale and does not write. Together with create_only, a missing file resolves ok:false reason invalid_args."
-                },
-                "create_only": {
-                    "type": "boolean",
-                    "description": "If true, refuse to overwrite an existing file (default: false)"
-                }
-            },
-            "required": ["path", "content"]
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "description": "File that was written.",
-            "properties": {
-                "file": {
-                    "type": "object",
-                    "description": "File identity after the write. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.",
-                    "properties": {
-                        "path": { "type": "string" },
-                        "abs": { "type": "string" },
-                        "hash": { "type": "string", "description": "sha256 hex of the file bytes." },
-                        "bytes": { "type": "integer", "minimum": 0 }
-                    },
-                    "required": ["path", "hash", "bytes"]
-                },
-                "created": { "type": "boolean", "description": "True when the file did not exist before." },
-                "message": {
-                    "type": "string",
-                    "description": "Post-write warnings such as LSP errors or path-risk notes. Absent when clean."
-                }
-            },
-            "required": ["file", "created"]
-        }))
-    }
-
     fn timeout(&self) -> Option<std::time::Duration> {
         Some(std::time::Duration::from_secs(30))
     }
@@ -188,10 +134,6 @@ impl Tool for WriteTool {
             .build()
             .expect("test runtime");
         rt.block_on(self.call_for_execution(input, execution))
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/write.md"))
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
@@ -497,7 +439,8 @@ mod expected_hash_tests {
     }
 
     fn allow_engine(root: &Path) -> PermissionEngine {
-        let resolved = resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new(root));
+        let resolved =
+            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new(root));
         PermissionEngine::resolver(resolved, "default", 0)
     }
 

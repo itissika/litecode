@@ -329,31 +329,47 @@ impl Tool for SubagentLaunchTool {
         })
     }
 
-    fn schema(&self) -> Value {
-        let agent_desc = match self.format_available_subagents() {
-            Some(catalog) => {
-                format!("Subagent id from the parent primary agent allowlist. Available: {catalog}")
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description = {
+            let base =
+                crate::tools::description_text(include_str!("../descriptions/subagent_launch.md"));
+            match self.format_available_subagents() {
+                None => base,
+                Some(catalog) => format!("{base} Available agents: {catalog}."),
             }
-            None => "No subagents configured for this primary agent".to_string(),
         };
+        let input_schema = {
+            let agent_desc = match self.format_available_subagents() {
+                Some(catalog) => {
+                    format!(
+                        "Subagent id from the parent primary agent allowlist. Available: {catalog}"
+                    )
+                }
+                None => "No subagents configured for this primary agent".to_string(),
+            };
 
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "agent": {
-                    "type": "string",
-                    "description": agent_desc
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": agent_desc
+                    },
+                    "responsibility": {
+                        "type": "string",
+                        "description": "Stable team responsibility for this child session"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Self-contained first assignment: goal, relevant context, constraints, and expected result"
+                    },
                 },
-                "responsibility": {
-                    "type": "string",
-                    "description": "Stable team responsibility for this child session"
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "Self-contained first assignment: goal, relevant context, constraints, and expected result"
-                },
-            },
-            "required": ["agent", "responsibility", "prompt"]
+                "required": ["agent", "responsibility", "prompt"]
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
     }
 
@@ -363,15 +379,6 @@ impl Tool for SubagentLaunchTool {
             Ok(_) => ToolCallResult::error(
                 "subagent_launch must be invoked via execute (async tool path)",
             ),
-        }
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        let base =
-            crate::tools::description_text(include_str!("../descriptions/subagent_launch.md"));
-        match self.format_available_subagents() {
-            None => base,
-            Some(catalog) => format!("{base} Available agents: {catalog}."),
         }
     }
 
@@ -393,10 +400,4 @@ impl Tool for SubagentLaunchTool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-    
-    
-
-}
+mod tests {}

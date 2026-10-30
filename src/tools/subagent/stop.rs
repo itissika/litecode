@@ -83,16 +83,24 @@ impl Tool for SubagentStopTool {
         "subagent_stop"
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "description": "child_session_id"
-                }
-            },
-            "required": ["id"]
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description =
+            crate::tools::description_text(include_str!("../descriptions/subagent_stop.md"));
+        let input_schema = {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "child_session_id"
+                    }
+                },
+                "required": ["id"]
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
     }
 
@@ -112,17 +120,10 @@ impl Tool for SubagentStopTool {
         self.call_stop(input)
     }
 
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("../descriptions/subagent_stop.md"))
-    }
-
     fn set_active_session(&self, session_id: String) {
         *self.session_id.lock().unwrap() = session_id;
     }
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

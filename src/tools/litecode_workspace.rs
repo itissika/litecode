@@ -26,9 +26,6 @@ use crate::session::SessionDataReader;
 use crate::session::manager::{SessionActivityRow, SessionManager, SessionStatus};
 use crate::tool::Tool;
 use crate::tool::availability::agent_tool_enabled;
-use crate::tool::project::project_code_specs;
-use crate::tool::registry::builtin_code_specs;
-use crate::tool::spec::FunctionSpec;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tools::custom::validate_custom_tool_run;
 use crate::types::ToolCallResult;
@@ -161,11 +158,6 @@ fn call_surface_label(surface: CallSurface) -> &'static str {
     }
 }
 
-fn code_binding_id(resolved: &crate::config::resolved::ResolvedConfig, tool_name: &str) -> String {
-    crate::tool::capability::member_owner(resolved, tool_name)
-        .unwrap_or_else(|| tool_name.to_string())
-}
-
 fn effective_custom_definition(
     def: &CustomToolDefinition,
     suites: &std::collections::HashMap<String, crate::config::schema::CustomSuiteDefinition>,
@@ -178,40 +170,11 @@ fn effective_custom_definition(
     effective
 }
 
-fn code_composition_error(
-    resolved: &crate::config::resolved::ResolvedConfig,
-    agent_id: &str,
-    def: &CustomToolDefinition,
-) -> Option<String> {
+fn dynamic_contract_error(def: &CustomToolDefinition) -> Option<String> {
     if def.effective_surface() != CallSurface::Code {
         return None;
     }
-    let mut specs = builtin_code_specs()
-        .into_iter()
-        .filter(|spec| {
-            let binding = code_binding_id(resolved, &spec.name);
-            agent_tool_enabled(resolved, agent_id, &binding)
-        })
-        .collect::<Vec<_>>();
-    for existing in resolved.custom_tools() {
-        if existing.effective_surface() == CallSurface::Code
-            && existing.name != def.name
-            && agent_tool_enabled(resolved, agent_id, &existing.name)
-            && let Ok(spec) = FunctionSpec::from_custom_definition(&existing)
-            && let Some(spec) = spec.into_code()
-        {
-            specs.push(spec);
-        }
-    }
-    let target = FunctionSpec::from_custom_definition(def)
-        .ok()?
-        .into_code()?;
-    let name = target.name.clone();
-    specs.push(target);
-    project_code_specs(specs)
-        .into_iter()
-        .find(|rejected| rejected.name == name)
-        .map(|rejected| rejected.reason)
+    crate::tool::dynamic_contract::validate_custom_code_contract(def, CallSurface::Code).err()
 }
 
 fn parse_validate_custom(input: &Value) -> Result<(CustomToolDefinition, Value), String> {
@@ -577,12 +540,10 @@ impl LitecodeWorkspaceTool {
         }
     }
 
-    /// Check SDK type-name and nested-namespace collisions against the Code
-    /// tools this agent can currently enable. Single-tool admission cannot see
-    /// this: it is a composition failure discovered only when the bundle is
-    /// projected.
-    fn code_composition_error(&self, def: &CustomToolDefinition) -> Option<String> {
-        code_composition_error(&self.runtime.resolved, &self.agent_id, def)
+    /// Re-check that a custom schema is representable in the dynamic
+    /// code-tool fallback when a bundle is projected.
+    fn dynamic_contract_error(&self, def: &CustomToolDefinition) -> Option<String> {
+        dynamic_contract_error(def)
     }
 
     fn run(&self, input: &Value, execution: &ToolExecutionContext) -> ToolCallResult {
@@ -615,9 +576,9 @@ impl LitecodeWorkspaceTool {
                     }
                     let effective = effective_custom_definition(&def, &suites);
                     let surface = effective.effective_surface();
-                    if let Some(reason) = self.code_composition_error(&effective) {
+                    if let Some(reason) = self.dynamic_contract_error(&effective) {
                         return ToolCallResult::error(format!(
-                            "# validate_custom — FAIL\n\n- tool: `{id}`\n- {}\n- code admission: PASS\n- composition: FAIL\n- detail: {reason}\n- next: rename the tool or one of its schema type fields, remove a standalone/suite name collision, or disable the colliding Code tool; do not enable both together\n",
+                            "# validate_custom — FAIL\n\n- tool: `{id}`\n- {}\n- code admission: PASS\n- dynamic contract: FAIL\n- detail: {reason}\n- next: use a simple input/output object schema with supported JSON Schema keywords, or declare surface \"direct\"\n",
                             call_surface_label(surface)
                         ));
                     }
@@ -629,7 +590,7 @@ impl LitecodeWorkspaceTool {
                     if surface == CallSurface::Code && result.error.is_none() {
                         result.content = result.content.replacen(
                             "- code admission: PASS\n",
-                            "- code admission: PASS\n- composition: PASS (current enabled and available Code tools)\n",
+                            "- code admission: PASS\n- dynamic contract: PASS\n",
                             1,
                         );
                     }
@@ -1146,28 +1107,36 @@ impl Tool for LitecodeWorkspaceTool {
         "litecode_workspace"
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "CLI-style command. Omit or leave empty to open the panel. Use `validate_custom` with `definition` + `sample_input` to trial a tool without registering it (no rules eval; run_in_background stripped from stdin)."
-                },
-                "definition": {
-                    "type": "object",
-                    "description": "Custom tool body for `validate_custom` (one tool object, not a full file). Standalone must set surface direct|code; suite member must set suite (already loaded) and omit surface/rules. Required: name/command/schema; code also requires output_schema (direct forbids it). Code returns {ok:true,...stdout}; direct supports run_in_background."
-                },
-                "sample_input": {
-                    "type": "object",
-                    "description": "JSON object written to custom tool stdin during `validate_custom` (run_in_background is stripped, same as production). Does not evaluate rules."
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Optional name when definition.name is empty (validate_custom only)."
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description =
+            crate::tools::description_text(include_str!("descriptions/litecode_workspace.md"));
+        let input_schema = {
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "CLI-style command. Omit or leave empty to open the panel. Use `validate_custom` with `definition` + `sample_input` to trial a tool without registering it (no rules eval; run_in_background stripped from stdin)."
+                    },
+                    "definition": {
+                        "type": "object",
+                        "description": "Custom tool body for `validate_custom` (one tool object, not a full file). Standalone must set surface direct|code; suite member must set suite (already loaded) and omit surface/rules. Required: name/command/schema; code also requires output_schema (direct forbids it). Code returns {ok:true,...stdout}; direct supports run_in_background."
+                    },
+                    "sample_input": {
+                        "type": "object",
+                        "description": "JSON object written to custom tool stdin during `validate_custom` (run_in_background is stripped, same as production). Does not evaluate rules."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Optional name when definition.name is empty (validate_custom only)."
+                    }
                 }
-            }
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
     }
 
@@ -1197,10 +1166,6 @@ impl Tool for LitecodeWorkspaceTool {
                 session: Some(self.sessions.reader()),
             },
         )
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/litecode_workspace.md"))
     }
 }
 
@@ -1481,8 +1446,7 @@ fn one_line_preview(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{AgentProfile, AgentToolBinding, GlobalSettings, ToolSchema};
-    use crate::config::{ConfigManager, WorkspaceState};
+    use crate::config::schema::ToolSchema;
 
     fn def(name: &str) -> CustomToolDefinition {
         CustomToolDefinition {
@@ -1505,40 +1469,22 @@ mod tests {
         }
     }
 
-    fn binding() -> AgentToolBinding {
-        AgentToolBinding {
-            enabled: true,
-            preset: None,
-            allowed_tools: None,
-        }
-    }
-
     #[test]
-    fn composition_check_reports_sdk_type_collision() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut global = GlobalSettings::default();
-        let mut profile = AgentProfile::default();
-        profile.tools.insert("foo_bar".into(), binding());
-        profile.tools.insert("foo__bar".into(), binding());
-        global.agents.insert("default".into(), profile);
-        global.custom_tools.push(def("foo__bar"));
-        let resolved =
-            ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
-        let reason = code_composition_error(&resolved, "default", &def("foo_bar"))
-            .expect("same PascalCase type must collide");
-        assert!(reason.contains("collides"), "{reason}");
+    fn composition_check_reports_bad_code_schema() {
+        let mut bad = def("foo_bar");
+        bad.schema.properties = serde_json::json!({
+            "item": { "$ref": "#/Item" }
+        });
+        let reason =
+            dynamic_contract_error(&bad).expect("unsupported dynamic schema must fail composition");
+        assert!(reason.contains("$ref"), "{reason}");
     }
 
     #[test]
     fn composition_check_ignores_direct_tools() {
-        let dir = tempfile::tempdir().unwrap();
         let mut def = def("direct_probe");
         def.surface = Some(CallSurface::Direct);
-        let resolved = ConfigManager::resolve_without_catalog(
-            GlobalSettings::default(),
-            WorkspaceState::new(dir.path()),
-        );
-        assert!(code_composition_error(&resolved, "default", &def).is_none());
+        assert!(dynamic_contract_error(&def).is_none());
     }
 
     #[test]

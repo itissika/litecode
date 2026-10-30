@@ -1,7 +1,6 @@
 //! Sole success/failure shape for `edit` / `apply_edits`.
 
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::tool::outcome::ToolOutcome;
 use crate::types::ToolCallResult;
@@ -41,20 +40,6 @@ impl EditResult {
         self.reason = Some(reason);
         self
     }
-}
-
-pub fn edit_result_schema() -> Value {
-    serde_json::json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "ok": { "type": "boolean" },
-            "path": { "type": "string" },
-            "message": { "type": "string" },
-            "reason": { "type": "string", "enum": ["not_found", "no_match", "invalid_args", "empty", "permission", "io"] }
-        },
-        "required": ["ok", "path", "message"]
-    })
 }
 
 pub fn present_edit(result: EditResult) -> ToolCallResult {

@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::context_pipeline::Context;
 use crate::terminal::{AgentJobRegistry, WaitOutcome};
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
@@ -151,35 +150,6 @@ impl Tool for WaitTool {
         crate::tool::ToolSurface::Code
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "description": "Command.id from tools.run in this session."
-                },
-                "sec": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": format!(
-                        "Seconds to block waiting for exit. Required. Values above {MAX_WAIT_SECS} are silently clamped to {MAX_WAIT_SECS}."
-                    )
-                }
-            },
-            "required": ["id", "sec"]
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(command_job::command_data_schema())
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/wait.md"))
-    }
-
     fn execute(
         &self,
         input: Value,
@@ -213,8 +183,7 @@ mod tests {
     use std::time::Instant;
 
     use crate::tool::Tool;
-    
-    
+
     use crate::tools::command_job::{StopJob, echo_then_sleep, sleep_shell, test_execution};
     use crate::tools::run::RunTool;
 
@@ -275,7 +244,6 @@ mod tests {
         assert!(data["output"].as_str().unwrap().contains("ready"));
     }
 
-
     #[tokio::test(flavor = "current_thread")]
     async fn wait_after_tool_kill_sets_killed_and_note() {
         let dir = tempfile::tempdir().unwrap();
@@ -328,7 +296,10 @@ mod tests {
             .await;
         assert!(started.error.is_none(), "{started:?}");
         let data = started.data.as_ref().unwrap();
-        assert!(data["exit_code"].is_null(), "must detach before exit: {data}");
+        assert!(
+            data["exit_code"].is_null(),
+            "must detach before exit: {data}"
+        );
         let id = data["id"].as_str().unwrap().to_string();
         let _stop = StopJob {
             jobs: Arc::clone(&jobs),
@@ -344,7 +315,10 @@ mod tests {
         assert!(result.error.is_none(), "{result:?}");
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["exit_code"], 1, "{data}");
-        assert!(data.get("killed").is_none() || data["killed"].is_null(), "{data}");
+        assert!(
+            data.get("killed").is_none() || data["killed"].is_null(),
+            "{data}"
+        );
         assert!(
             !data["output"]
                 .as_str()
@@ -384,5 +358,4 @@ mod tests {
             "{data}"
         );
     }
-
 }

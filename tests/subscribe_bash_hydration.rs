@@ -103,6 +103,9 @@ async fn subscribe_hydrates_bash_jobs_and_clears_after_kill() {
         .terminal
         .kill(job_id)
         .expect("kill background job");
+    // The fixture has no supervisor to reap a synthetic no-pid row; simulate
+    // the supervisor's exit edge before the fresh subscription.
+    ctrl.runtime.ide.terminal.jobs.finish(job_id, None);
     ctrl.unsubscribe(&sid);
     ctrl.subscribe_checked(&sid).await.unwrap();
     let out = ctrl.take_outgoing_for(&sid);

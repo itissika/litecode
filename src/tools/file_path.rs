@@ -42,18 +42,13 @@ pub fn workspace_error(error: crate::workspace::WorkspaceError) -> ToolCallResul
             "invalid_input"
         }
         Kind::Binary | Kind::Utf16 | Kind::NotUtf8 | Kind::MediaUnsupported(_) => "unsupported",
-        Kind::TooLarge
-        | Kind::Io(_)
-        | Kind::Sqlite(_)
-        | Kind::OpenFailed(_)
-        | Kind::RevealFailed(_) => "io",
+        Kind::TooLarge | Kind::Io(_) | Kind::Sqlite(_) | Kind::RevealFailed(_) => "io",
         Kind::MediaFailed(_) => "internal",
         Kind::PreviewTooLarge
         | Kind::NotSqlite
         | Kind::UnknownTable
         | Kind::Sandbox(_)
         | Kind::Tree(_)
-        | Kind::OpenUnsupported
         | Kind::RevealUnsupported
         | Kind::PreviewOffset => "internal",
     };
@@ -167,11 +162,7 @@ pub fn code_path(input: &Value) -> Option<&str> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}
 
 pub fn require_code_path(input: &Value) -> Result<&str, String> {
     match input.get("path") {

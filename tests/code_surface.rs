@@ -38,26 +38,28 @@ mod projection {
             Some(litecode::config::schema::ToolPreset::Safe)
         };
         if policy.default != PermissionAction::Allow {
-            global.custom_tools.push(litecode::config::schema::CustomToolDefinition {
-                name: tool.into(),
-                description: String::new(),
-                schema: litecode::config::schema::ToolSchema {
-                    schema_type: "object".into(),
-                    properties: json!({}),
-                    required: Vec::new(),
-                },
-                command: "echo".into(),
-                args: Vec::new(),
-                timeout: 120,
-                rules: vec![PolicyRule {
-                    id: "test".into(),
-                    when: ArgMatcher::Any,
-                    action: policy.default,
-                }],
-                surface: Some(litecode::config::schema::CallSurface::Direct),
-                suite: None,
-                output_schema: None,
-            });
+            global
+                .custom_tools
+                .push(litecode::config::schema::CustomToolDefinition {
+                    name: tool.into(),
+                    description: String::new(),
+                    schema: litecode::config::schema::ToolSchema {
+                        schema_type: "object".into(),
+                        properties: json!({}),
+                        required: Vec::new(),
+                    },
+                    command: "echo".into(),
+                    args: Vec::new(),
+                    timeout: 120,
+                    rules: vec![PolicyRule {
+                        id: "test".into(),
+                        when: ArgMatcher::Any,
+                        action: policy.default,
+                    }],
+                    surface: Some(litecode::config::schema::CallSurface::Direct),
+                    suite: None,
+                    output_schema: None,
+                });
         }
         global.agents.insert(
             "default".into(),
@@ -94,8 +96,7 @@ mod projection {
         surface: ToolSurface,
         hits: Arc<AtomicUsize>,
         with_data: bool,
-        schema: Value,
-        data_schema: Option<Value>,
+        dynamic_contract: bool,
     }
 
     impl CountTool {
@@ -105,12 +106,7 @@ mod projection {
                 surface: ToolSurface::Code,
                 hits,
                 with_data: true,
-                schema: json!({"type": "object", "properties": {}}),
-                data_schema: Some(json!({
-                    "type": "object",
-                    "properties": {"n": {"type": "integer"}},
-                    "required": ["n"]
-                })),
+                dynamic_contract: true,
             }
         }
     }
@@ -124,16 +120,25 @@ mod projection {
             self.surface
         }
 
-        fn schema(&self) -> Value {
-            self.schema.clone()
+        fn direct_spec(&self, _ctx: &Context) -> Option<litecode::tool::DirectToolSpec> {
+            (self.surface == ToolSurface::Direct).then(|| litecode::tool::DirectToolSpec {
+                description: format!("count tool {}", self.name),
+                input_schema: json!({"type": "object", "properties": {}}),
+            })
         }
 
-        fn data_schema(&self) -> Option<Value> {
-            self.data_schema.clone()
-        }
-
-        fn description(&self, _ctx: &Context) -> String {
-            format!("count tool {}", self.name)
+        fn dynamic_code_spec(&self) -> Option<litecode::tool::DynamicCodeSpec> {
+            (self.surface == ToolSurface::Code && self.dynamic_contract).then(|| {
+                litecode::tool::DynamicCodeSpec {
+                    description: format!("count tool {}", self.name),
+                    input_schema: json!({"type": "object", "properties": {}}),
+                    output_schema: json!({
+                        "type": "object",
+                        "properties": {"n": {"type": "integer"}},
+                        "required": ["n"]
+                    }),
+                }
+            })
         }
 
         fn resource_keys(
@@ -172,16 +177,12 @@ mod projection {
             ToolSurface::Code
         }
 
-        fn schema(&self) -> Value {
-            json!({"type": "object", "properties": {"item": {"$ref": "#/Item"}}})
-        }
-
-        fn data_schema(&self) -> Option<Value> {
-            Some(json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
-        }
-
-        fn description(&self, _ctx: &Context) -> String {
-            "Broken code tool.".into()
+        fn dynamic_code_spec(&self) -> Option<litecode::tool::DynamicCodeSpec> {
+            Some(litecode::tool::DynamicCodeSpec {
+                description: "Broken code tool.".into(),
+                input_schema: json!({"type": "object", "properties": {"item": {"$ref": "#/Item"}}}),
+                output_schema: json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}),
+            })
         }
     }
 
@@ -198,16 +199,12 @@ mod projection {
             ToolSurface::Code
         }
 
-        fn schema(&self) -> Value {
-            json!({"type": "object", "properties": {}})
-        }
-
-        fn data_schema(&self) -> Option<Value> {
-            Some(json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
-        }
-
-        fn description(&self, _ctx: &Context) -> String {
-            format!("colliding {}", self.name)
+        fn dynamic_code_spec(&self) -> Option<litecode::tool::DynamicCodeSpec> {
+            Some(litecode::tool::DynamicCodeSpec {
+                description: format!("colliding {}", self.name),
+                input_schema: json!({"type": "object", "properties": {"item": {"$ref": "#/Item"}}}),
+                output_schema: json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}),
+            })
         }
     }
 
@@ -219,7 +216,7 @@ mod projection {
     fn missing_or_unrenderable_code_tool_leaves_both_surfaces() {
         let hits = Arc::new(AtomicUsize::new(0));
         let mut stripped = CountTool::code("stripped", hits);
-        stripped.data_schema = None;
+        stripped.dynamic_contract = false;
         let projected = project_tools(vec![
             Arc::new(stripped),
             Arc::new(BrokenCode),
@@ -240,7 +237,7 @@ mod projection {
             projected
                 .rejected
                 .iter()
-                .any(|item| item.name == "stripped" && item.reason.contains("data schema"))
+                .any(|item| item.name == "stripped" && item.reason.contains("JS SDK contract"))
         );
         assert!(
             projected
@@ -248,16 +245,16 @@ mod projection {
                 .iter()
                 .any(|item| item.name == "broken" && item.reason.contains("$ref"))
         );
-        assert_eq!(projected.whitelist, vec!["read"]);
+        assert_eq!(projected.whitelist(), vec!["read"]);
         assert!(
             !names(&projected.direct).iter().any(|name| {
                 ["stripped", "broken", "foo-bar", "foo_bar", "read"].contains(name)
             })
         );
-        assert!(!projected.sdk.contains("stripped"));
-        assert!(!projected.sdk.contains("broken"));
-        assert!(!projected.sdk.contains("foo-bar"));
-        assert!(projected.sdk.contains("[\"read\"]"));
+        assert!(!projected.sdk().contains("stripped"));
+        assert!(!projected.sdk().contains("broken"));
+        assert!(!projected.sdk().contains("foo-bar"));
+        assert!(projected.sdk().contains("read(args: ReadInput)"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -351,50 +348,6 @@ mod projection {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn code_success_without_matching_data_is_an_internal_error() {
-        let hits = Arc::new(AtomicUsize::new(0));
-        let mut tool = CountTool::code("marker", hits);
-        tool.with_data = false;
-        let dir = tempfile::tempdir().unwrap();
-        let permission = engine(dir.path(), "marker", ToolPolicy::allow_all());
-        let result = execute_tool_call(
-            &call("marker", json!({})),
-            &[Arc::new(tool)],
-            &permission,
-            &ctx(dir.path()),
-            "s",
-            "default",
-            &RecordingPermissionSink::from_reply(true, false),
-            tokio_util::sync::CancellationToken::new(),
-            dir.path(),
-            4096,
-            None,
-            process_write_lock(),
-            None,
-            ToolCallOrigin {
-                caller: ToolCaller::Code {
-                    parent_call_id: "outer".into(),
-                },
-                code_names: Arc::from([]),
-                file_note: None,
-                permission_sink: None,
-                plan_touch: None,
-                deadline: None,
-            },
-        )
-        .await;
-        assert_eq!(
-            result.error.as_ref().map(|error| error.kind),
-            Some(ToolErrorKind::Internal)
-        );
-        assert!(
-            result.content.contains("without data"),
-            "{}",
-            result.content
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn code_transport_is_allowed_by_identity_not_by_name() {
         use litecode::config::schema::{
             AgentProfile, AgentToolBinding, CustomToolDefinition, ToolPreset, ToolSchema,
@@ -451,12 +404,12 @@ mod projection {
             process_write_lock(),
             None,
         ));
-        let transport = litecode::tools::code::CodeTool::from_surface(
-            Vec::new(),
-            "sdk".into(),
-            Vec::new(),
-            host,
-        );
+        let surface = Arc::new(litecode::tool::code_contract::CodeSurface {
+            sdk: "sdk".into(),
+            sdk_hash: "test".into(),
+            tools: std::collections::BTreeMap::new(),
+        });
+        let transport = litecode::tools::code::CodeTool::from_surface(Vec::new(), surface, host);
         assert!(transport.is_code_transport());
         let allowed = authorize(
             &call("run_code", json!({"code": "return 1"})),
@@ -502,10 +455,7 @@ mod projection {
         #[cfg(windows)]
         let (command, args) = (
             "cmd",
-            vec![
-                "/C".into(),
-                format!("type {}", output.display()),
-            ],
+            vec!["/C".into(), format!("type {}", output.display())],
         );
         #[cfg(unix)]
         let (command, args) = ("cat", vec![output.display().to_string()]);
@@ -583,6 +533,7 @@ mod run_code_only {
         AskOutcome, AskPrompt, AskReply, PermissionAction, PermissionEngine, PermissionSink,
         RecordingPermissionSink,
     };
+    use litecode::terminal::AgentJobRegistry;
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
     use litecode::tool::trait_::ToolExecutionContext;
     use litecode::tool::write_lock::process_write_lock;
@@ -590,7 +541,10 @@ mod run_code_only {
     use litecode::tools::code::{CodeTool, CodeToolHost};
     use litecode::tools::glob::GlobTool;
     use litecode::tools::grep::GrepTool;
+    use litecode::tools::kill::KillTool;
     use litecode::tools::read::ReadTool;
+    use litecode::tools::run::RunTool;
+    use litecode::tools::wait::WaitTool;
     use litecode::tools::write::WriteTool;
     use litecode::types::{FunctionToolCall, ToolCallResult, ToolErrorKind};
     use serde_json::{Value, json};
@@ -637,6 +591,9 @@ mod run_code_only {
             "hold",
             "late",
             "custom_code",
+            "run",
+            "wait",
+            "kill",
         ] {
             tools.insert(name.to_string(), binding.clone());
         }
@@ -790,16 +747,12 @@ mod run_code_only {
             ToolSurface::Code
         }
 
-        fn schema(&self) -> Value {
-            object_schema()
-        }
-
-        fn data_schema(&self) -> Option<Value> {
-            Some(flag_schema())
-        }
-
-        fn description(&self, _: &litecode::context_pipeline::Context) -> String {
-            "phase 2b gate tool".into()
+        fn dynamic_code_spec(&self) -> Option<litecode::tool::DynamicCodeSpec> {
+            Some(litecode::tool::DynamicCodeSpec {
+                description: "phase 2b gate tool".into(),
+                input_schema: object_schema(),
+                output_schema: flag_schema(),
+            })
         }
 
         fn is_concurrency_safe(&self, _: &Value) -> bool {
@@ -838,16 +791,12 @@ mod run_code_only {
             ToolSurface::Code
         }
 
-        fn schema(&self) -> Value {
-            object_schema()
-        }
-
-        fn data_schema(&self) -> Option<Value> {
-            Some(flag_schema())
-        }
-
-        fn description(&self, _: &litecode::context_pipeline::Context) -> String {
-            "finishes after the cancel grace".into()
+        fn dynamic_code_spec(&self) -> Option<litecode::tool::DynamicCodeSpec> {
+            Some(litecode::tool::DynamicCodeSpec {
+                description: "finishes after the cancel grace".into(),
+                input_schema: object_schema(),
+                output_schema: flag_schema(),
+            })
         }
 
         fn is_concurrency_safe(&self, _: &Value) -> bool {
@@ -865,6 +814,142 @@ mod run_code_only {
                 ToolCallResult::ok("late").with_data(json!({ "ok": true }))
             })
         }
+    }
+
+    struct BadDataTool;
+
+    impl Tool for BadDataTool {
+        fn name(&self) -> &str {
+            "fast"
+        }
+
+        fn surface(&self) -> ToolSurface {
+            ToolSurface::Code
+        }
+
+        fn dynamic_code_spec(&self) -> Option<litecode::tool::DynamicCodeSpec> {
+            Some(litecode::tool::DynamicCodeSpec {
+                description: "returns no data".into(),
+                input_schema: object_schema(),
+                output_schema: flag_schema(),
+            })
+        }
+
+        fn execute(
+            &self,
+            _: Value,
+            _: ToolExecutionContext,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>>
+        {
+            Box::pin(std::future::ready(ToolCallResult::ok("ran")))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn bridge_rejects_output_that_does_not_match_the_js_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        let hosted = hosted(
+            dir.path(),
+            vec![Arc::new(BadDataTool)],
+            PermissionAction::Allow,
+            litecode::permission::deny_permission_sink(),
+        );
+        let result = execute(
+            &hosted,
+            "run_code",
+            json!({ "code": "return await tools.fast({});" }),
+            litecode::permission::deny_permission_sink().as_ref(),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(result.error.is_some(), "{}", result.content);
+        assert!(
+            result.content.contains("does not match its JS contract"),
+            "{}",
+            result.content
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn non_finite_program_result_is_null_with_a_header_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let hosted = hosted(
+            dir.path(),
+            vec![Arc::new(ReadTool::default())],
+            PermissionAction::Allow,
+            litecode::permission::deny_permission_sink(),
+        );
+        let result = execute(
+            &hosted,
+            "run_code",
+            json!({ "code": "return NaN;" }),
+            litecode::permission::deny_permission_sink().as_ref(),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(result.error.is_none(), "{}", result.content);
+        assert!(
+            result
+                .content
+                .contains("coerced non-finite number at $ to null"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains(
+                "result:
+null"
+            ),
+            "{}",
+            result.content
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn background_run_wait_kill_are_reachable_through_the_bridge() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = Arc::new(AgentJobRegistry::new());
+        let bundle: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(RunTool::new(Arc::clone(&jobs))),
+            Arc::new(WaitTool::new(Arc::clone(&jobs))),
+            Arc::new(KillTool::new(jobs)),
+        ];
+        let hosted = hosted(
+            dir.path(),
+            bundle,
+            PermissionAction::Allow,
+            litecode::permission::deny_permission_sink(),
+        );
+        let command = if cfg!(windows) {
+            "ping -n 30 127.0.0.1 >NUL"
+        } else {
+            "sleep 30"
+        };
+        let code = format!(
+            r#"
+            const started = await tools.run({{ command: {command:?}, run_in_background: true }});
+            const waited = await tools.wait({{ id: started.id, sec: 1 }});
+            const killed = await tools.kill({{ id: started.id }});
+            return {{
+                started_exit: started.exit_code,
+                waited_exit: waited.exit_code,
+                killed: killed.killed === true || killed.exit_code !== null
+            }};
+            "#
+        );
+        let result = execute(
+            &hosted,
+            "run_code",
+            json!({ "code": code }),
+            litecode::permission::deny_permission_sink().as_ref(),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(result.error.is_none(), "{}", result.content);
+        let data = run_code_result(&result.content);
+        assert!(data["started_exit"].is_null(), "{data}");
+        assert!(data["waited_exit"].is_null(), "{data}");
+        assert_eq!(data["killed"], true, "{data}");
     }
 
     struct SlowAllow;
@@ -1151,16 +1236,16 @@ mod run_code_only {
             sink.clone(),
         );
         assert!(
-            hosted
-                .code_names
-                .iter()
-                .any(|name| name == "deck.only"),
+            hosted.code_names.iter().any(|name| name == "deck.only"),
             "{:?}",
             hosted.code_names
         );
-        let description = hosted.tools[0].description(&hosted.ctx);
-        assert!(description.contains("readonly [\"deck\"]: {"), "{description}");
-        assert!(description.contains("readonly [\"only\"]:"), "{description}");
+        let description = hosted.tools[0]
+            .direct_spec(&hosted.ctx)
+            .expect("run_code direct spec")
+            .description;
+        assert!(description.contains("deck: {"), "{description}");
+        assert!(description.contains("only(args:"), "{description}");
 
         let result = execute(
             &hosted,
@@ -1177,9 +1262,7 @@ mod run_code_only {
 
     #[tokio::test(flavor = "current_thread")]
     async fn custom_tool_code_surface_round_trips_through_run_code_sdk() {
-        use litecode::config::schema::{
-            CallSurface, CustomToolDefinition, ToolSchema,
-        };
+        use litecode::config::schema::{CallSurface, CustomToolDefinition, ToolSchema};
         use litecode::tools::custom::CustomTool;
         use litecode::tools::custom_hub::CustomToolHub;
 
@@ -1189,10 +1272,7 @@ mod run_code_only {
         #[cfg(windows)]
         let (command, args) = (
             "cmd",
-            vec![
-                "/C".into(),
-                format!("type {}", output.display()),
-            ],
+            vec!["/C".into(), format!("type {}", output.display())],
         );
         #[cfg(unix)]
         let (command, args) = ("cat", vec![output.display().to_string()]);
@@ -1219,7 +1299,12 @@ mod run_code_only {
         let custom = Arc::new(CustomTool::new(def, Arc::new(CustomToolHub::new())));
         let root = tempfile::tempdir().unwrap();
         let sink = litecode::permission::deny_permission_sink();
-        let hosted = hosted(root.path(), vec![custom], PermissionAction::Allow, sink.clone());
+        let hosted = hosted(
+            root.path(),
+            vec![custom],
+            PermissionAction::Allow,
+            sink.clone(),
+        );
         assert!(hosted.code_names.iter().any(|name| name == "custom_code"));
 
         let result = execute(
@@ -2716,6 +2801,4 @@ mod approval_concurrency {
             "OTHER_NEEDLE\n"
         );
     }
-
-
 }

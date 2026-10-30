@@ -1,0 +1,2486 @@
+{
+  "version": 1,
+  "sdk_hash": "85ce458b06d12055a696c2951c20ad8faf0110b44e8269b458d0c8343760e34b",
+  "tools": {
+    "apply_edits": {
+      "path": [
+        "apply_edits"
+      ],
+      "suite": "file",
+      "tool": "apply_edits",
+      "doc": "Apply several edit replacements serially.",
+      "signature": "apply_edits(args: ApplyEditsInput): Promise<ToolResult<ApplyEditsData>>;",
+      "input_type": "ApplyEditsInput",
+      "output_type": "ApplyEditsData",
+      "type_deps": [
+        "ApplyEditsData",
+        "ApplyEditsInput",
+        "EditData",
+        "EditFailureReason",
+        "EditInput",
+        "Path"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "edits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "new_string": {
+                  "type": "string",
+                  "description": "Replacement text. Use an empty string to delete old_string."
+                },
+                "old_string": {
+                  "type": "string",
+                  "description": "Exact file text to find. Must match exactly one place."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Prefer a workspace-relative path."
+                }
+              },
+              "required": [
+                "new_string",
+                "old_string",
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Replacements applied serially; later items on the same path see earlier successful writes."
+          }
+        },
+        "required": [
+          "edits"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string"
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "not_found",
+                    "no_match",
+                    "invalid_args",
+                    "empty",
+                    "permission",
+                    "io"
+                  ]
+                }
+              },
+              "required": [
+                "message",
+                "ok",
+                "path"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Same length and order as edits."
+          }
+        },
+        "required": [
+          "ok",
+          "results"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "edit": {
+      "path": [
+        "edit"
+      ],
+      "suite": "file",
+      "tool": "edit",
+      "doc": "Apply one exact-string replacement.",
+      "signature": "edit(args: EditInput): Promise<ToolResult<EditData>>;",
+      "input_type": "EditInput",
+      "output_type": "EditData",
+      "type_deps": [
+        "EditData",
+        "EditFailureReason",
+        "EditInput",
+        "Path"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "new_string": {
+            "type": "string",
+            "description": "Replacement text. Use an empty string to delete old_string."
+          },
+          "old_string": {
+            "type": "string",
+            "description": "Exact file text to find. Must match exactly one place."
+          },
+          "path": {
+            "type": "string",
+            "description": "Prefer a workspace-relative path."
+          }
+        },
+        "required": [
+          "new_string",
+          "old_string",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "not_found",
+              "no_match",
+              "invalid_args",
+              "empty",
+              "permission",
+              "io"
+            ]
+          }
+        },
+        "required": [
+          "message",
+          "ok",
+          "path"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "glob": {
+      "path": [
+        "glob"
+      ],
+      "suite": "file",
+      "tool": "glob",
+      "doc": "Find files by path glob.",
+      "signature": "glob(args: GlobInput): Promise<ToolResult<GlobData>>;",
+      "input_type": "GlobInput",
+      "output_type": "GlobData",
+      "type_deps": [
+        "GlobData",
+        "GlobInput",
+        "Integer",
+        "Path"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "Glob relative to path, or to the workspace root when path is omitted."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum paths to return.",
+            "default": 1000,
+            "minimum": 1,
+            "maximum": 5000
+          },
+          "path": {
+            "type": "string",
+            "description": "Optional directory to search under."
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "message": {
+            "type": "string"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Matching paths sorted by depth, then parent directory, then name."
+          }
+        },
+        "required": [
+          "ok",
+          "message",
+          "paths"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "grep": {
+      "path": [
+        "grep"
+      ],
+      "suite": "file",
+      "tool": "grep",
+      "doc": "Search file contents.",
+      "signature": "grep(args: GrepInput): Promise<ToolResult<GrepData>>;",
+      "input_type": "GrepInput",
+      "output_type": "GrepData",
+      "type_deps": [
+        "GrepData",
+        "GrepHit",
+        "GrepInput",
+        "Integer",
+        "LineText",
+        "Path"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "Regular expression over file contents, unless literal is true."
+          },
+          "before": {
+            "type": "integer",
+            "description": "Lines of context before each hit.",
+            "default": 0,
+            "minimum": 0,
+            "maximum": 5
+          },
+          "after": {
+            "type": "integer",
+            "description": "Lines of context after each hit.",
+            "default": 0,
+            "minimum": 0,
+            "maximum": 5
+          },
+          "glob": {
+            "type": "string",
+            "description": "One glob or comma-separated globs. A leading ! excludes. Relative to path."
+          },
+          "ignore_case": {
+            "type": "boolean",
+            "description": "Ignore case when matching.",
+            "default": false
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum hits to return.",
+            "default": 40,
+            "minimum": 1,
+            "maximum": 100
+          },
+          "literal": {
+            "type": "boolean",
+            "description": "Search for pattern as plain text.",
+            "default": false
+          },
+          "path": {
+            "type": "string",
+            "description": "File or directory to search. Defaults to the workspace."
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "hits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Source file path."
+                },
+                "line": {
+                  "type": "integer",
+                  "description": "1-based match line."
+                },
+                "text": {
+                  "type": "string",
+                  "description": "Matching line text, capped at 500 characters."
+                },
+                "before": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "line": {
+                        "type": "integer",
+                        "description": "1-based source line."
+                      },
+                      "text": {
+                        "type": "string",
+                        "description": "Exact line text."
+                      }
+                    },
+                    "required": [
+                      "line",
+                      "text"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "description": "Exact lines before the hit, when before > 0."
+                },
+                "after": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "line": {
+                        "type": "integer",
+                        "description": "1-based source line."
+                      },
+                      "text": {
+                        "type": "string",
+                        "description": "Exact line text."
+                      }
+                    },
+                    "required": [
+                      "line",
+                      "text"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "description": "Exact lines after the hit, when after > 0."
+                }
+              },
+              "required": [
+                "path",
+                "line",
+                "text"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "message": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when a limit or the 8K-token data guard removed results or context."
+          }
+        },
+        "required": [
+          "ok",
+          "hits",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "read": {
+      "path": [
+        "read"
+      ],
+      "suite": "file",
+      "tool": "read",
+      "doc": "Read lines from one file or archived session transcript.",
+      "signature": "read(args: ReadInput): Promise<ToolResult<ReadData>>;",
+      "input_type": "ReadInput",
+      "output_type": "ReadData",
+      "type_deps": [
+        "Integer",
+        "Path",
+        "ReadData",
+        "ReadInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md."
+          },
+          "start_line": {
+            "type": "integer",
+            "description": "First line to read, 1-based, inclusive.",
+            "default": 1,
+            "minimum": 1
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum lines to return.",
+            "default": 2000,
+            "minimum": 1,
+            "maximum": 5000
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Line contents for this page, in file order."
+          },
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "start_line": {
+            "type": "integer",
+            "description": "Whole JSON number. The host rejects fractional values."
+          }
+        },
+        "required": [
+          "ok",
+          "lines",
+          "message",
+          "path",
+          "start_line"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "write": {
+      "path": [
+        "write"
+      ],
+      "suite": "file",
+      "tool": "write",
+      "doc": "Replace a file's contents; optional hash and create-only guards.",
+      "signature": "write(args: WriteInput): Promise<ToolResult<WriteData>>;",
+      "input_type": "WriteInput",
+      "output_type": "WriteData",
+      "type_deps": [
+        "FileRef",
+        "Integer",
+        "Path",
+        "WriteData",
+        "WriteInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Content to write to the file."
+          },
+          "path": {
+            "type": "string",
+            "description": "Prefer a workspace-relative path."
+          },
+          "create_only": {
+            "type": "boolean",
+            "description": "If true, refuse to overwrite an existing file.",
+            "default": false
+          },
+          "expected_hash": {
+            "type": "string",
+            "description": "sha256 of the current file bytes. Omit to skip the check. A mismatch resolves ok:false reason stale."
+          }
+        },
+        "required": [
+          "content",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "created": {
+            "type": "boolean",
+            "description": "True when the file did not exist before."
+          },
+          "file": {
+            "type": "object",
+            "properties": {
+              "bytes": {
+                "type": "integer",
+                "description": "File size in bytes."
+              },
+              "hash": {
+                "type": "string",
+                "description": "sha256 hex of the file bytes."
+              },
+              "path": {
+                "type": "string",
+                "description": "Workspace-relative path inside the workspace; requested path outside it."
+              },
+              "abs": {
+                "type": "string",
+                "description": "Absolute path when the file is outside the workspace."
+              }
+            },
+            "required": [
+              "bytes",
+              "hash",
+              "path"
+            ],
+            "additionalProperties": false,
+            "description": "File identity after the write."
+          },
+          "message": {
+            "type": "string",
+            "description": "Post-write warnings such as LSP errors or path-risk notes."
+          }
+        },
+        "required": [
+          "ok",
+          "created",
+          "file"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "code_search": {
+      "path": [
+        "code_search"
+      ],
+      "suite": "search",
+      "tool": "code_search",
+      "doc": "Semantic search over the workspace code index.",
+      "signature": "code_search(args: CodeSearchInput): Promise<ToolResult<CodeSearchData>>;",
+      "input_type": "CodeSearchInput",
+      "output_type": "CodeSearchData",
+      "type_deps": [
+        "CodeSearchData",
+        "CodeSearchHit",
+        "CodeSearchInput",
+        "CodeSearchStatus",
+        "Integer"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "One natural-language or code-token query."
+          },
+          "include_pattern": {
+            "type": "string",
+            "description": "Optional glob filter for workspace paths."
+          },
+          "min_score": {
+            "type": "number",
+            "description": "Minimum raw dense cosine similarity.",
+            "default": 0.8,
+            "minimum": 0,
+            "maximum": 1
+          },
+          "top_k": {
+            "type": "integer",
+            "description": "Maximum hits.",
+            "default": 8,
+            "minimum": 1,
+            "maximum": 20
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "off",
+              "warming",
+              "failed",
+              "busy"
+            ],
+            "description": "ok is true only for status ok; off/warming/failed/busy are soft domain failures."
+          },
+          "hits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Source file path."
+                },
+                "anchor_line": {
+                  "type": "integer",
+                  "description": "Query-relevant anchor line."
+                },
+                "start_line": {
+                  "type": "integer",
+                  "description": "First line in the returned snippet."
+                },
+                "end_line": {
+                  "type": "integer",
+                  "description": "Last line in the returned snippet."
+                },
+                "symbol": {
+                  "type": "string",
+                  "description": "Optional AST symbol enclosing the anchor."
+                },
+                "snippet": {
+                  "type": "string",
+                  "description": "Source excerpt, at most 24 lines; overlong lines are capped."
+                }
+              },
+              "required": [
+                "path",
+                "anchor_line",
+                "start_line",
+                "end_line",
+                "snippet"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "status",
+          "hits"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "kill": {
+      "path": [
+        "kill"
+      ],
+      "suite": "process",
+      "tool": "kill",
+      "doc": "Terminate a command job in this session.",
+      "signature": "kill(args: KillInput): Promise<ToolResult<KillData>>;",
+      "input_type": "KillInput",
+      "output_type": "KillData",
+      "type_deps": [
+        "CommandData",
+        "Integer",
+        "KillData",
+        "KillInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Command.id from a tools.run or tools.wait result whose exit_code is null."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "Whole JSON number. The host rejects fractional values."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Process exit code when finished; null when still running or unavailable."
+          },
+          "id": {
+            "type": "string",
+            "description": "While exit_code is null, use with tools.wait / tools.kill in this session."
+          },
+          "output": {
+            "type": "string",
+            "description": "Stdout plus truncation notes, spill path, or status line. Always present, may be empty."
+          },
+          "shell": {
+            "type": "string",
+            "description": "Shell that ran the command."
+          },
+          "stderr": {
+            "type": "string",
+            "description": "Stderr plus truncation notes. Empty when nothing was written."
+          },
+          "killed": {
+            "type": "boolean",
+            "description": "True when wait observes a kill."
+          },
+          "message": {
+            "type": "string",
+            "description": "Warning about the command itself."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "True when the tool call itself completed; this is not command success. Check exit_code === 0 for process success. False on soft failures such as an unreaped kill."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Present with ok:false; unreaped kill uses still_alive."
+          }
+        },
+        "required": [
+          "exit_code",
+          "id",
+          "output",
+          "shell",
+          "stderr"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "run": {
+      "path": [
+        "run"
+      ],
+      "suite": "process",
+      "tool": "run",
+      "doc": "Start one shell command; use run_in_background for a non-blocking job.",
+      "signature": "run(args: RunInput): Promise<ToolResult<RunData>>;",
+      "input_type": "RunInput",
+      "output_type": "RunData",
+      "type_deps": [
+        "CommandData",
+        "Integer",
+        "RunData",
+        "RunInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Shell command to run once in the workspace root. Chain with && for cd or env changes."
+          },
+          "run_in_background": {
+            "type": "boolean",
+            "description": "Return immediately after spawn with exit_code:null and keep the job as a wait/kill target. Default false: wait up to 30 seconds; longer jobs detach automatically.",
+            "default": false
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "Whole JSON number. The host rejects fractional values."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Process exit code when finished; null when still running or unavailable."
+          },
+          "id": {
+            "type": "string",
+            "description": "While exit_code is null, use with tools.wait / tools.kill in this session."
+          },
+          "output": {
+            "type": "string",
+            "description": "Stdout plus truncation notes, spill path, or status line. Always present, may be empty."
+          },
+          "shell": {
+            "type": "string",
+            "description": "Shell that ran the command."
+          },
+          "stderr": {
+            "type": "string",
+            "description": "Stderr plus truncation notes. Empty when nothing was written."
+          },
+          "killed": {
+            "type": "boolean",
+            "description": "True when wait observes a kill."
+          },
+          "message": {
+            "type": "string",
+            "description": "Warning about the command itself."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "True when the tool call itself completed; this is not command success. Check exit_code === 0 for process success. False on soft failures such as an unreaped kill."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Present with ok:false; unreaped kill uses still_alive."
+          }
+        },
+        "required": [
+          "exit_code",
+          "id",
+          "output",
+          "shell",
+          "stderr"
+        ],
+        "additionalProperties": false,
+        "description": "run returns ok for a resolved call; exit_code carries the command status."
+      }
+    },
+    "wait": {
+      "path": [
+        "wait"
+      ],
+      "suite": "process",
+      "tool": "wait",
+      "doc": "Wait for a still-running command job; exit_code is the command status.",
+      "signature": "wait(args: WaitInput): Promise<ToolResult<WaitData>>;",
+      "input_type": "WaitInput",
+      "output_type": "WaitData",
+      "type_deps": [
+        "CommandData",
+        "Integer",
+        "WaitData",
+        "WaitInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Command.id from a tools.run result whose exit_code is null."
+          },
+          "sec": {
+            "type": "integer",
+            "description": "Seconds to block waiting for exit. Values above 300 are clamped to 300.",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "id",
+          "sec"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "Whole JSON number. The host rejects fractional values."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Process exit code when finished; null when still running or unavailable."
+          },
+          "id": {
+            "type": "string",
+            "description": "While exit_code is null, use with tools.wait / tools.kill in this session."
+          },
+          "output": {
+            "type": "string",
+            "description": "Stdout plus truncation notes, spill path, or status line. Always present, may be empty."
+          },
+          "shell": {
+            "type": "string",
+            "description": "Shell that ran the command."
+          },
+          "stderr": {
+            "type": "string",
+            "description": "Stderr plus truncation notes. Empty when nothing was written."
+          },
+          "killed": {
+            "type": "boolean",
+            "description": "True when wait observes a kill."
+          },
+          "message": {
+            "type": "string",
+            "description": "Warning about the command itself."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "True when the tool call itself completed; this is not command success. Check exit_code === 0 for process success. False on soft failures such as an unreaped kill."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Present with ok:false; unreaped kill uses still_alive."
+          }
+        },
+        "required": [
+          "exit_code",
+          "id",
+          "output",
+          "shell",
+          "stderr"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "webfetch": {
+      "path": [
+        "webfetch"
+      ],
+      "suite": "web",
+      "tool": "webfetch",
+      "doc": "Fetch one http(s) URL.",
+      "signature": "webfetch(args: WebfetchInput): Promise<ToolResult<WebfetchData>>;",
+      "input_type": "WebfetchInput",
+      "output_type": "WebfetchData",
+      "type_deps": [
+        "Integer",
+        "WebfetchData",
+        "WebfetchFormat",
+        "WebfetchInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "URL to fetch. Only http(s) URLs are accepted."
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "text",
+              "markdown",
+              "html"
+            ],
+            "description": "Desired output format.",
+            "default": "markdown"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "body": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "text",
+              "markdown",
+              "html"
+            ]
+          },
+          "status": {
+            "type": "integer",
+            "description": "Whole JSON number. The host rejects fractional values."
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "ok"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "websearch": {
+      "path": [
+        "websearch"
+      ],
+      "suite": "web",
+      "tool": "websearch",
+      "doc": "Search the web.",
+      "signature": "websearch(args: WebsearchInput): Promise<ToolResult<WebsearchData>>;",
+      "input_type": "WebsearchInput",
+      "output_type": "WebsearchData",
+      "type_deps": [
+        "Integer",
+        "WebsearchData",
+        "WebsearchHit",
+        "WebsearchInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query."
+          },
+          "top_k": {
+            "type": "integer",
+            "description": "Number of results. Values above 10 are clamped to 10.",
+            "default": 5,
+            "minimum": 1
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "snippet": {
+                  "type": "string",
+                  "description": "Leading page text, at most about 300 characters."
+                },
+                "title": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "snippet",
+                "title",
+                "url"
+              ],
+              "additionalProperties": false
+            },
+            "description": "At most top_k hits, best first."
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "ok",
+          "results"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "memory.delete": {
+      "path": [
+        "memory",
+        "delete"
+      ],
+      "suite": "memory",
+      "tool": "memory.delete",
+      "doc": "Delete entries by id from the current session's working memory.",
+      "signature": "delete(args: MemoryDeleteInput): Promise<ToolResult<MemoryDeleteData>>;",
+      "input_type": "MemoryDeleteInput",
+      "output_type": "MemoryDeleteData",
+      "type_deps": [
+        "Integer",
+        "MemoryDeleteData",
+        "MemoryDeleteInput",
+        "RejectedItem"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Entry ids to delete."
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "count": {
+            "type": "integer",
+            "description": "Entries after the batch."
+          },
+          "deleted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Deleted ids."
+          },
+          "rejected": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "description": "0-based input item index."
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "empty_text | text_too_long | invalid_kind | invalid_id | unknown_id | limit_exceeded."
+                },
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "index",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "count",
+          "deleted",
+          "rejected"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "memory.list": {
+      "path": [
+        "memory",
+        "list"
+      ],
+      "suite": "memory",
+      "tool": "memory.list",
+      "doc": "List the current session's working memory.",
+      "signature": "list(args: MemoryListInput): Promise<ToolResult<MemoryListData>>;",
+      "input_type": "MemoryListInput",
+      "output_type": "MemoryListData",
+      "type_deps": [
+        "Integer",
+        "MemoryEntry",
+        "MemoryKind",
+        "MemoryListData",
+        "MemoryListInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "fact",
+              "preference",
+              "decision",
+              "constraint"
+            ],
+            "description": "Optional kind filter."
+          },
+          "query": {
+            "type": "string",
+            "description": "Optional case-insensitive substring over entry text. Max 100 characters."
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "count": {
+            "type": "integer",
+            "description": "Returned filtered entries."
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "fact",
+                    "preference",
+                    "decision",
+                    "constraint"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer",
+                  "description": "Whole JSON number. The host rejects fractional values."
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "text",
+                "updated_at"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Current entries, in insertion order."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum entries the session can hold."
+          },
+          "total": {
+            "type": "integer",
+            "description": "Entries in the whole session memory."
+          },
+          "total_chars": {
+            "type": "integer",
+            "description": "Characters across all entry texts."
+          }
+        },
+        "required": [
+          "ok",
+          "count",
+          "entries",
+          "limit",
+          "total",
+          "total_chars"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "memory.upsert": {
+      "path": [
+        "memory",
+        "upsert"
+      ],
+      "suite": "memory",
+      "tool": "memory.upsert",
+      "doc": "Add or update small, durable session memory entries.",
+      "signature": "upsert(args: MemoryUpsertInput): Promise<ToolResult<MemoryUpsertData>>;",
+      "input_type": "MemoryUpsertInput",
+      "output_type": "MemoryUpsertData",
+      "type_deps": [
+        "Integer",
+        "MemoryUpsertData",
+        "MemoryUpsertEntry",
+        "MemoryUpsertInput",
+        "RejectedItem"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "description": "Optional kind; defaults to fact for new entries and keeps the current kind on update."
+                },
+                "text": {
+                  "type": "string",
+                  "description": "Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry."
+                },
+                "id": {
+                  "type": "string",
+                  "description": "Optional existing id. Omit to add or update by text."
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Memory entries to add or update."
+          }
+        },
+        "required": [
+          "entries"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "New ids."
+          },
+          "count": {
+            "type": "integer",
+            "description": "Entries after the batch."
+          },
+          "rejected": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "description": "0-based input item index."
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "empty_text | text_too_long | invalid_kind | invalid_id | unknown_id | limit_exceeded."
+                },
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "index",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "total_chars": {
+            "type": "integer",
+            "description": "Characters after the batch."
+          },
+          "updated": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Updated ids."
+          }
+        },
+        "required": [
+          "ok",
+          "added",
+          "count",
+          "rejected",
+          "total_chars",
+          "updated"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "browser_click": {
+      "path": [
+        "browser_click"
+      ],
+      "suite": "browser",
+      "tool": "browser_click",
+      "doc": "Click one interactive element on the visible page.",
+      "signature": "browser_click(args: BrowserClickInput): Promise<ToolResult<BrowserClickData>>;",
+      "input_type": "BrowserClickInput",
+      "output_type": "BrowserClickData",
+      "type_deps": [
+        "BrowserClickData",
+        "BrowserClickInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "Element reference from the latest browser_read."
+          },
+          "page_id": {
+            "type": "string",
+            "description": "Optional page id. Omit for the active visible tab."
+          }
+        },
+        "required": [
+          "ref"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "page_id": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "page_id",
+          "ref",
+          "tag",
+          "text",
+          "title",
+          "url"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "browser_close": {
+      "path": [
+        "browser_close"
+      ],
+      "suite": "browser",
+      "tool": "browser_close",
+      "doc": "Close an agent-owned browser tab.",
+      "signature": "browser_close(args: BrowserCloseInput): Promise<ToolResult<BrowserCloseData>>;",
+      "input_type": "BrowserCloseInput",
+      "output_type": "BrowserCloseData",
+      "type_deps": [
+        "BrowserCloseData",
+        "BrowserCloseInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "page_id": {
+            "type": "string",
+            "description": "Browser page id from browser_open or browser_list."
+          }
+        },
+        "required": [
+          "page_id"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "closed": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "fallback": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "closed",
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "browser_list": {
+      "path": [
+        "browser_list"
+      ],
+      "suite": "browser",
+      "tool": "browser_list",
+      "doc": "List open browser tabs.",
+      "signature": "browser_list(args: BrowserListInput): Promise<ToolResult<BrowserListData>>;",
+      "input_type": "BrowserListInput",
+      "output_type": "BrowserListData",
+      "type_deps": [
+        "BrowserListData",
+        "BrowserListInput",
+        "BrowserPage"
+      ],
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "active_id": {
+            "type": "string"
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "agentOwned": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "visible": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "active",
+                "agentOwned",
+                "id",
+                "title",
+                "url",
+                "visible"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "active_id",
+          "pages"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "browser_open": {
+      "path": [
+        "browser_open"
+      ],
+      "suite": "browser",
+      "tool": "browser_open",
+      "doc": "Open a visible browser tab.",
+      "signature": "browser_open(args: BrowserOpenInput): Promise<ToolResult<BrowserOpenData>>;",
+      "input_type": "BrowserOpenInput",
+      "output_type": "BrowserOpenData",
+      "type_deps": [
+        "BrowserOpenData",
+        "BrowserOpenInput",
+        "BrowserPage"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "http(s) URL to open in a visible browser tab."
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "agentOwned": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "visible": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active",
+          "agentOwned",
+          "id",
+          "ok",
+          "title",
+          "url",
+          "visible"
+        ]
+      }
+    },
+    "browser_read": {
+      "path": [
+        "browser_read"
+      ],
+      "suite": "browser",
+      "tool": "browser_read",
+      "doc": "Read the current visible browser page.",
+      "signature": "browser_read(args: BrowserReadInput): Promise<ToolResult<BrowserReadData>>;",
+      "input_type": "BrowserReadInput",
+      "output_type": "BrowserReadData",
+      "type_deps": [
+        "BrowserElement",
+        "BrowserReadData",
+        "BrowserReadInput",
+        "Integer"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "max_chars": {
+            "type": "integer",
+            "description": "Maximum body text characters.",
+            "default": 12000,
+            "minimum": 1000,
+            "maximum": 30000
+          },
+          "page_id": {
+            "type": "string",
+            "description": "Optional page id. Omit for the active visible tab."
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "elements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "string",
+                  "description": "Element reference from the latest browser_read."
+                },
+                "tag": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "href": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ref",
+                "tag",
+                "text"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "page_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "elements",
+          "page_id",
+          "text",
+          "title",
+          "truncated",
+          "url"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "browser_type": {
+      "path": [
+        "browser_type"
+      ],
+      "suite": "browser",
+      "tool": "browser_type",
+      "doc": "Type text into one input on the visible page.",
+      "signature": "browser_type(args: BrowserTypeInput): Promise<ToolResult<BrowserTypeData>>;",
+      "input_type": "BrowserTypeInput",
+      "output_type": "BrowserTypeData",
+      "type_deps": [
+        "BrowserTypeData",
+        "BrowserTypeInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string",
+            "description": "Input reference from the latest browser_read."
+          },
+          "text": {
+            "type": "string",
+            "description": "Text to set on the focused input."
+          },
+          "page_id": {
+            "type": "string",
+            "description": "Optional page id. Omit for the active visible tab."
+          }
+        },
+        "required": [
+          "ref",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "page_id": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "page_id",
+          "ref",
+          "tag",
+          "title",
+          "url"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "diagnostics": {
+      "path": [
+        "diagnostics"
+      ],
+      "suite": "lsp",
+      "tool": "diagnostics",
+      "doc": "List diagnostics for one source file.",
+      "signature": "diagnostics(args: DiagnosticsInput): Promise<ToolResult<DiagnosticsData>>;",
+      "input_type": "DiagnosticsInput",
+      "output_type": "DiagnosticsData",
+      "type_deps": [
+        "DiagnosticItem",
+        "DiagnosticsData",
+        "DiagnosticsInput",
+        "Integer",
+        "Path",
+        "PathInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Source file under the workspace; workspace-relative is preferred."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "type": "string",
+                  "description": "Severity label supplied by the language server."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Source file path."
+                },
+                "line": {
+                  "type": "integer",
+                  "description": "1-based line number."
+                },
+                "character": {
+                  "type": "integer",
+                  "description": "1-based UTF-16 column on that line."
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Human-readable diagnostic."
+                }
+              },
+              "required": [
+                "severity",
+                "path",
+                "line",
+                "character",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "items",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "document_symbol": {
+      "path": [
+        "document_symbol"
+      ],
+      "suite": "lsp",
+      "tool": "document_symbol",
+      "doc": "List symbols in one source file.",
+      "signature": "document_symbol(args: DocumentSymbolInput): Promise<ToolResult<DocumentSymbolData>>;",
+      "input_type": "DocumentSymbolInput",
+      "output_type": "DocumentSymbolData",
+      "type_deps": [
+        "DocumentSymbolData",
+        "DocumentSymbolInput",
+        "Integer",
+        "Path",
+        "PathInput",
+        "SymbolInfo",
+        "SymbolsData"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Source file under the workspace; workspace-relative is preferred."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "message": {
+            "type": "string"
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Symbol name."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "Symbol kind label supplied by the language server."
+                },
+                "line": {
+                  "type": "integer",
+                  "description": "1-based line number."
+                },
+                "character": {
+                  "type": "integer",
+                  "description": "1-based UTF-16 column on that line."
+                },
+                "end_character": {
+                  "type": "integer",
+                  "description": "Optional end column."
+                },
+                "end_line": {
+                  "type": "integer",
+                  "description": "Optional end line."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Optional source file path."
+                }
+              },
+              "required": [
+                "name",
+                "kind",
+                "line",
+                "character"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "message",
+          "symbols"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "find_references": {
+      "path": [
+        "find_references"
+      ],
+      "suite": "lsp",
+      "tool": "find_references",
+      "doc": "List references at a file position.",
+      "signature": "find_references(args: FindReferencesInput): Promise<ToolResult<FindReferencesData>>;",
+      "input_type": "FindReferencesInput",
+      "output_type": "FindReferencesData",
+      "type_deps": [
+        "FindReferencesData",
+        "FindReferencesInput",
+        "Integer",
+        "Location",
+        "LocationsData",
+        "Path",
+        "RangeInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "line": {
+            "type": "integer",
+            "description": "1-based line number."
+          },
+          "character": {
+            "type": "integer",
+            "description": "1-based UTF-16 column on that line."
+          },
+          "path": {
+            "type": "string",
+            "description": "Source file under the workspace; workspace-relative is preferred."
+          }
+        },
+        "required": [
+          "line",
+          "character",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "locations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Source file path."
+                },
+                "line": {
+                  "type": "integer",
+                  "description": "1-based line number."
+                },
+                "character": {
+                  "type": "integer",
+                  "description": "1-based UTF-16 column on that line."
+                },
+                "end_character": {
+                  "type": "integer",
+                  "description": "Optional end column."
+                },
+                "end_line": {
+                  "type": "integer",
+                  "description": "Optional end line."
+                }
+              },
+              "required": [
+                "path",
+                "line",
+                "character"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "locations",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "go_to_definition": {
+      "path": [
+        "go_to_definition"
+      ],
+      "suite": "lsp",
+      "tool": "go_to_definition",
+      "doc": "Jump to definition at a file position.",
+      "signature": "go_to_definition(args: GoToDefinitionInput): Promise<ToolResult<GoToDefinitionData>>;",
+      "input_type": "GoToDefinitionInput",
+      "output_type": "GoToDefinitionData",
+      "type_deps": [
+        "GoToDefinitionData",
+        "GoToDefinitionInput",
+        "Integer",
+        "Location",
+        "LocationsData",
+        "Path",
+        "RangeInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "line": {
+            "type": "integer",
+            "description": "1-based line number."
+          },
+          "character": {
+            "type": "integer",
+            "description": "1-based UTF-16 column on that line."
+          },
+          "path": {
+            "type": "string",
+            "description": "Source file under the workspace; workspace-relative is preferred."
+          }
+        },
+        "required": [
+          "line",
+          "character",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "locations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Source file path."
+                },
+                "line": {
+                  "type": "integer",
+                  "description": "1-based line number."
+                },
+                "character": {
+                  "type": "integer",
+                  "description": "1-based UTF-16 column on that line."
+                },
+                "end_character": {
+                  "type": "integer",
+                  "description": "Optional end column."
+                },
+                "end_line": {
+                  "type": "integer",
+                  "description": "Optional end line."
+                }
+              },
+              "required": [
+                "path",
+                "line",
+                "character"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "locations",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "go_to_implementation": {
+      "path": [
+        "go_to_implementation"
+      ],
+      "suite": "lsp",
+      "tool": "go_to_implementation",
+      "doc": "Jump to implementations at a file position.",
+      "signature": "go_to_implementation(args: GoToImplementationInput): Promise<ToolResult<GoToImplementationData>>;",
+      "input_type": "GoToImplementationInput",
+      "output_type": "GoToImplementationData",
+      "type_deps": [
+        "GoToImplementationData",
+        "GoToImplementationInput",
+        "Integer",
+        "Location",
+        "LocationsData",
+        "Path",
+        "RangeInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "line": {
+            "type": "integer",
+            "description": "1-based line number."
+          },
+          "character": {
+            "type": "integer",
+            "description": "1-based UTF-16 column on that line."
+          },
+          "path": {
+            "type": "string",
+            "description": "Source file under the workspace; workspace-relative is preferred."
+          }
+        },
+        "required": [
+          "line",
+          "character",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "locations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Source file path."
+                },
+                "line": {
+                  "type": "integer",
+                  "description": "1-based line number."
+                },
+                "character": {
+                  "type": "integer",
+                  "description": "1-based UTF-16 column on that line."
+                },
+                "end_character": {
+                  "type": "integer",
+                  "description": "Optional end column."
+                },
+                "end_line": {
+                  "type": "integer",
+                  "description": "Optional end line."
+                }
+              },
+              "required": [
+                "path",
+                "line",
+                "character"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "locations",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "hover": {
+      "path": [
+        "hover"
+      ],
+      "suite": "lsp",
+      "tool": "hover",
+      "doc": "Fetch hover docs or type information at a file position.",
+      "signature": "hover(args: HoverInput): Promise<ToolResult<HoverData>>;",
+      "input_type": "HoverInput",
+      "output_type": "HoverData",
+      "type_deps": [
+        "HoverData",
+        "HoverInput",
+        "Integer",
+        "Path",
+        "RangeInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "line": {
+            "type": "integer",
+            "description": "1-based line number."
+          },
+          "character": {
+            "type": "integer",
+            "description": "1-based UTF-16 column on that line."
+          },
+          "path": {
+            "type": "string",
+            "description": "Source file under the workspace; workspace-relative is preferred."
+          }
+        },
+        "required": [
+          "line",
+          "character",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "markdown": {
+            "type": "string",
+            "description": "Flattened hover text, not raw LSP JSON."
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "markdown",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "workspace_symbol": {
+      "path": [
+        "workspace_symbol"
+      ],
+      "suite": "lsp",
+      "tool": "workspace_symbol",
+      "doc": "Search symbols across the workspace.",
+      "signature": "workspace_symbol(args: WorkspaceSymbolInput): Promise<ToolResult<WorkspaceSymbolData>>;",
+      "input_type": "WorkspaceSymbolInput",
+      "output_type": "WorkspaceSymbolData",
+      "type_deps": [
+        "Integer",
+        "SymbolInfo",
+        "SymbolsData",
+        "WorkspaceSymbolData",
+        "WorkspaceSymbolInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Symbol name or fragment to search across the workspace."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "message": {
+            "type": "string"
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Symbol name."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "Symbol kind label supplied by the language server."
+                },
+                "line": {
+                  "type": "integer",
+                  "description": "1-based line number."
+                },
+                "character": {
+                  "type": "integer",
+                  "description": "1-based UTF-16 column on that line."
+                },
+                "end_character": {
+                  "type": "integer",
+                  "description": "Optional end column."
+                },
+                "end_line": {
+                  "type": "integer",
+                  "description": "Optional end line."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Optional source file path."
+                }
+              },
+              "required": [
+                "name",
+                "kind",
+                "line",
+                "character"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "message",
+          "symbols"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

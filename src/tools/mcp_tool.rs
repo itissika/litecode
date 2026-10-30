@@ -53,8 +53,13 @@ impl Tool for McpTool {
         &self.tool_name
     }
 
-    fn schema(&self) -> Value {
-        self.input_schema.clone()
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description = self.tool_description.clone();
+        let input_schema = { self.input_schema.clone() };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
+        })
     }
 
     fn execute(
@@ -86,10 +91,6 @@ impl Tool for McpTool {
         Some(std::time::Duration::from_secs(
             self.server_connection.timeout_secs.saturating_add(15),
         ))
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        self.tool_description.clone()
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
@@ -143,8 +144,4 @@ fn hub_call(
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

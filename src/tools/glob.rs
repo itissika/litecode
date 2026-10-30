@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::context_pipeline::Context;
 use crate::tool::Tool;
 use crate::tool::file_identity;
 use crate::tool::trait_::ToolExecutionContext;
@@ -24,44 +23,6 @@ impl Tool for GlobTool {
 
     fn surface(&self) -> crate::tool::ToolSurface {
         crate::tool::ToolSurface::Code
-    }
-
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Glob relative to path (or workspace root if path omitted). Example: '**/*.rs'. The pattern is used as given; a repeated path prefix is not removed. If path is 'src', use '**/*.rs', not 'src/**/*.rs'."
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Optional directory to search under (workspace-relative preferred). Pattern is matched relative to this directory. Session transcripts are listed only when this is `.litecode/sessions`."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum paths to return. Default 1000, maximum 5000."
-                }
-            },
-            "required": ["pattern"],
-            "additionalProperties": false
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "paths": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Matching paths sorted by depth, then parent directory, then name. Workspace-relative by default."
-                },
-                "message": { "type": "string" }
-            },
-            "required": ["paths", "message"]
-        }))
     }
 
     fn effects(
@@ -110,10 +71,6 @@ impl Tool for GlobTool {
                 session: None,
             },
         )
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/glob.md"))
     }
 
     fn timeout(&self) -> Option<Duration> {
@@ -432,12 +389,11 @@ fn discovery_preset(no_ignore: bool) -> FilterPreset {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tool::Tool;
-    
+
     use tempfile::TempDir;
 
     #[test]
@@ -468,7 +424,13 @@ mod tests {
         std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
         let result = glob_result_in(dir.path(), serde_json::json!({ "pattern": "../*" }));
         assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
-        assert!(result.content.contains("reaches outside the search directory"), "{}", result.content);
+        assert!(
+            result
+                .content
+                .contains("reaches outside the search directory"),
+            "{}",
+            result.content
+        );
         assert!(result.data.is_none());
     }
 
@@ -483,7 +445,11 @@ mod tests {
         assert_eq!(listing.hits.len(), DEFAULT_GLOB_LIMIT + 7);
         let data = glob_data_in(root, serde_json::json!({"pattern": "*.txt"}));
         assert_eq!(data["paths"].as_array().unwrap().len(), DEFAULT_GLOB_LIMIT);
-        assert!(data["message"].as_str().unwrap().contains("Raise limit"), "{}", data["message"]);
+        assert!(
+            data["message"].as_str().unwrap().contains("Raise limit"),
+            "{}",
+            data["message"]
+        );
         assert!(data.get("page").is_none());
     }
 
@@ -505,7 +471,10 @@ mod tests {
     }
 
     fn glob_result_in(root: &std::path::Path, input: Value) -> ToolCallResult {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("test runtime");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
         rt.block_on(GlobTool.execute(
             input,
             crate::tool::trait_::ToolExecutionContext {
@@ -515,13 +484,17 @@ mod tests {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 output_limit: GlobTool.max_result_size(),
                 session_id: String::new(),
-                session: Some(crate::session::SessionDataReader::open(&root.join(".litecode").join("sessions.db"))),
+                session: Some(crate::session::SessionDataReader::open(
+                    &root.join(".litecode").join("sessions.db"),
+                )),
             },
         ))
     }
 
     fn glob_data_in(root: &std::path::Path, input: Value) -> Value {
-        glob_result_in(root, input).data.expect("glob must return structured data")
+        glob_result_in(root, input)
+            .data
+            .expect("glob must return structured data")
     }
 
     #[test]
@@ -530,7 +503,8 @@ mod tests {
         std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
         let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel();
-        let error = glob_match_cancellable(dir.path(), dir.path(), "**/*.rs", false, Some(&cancel)).unwrap_err();
+        let error = glob_match_cancellable(dir.path(), dir.path(), "**/*.rs", false, Some(&cancel))
+            .unwrap_err();
         assert!(error.to_string().contains("glob cancelled"), "{error}");
     }
 }

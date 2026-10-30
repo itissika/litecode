@@ -1,8 +1,10 @@
 //! Lossless JSON boundary between JavaScript and the host.
 //!
-//! JavaScript to host (call arguments and the program result) accepts only
-//! `null`, booleans, finite numbers, strings, dense arrays, and plain objects.
-//! Anything else is [`BoundaryError::Illegal`].
+//! JavaScript to host call arguments accepts only `null`, booleans, finite
+//! numbers, strings, dense arrays, and plain objects. The program result has
+//! the same shape except non-finite numbers are coerced to `null` and reported,
+//! matching JSON's number behavior. Other unsupported values are
+//! [`BoundaryError::Illegal`].
 //!
 //! Both directions walk the value with an explicit heap stack. Nesting depth is
 //! not capped: a deep directory tree or a long dense array is a real result.
@@ -71,12 +73,14 @@ pub(crate) enum UndefinedPolicy {
     StripOrNull,
 }
 
-/// Paths where `undefined` was dropped or nulled. Keeps the first
-/// [`DROPPED_CAP`] paths and counts the rest.
+/// Boundary coercions recorded while producing the program result. Keeps the
+/// first [`DROPPED_CAP`] paths for each kind and counts the rest.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DroppedUndefined {
     pub paths: Vec<String>,
     pub total: usize,
+    pub non_finite_paths: Vec<String>,
+    pub non_finite_total: usize,
 }
 
 pub const DROPPED_CAP: usize = 10;
@@ -89,8 +93,31 @@ impl DroppedUndefined {
         }
     }
 
+    fn record_non_finite(&mut self, path: String) {
+        self.non_finite_total += 1;
+        if self.non_finite_paths.len() < DROPPED_CAP {
+            self.non_finite_paths.push(path);
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.total == 0
+        self.total == 0 && self.non_finite_total == 0
+    }
+
+    /// `coerced non-finite number at a.b, c[2] to null +N more`.
+    pub fn non_finite_head_line(&self) -> Option<String> {
+        if self.non_finite_total == 0 {
+            return None;
+        }
+        let mut line = format!(
+            "coerced non-finite number at {} to null",
+            self.non_finite_paths.join(", ")
+        );
+        let more = self.non_finite_total - self.non_finite_paths.len();
+        if more > 0 {
+            line.push_str(&format!(" +{more} more"));
+        }
+        Some(line)
     }
 
     /// `dropped undefined at a.b, c[2] +N more`.
@@ -118,8 +145,18 @@ fn display_path(path: String) -> String {
     }
 }
 
+/// What to do with non-finite numbers while crossing into JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NonFinitePolicy {
+    /// Reject with a path-specific illegal-output error (arguments/details).
+    Reject,
+    /// Program result: JSON.stringify-style `null`, recorded as a warning.
+    Null,
+}
+
 struct Undef<'a> {
     policy: UndefinedPolicy,
+    non_finite: NonFinitePolicy,
     dropped: &'a mut DroppedUndefined,
 }
 
@@ -129,18 +166,35 @@ impl Undef<'_> {
             self.dropped.record(display_path(path_at(frames)));
         }
     }
+
+    fn note_non_finite(&mut self, frames: &[Frame<'_>]) {
+        if self.non_finite == NonFinitePolicy::Null {
+            self.dropped
+                .record_non_finite(display_path(path_at(frames)));
+        }
+    }
 }
 
 pub(crate) fn from_js(value: &Value<'_>) -> Result<Json, BoundaryError> {
-    from_js_with(value, UndefinedPolicy::Reject, &mut DroppedUndefined::default())
+    from_js_with(
+        value,
+        UndefinedPolicy::Reject,
+        NonFinitePolicy::Reject,
+        &mut DroppedUndefined::default(),
+    )
 }
 
 pub(crate) fn from_js_with(
     value: &Value<'_>,
     policy: UndefinedPolicy,
+    non_finite: NonFinitePolicy,
     dropped: &mut DroppedUndefined,
 ) -> Result<Json, BoundaryError> {
-    let mut undef = Undef { policy, dropped };
+    let mut undef = Undef {
+        policy,
+        non_finite,
+        dropped,
+    };
     let mut cycles = Vec::new();
     let mut frames: Vec<Frame<'_>> = Vec::new();
     let mut focus = value.clone();
@@ -186,7 +240,7 @@ fn open<'js>(
         )));
     }
     if let Some(number) = value.as_number() {
-        return number_from_f64(number).map(ready);
+        return number_from_f64(number, frames.as_slice(), undef).map(ready);
     }
     if value.is_string() {
         return Ok(ready(serde_json::Value::String(rust_string(value)?)));
@@ -515,9 +569,17 @@ fn array_index(key: &str) -> Option<u64> {
     }
 }
 
-fn number_from_f64(number: f64) -> Result<serde_json::Value, BoundaryError> {
+fn number_from_f64(
+    number: f64,
+    frames: &[Frame<'_>],
+    undef: &mut Undef<'_>,
+) -> Result<serde_json::Value, BoundaryError> {
     if !number.is_finite() {
-        return Err(illegal("non-finite number"));
+        if undef.non_finite == NonFinitePolicy::Null {
+            undef.note_non_finite(frames);
+            return Ok(serde_json::Value::Null);
+        }
+        return Err(illegal_at("non-finite number", frames));
     }
     let max = MAX_SAFE_INTEGER as f64;
     if number.fract() == 0.0 && number.abs() <= max {
@@ -526,7 +588,7 @@ fn number_from_f64(number: f64) -> Result<serde_json::Value, BoundaryError> {
     }
     Number::from_f64(number)
         .map(serde_json::Value::Number)
-        .ok_or_else(|| illegal("non-finite number"))
+        .ok_or_else(|| illegal_at("non-finite number", frames))
 }
 
 fn array_length(value: &Value<'_>) -> Result<u64, BoundaryError> {
@@ -828,9 +890,4 @@ pub(crate) fn uncatchable(ctx: &Ctx<'_>, message: &str) -> Error {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-
-}
+mod tests {}

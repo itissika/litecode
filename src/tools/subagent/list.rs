@@ -109,10 +109,18 @@ impl Tool for SubagentListTool {
         "subagent_list"
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {},
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description =
+            crate::tools::description_text(include_str!("../descriptions/subagent_list.md"));
+        let input_schema = {
+            serde_json::json!({
+                "type": "object",
+                "properties": {},
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
     }
 
@@ -132,10 +140,6 @@ impl Tool for SubagentListTool {
         self.call_list()
     }
 
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("../descriptions/subagent_list.md"))
-    }
-
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
         true
     }
@@ -146,9 +150,4 @@ impl Tool for SubagentListTool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-    
-
-}
+mod tests {}

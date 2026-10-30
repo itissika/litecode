@@ -43,52 +43,6 @@ pub(crate) struct JobOutput {
     pub stderr: String,
 }
 
-pub(crate) fn command_data_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "id": {
-                "type": "string",
-                "description": "Handle for later wait / kill in the same session."
-            },
-            "exit_code": {
-                "type": ["integer", "null"],
-                "description": "Process exit code when finished; null when still running or no code is available."
-            },
-            "output": {
-                "type": "string",
-                "description": "Stdout (decoded to UTF-8) plus any stdout truncation note, on-disk spill path, or status line. Always present (may be empty)."
-            },
-            "stderr": {
-                "type": "string",
-                "description": "Stderr (decoded to UTF-8) plus any stderr truncation note. Empty when nothing was written."
-            },
-            "shell": {
-                "type": "string",
-                "description": "Shell that ran the command, e.g. `bash (MINGW64)` on Windows with Git Bash, `powershell`, or `bash`/`sh`."
-            },
-            "message": {
-                "type": "string",
-                "description": "Warning about the command itself, e.g. a Git Bash path-conversion hint. Absent when clean."
-            },
-            "ok": {
-                "type": "boolean",
-                "description": "False on soft failures (unreaped kill). Absent on ordinary success."
-            },
-            "reason": {
-                "type": "string",
-                "description": "Present with ok:false; unreaped kill uses still_alive."
-            },
-            "killed": {
-                "type": "boolean",
-                "description": "True when wait observes a kill (tools.kill or UI). Absent on natural exit."
-            }
-        },
-        "required": ["id", "exit_code", "output", "stderr", "shell"]
-    })
-}
-
 pub(crate) fn owns_session(jobs: &AgentJobRegistry, session_id: &str, job_id: &str) -> bool {
     jobs.get(job_id)
         .is_some_and(|(_, _, owner, _)| owner == session_id)
@@ -209,9 +163,7 @@ pub(crate) fn format_exited_output(
 }
 
 fn stream_needs_file(capture: &TeeCapture) -> bool {
-    capture.frozen
-        || capture.truncated_on_disk
-        || capture.total_bytes > INLINE_FULL
+    capture.frozen || capture.truncated_on_disk || capture.total_bytes > INLINE_FULL
 }
 
 fn stream_text(capture: &TeeCapture) -> String {
@@ -445,7 +397,6 @@ pub(crate) fn echo_then_sleep(text: &str, seconds: u64) -> String {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,9 +443,11 @@ mod tests {
         assert_eq!(data["ok"], false, "{data}");
         assert_eq!(data["reason"], "still_alive", "{data}");
         assert!(data["exit_code"].is_null(), "{data}");
-        assert!(data.get("killed").is_none() || data["killed"].is_null(), "{data}");
+        assert!(
+            data.get("killed").is_none() || data["killed"].is_null(),
+            "{data}"
+        );
         assert_eq!(data["output"], "out");
         assert_eq!(data["stderr"], "err");
     }
-
 }

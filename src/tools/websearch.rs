@@ -3,7 +3,6 @@ use std::sync::{Arc, RwLock};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::context_pipeline::Context;
 use crate::optional::exa_mcp;
 use crate::tool::Tool;
 use crate::tool::outcome::ToolOutcome;
@@ -93,8 +92,7 @@ impl WebSearchTool {
         };
         let query = query.to_string();
 
-        match std::thread::spawn(move || exa_mcp::search(&client, &endpoint, &query, top_k))
-            .join()
+        match std::thread::spawn(move || exa_mcp::search(&client, &endpoint, &query, top_k)).join()
         {
             Ok(Ok(text)) => SearchOutcome::Ok { text },
             Ok(Err(message)) => SearchOutcome::Soft { message },
@@ -212,34 +210,6 @@ fn parse_top_k(input: &Value) -> Result<u32, String> {
     }
 }
 
-fn websearch_data_schema() -> Value {
-    serde_json::json!({
-        "type": "object",
-        "additionalProperties": false,
-        "description": "websearch outcome. Soft failures (provider HTTP/business/parse/timeout) resolve with ok=false and empty results; hard failures reject ToolError.",
-        "properties": {
-            "ok": { "type": "boolean" },
-            "query": { "type": "string" },
-            "results": {
-                "type": "array",
-                "description": "At most top_k hits, best first.",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "title": { "type": "string" },
-                        "url": { "type": "string" },
-                        "snippet": { "type": "string", "description": "Leading page text, at most ~300 chars." }
-                    },
-                    "required": ["title", "url", "snippet"]
-                }
-            },
-            "message": { "type": "string" }
-        },
-        "required": ["ok", "results", "message"]
-    })
-}
-
 fn present_websearch(data: WebSearchData) -> ToolCallResult {
     ToolOutcome::ok(data).into_call_result("")
 }
@@ -272,27 +242,6 @@ impl Tool for WebSearchTool {
                 Err(e) => coded_error("internal", format!("websearch task join failed: {e}")),
             }
         })
-    }
-
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query"
-                },
-                "top_k": {
-                    "type": "integer",
-                    "description": "Number of results. Default 5, maximum 10."
-                }
-            },
-            "required": ["query"]
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(websearch_data_schema())
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
@@ -332,10 +281,6 @@ impl Tool for WebSearchTool {
             }),
             SearchOutcome::Hard { code, message } => coded_error(code, message),
         }
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/websearch.md"))
     }
 
     fn timeout(&self) -> Option<std::time::Duration> {
@@ -396,19 +341,39 @@ mod tests {
         assert_eq!(
             hits,
             vec![
-                SearchHit { title: "One".into(), url: "https://a.example".into(), snippet: "first body line more body".into() },
-                SearchHit { title: "Two".into(), url: "https://b.example".into(), snippet: "second".into() },
+                SearchHit {
+                    title: "One".into(),
+                    url: "https://a.example".into(),
+                    snippet: "first body line more body".into()
+                },
+                SearchHit {
+                    title: "Two".into(),
+                    url: "https://b.example".into(),
+                    snippet: "second".into()
+                },
             ]
         );
         assert_eq!(parse_top_k(&serde_json::json!({})).unwrap(), DEFAULT_TOP_K);
-        assert_eq!(parse_top_k(&serde_json::json!({"top_k": 50})).unwrap(), MAX_TOP_K);
+        assert_eq!(
+            parse_top_k(&serde_json::json!({"top_k": 50})).unwrap(),
+            MAX_TOP_K
+        );
         assert!(parse_top_k(&serde_json::json!({"top_k": 0})).is_err());
-        let schema = websearch_data_schema();
-        assert!(schema["properties"].get("text").is_none());
-        assert!(WebSearchTool::new(Arc::new(RwLock::new(None)), Arc::new(RwLock::new(None)))
-            .schema()["properties"]
-            .get("top_k")
-            .is_some());
+        let tool: std::sync::Arc<dyn crate::tool::Tool> = Arc::new(WebSearchTool::new(
+            Arc::new(RwLock::new(None)),
+            Arc::new(RwLock::new(None)),
+        ));
+        let surface = crate::tool::code_contract::build_surface(&[tool])
+            .expect("websearch JS contract surface");
+        assert!(
+            surface.tools["websearch"].output_schema["properties"]
+                .get("text")
+                .is_none()
+        );
+        assert!(
+            surface.tools["websearch"].input_schema["properties"]
+                .get("top_k")
+                .is_some()
+        );
     }
-
 }

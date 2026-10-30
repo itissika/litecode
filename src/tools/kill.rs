@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::context_pipeline::Context;
 use crate::terminal::AgentJobRegistry;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
@@ -91,10 +90,7 @@ impl KillTool {
                 job_id,
                 None,
                 output,
-                Some(
-                    "kill signal sent but the process was still alive after the reap wait"
-                        .into(),
-                ),
+                Some("kill signal sent but the process was still alive after the reap wait".into()),
                 Some("still_alive"),
                 None,
             )
@@ -182,28 +178,6 @@ impl Tool for KillTool {
         crate::tool::ToolSurface::Code
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "description": "Command.id from tools.run or tools.wait in this session."
-                }
-            },
-            "required": ["id"]
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(command_job::command_data_schema())
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/kill.md"))
-    }
-
     fn execute(
         &self,
         input: Value,
@@ -236,8 +210,7 @@ mod tests {
     use std::time::Instant;
 
     use crate::tool::Tool;
-    
-    
+
     use crate::tools::command_job::{StopJob, pid_alive, sleep_shell, test_execution};
     use crate::tools::run::RunTool;
 
@@ -289,8 +262,15 @@ mod tests {
         assert!(result.error.is_none(), "{result:?}");
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["id"].as_str().unwrap().len() > 0, true);
-        assert_ne!(data.get("ok").and_then(|v| v.as_bool()), Some(false), "{data}");
-        assert!(data.get("reason").is_none() || data["reason"].is_null(), "{data}");
+        assert_ne!(
+            data.get("ok").and_then(|v| v.as_bool()),
+            Some(false),
+            "{data}"
+        );
+        assert!(
+            data.get("reason").is_none() || data["reason"].is_null(),
+            "{data}"
+        );
         assert!(
             data["output"]
                 .as_str()
@@ -380,7 +360,10 @@ mod tests {
             "{data}"
         );
         assert!(
-            data["output"].as_str().unwrap().contains("job had already exited"),
+            data["output"]
+                .as_str()
+                .unwrap()
+                .contains("job had already exited"),
             "{data}"
         );
     }
@@ -391,14 +374,8 @@ mod tests {
         let (tool, jobs) = tool();
         let session = "sess-kill-nopid";
         // A registry row with no pid and no supervisor: the signal cannot land.
-        jobs.insert_live_pipe_job(
-            "bg_nopid01",
-            session,
-            "call_nopid",
-            "echo hi",
-            dir.path(),
-        )
-        .expect("seed a live job");
+        jobs.insert_live_pipe_job("bg_nopid01", session, "call_nopid", "echo hi", dir.path())
+            .expect("seed a live job");
 
         let result = tool
             .execute(

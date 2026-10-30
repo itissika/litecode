@@ -38,24 +38,31 @@ impl Tool for TodoWriteTool {
         "todo"
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "todos": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "content": {"type": "string", "description": "Task content"},
-                            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Task status"}
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description = crate::tools::description_text(include_str!("descriptions/todo.md"));
+        let input_schema = {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string", "description": "Task content"},
+                                "status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Task status"}
+                            },
+                            "required": ["content", "status"]
                         },
-                        "required": ["content", "status"]
-                    },
-                    "description": "Complete task list (submits full list, overwrites previous state)"
-                }
-            },
-            "required": ["todos"]
+                        "description": "Complete task list (submits full list, overwrites previous state)"
+                    }
+                },
+                "required": ["todos"]
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
     }
 
@@ -126,10 +133,6 @@ impl Tool for TodoWriteTool {
         }
     }
 
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/todo.md"))
-    }
-
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
         let todos = match input.get("todos") {
             None => return Err(crate::tool::missing_parameter("todos")),
@@ -188,12 +191,4 @@ impl TodoWriteTool {
 // Removed: do_add, do_update, do_remove, do_list, do_clear, parse_status, next_id
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-    
-    
-
-}
+mod tests {}

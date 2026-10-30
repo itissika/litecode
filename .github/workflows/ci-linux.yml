@@ -44,6 +44,11 @@ jobs:
             web/package-lock.json
             desktop/package-lock.json
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+
       - name: Prepare log dir
         run: mkdir -p ci-logs && echo "note=${{ inputs.note }}" > ci-logs/meta.txt && date -u >> ci-logs/meta.txt
 
@@ -52,6 +57,16 @@ jobs:
 
       - name: npm ci (desktop)
         run: npm --prefix desktop ci --no-audit --no-fund 2>&1 | tee ci-logs/npm_ci_desktop.log
+
+      # Keep the JS/TS source, committed generated artifacts, and Rust view in lockstep.
+      # Do not move this into cargo build: Rust must remain buildable without Node.
+      - name: SDK contract check
+        id: sdk_contract
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pnpm --dir sdk install --frozen-lockfile 2>&1 | tee ci-logs/sdk_contract.log
+          pnpm --dir sdk check 2>&1 | tee -a ci-logs/sdk_contract.log
 
       # Serial heavy steps: each continues on failure; final gate fails the job if any failed.
       - name: cargo build --locked
@@ -87,6 +102,7 @@ jobs:
           set +e
           FAILED=()
           for pair in \
+            "sdk_contract:${{ steps.sdk_contract.outcome }}" \
             "cargo_build:${{ steps.cargo_build.outcome }}" \
             "cargo_test:${{ steps.cargo_test.outcome }}" \
             "web_tsc:${{ steps.web_tsc.outcome }}" \

@@ -181,12 +181,15 @@ async fn code_mode_tool_list_prefix_stays_stable_across_the_turn() {
     let sdk = descriptions[0];
     assert!(sdk.contains("declare const tools"), "{sdk}");
     assert!(sdk.contains("declare class ToolError"), "{sdk}");
-    assert!(!sdk.contains("ToolResult<"), "{sdk}");
+    assert!(
+        sdk.contains("type ToolResult<T> = T | ToolFailure;"),
+        "{sdk}"
+    );
     assert!(!sdk.contains("status: \"partial\""), "{sdk}");
     assert!(!sdk.contains("retryable: boolean"), "{sdk}");
-    assert!(sdk.contains("[\"edit\"]"), "{sdk}");
-    assert!(sdk.contains("[\"write\"]"), "{sdk}");
-    assert!(sdk.contains("[\"read\"]"), "{sdk}");
+    assert!(sdk.contains("edit(args: EditInput)"), "{sdk}");
+    assert!(sdk.contains("write(args: WriteInput)"), "{sdk}");
+    assert!(sdk.contains("read(args: ReadInput)"), "{sdk}");
     assert!(sdk.contains("path:"), "{sdk}");
     assert!(!sdk.contains("file_path"), "{sdk}");
     assert_eq!(descriptions[0], descriptions[1]);

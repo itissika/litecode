@@ -40,72 +40,79 @@ impl Tool for AskUserTool {
         "ask_user"
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "description": "Optional card title shown above the questions."
-                },
-                "questions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {
-                                "type": "string",
-                                "description": "Stable id keyed in the answers map."
-                            },
-                            "prompt": {
-                                "type": "string",
-                                "description": "Question text shown to the user."
-                            },
-                            "options": {
-                                "type": "array",
-                                "minItems": 2,
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "id": { "type": "string" },
-                                        "label": { "type": "string" }
-                                    },
-                                    "required": ["id", "label"]
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description = crate::tools::description_text(include_str!("descriptions/ask_user.md"));
+        let input_schema = {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "Optional card title shown above the questions."
+                    },
+                    "questions": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Stable id keyed in the answers map."
                                 },
-                                "description": "Two or more choices for this question."
+                                "prompt": {
+                                    "type": "string",
+                                    "description": "Question text shown to the user."
+                                },
+                                "options": {
+                                    "type": "array",
+                                    "minItems": 2,
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": { "type": "string" },
+                                            "label": { "type": "string" }
+                                        },
+                                        "required": ["id", "label"]
+                                    },
+                                    "description": "Two or more choices for this question."
+                                },
+                                "multi_select": {
+                                    "type": "boolean",
+                                    "description": "When true, the user may pick multiple options. Default false."
+                                }
                             },
-                            "multi_select": {
-                                "type": "boolean",
-                                "description": "When true, the user may pick multiple options. Default false."
-                            }
+                            "required": ["id", "prompt", "options"]
                         },
-                        "required": ["id", "prompt", "options"]
+                        "description": "One or more questions. Prefer this over legacy top-level question/options."
                     },
-                    "description": "One or more questions. Prefer this over legacy top-level question/options."
-                },
-                "question": {
-                    "type": "string",
-                    "description": "Legacy single-question text (compat → questions[0] with id q0)."
-                },
-                "options": {
-                    "type": "array",
-                    "minItems": 2,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "string" },
-                            "label": { "type": "string" }
+                    "question": {
+                        "type": "string",
+                        "description": "Legacy single-question text (compat → questions[0] with id q0)."
+                    },
+                    "options": {
+                        "type": "array",
+                        "minItems": 2,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "label": { "type": "string" }
+                            },
+                            "required": ["id", "label"]
                         },
-                        "required": ["id", "label"]
+                        "description": "Legacy flat options (compat with top-level question)."
                     },
-                    "description": "Legacy flat options (compat with top-level question)."
-                },
-                "multi_select": {
-                    "type": "boolean",
-                    "description": "Legacy: multi_select for the single top-level question."
+                    "multi_select": {
+                        "type": "boolean",
+                        "description": "Legacy: multi_select for the single top-level question."
+                    }
                 }
-            }
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
     }
 
@@ -125,10 +132,6 @@ impl Tool for AskUserTool {
         let sink = self.permission_sink();
         let cancel = execution.cancel.clone();
         Box::pin(async move { self.run(&input, &cancel, sink.as_deref()) })
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/ask_user.md"))
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
@@ -346,9 +349,4 @@ fn format_answers(questions: &[AskQuestion], answers: &HashMap<String, AskAnswer
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-
-}
+mod tests {}

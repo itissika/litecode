@@ -40,6 +40,16 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+
+      - name: SDK contract check
+        run: |
+          pnpm --dir sdk install --frozen-lockfile
+          pnpm --dir sdk check
+
       - name: Build Linux server bundle
         shell: bash
         env:

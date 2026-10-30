@@ -23,6 +23,7 @@ use crate::ptc::{
     Limits, LogLevel, Namespace,
 };
 use crate::tool::Tool;
+use crate::tool::code_contract::CodeSurface;
 use crate::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
 use crate::tool::outcome;
 use crate::tool::trait_::ToolExecutionContext;
@@ -264,8 +265,8 @@ impl CallLedger {
 
     fn record(&self, seq: u64, result: &ToolCallResult) {
         let outcome = call_outcome_label(result);
-        let error_code = call_error_code(result)
-            .or_else(|| outcome.strip_prefix("error:").map(str::to_string));
+        let error_code =
+            call_error_code(result).or_else(|| outcome.strip_prefix("error:").map(str::to_string));
         if let Some(code) = &error_code {
             let mut counts = self
                 .per_error
@@ -485,53 +486,50 @@ fn call_error_code(result: &ToolCallResult) -> Option<String> {
         return None;
     }
     if let Some(code) = &result.error_code {
-        return Some(code.clone());
+        return Some(display_error_code(code));
     }
     result
         .error
         .as_ref()
-        .map(|error| outcome::error_kind_code(error.kind).to_string())
+        .map(|error| display_error_code(&outcome::error_kind_code(error.kind)))
+}
+
+/// The JS-facing code surface uses `invalid_args`; keep the ledger label in
+/// the same vocabulary instead of leaking the Rust `invalid_input` code.
+fn display_error_code(code: &str) -> String {
+    match code {
+        "invalid_input" | "invalid_regex" => "invalid_args".to_string(),
+        _ => code.to_string(),
+    }
 }
 
 /// A bounded code bundle projected as one model-facing tool.
 pub struct CodeTool {
     bundle: Arc<Vec<Arc<dyn Tool>>>,
-    sdk: String,
-    whitelist: Arc<[String]>,
+    surface: Arc<CodeSurface>,
     host: Arc<CodeToolHost>,
 }
 
 impl CodeTool {
-    /// Build from an already-admitted surface. `sdk` is the pure rendering of that surface.
+    /// Build from an already-admitted JS contract surface.
     pub fn from_surface(
         bundle: Vec<Arc<dyn Tool>>,
-        sdk: String,
-        whitelist: Vec<String>,
+        surface: Arc<CodeSurface>,
         host: Arc<CodeToolHost>,
     ) -> Self {
         Self {
             bundle: Arc::new(bundle),
-            sdk,
-            whitelist: whitelist.into(),
+            surface,
             host,
         }
     }
 
     pub fn new(bundle: Vec<Arc<dyn Tool>>, host: Arc<CodeToolHost>) -> Self {
-        let specs = bundle
-            .iter()
-            .filter_map(|tool| {
-                crate::tool::spec::FunctionSpec::from_tool(tool.as_ref())
-                    .ok()?
-                    .into_code()
-            })
-            .collect::<Vec<_>>();
-        let sdk =
-            crate::tool::code_manifest::render_code_tool_description(&specs).unwrap_or_default();
-        let mut whitelist: Vec<String> =
-            bundle.iter().map(|tool| tool.name().to_string()).collect();
-        whitelist.sort();
-        Self::from_surface(bundle, sdk, whitelist, host)
+        let surface = Arc::new(
+            crate::tool::code_contract::build_surface(&bundle)
+                .expect("test code bundle must match the JS SDK contract"),
+        );
+        Self::from_surface(bundle, surface, host)
     }
 
     fn binding(
@@ -545,6 +543,7 @@ impl CodeTool {
                 let name = tool.name().to_string();
                 let bundle = Arc::clone(&self.bundle);
                 let host = Arc::clone(&self.host);
+                let surface = Arc::clone(&self.surface);
                 let ledger = Arc::clone(&ledger);
                 let session_id = execution.session_id.clone();
                 let parent_call_id = execution.call_id.clone();
@@ -554,6 +553,7 @@ impl CodeTool {
                         let name = name.clone();
                         let bundle = Arc::clone(&bundle);
                         let host = Arc::clone(&host);
+                        let surface = Arc::clone(&surface);
                         let ledger = Arc::clone(&ledger);
                         let session_id = session_id.clone();
                         let parent_call_id = parent_call_id.clone();
@@ -569,6 +569,7 @@ impl CodeTool {
                                 pause,
                                 bundle,
                                 host,
+                                surface,
                                 ledger,
                                 session_id,
                                 parent_call_id,
@@ -582,7 +583,7 @@ impl CodeTool {
     }
 
     async fn execute_code(&self, input: Value, execution: ToolExecutionContext) -> ToolCallResult {
-        if self.sdk.is_empty() || self.bundle.is_empty() {
+        if self.surface.sdk.is_empty() || self.bundle.is_empty() {
             return ToolCallResult::error_with_kind(
                 ToolErrorKind::Internal,
                 "run_code is unavailable because its code surface failed admission",
@@ -633,6 +634,7 @@ async fn invoke_binding(
     pause: BudgetPause,
     bundle: Arc<Vec<Arc<dyn Tool>>>,
     host: Arc<CodeToolHost>,
+    surface: Arc<CodeSurface>,
     ledger: Arc<CallLedger>,
     session_id: String,
     parent_call_id: String,
@@ -668,6 +670,21 @@ async fn invoke_binding(
         ledger.record(index, &protocol_failure(&message));
         return Err(crate::ptc::HostError::type_error(message));
     }
+    let input_value: Value = match serde_json::from_str(&arguments) {
+        Ok(value) => value,
+        Err(error) => {
+            let message = format!("tool arguments for '{name}' are not valid JSON: {error}");
+            ledger.record(index, &protocol_failure(&message));
+            return Err(crate::ptc::HostError::type_error(message));
+        }
+    };
+    if let Err(error) = surface.validate_input(&name, &input_value) {
+        let failure = protocol_failure(&format!("invalid input for '{name}': {error}"));
+        ledger.record(index, &failure);
+        return Ok(
+            outcome::program_result(&failure).expect("invalid input is a resolved domain failure")
+        );
+    }
 
     let call = FunctionToolCall {
         arguments,
@@ -681,7 +698,7 @@ async fn invoke_binding(
         inner: host.sink(),
         pause,
     };
-    let result = host
+    let mut result = host
         .run_nested(
             bundle.as_slice(),
             &call,
@@ -692,6 +709,23 @@ async fn invoke_binding(
             Some(deadline),
         )
         .await;
+    let success = result.error.is_none()
+        && matches!(
+            result.level,
+            crate::types::ToolSignalLevel::Ok | crate::types::ToolSignalLevel::Warning
+        );
+    if success
+        && let Ok(program_value) = outcome::program_result(&result)
+        && let Err(error) = surface.validate_output(&name, &program_value)
+    {
+        let mut invalid = ToolCallResult::error_with_kind(
+            ToolErrorKind::Internal,
+            format!("tool '{name}' returned data that does not match its JS contract: {error}"),
+            false,
+        );
+        invalid.error_code = Some("invalid_output".into());
+        result = invalid;
+    }
     ledger.record(index, &result);
     outcome::program_result(&result)
 }
@@ -970,6 +1004,7 @@ fn run_report(
     }
     render::RunReport {
         dropped_undefined: outcome.dropped_undefined.head_line(),
+        coerced_non_finite: outcome.dropped_undefined.non_finite_head_line(),
         logs: outcome
             .logs
             .iter()
@@ -1099,39 +1134,51 @@ impl Tool for CodeTool {
         CODE_TOOL_NAME
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "description": "Async JavaScript function body for the Code SDK below. Prefer explore → edit → verify in one program; return a short summary. Call tools as `await tools.name(args)` and branch on `ok`."
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description = {
+            if self.surface.sdk.is_empty() {
+                "run_code is unavailable because its code surface failed admission".to_string()
+            } else {
+                self.surface.sdk.clone()
+            }
+        };
+        let input_schema = {
+            json!({
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Async JavaScript function body for the SDK below."
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Total program budget. Time spent waiting for approval is not counted. Defaults to 120000; values above 600000 are clamped."
+                    }
                 },
-                "timeout_ms": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "Total program budget. Time spent waiting for approval is not counted. Defaults to 120000; values above 600000 are clamped."
-                }
-            },
-            "required": ["code"],
-            "additionalProperties": false
+                "required": ["code"],
+                "additionalProperties": false
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
     }
 
     fn code_bindings(&self) -> Option<Arc<[String]>> {
-        Some(Arc::clone(&self.whitelist))
+        Some(
+            self.surface
+                .tools
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .into(),
+        )
     }
 
     fn is_code_transport(&self) -> bool {
         true
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        if self.sdk.is_empty() {
-            "run_code is unavailable because its code surface failed admission".to_string()
-        } else {
-            self.sdk.clone()
-        }
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
@@ -1179,7 +1226,10 @@ mod outcome_tests {
     use crate::ptc::{CallRecord, CallState, Failure, Json, Outcome};
     use crate::types::{ToolCallResult, ToolErrorKind};
 
-    use super::{CallLedger, DecodeFail, decode_invocation, merge_call_outcome, render_run_output};
+    use super::{
+        CallLedger, DecodeFail, call_outcome_label, decode_invocation, merge_call_outcome,
+        render_run_output,
+    };
 
     fn runtime(state: CallState) -> Outcome {
         Outcome {
@@ -1226,6 +1276,14 @@ mod outcome_tests {
         assert!(text.contains("tool calls: 0 ok / 0 failed"), "{text}");
         assert!(!text.contains("calls ("), "{text}");
         assert!(!text.contains("@@run_code_data"), "{text}");
+    }
+
+    #[test]
+    fn ledger_uses_the_js_invalid_args_vocabulary() {
+        let mut result =
+            ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, "bad input", false);
+        result.error_code = Some("invalid_input".into());
+        assert_eq!(call_outcome_label(&result), "error:invalid_args");
     }
 
     #[test]
@@ -1304,13 +1362,19 @@ mod outcome_tests {
         let result = render_run_output(&ledger, &outcome, 120_000, "");
         assert!(result.error.is_none(), "{}", result.content);
         assert!(
-            result.content.starts_with("run_code ok · program: ok · tool calls: 1 ok / 1 failed · 42ms"),
+            result
+                .content
+                .starts_with("run_code ok · program: ok · tool calls: 1 ok / 1 failed · 42ms"),
             "{}",
             result.content
         );
         assert!(!result.content.contains("by_tool"), "{}", result.content);
         assert!(!result.content.contains("calls ("), "{}", result.content);
-        assert!(!result.content.contains("@@run_code_data"), "{}", result.content);
+        assert!(
+            !result.content.contains("@@run_code_data"),
+            "{}",
+            result.content
+        );
         let data = result.data.expect("data");
         assert_eq!(data["succeeded"], 1);
         assert_eq!(data["failed"], 1);
@@ -1321,5 +1385,4 @@ mod outcome_tests {
         assert_eq!(data["by_tool"]["write"]["ok"], 0);
         assert_eq!(data["by_tool"]["write"]["fail"], 1);
     }
-
 }

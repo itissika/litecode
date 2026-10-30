@@ -14,12 +14,11 @@ use futures_util::Future;
 use serde_json::Value;
 
 use crate::config::path::strip_verbatim;
-use crate::context_pipeline::Context;
 use crate::engines::{EngineState, WorkspaceEngines};
 use crate::lsp::SharedLspHub;
 use crate::lsp::format::{
-    extract_diagnostic_items, extract_hover_markdown, extract_location_items, extract_symbol_items,
-    MAX_DIAGNOSTIC_ITEMS, MAX_LOCATIONS, MAX_SYMBOLS,
+    MAX_DIAGNOSTIC_ITEMS, MAX_LOCATIONS, MAX_SYMBOLS, extract_diagnostic_items,
+    extract_hover_markdown, extract_location_items, extract_symbol_items,
 };
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
@@ -83,23 +82,8 @@ impl LspOp {
     fn needs_position(self) -> bool {
         matches!(
             self,
-            Self::GoToDefinition
-                | Self::FindReferences
-                | Self::Hover
-                | Self::GoToImplementation
+            Self::GoToDefinition | Self::FindReferences | Self::Hover | Self::GoToImplementation
         )
-    }
-
-    fn description_md(self) -> &'static str {
-        match self {
-            Self::GoToDefinition => include_str!("descriptions/go_to_definition.md"),
-            Self::FindReferences => include_str!("descriptions/find_references.md"),
-            Self::Hover => include_str!("descriptions/hover.md"),
-            Self::Diagnostics => include_str!("descriptions/diagnostics.md"),
-            Self::DocumentSymbol => include_str!("descriptions/document_symbol.md"),
-            Self::WorkspaceSymbol => include_str!("descriptions/workspace_symbol.md"),
-            Self::GoToImplementation => include_str!("descriptions/go_to_implementation.md"),
-        }
     }
 }
 
@@ -243,139 +227,6 @@ impl Tool for LspOpTool {
         crate::tool::ToolSurface::Code
     }
 
-    fn schema(&self) -> Value {
-        match self.op {
-            LspOp::WorkspaceSymbol => serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Symbol name or fragment to search across the workspace."
-                    }
-                },
-                "required": ["query"],
-                "additionalProperties": false
-            }),
-            LspOp::Diagnostics | LspOp::DocumentSymbol => serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Source file under the workspace (workspace-relative preferred)."
-                    }
-                },
-                "required": ["path"],
-                "additionalProperties": false
-            }),
-            _ => serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Source file under the workspace (workspace-relative preferred)."
-                    },
-                    "line": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "1-based line number."
-                    },
-                    "character": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "1-based UTF-16 column on that line (editor column, not Unicode scalar index)."
-                    }
-                },
-                "required": ["path", "line", "character"],
-                "additionalProperties": false
-            }),
-        }
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(match self.op {
-            LspOp::Hover => serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "markdown": { "type": "string" },
-                    "message": { "type": "string" }
-                },
-                "required": ["markdown", "message"]
-            }),
-            LspOp::Diagnostics => serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "items": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                                "severity": { "type": "string" },
-                                "path": { "type": "string" },
-                                "line": { "type": "integer", "minimum": 1 },
-                                "character": { "type": "integer", "minimum": 1 },
-                                "message": { "type": "string" }
-                            },
-                            "required": ["severity", "path", "line", "character", "message"]
-                        }
-                    },
-                    "message": { "type": "string" }
-                },
-                "required": ["items", "message"]
-            }),
-            LspOp::DocumentSymbol | LspOp::WorkspaceSymbol => serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "symbols": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                                "name": { "type": "string" },
-                                "kind": { "type": "string" },
-                                "line": { "type": "integer", "minimum": 1 },
-                                "character": { "type": "integer", "minimum": 1 },
-                                "end_line": { "type": "integer", "minimum": 1 },
-                                "end_character": { "type": "integer", "minimum": 1 },
-                                "path": { "type": "string" }
-                            },
-                            "required": ["name", "kind", "line", "character"]
-                        }
-                    },
-                    "message": { "type": "string" }
-                },
-                "required": ["symbols", "message"]
-            }),
-            _ => serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "locations": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                                "path": { "type": "string" },
-                                "line": { "type": "integer", "minimum": 1 },
-                                "character": { "type": "integer", "minimum": 1 },
-                                "end_line": { "type": "integer", "minimum": 1 },
-                                "end_character": { "type": "integer", "minimum": 1 }
-                            },
-                            "required": ["path", "line", "character"]
-                        }
-                    },
-                    "message": { "type": "string" }
-                },
-                "required": ["locations", "message"]
-            }),
-        })
-    }
-
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
         true
     }
@@ -386,20 +237,6 @@ impl Tool for LspOpTool {
 
     fn max_result_size(&self) -> usize {
         20_000
-    }
-
-    fn prepare_input(&self, input: &mut Value) {
-        // `file_path` is a retired spelling. Keep it working for callers that
-        // still send it, but expose only `path` in the schema and SDK.
-        if input.get("path").is_none()
-            && let Some(file_path) = input.get("file_path").cloned()
-            && let Some(object) = input.as_object_mut()
-        {
-            object.insert("path".into(), file_path);
-        }
-        if let Some(object) = input.as_object_mut() {
-            object.remove("file_path");
-        }
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
@@ -446,10 +283,6 @@ impl Tool for LspOpTool {
                 session: None,
             },
         )
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(self.op.description_md())
     }
 }
 
@@ -510,13 +343,7 @@ impl LspOpTool {
         match self
             .shared
             .hub
-            .tool_action_outcome(
-                self.op.hub_action(),
-                &file_path,
-                line,
-                character,
-                None,
-            )
+            .tool_action_outcome(self.op.hub_action(), &file_path, line, character, None)
             .await
         {
             Ok(out) => match self.op {
@@ -574,10 +401,7 @@ fn scope_guidance(root: &Path, got: &str) -> String {
 }
 
 fn lsp_path(input: &Value) -> Option<&str> {
-    input
-        .get("path")
-        .or_else(|| input.get("file_path"))
-        .and_then(Value::as_str)
+    input.get("path").and_then(Value::as_str)
 }
 
 fn require_lsp_path(input: &Value) -> Result<&str, String> {
@@ -681,9 +505,7 @@ fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCall
         "No locations found (language server ready; no definition/reference at this position)."
             .to_string()
     } else if truncated {
-        format!(
-            "Returning first {MAX_LOCATIONS} locations (more omitted)."
-        )
+        format!("Returning first {MAX_LOCATIONS} locations (more omitted).")
     } else {
         format!("{} location(s).", locations.len())
     };
@@ -698,8 +520,7 @@ fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCall
 
 fn finish_hover(out: crate::lsp::LspToolOutput) -> ToolCallResult {
     let markdown = extract_hover_markdown(&out.raw);
-    let empty = markdown.trim().is_empty()
-        || markdown == "No hover information available";
+    let empty = markdown.trim().is_empty() || markdown == "No hover information available";
     let message = if empty {
         "No hover information available.".to_string()
     } else {
@@ -772,9 +593,7 @@ mod tests {
         assert_eq!(LSP_CODE_TOOL_NAMES.len(), 7);
         for name in LSP_CODE_TOOL_NAMES {
             assert!(!name.contains("lsp") || *name != "lsp");
-            assert!(name
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c == '_'));
+            assert!(name.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
         }
     }
 
@@ -796,12 +615,12 @@ mod tests {
                 "go_to_implementation",
             ]
         );
+        let surface =
+            crate::tool::code_contract::build_surface(&tools).expect("LSP JS contract surface");
         for tool in &tools {
             assert_eq!(tool.surface(), crate::tool::ToolSurface::Code);
             assert_ne!(tool.name(), "lsp");
-            assert!(tool.schema()["properties"].get("text").is_none());
-            assert!(tool.schema()["properties"].get("action").is_none());
-            assert!(tool.data_schema().is_some());
+            assert!(surface.tools.contains_key(tool.name()));
         }
     }
 
@@ -812,7 +631,9 @@ mod tests {
             .into_iter()
             .find(|t| t.name() == "go_to_definition")
             .unwrap();
-        let schema = tool.schema();
+        let surface = crate::tool::code_contract::build_surface(&[tool.clone()])
+            .expect("go_to_definition JS contract");
+        let schema = &surface.tools["go_to_definition"].input_schema;
         assert!(schema["properties"].get("character").is_some());
         assert!(schema["properties"].get("path").is_some());
         assert!(schema["properties"].get("file_path").is_none());
@@ -840,16 +661,8 @@ mod tests {
                 "line": 1,
                 "character": 1
             }))
-            .is_ok()
+            .is_err()
         );
-        let mut legacy = serde_json::json!({
-            "file_path": "src/main.rs",
-            "line": 1,
-            "character": 1
-        });
-        tool.prepare_input(&mut legacy);
-        assert_eq!(legacy["path"], "src/main.rs");
-        assert!(legacy.get("file_path").is_none());
     }
 
     #[test]
@@ -859,7 +672,9 @@ mod tests {
             .into_iter()
             .find(|t| t.name() == "workspace_symbol")
             .unwrap();
-        let schema = tool.schema();
+        let surface = crate::tool::code_contract::build_surface(&[tool.clone()])
+            .expect("workspace_symbol JS contract");
+        let schema = &surface.tools["workspace_symbol"].input_schema;
         assert!(schema["properties"].get("query").is_some());
         assert!(schema["properties"].get("path").is_none());
         assert!(schema["properties"].get("file_path").is_none());
@@ -903,7 +718,10 @@ mod tests {
         let file = outside.path().join("other.rs");
         std::fs::write(&file, "fn y() {}\n").unwrap();
         let err = resolve_in_workspace(root, file.to_str().unwrap()).unwrap_err();
-        assert!(err.contains("path not in LSP workspace scope"), "got: {err}");
+        assert!(
+            err.contains("path not in LSP workspace scope"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -915,11 +733,7 @@ mod tests {
 
     #[test]
     fn finish_locations_empty_resolves_with_empty_array() {
-        let out = crate::lsp::LspToolOutput::new(
-            "No locations found".into(),
-            Value::Null,
-            false,
-        );
+        let out = crate::lsp::LspToolOutput::new("No locations found".into(), Value::Null, false);
         let result = finish_locations(out, &[]);
         assert_eq!(result.level, crate::types::result::ToolSignalLevel::Ok);
         assert!(result.error.is_none());
@@ -938,8 +752,15 @@ mod tests {
         ] {
             let err = crate::lsp::server::index_not_ready_error(method);
             let result = map_lsp_query_error(err);
-            assert_eq!(result.error_code.as_deref(), Some("unavailable"), "{method}");
-            assert!(result.data.is_none(), "{method}: must not be an empty success");
+            assert_eq!(
+                result.error_code.as_deref(),
+                Some("unavailable"),
+                "{method}"
+            );
+            assert!(
+                result.data.is_none(),
+                "{method}: must not be an empty success"
+            );
         }
         // Hub's "server not running" also lands on unavailable.
         let result = map_lsp_query_error("language server is not ready");
@@ -951,17 +772,25 @@ mod tests {
         // WP-206 ⑧
         let ws = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
-        let mk = |p: &Path| serde_json::json!({
-            "uri": crate::lsp::uri::file_to_uri(p),
-            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } }
-        });
-        let raw = serde_json::json!([mk(&ws.path().join("a").join("b.rs")), mk(&other.path().join("c.rs"))]);
+        let mk = |p: &Path| {
+            serde_json::json!({
+                "uri": crate::lsp::uri::file_to_uri(p),
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } }
+            })
+        };
+        let raw = serde_json::json!([
+            mk(&ws.path().join("a").join("b.rs")),
+            mk(&other.path().join("c.rs"))
+        ]);
         let out = crate::lsp::LspToolOutput::new(String::new(), raw, false);
         let result = finish_locations(out, &[ws.path()]);
         let data = result.data.expect("data");
         assert_eq!(data["locations"][0]["path"], "a/b.rs");
         let outside = data["locations"][1]["path"].as_str().unwrap();
-        assert!(Path::new(outside).is_absolute() && outside.ends_with("c.rs"), "{outside}");
+        assert!(
+            Path::new(outside).is_absolute() && outside.ends_with("c.rs"),
+            "{outside}"
+        );
     }
 
     #[test]
@@ -975,5 +804,4 @@ mod tests {
         assert_eq!(data["symbols"][0]["path"], "m.rs");
         assert_eq!(data["symbols"][0]["line"], 5);
     }
-
 }

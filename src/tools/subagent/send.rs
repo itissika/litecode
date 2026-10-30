@@ -235,26 +235,34 @@ impl Tool for SubagentSendTool {
         "subagent_send"
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "description": "child_session_id"
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description =
+            crate::tools::description_text(include_str!("../descriptions/subagent_send.md"));
+        let input_schema = {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "child_session_id"
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Next assignment within this child session's established responsibility"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["queue", "steer", "stop_and_send"],
+                        "default": "queue",
+                        "description": "queue: run as a new turn after the current one (default); steer: inject into the running turn; stop_and_send: stop the current turn, then run this next"
+                    }
                 },
-                "message": {
-                    "type": "string",
-                    "description": "Next assignment within this child session's established responsibility"
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["queue", "steer", "stop_and_send"],
-                    "default": "queue",
-                    "description": "queue: run as a new turn after the current one (default); steer: inject into the running turn; stop_and_send: stop the current turn, then run this next"
-                }
-            },
-            "required": ["id", "message"]
+                "required": ["id", "message"]
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
     }
 
@@ -276,10 +284,6 @@ impl Tool for SubagentSendTool {
         ToolCallResult::error("subagent_send must be invoked via execute (async tool path)")
     }
 
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("../descriptions/subagent_send.md"))
-    }
-
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
         false
     }
@@ -298,15 +302,4 @@ impl Tool for SubagentSendTool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-    
-    
-    
-    
-    
-
-}
+mod tests {}

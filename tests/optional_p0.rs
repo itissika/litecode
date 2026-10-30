@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use common::bindings::binding_all_for;
 use litecode::config::global_db::{self};
-use litecode::config::{
-    ConfigManager, SettingsWriter, TurnGuard, WorkspaceState,
-};
+use litecode::config::{ConfigManager, SettingsWriter, TurnGuard, WorkspaceState};
 use litecode::engines::WorkspaceEngines;
 use litecode::optional::{EngineManager, EngineWarmupState};
 use litecode::runtime::RuntimeHandle;
@@ -112,19 +110,43 @@ fn settings_reload_reconciles_engine_manager() {
         .enable_all()
         .build()
         .unwrap();
-    let tools = rt.block_on(build_tool_list(
-        &runtime,
+    let permission =
+        litecode::permission::PermissionEngine::resolver(runtime.resolved.clone(), "default", 0);
+    let context = litecode::context_pipeline::Context {
+        cwd: runtime.resolved.workspace_root().to_path_buf(),
+        workspace_paths: litecode::config::WorkspacePaths::for_legacy_root(
+            runtime.resolved.workspace_root(),
+        ),
+        agents_md: None,
+        claude_md: None,
+    };
+    let host = Arc::new(litecode::tools::code::CodeToolHost::new(
+        permission,
+        context,
         "default",
-        0,
-        tokio_util::sync::CancellationToken::new(),
-        "test-parent-session",
-        Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            String::new(),
-        )),
+        litecode::permission::deny_permission_sink(),
+        runtime.resolved.workspace_root().join(".litecode"),
+        litecode::tool::write_lock::process_write_lock(),
         None,
-    ))
-    .expect("build tool list");
-    let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-    assert!(names.contains(&"webfetch"));
+    ));
+    let tools = rt
+        .block_on(build_tool_list(
+            &runtime,
+            "default",
+            0,
+            tokio_util::sync::CancellationToken::new(),
+            "test-parent-session",
+            Arc::new(SessionManager::new_for_test(
+                Arc::new(TurnGuard::new()),
+                String::new(),
+            )),
+            Some(host),
+        ))
+        .expect("build tool list");
+    let transport = tools
+        .iter()
+        .find(|tool| tool.name() == "run_code")
+        .expect("webfetch must bundle into run_code");
+    let bindings = transport.code_bindings().expect("code bindings");
+    assert!(bindings.iter().any(|name| name == "webfetch"));
 }

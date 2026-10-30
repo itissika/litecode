@@ -102,10 +102,15 @@ impl RuntimeContext {
     pub(crate) fn derive_defs(tools: &[Arc<dyn Tool>], ctx: &Context) -> Vec<ToolDef> {
         tools
             .iter()
-            .map(|t| ToolDef {
-                name: t.name().to_string(),
-                description: t.description(ctx),
-                input_schema: t.schema(),
+            .map(|t| {
+                let spec = t
+                    .direct_spec(ctx)
+                    .unwrap_or_else(|| panic!("direct tool '{}' has no direct spec", t.name()));
+                ToolDef {
+                    name: t.name().to_string(),
+                    description: spec.description,
+                    input_schema: spec.input_schema,
+                }
             })
             .collect()
     }

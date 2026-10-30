@@ -102,17 +102,25 @@ impl Tool for SubagentDeleteTool {
         "subagent_delete"
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "description": "child_session_id of a direct child of this session"
-                }
-            },
-            "required": ["id"]
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description =
+            crate::tools::description_text(include_str!("../descriptions/subagent_delete.md"));
+        let input_schema = {
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "child_session_id of a direct child of this session"
+                    }
+                },
+                "required": ["id"]
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
     }
 
@@ -143,10 +151,6 @@ impl Tool for SubagentDeleteTool {
 
     fn call_inner(&self, _input: Value) -> ToolCallResult {
         ToolCallResult::error("subagent_delete must be invoked via execute (async tool path)")
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("../descriptions/subagent_delete.md"))
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {

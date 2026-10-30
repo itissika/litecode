@@ -2,7 +2,6 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::context_pipeline::Context;
 use crate::tool::Tool;
 use crate::tool::file_identity::{self, locate_resolved};
 use crate::tool::trait_::ToolExecutionContext;
@@ -32,49 +31,6 @@ impl Tool for ReadTool {
 
     fn surface(&self) -> crate::tool::ToolSurface {
         crate::tool::ToolSurface::Code
-    }
-
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": format!(
-                        "{} Past session transcripts are readable at `.litecode/sessions/<session_id>.md`.",
-                        crate::tools::file_path::FILE_PATH_SCHEMA_HINT
-                    )
-                },
-                "start_line": {
-                    "type": "integer",
-                    "description": "First line to read, 1-based, inclusive. Default 1."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum lines to return. Default 2000, maximum 5000."
-                }
-            },
-            "required": ["path"],
-            "additionalProperties": false
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "path": { "type": "string" },
-                "start_line": { "type": "integer", "minimum": 1 },
-                "lines": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Line contents for this page, in file order."
-                },
-                "message": { "type": "string" }
-            },
-            "required": ["path", "start_line", "lines", "message"]
-        }))
     }
 
     fn effects(
@@ -139,10 +95,6 @@ impl Tool for ReadTool {
             .build()
             .expect("test runtime");
         rt.block_on(self.call_for_execution(input, execution))
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/read.md"))
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
@@ -437,9 +389,16 @@ fn render_text_page(content: &str, input: &Value, path: &str) -> ToolCallResult 
 /// `start_line` beyond the last line (including an empty file): resolve an
 /// empty window and say how long the file is, instead of rejecting.
 fn past_eof_page(path: &str, start_line: usize, total_lines: usize) -> ToolCallResult {
-    let message =
-        format!("File has {total_lines} lines; start_line {start_line} is past the end.");
-    finish_read(path, start_line, Vec::new(), total_lines, total_lines, &message, Vec::new())
+    let message = format!("File has {total_lines} lines; start_line {start_line} is past the end.");
+    finish_read(
+        path,
+        start_line,
+        Vec::new(),
+        total_lines,
+        total_lines,
+        &message,
+        Vec::new(),
+    )
 }
 
 fn finish_read(
@@ -480,7 +439,11 @@ fn capped_note(lines: &[usize]) -> String {
     const SHOW: usize = 5;
     let shown: Vec<String> = lines.iter().take(SHOW).map(usize::to_string).collect();
     let more = lines.len().saturating_sub(SHOW);
-    let more = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+    let more = if more > 0 {
+        format!(" (+{more} more)")
+    } else {
+        String::new()
+    };
     let noun = if lines.len() == 1 { "Line" } else { "Lines" };
     format!(
         "{noun} {}{more} truncated to {MAX_LINE_CHARS} chars.",
@@ -493,7 +456,10 @@ fn data_line_text(line: &str) -> (String, bool) {
         (line.to_string(), false)
     } else {
         (
-            format!("{}...", line.chars().take(MAX_LINE_CHARS).collect::<String>()),
+            format!(
+                "{}...",
+                line.chars().take(MAX_LINE_CHARS).collect::<String>()
+            ),
             true,
         )
     }
@@ -514,7 +480,6 @@ fn resolve_start_line(input: &Value) -> Result<usize, String> {
         _ => Err("parameter 'start_line' must be an integer >= 1".into()),
     }
 }
-
 
 enum WorkspaceBytes {
     Bytes(Vec<u8>),
@@ -627,8 +592,6 @@ fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,10 +607,7 @@ mod tests {
     }
 
     fn page_lines(result: &ToolCallResult) -> Vec<String> {
-        result
-            .data
-            .as_ref()
-            .unwrap()["lines"]
+        result.data.as_ref().unwrap()["lines"]
             .as_array()
             .unwrap()
             .iter()
@@ -719,7 +679,14 @@ mod tests {
         }));
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["lines"].as_array().unwrap().len(), 2000);
-        assert!(data["message"].as_str().unwrap().contains("start_line=2001"), "{}", data["message"]);
+        assert!(
+            data["message"]
+                .as_str()
+                .unwrap()
+                .contains("start_line=2001"),
+            "{}",
+            data["message"]
+        );
     }
 
     #[test]
@@ -741,7 +708,6 @@ mod tests {
         );
         assert!(data["lines"][0].is_string());
     }
-
 }
 
 /// read paging and tool chains (merged from phase2_gate, WP-207).

@@ -141,6 +141,23 @@ fn engines_json_off_keeps_lsp_tools() {
         .unwrap();
     let ide = litecode::ide_base::IdeBaseHandle::open(root, std::sync::Arc::new(engines.clone()))
         .expect("ide");
+    let permission =
+        litecode::permission::PermissionEngine::resolver(resolved.clone(), "default", 0);
+    let context = litecode::context_pipeline::Context {
+        cwd: root.to_path_buf(),
+        workspace_paths: litecode::config::WorkspacePaths::for_legacy_root(root),
+        agents_md: None,
+        claude_md: None,
+    };
+    let host = Arc::new(litecode::tools::code::CodeToolHost::new(
+        permission,
+        context,
+        "default",
+        litecode::permission::deny_permission_sink(),
+        root.join(".litecode"),
+        litecode::tool::write_lock::process_write_lock(),
+        None,
+    ));
     let runtime = litecode::runtime::RuntimeHandle::new(
         resolved,
         "default".into(),
@@ -151,24 +168,27 @@ fn engines_json_off_keeps_lsp_tools() {
         Arc::new(std::sync::atomic::AtomicU64::new(0)),
         root.join("global.db"),
     );
-    let tools = rt.block_on(build_tool_list(
-        &runtime,
-        "default",
-        0,
-        tokio_util::sync::CancellationToken::new(),
-        "test-parent-session",
-        Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            String::new(),
-        )),
-        None,
-    ))
-    .expect("build tool list");
-    assert!(
-        tools.iter().any(|t| t.name() == "go_to_definition"),
-        "D2: LSP card is bound and listed even when the engine is off"
-    );
-    assert!(tools.iter().any(|t| t.name() == "hover"));
+    let tools = rt
+        .block_on(build_tool_list(
+            &runtime,
+            "default",
+            0,
+            tokio_util::sync::CancellationToken::new(),
+            "test-parent-session",
+            Arc::new(SessionManager::new_for_test(
+                Arc::new(TurnGuard::new()),
+                String::new(),
+            )),
+            Some(host),
+        ))
+        .expect("build tool list");
+    let transport = tools
+        .iter()
+        .find(|tool| tool.name() == "run_code")
+        .expect("LSP card must bundle into run_code even when the engine is off");
+    let bindings = transport.code_bindings().expect("code bindings");
+    assert!(bindings.iter().any(|name| name == "go_to_definition"));
+    assert!(bindings.iter().any(|name| name == "hover"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -687,8 +707,10 @@ fn edit_fix_must_not_echo_previous_lsp_error() {
         .and_then(|m| m.as_str())
         .unwrap_or("")
         .to_string();
-    let fixed_note = format!("{fixed_lsp}
-{fixed_msg}");
+    let fixed_note = format!(
+        "{fixed_lsp}
+{fixed_msg}"
+    );
     assert!(
         !fixed_note.contains("mock broken marker"),
         "fixed edit must not echo the previous LSP error: {fixed_note}"

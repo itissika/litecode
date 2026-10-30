@@ -105,21 +105,29 @@ impl Tool for SessionSearchTool {
         "session_search"
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "What to find in past session transcripts. Literal words or a phrase. A multi-word query matches rows that contain most of those words (a literal phrase matches verbatim). Separate alternatives with | (any may match, e.g. 'retry|重试'); matching is case-insensitive and literal, so separators count. The current session's live context window is never searched."
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description =
+            crate::tools::description_text(include_str!("descriptions/session_search.md"));
+        let input_schema = {
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "What to find in past session transcripts. Literal words or a phrase. A multi-word query matches rows that contain most of those words (a literal phrase matches verbatim). Separate alternatives with | (any may match, e.g. 'retry|重试'); matching is case-insensitive and literal, so separators count. The current session's live context window is never searched."
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session scope: full id, unique prefix, or the handle shown in a result."
+                    }
                 },
-                "session_id": {
-                    "type": "string",
-                    "description": "Optional session scope: full id, unique prefix, or the handle shown in a result."
-                }
-            },
-            "required": ["query"]
+                "required": ["query"]
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
     }
 
@@ -150,10 +158,6 @@ impl Tool for SessionSearchTool {
                 session: None,
             },
         )
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/session_search.md"))
     }
 
     fn timeout(&self) -> Option<std::time::Duration> {

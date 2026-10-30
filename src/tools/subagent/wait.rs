@@ -189,20 +189,28 @@ impl Tool for SubagentWaitTool {
         "subagent_wait"
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "ids": {
-                    "type": "array",
-                    "items": { "type": "string" },
-                    "description": "Optional child_session_ids. Omit to snapshot all currently running children."
-                },
-                "count": {
-                    "type": "integer",
-                    "description": "Number of selected child turns to await. Omit to await all selected turns."
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description =
+            crate::tools::description_text(include_str!("../descriptions/subagent_wait.md"));
+        let input_schema = {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional child_session_ids. Omit to snapshot all currently running children."
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of selected child turns to await. Omit to await all selected turns."
+                    }
                 }
-            }
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
     }
 
@@ -221,10 +229,6 @@ impl Tool for SubagentWaitTool {
 
     fn call_inner(&self, _input: Value) -> ToolCallResult {
         ToolCallResult::error("subagent_wait must be invoked via execute (async tool path)")
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("../descriptions/subagent_wait.md"))
     }
 
     fn timeout(&self) -> Option<std::time::Duration> {

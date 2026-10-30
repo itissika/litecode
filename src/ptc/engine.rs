@@ -7,8 +7,8 @@ use std::ffi::c_void;
 use std::future::Future;
 use std::pin::pin;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread;
 use std::time::Duration;
@@ -20,7 +20,8 @@ use futures_util::future::{Either, select};
 use rquickjs::context::EvalOptions;
 use rquickjs::prelude::{Async, Rest};
 use rquickjs::{
-    AsyncContext, AsyncRuntime, Ctx, Error, Exception, Function, Object, Persistent, Promise, Value,
+    AsyncContext, AsyncRuntime, Ctx, Error, Exception, Function, IntoJs, Object, Persistent,
+    Promise, Value,
 };
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
@@ -201,21 +202,23 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     {
         let rejections = Arc::clone(&rejections);
         runtime
-            .set_host_promise_rejection_tracker(Some(Box::new(move |_ctx, _promise, reason, is_handled| {
-                let mut state = rejections.lock().expect("rejection lock");
-                if is_handled {
-                    state.count = state.count.saturating_sub(1);
-                    if state.count == 0 {
-                        state.first = None;
+            .set_host_promise_rejection_tracker(Some(Box::new(
+                move |_ctx, _promise, reason, is_handled| {
+                    let mut state = rejections.lock().expect("rejection lock");
+                    if is_handled {
+                        state.count = state.count.saturating_sub(1);
+                        if state.count == 0 {
+                            state.first = None;
+                        }
+                        return;
                     }
-                    return;
-                }
-                state.count += 1;
-                if state.first.is_none() {
-                    let message = boundary::describe(&reason).message;
-                    state.first = Some(truncate_chars(&message, 200));
-                }
-            })))
+                    state.count += 1;
+                    if state.first.is_none() {
+                        let message = boundary::describe(&reason).message;
+                        state.first = Some(truncate_chars(&message, 200));
+                    }
+                },
+            )))
             .await;
     }
 
@@ -397,10 +400,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
         let state = rejections.lock().expect("rejection lock");
         if state.count > 0 {
             let first = state.first.as_deref().unwrap_or("rejection");
-            let note = format!(
-                "unhandled promise rejection ({}): {}",
-                state.count, first
-            );
+            let note = format!("unhandled promise rejection ({}): {}", state.count, first);
             let _ = output.borrow_mut().push(LogLevel::Warn, note);
         }
     }
@@ -716,12 +716,16 @@ fn install_libs(ctx: &Ctx<'_>) -> Result<(), Failure> {
 fn install_fs<'js>(ctx: &Ctx<'js>, root: &std::path::Path) -> Result<(), Failure> {
     let object = Object::new(ctx.clone()).map_err(|error| Failure::internal(error.to_string()))?;
     let fail = |error: rquickjs::Error| Failure::internal(error.to_string());
-    let path_arg = |ctx: &Ctx<'_>, args: &Rest<Value<'_>>, name: &str| -> rquickjs::Result<String> {
-        match args.0.first().and_then(|value| value.as_string()) {
-            Some(text) if args.0.len() == 1 => text.to_string(),
-            _ => Err(boundary::throw_type(ctx, &format!("fs.{name} takes one path string"))),
-        }
-    };
+    let path_arg =
+        |ctx: &Ctx<'_>, args: &Rest<Value<'_>>, name: &str| -> rquickjs::Result<String> {
+            match args.0.first().and_then(|value| value.as_string()) {
+                Some(text) if args.0.len() == 1 => text.to_string(),
+                _ => Err(boundary::throw_type(
+                    ctx,
+                    &format!("fs.{name} takes one path string"),
+                )),
+            }
+        };
     for name in ["ls", "stat"] {
         let root = root.to_path_buf();
         let function = Function::new(
@@ -803,7 +807,49 @@ fn install_namespace(
     for binding in &namespace.functions {
         install_binding(ctx, &object, namespace, binding, shared)?;
     }
-    define_const(ctx, &namespace.name, object)
+    let value = unknown_tool_proxy(ctx, object)?;
+    define_const(ctx, &namespace.name, value)
+}
+
+/// Unknown tools should fail with a named TypeError, not V8's bare
+/// "not a function". Proxy known members through unchanged; for an unknown
+/// identifier return a function that throws with the attempted tool path.
+fn unknown_tool_proxy<'js>(ctx: &Ctx<'js>, target: Object<'js>) -> Result<Value<'js>, Failure> {
+    const FACTORY: &str = r#"
+        (target) => {
+            const blocked = new Set([
+                "then", "toJSON", "toString", "valueOf", "inspect", "constructor"
+            ]);
+            const wrap = (value, path) => {
+                if (value === null || typeof value !== "object" || Array.isArray(value)) {
+                    return value;
+                }
+                return new Proxy(value, {
+                    get(target, property, receiver) {
+                        if (
+                            typeof property === "string" &&
+                            !(property in target) &&
+                            !blocked.has(property)
+                        ) {
+                            return function () {
+                                throw new TypeError(
+                                    "tool '" + path + property + "' not found"
+                                );
+                            };
+                        }
+                        return Reflect.get(target, property, receiver);
+                    }
+                });
+            };
+            return wrap(target, "");
+        }
+    "#;
+    let factory = ctx
+        .eval::<Function<'js>, _>(FACTORY)
+        .map_err(|error| Failure::internal(error.to_string()))?;
+    factory
+        .call::<_, Value<'js>>((target,))
+        .map_err(|error| Failure::internal(error.to_string()))
 }
 
 /// A dotted binding name nests under the namespace: `suite.member` becomes
@@ -939,6 +985,7 @@ async fn invoke<'js>(
         [one] => match boundary::from_js_with(
             one,
             boundary::UndefinedPolicy::Strip,
+            boundary::NonFinitePolicy::Reject,
             &mut boundary::DroppedUndefined::default(),
         ) {
             Ok(json) => json,
@@ -954,19 +1001,22 @@ async fn invoke<'js>(
             // in call order. A single argument is still that value alone.
             let mut items = Vec::with_capacity(many.len());
             for arg in many {
-                items.push(match boundary::from_js_with(
-                    arg,
-                    boundary::UndefinedPolicy::Strip,
-                    &mut boundary::DroppedUndefined::default(),
-                ) {
-                    Ok(json) => json,
-                    Err(BoundaryError::Illegal(message)) => {
-                        return Err(boundary::throw_type(&ctx, &message));
-                    }
-                    Err(BoundaryError::Thrown(thrown)) => {
-                        return Err(boundary::throw_message(&ctx, &thrown.message));
-                    }
-                });
+                items.push(
+                    match boundary::from_js_with(
+                        arg,
+                        boundary::UndefinedPolicy::Strip,
+                        boundary::NonFinitePolicy::Reject,
+                        &mut boundary::DroppedUndefined::default(),
+                    ) {
+                        Ok(json) => json,
+                        Err(BoundaryError::Illegal(message)) => {
+                            return Err(boundary::throw_type(&ctx, &message));
+                        }
+                        Err(BoundaryError::Thrown(thrown)) => {
+                            return Err(boundary::throw_message(&ctx, &thrown.message));
+                        }
+                    },
+                );
             }
             Json::from_array(items)
         }
@@ -1034,7 +1084,15 @@ fn raise_host_error(ctx: &Ctx<'_>, error: super::HostError, tool: &str, seq: u64
             code,
             details,
             retryable,
-        } => throw_tool_error(ctx, &error.message, &code, details.as_ref(), retryable, tool, seq),
+        } => throw_tool_error(
+            ctx,
+            &error.message,
+            &code,
+            details.as_ref(),
+            retryable,
+            tool,
+            seq,
+        ),
     }
 }
 
@@ -1156,8 +1214,12 @@ fn accept_value(
     output_limit: usize,
 ) -> ProgramEnd {
     let mut dropped = boundary::DroppedUndefined::default();
-    let converted =
-        boundary::from_js_with(value, boundary::UndefinedPolicy::StripOrNull, &mut dropped);
+    let converted = boundary::from_js_with(
+        value,
+        boundary::UndefinedPolicy::StripOrNull,
+        boundary::NonFinitePolicy::Null,
+        &mut dropped,
+    );
     output.borrow_mut().set_dropped_undefined(dropped);
     match converted {
         Err(BoundaryError::Illegal(message)) => ProgramEnd::Failure(Failure::illegal(message)),
@@ -1296,7 +1358,9 @@ fn classify_value<'js>(
         failure.uncaught_type_error = true;
         return ProgramEnd::Failure(failure.locate_runtime(source_lines));
     }
-    ProgramEnd::Failure(Failure::exception(thrown.message, thrown.stack).locate_runtime(source_lines))
+    ProgramEnd::Failure(
+        Failure::exception(thrown.message, thrown.stack).locate_runtime(source_lines),
+    )
 }
 
 fn tool_error_info<'js>(
@@ -1308,21 +1372,26 @@ fn tool_error_info<'js>(
         return None;
     }
     let object = value.as_object()?;
-    let code = object.get::<_, String>("code").unwrap_or_else(|_| "internal".into());
+    let code = object
+        .get::<_, String>("code")
+        .unwrap_or_else(|_| "internal".into());
     let tool = object.get::<_, String>("tool").unwrap_or_default();
     let seq = object
         .get::<_, f64>("seq")
         .ok()
         .map(|number| number as u64)
         .unwrap_or(0);
-    let details = object.get::<_, Value<'_>>("details").ok().and_then(|details| {
-        if details.is_undefined() || details.is_null() {
-            return None;
-        }
-        boundary::from_js(&details)
-            .ok()
-            .map(|json| json.into_value())
-    });
+    let details = object
+        .get::<_, Value<'_>>("details")
+        .ok()
+        .and_then(|details| {
+            if details.is_undefined() || details.is_null() {
+                return None;
+            }
+            boundary::from_js(&details)
+                .ok()
+                .map(|json| json.into_value())
+        });
     Some(super::ToolErrorInfo {
         code,
         tool,
@@ -1370,7 +1439,11 @@ fn seal_latched_stack(end: ProgramEnd, faults: &Faults) -> ProgramEnd {
             "stack overflow",
             failure.stack,
         )),
-        _ => ProgramEnd::Failure(Failure::resource(ResourceKind::Stack, "stack overflow", None)),
+        _ => ProgramEnd::Failure(Failure::resource(
+            ResourceKind::Stack,
+            "stack overflow",
+            None,
+        )),
     }
 }
 
@@ -1576,7 +1649,10 @@ fn eval_object<'js>(ctx: &Ctx<'js>, source: &str) -> Result<Object<'js>, Failure
     }
 }
 
-fn define_const<'js>(ctx: &Ctx<'js>, name: &str, value: Object<'js>) -> Result<(), Failure> {
+fn define_const<'js, T>(ctx: &Ctx<'js>, name: &str, value: T) -> Result<(), Failure>
+where
+    T: IntoJs<'js>,
+{
     ctx.globals()
         .set("__litecode_slot", value)
         .map_err(|error| Failure::internal(error.to_string()))?;
@@ -1691,10 +1767,7 @@ fn format_debug(value: &Value<'_>, depth: usize, stack: &mut Vec<usize>) -> Stri
         let mut extra = 0usize;
         for (index, (key, child)) in object.props::<String, Value<'_>>().flatten().enumerate() {
             if index < 20 {
-                parts.push(format!(
-                    "{key}: {}",
-                    format_debug(&child, depth + 1, stack)
-                ));
+                parts.push(format!("{key}: {}", format_debug(&child, depth + 1, stack)));
             } else {
                 extra += 1;
             }
@@ -1753,11 +1826,11 @@ mod settle_tests {
             }
             _ => panic!("expected the returned value to survive a drain timeout"),
         }
-        assert!(
-            output.borrow().logs().iter().any(|entry| {
-                entry.message.contains("program budget expired while draining")
-            })
-        );
+        assert!(output.borrow().logs().iter().any(|entry| {
+            entry
+                .message
+                .contains("program budget expired while draining")
+        }));
     }
 
     #[test]
@@ -1785,4 +1858,3 @@ mod settle_tests {
         }
     }
 }
-

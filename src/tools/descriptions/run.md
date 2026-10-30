@@ -1,5 +1,0 @@
-Run one shell command. Resolves `id`, `exit_code` (int or `null` if still running), `output` (stdout plus truncation/status notes), `stderr` (stderr plus notes), `shell`, and optional `message`. Foreground ~30s then backgrounds with `exit_code: null`—continue with `tools.wait` / `tools.kill`. The exit code belongs to the shell process, not to its output: if a backgrounded descendant keeps the pipe open, the call returns at the exit and `output` says `still draining` with the full log path. cwd is workspace root; chain with `&&` when needed. Non-zero `exit_code` still resolves—branch in-program. Parallel `run` via `Promise.all` is truly concurrent. Under Git Bash, MSYS may rewrite POSIX-looking args like `/c`; use `//c` or `MSYS_NO_PATHCONV=1`. A path-conversion hint is reported in `message` and does not change `exit_code`.
-Example:
-const test = await tools.run({ command: "cargo test -q --lib a" });
-const done = test.exit_code === null ? await tools.wait({ id: test.id, sec: 60 }) : test;
-return { exit_code: done.exit_code, output: done.output };

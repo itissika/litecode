@@ -528,20 +528,23 @@ impl Tool for KnowledgeTool {
         "knowledge"
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Empty opens the board. Otherwise one command: list, refs, check, create, or rename. Quote a key or folder that contains spaces."
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description = crate::tools::description_text(include_str!("descriptions/knowledge.md"));
+        let input_schema = {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Empty opens the board. Otherwise one command: list, refs, check, create, or rename. Quote a key or folder that contains spaces."
+                    }
                 }
-            }
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/knowledge.md"))
     }
 
     fn is_concurrency_safe(&self, input: &Value) -> bool {
@@ -784,12 +787,4 @@ fn spill(workspace: &Path, rest: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-
-    
-    
-
-}
+mod tests {}

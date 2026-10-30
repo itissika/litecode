@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use crate::context_pipeline::Context;
 use crate::session::manager::SessionManager;
 use crate::session::memory::{
     MEMORY_MAX_BATCH, MEMORY_MAX_QUERY_CHARS, MemoryEntry, MemoryKind, MemoryReject,
@@ -110,43 +109,6 @@ impl Tool for MemoryListTool {
         crate::tool::ToolSurface::Code
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Optional case-insensitive substring; matches entry text only. Max 100 characters."
-                },
-                "kind": {
-                    "type": "string",
-                    "enum": KIND_NAMES,
-                    "description": "Optional kind filter."
-                }
-            }
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "entries": {
-                    "type": "array",
-                    "items": entry_data_schema(),
-                    "description": "Current entries, in insertion order."
-                },
-                "count": { "type": "integer", "description": "Returned (filtered) entries." },
-                "total": { "type": "integer", "description": "Entries in the whole session memory." },
-                "limit": { "type": "integer", "description": "Maximum entries the session can hold." },
-                "total_chars": { "type": "integer", "description": "Characters across all entry texts." }
-            },
-            "required": ["entries", "count", "total", "limit", "total_chars"]
-        }))
-    }
-
     fn execute(
         &self,
         input: Value,
@@ -165,10 +127,6 @@ impl Tool for MemoryListTool {
         code_surface_only()
     }
 
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/memory_list.md"))
-    }
-
     fn timeout(&self) -> Option<std::time::Duration> {
         Some(std::time::Duration::from_secs(10))
     }
@@ -181,55 +139,6 @@ impl Tool for MemoryUpsertTool {
 
     fn surface(&self) -> crate::tool::ToolSurface {
         crate::tool::ToolSurface::Code
-    }
-
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "entries": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": MEMORY_MAX_BATCH,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                            "id": {
-                                "type": "string",
-                                "description": "Optional existing id (m1, m2, ...). Omit to add, or to update the entry with the same text."
-                            },
-                            "text": {
-                                "type": "string",
-                                "description": "Fact/preference/decision/constraint, trimmed. 1-200 characters; duplicate text updates the existing entry."
-                            },
-                            "kind": {
-                                "type": "string",
-                                "description": "Optional: fact, preference, decision, constraint. Defaults to fact for new entries; keeps the current kind on update."
-                            }
-                        },
-                        "required": ["text"]
-                    }
-                }
-            },
-            "required": ["entries"]
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "added": { "type": "array", "items": { "type": "string" }, "description": "New ids." },
-                "updated": { "type": "array", "items": { "type": "string" }, "description": "Updated ids." },
-                "rejected": { "type": "array", "items": rejected_data_schema() },
-                "count": { "type": "integer", "description": "Entries after the batch." },
-                "total_chars": { "type": "integer", "description": "Characters after the batch." }
-            },
-            "required": ["added", "updated", "rejected", "count", "total_chars"]
-        }))
     }
 
     fn execute(
@@ -251,10 +160,6 @@ impl Tool for MemoryUpsertTool {
         code_surface_only()
     }
 
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/memory_upsert.md"))
-    }
-
     fn timeout(&self) -> Option<std::time::Duration> {
         Some(std::time::Duration::from_secs(10))
     }
@@ -267,36 +172,6 @@ impl Tool for MemoryDeleteTool {
 
     fn surface(&self) -> crate::tool::ToolSurface {
         crate::tool::ToolSurface::Code
-    }
-
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "ids": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": MEMORY_MAX_BATCH,
-                    "items": { "type": "string" },
-                    "description": "Entry ids to delete (m1, m2, ...)."
-                }
-            },
-            "required": ["ids"]
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "deleted": { "type": "array", "items": { "type": "string" }, "description": "Deleted ids." },
-                "rejected": { "type": "array", "items": rejected_data_schema() },
-                "count": { "type": "integer", "description": "Entries after the batch." }
-            },
-            "required": ["deleted", "rejected", "count"]
-        }))
     }
 
     fn execute(
@@ -316,10 +191,6 @@ impl Tool for MemoryDeleteTool {
 
     fn call_inner(&self, _input: Value) -> ToolCallResult {
         code_surface_only()
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/memory_delete.md"))
     }
 
     fn timeout(&self) -> Option<std::time::Duration> {
@@ -555,36 +426,6 @@ fn rejected_json(items: &[MemoryReject]) -> Value {
             })
             .collect(),
     )
-}
-
-fn entry_data_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "id": { "type": "string" },
-            "text": { "type": "string" },
-            "kind": { "type": "string", "enum": KIND_NAMES },
-            "updated_at": { "type": "integer" }
-        },
-        "required": ["id", "text", "kind", "updated_at"]
-    })
-}
-
-fn rejected_data_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "index": { "type": "integer", "description": "0-based input item index." },
-            "id": { "type": "string" },
-            "reason": {
-                "type": "string",
-                "description": "empty_text | text_too_long | invalid_kind | invalid_id | unknown_id | limit_exceeded."
-            }
-        },
-        "required": ["index", "reason"]
-    })
 }
 
 fn coded(code: &str, message: impl Into<String>) -> ToolCallResult {

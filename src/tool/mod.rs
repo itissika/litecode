@@ -2,8 +2,11 @@ pub mod agent_bindings;
 pub mod authorize;
 pub mod availability;
 pub mod capability;
-pub mod code_manifest;
+pub mod code_contract;
+pub mod code_sdk;
 pub mod coords;
+pub mod custom_spec;
+pub mod dynamic_contract;
 pub mod executor;
 pub mod file_identity;
 pub mod outcome;
@@ -16,15 +19,10 @@ pub mod run_scope;
 pub mod schema_validate;
 pub mod signal;
 pub mod snippet;
-pub mod spec;
 pub mod trait_;
 pub mod write_lock;
 
-#[cfg(test)]
-mod sdk_snapshot;
-
 pub use authorize::{AuthResult, authorize};
-pub use code_manifest::render_code_tool_description;
 pub use coords::{
     FILE_LINE_PREFIX_HINT, attach_offset_footer, format_file_line, format_file_window_footer,
     format_line_label, format_line_list, format_offset_done, format_offset_more, format_path_lines,
@@ -39,6 +37,5 @@ pub use schema_validate::{
     unknown_top_level_properties,
 };
 pub use snippet::{SnippetSection, format_snippet_sections};
-pub use spec::{CodeFunctionSpec, DirectFunctionSpec, FunctionSpec};
-pub use trait_::{Tool, ToolSurface};
+pub use trait_::{DirectToolSpec, DynamicCodeSpec, Tool, ToolSurface};
 pub use write_lock::{ResourceKey, WorkspaceWriteLock};

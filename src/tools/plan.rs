@@ -52,21 +52,28 @@ impl Tool for PlanTool {
         "plan"
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["create", "finish"],
-                    "description": "create: propose a plan (user Approve/Reject). finish: clear the active plan pointer."
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        let description = crate::tools::description_text(include_str!("descriptions/plan.md"));
+        let input_schema = {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "finish"],
+                        "description": "create: propose a plan (user Approve/Reject). finish: clear the active plan pointer."
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Short summary of the plan you intend to write (required for create). Shown to the user for Approve/Reject; not the plan body."
+                    }
                 },
-                "summary": {
-                    "type": "string",
-                    "description": "Short summary of the plan you intend to write (required for create). Shown to the user for Approve/Reject; not the plan body."
-                }
-            },
-            "required": ["action"]
+                "required": ["action"]
+            })
+        };
+        Some(crate::tool::DirectToolSpec {
+            description,
+            input_schema,
         })
     }
 
@@ -86,10 +93,6 @@ impl Tool for PlanTool {
         let sink = self.permission_sink();
         let cancel = execution.cancel.clone();
         Box::pin(async move { self.run(&input, &cancel, sink.as_deref()) })
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/plan.md"))
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
@@ -350,5 +353,4 @@ mod tests {
         );
         assert!(load_task_state(&manager, &sid).active_plan.is_none());
     }
-
 }

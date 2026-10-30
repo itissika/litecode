@@ -49,16 +49,12 @@ pub enum WorkspaceError {
     PreviewOffset,
     #[error("could not read sqlite database: {0}")]
     Sqlite(String),
-    #[error("opening with the system app is not available on this host")]
-    OpenUnsupported,
     #[error("showing in the file manager is not available on this host")]
     RevealUnsupported,
     #[error("not an image: {0}")]
     MediaUnsupported(String),
     #[error("{0}")]
     MediaFailed(String),
-    #[error("{0}")]
-    OpenFailed(String),
     #[error("{0}")]
     RevealFailed(String),
     #[error("invalid move: {0}")]
@@ -232,30 +228,6 @@ impl WorkspaceService {
         let rel = sandbox.rel_path(&abs)?;
         let page = super::sqlite_preview::preview(&abs, table, offset)?;
         Ok((rel, page))
-    }
-
-    pub fn open_with_default_app(&self, path: &str) -> Result<(), WorkspaceError> {
-        let sandbox = self.sandbox();
-        let abs = sandbox.resolve(path)?;
-        if !abs.exists() {
-            return Err(WorkspaceError::NotFound(
-                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
-            ));
-        }
-        if !abs.is_file() {
-            return Err(WorkspaceError::NotFile(
-                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
-            ));
-        }
-        match super::open_host::open_with_default_app(&abs) {
-            Ok(()) => Ok(()),
-            Err(super::open_host::OpenHostError::Unsupported) => {
-                Err(WorkspaceError::OpenUnsupported)
-            }
-            Err(super::open_host::OpenHostError::Failed(message)) => {
-                Err(WorkspaceError::OpenFailed(message))
-            }
-        }
     }
 
     /// Reveal a file or folder in the host file manager (Windows only).

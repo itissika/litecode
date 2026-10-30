@@ -76,6 +76,8 @@ pub(super) struct RunReport {
     pub uncaught_type_error: bool,
     /// `dropped undefined at …` head line (WP-206 #7).
     pub dropped_undefined: Option<String>,
+    /// `coerced non-finite number at ... to null` head line.
+    pub coerced_non_finite: Option<String>,
 }
 
 pub(super) fn render_model_view(report: &RunReport) -> String {
@@ -948,6 +950,9 @@ fn byte_fallback(
 
 fn render_header_block(report: &RunReport) -> String {
     let mut parts = vec![header_line(report)];
+    if let Some(line) = &report.coerced_non_finite {
+        parts.push(line.clone());
+    }
     if report.failure_kind == Some(FailureKind::Exception)
         && let Some(stack) = short_stack(report.failure_stack.as_deref())
     {
@@ -1336,6 +1341,7 @@ mod tests {
             tool_error: None,
             uncaught_type_error: false,
             dropped_undefined: None,
+            coerced_non_finite: None,
         }
     }
 
@@ -1439,6 +1445,19 @@ mod tests {
         let text = render_model_view(&report);
         let head = text.split("result:").next().unwrap_or("");
         assert!(head.contains("dropped undefined at a.b, c[2]"), "{text}");
+    }
+
+    #[test]
+    fn coerced_non_finite_line_sits_in_the_success_head() {
+        let mut report = report();
+        report.value = Some(Value::Null);
+        report.coerced_non_finite = Some("coerced non-finite number at n to null".into());
+        let text = render_model_view(&report);
+        let head = text.split("result:").next().unwrap_or("");
+        assert!(
+            head.contains("coerced non-finite number at n to null"),
+            "{text}"
+        );
     }
 
     #[test]

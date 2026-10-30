@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use crate::config::global_db::tools::{
     non_transport_name_rejection, reserved_command_name_rejection,
@@ -13,19 +13,18 @@ use crate::runtime::RuntimeHandle;
 use crate::session::manager::SessionManager;
 use crate::tool::capability::{CapabilitySource, MemberSpec, capability_catalog};
 use crate::tool::project::project_tools;
-use crate::tool::spec::{CodeFunctionSpec, FunctionSpec};
 use crate::tool::trait_::Tool;
 use crate::tools::{
+    apply_edits::ApplyEditsTool,
     ask_user::AskUserTool,
     browser,
     code::{CodeTool, CodeToolHost},
     code_search::CodeSearchTool,
-    kill::KillTool,
     custom::CustomTool,
-    apply_edits::ApplyEditsTool,
     edit::EditTool,
     glob::GlobTool,
     grep::GrepTool,
+    kill::KillTool,
     knowledge::KnowledgeTool,
     litecode_workspace::LitecodeWorkspaceTool,
     lsp,
@@ -34,13 +33,13 @@ use crate::tools::{
     plan::PlanTool,
     read::ReadTool,
     run::RunTool,
-    wait::WaitTool,
     session_search::SessionSearchTool,
     subagent::{
         SubagentDeleteTool, SubagentLaunchTool, SubagentListTool, SubagentSendTool,
         SubagentStopTool, SubagentWaitTool,
     },
     todo::TodoWriteTool,
+    wait::WaitTool,
     webfetch::WebFetchTool,
     websearch::WebSearchTool,
     write::WriteTool,
@@ -143,20 +142,26 @@ impl Tool for ExposedCodeTool {
         self.inner.is_code_transport()
     }
 
-    fn schema(&self) -> serde_json::Value {
-        self.inner.schema()
+    fn direct_spec(
+        &self,
+        ctx: &crate::context_pipeline::Context,
+    ) -> Option<crate::tool::DirectToolSpec> {
+        self.inner.direct_spec(ctx)
+    }
+
+    fn dynamic_code_spec(&self) -> Option<crate::tool::DynamicCodeSpec> {
+        self.inner.dynamic_code_spec()
     }
 
     fn prepare_input(&self, input: &mut serde_json::Value) {
         self.inner.prepare_input(input);
     }
 
-    fn schema_arguments<'a>(&self, input: &'a serde_json::Value) -> std::borrow::Cow<'a, serde_json::Value> {
+    fn schema_arguments<'a>(
+        &self,
+        input: &'a serde_json::Value,
+    ) -> std::borrow::Cow<'a, serde_json::Value> {
         self.inner.schema_arguments(input)
-    }
-
-    fn data_schema(&self) -> Option<serde_json::Value> {
-        self.inner.data_schema()
     }
 
     fn call(&self, input: serde_json::Value) -> crate::types::ToolCallResult {
@@ -170,7 +175,9 @@ impl Tool for ExposedCodeTool {
     fn call_async(
         &self,
         input: serde_json::Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::types::ToolCallResult> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::types::ToolCallResult> + Send + '_>,
+    > {
         self.inner.call_async(input)
     }
 
@@ -178,12 +185,10 @@ impl Tool for ExposedCodeTool {
         &self,
         input: serde_json::Value,
         execution: crate::tool::trait_::ToolExecutionContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::types::ToolCallResult> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::types::ToolCallResult> + Send + '_>,
+    > {
         self.inner.execute(input, execution)
-    }
-
-    fn description(&self, ctx: &crate::context_pipeline::Context) -> String {
-        self.inner.description(ctx)
     }
 
     fn timeout(&self) -> Option<std::time::Duration> {
@@ -246,7 +251,11 @@ impl Tool for ExposedCodeTool {
     }
 }
 
-fn custom_member(resolved: &ResolvedConfig, runtime: &RuntimeHandle, member: &str) -> Option<Arc<dyn Tool>> {
+fn custom_member(
+    resolved: &ResolvedConfig,
+    runtime: &RuntimeHandle,
+    member: &str,
+) -> Option<Arc<dyn Tool>> {
     resolved
         .custom_tools()
         .iter()
@@ -344,12 +353,8 @@ fn subagent_tools(
                 Arc::clone(sessions),
                 parent_session_id.to_string(),
             ))),
-            "subagent_wait" => {
-                tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(sessions))))
-            }
-            "subagent_stop" => {
-                tools.push(Arc::new(SubagentStopTool::new(Arc::clone(sessions))))
-            }
+            "subagent_wait" => tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(sessions)))),
+            "subagent_stop" => tools.push(Arc::new(SubagentStopTool::new(Arc::clone(sessions)))),
             "subagent_send" => tools.push(Arc::new(SubagentSendTool::new(
                 runtime.clone(),
                 Arc::clone(sessions),
@@ -359,15 +364,12 @@ fn subagent_tools(
                 Arc::clone(sessions),
                 Arc::clone(&runtime.subagent_hub),
             ))),
-            "subagent_list" => {
-                tools.push(Arc::new(SubagentListTool::new(Arc::clone(sessions))))
-            }
+            "subagent_list" => tools.push(Arc::new(SubagentListTool::new(Arc::clone(sessions)))),
             _ => {}
         }
     }
     tools
 }
-
 
 /// Assemble LLM tool list from available cards + per-agent DB bindings.
 ///
@@ -496,7 +498,6 @@ pub async fn build_tool_list(
     Ok(assemble_projected_tools(tools, code_host))
 }
 
-
 fn assemble_projected_tools(
     tools: Vec<Arc<dyn Tool>>,
     host: Option<Arc<CodeToolHost>>,
@@ -510,21 +511,23 @@ fn assemble_projected_tools(
             "code tool removed from both surfaces"
         );
     }
+    let names = projected.whitelist();
     let mut direct = projected.direct;
     if projected.code_tools.is_empty() {
         return direct;
     }
     let Some(host) = host else {
-        tracing::error!("code surface kept direct: no code host to bind run_code");
-        direct.extend(projected.code_tools);
+        tracing::error!("code tools unavailable: no code host to bind run_code");
         return direct;
     };
-    let names = projected.whitelist.clone();
+    let Some(surface) = projected.code_surface else {
+        tracing::error!("code tools unavailable: JS contract surface was not assembled");
+        return direct;
+    };
     tracing::info!("code mode active: bundling {names:?}");
     direct.push(Arc::new(CodeTool::from_surface(
         projected.code_tools,
-        projected.sdk,
-        names,
+        surface,
         host,
     )));
     direct
@@ -554,20 +557,6 @@ fn strip_reserved_transport_names(tools: Vec<Arc<dyn Tool>>) -> Vec<Arc<dyn Tool
             }
         })
         .collect()
-}
-
-/// Builtins that currently declare a code surface. Admission for the settings
-/// catalog runs on this set; each tool's own `surface` is still the decision.
-pub fn builtin_code_specs() -> Vec<CodeFunctionSpec> {
-    static SPECS: OnceLock<Vec<CodeFunctionSpec>> = OnceLock::new();
-    SPECS
-        .get_or_init(|| {
-            builtin_code_surface_tools()
-                .into_iter()
-                .filter_map(|tool| FunctionSpec::from_tool(tool.as_ref()).ok()?.into_code())
-                .collect()
-        })
-        .clone()
 }
 
 pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
@@ -693,6 +682,20 @@ mod tests {
         list_tools_with(resolved, depth, None)
     }
 
+    fn test_host(resolved: &ResolvedConfig, depth: u32) -> Arc<crate::tools::code::CodeToolHost> {
+        let permission =
+            crate::permission::PermissionEngine::resolver(resolved.clone(), "default", depth);
+        Arc::new(crate::tools::code::CodeToolHost::new(
+            permission,
+            dummy_ctx(),
+            "default",
+            crate::permission::deny_permission_sink(),
+            std::env::temp_dir().join("litecode-registry-code-host"),
+            crate::tool::write_lock::process_write_lock(),
+            None,
+        ))
+    }
+
     fn list_tools_with(
         resolved: &ResolvedConfig,
         depth: u32,
@@ -730,22 +733,24 @@ mod tests {
     #[test]
     fn catalog_definition_collision_does_not_block_other_tools() {
         let mut global = GlobalSettings::default();
-        global.custom_tools.push(crate::config::schema::CustomToolDefinition {
-            name: "hover".into(),
-            description: String::new(),
-            schema: crate::config::schema::ToolSchema {
-                schema_type: "object".into(),
-                properties: serde_json::json!({}),
-                required: Vec::new(),
-            },
-            command: "echo".into(),
-            args: Vec::new(),
-            timeout: 30,
-            rules: Vec::new(),
-            surface: Some(crate::config::schema::CallSurface::Direct),
-            suite: None,
-            output_schema: None,
-        });
+        global
+            .custom_tools
+            .push(crate::config::schema::CustomToolDefinition {
+                name: "hover".into(),
+                description: String::new(),
+                schema: crate::config::schema::ToolSchema {
+                    schema_type: "object".into(),
+                    properties: serde_json::json!({}),
+                    required: Vec::new(),
+                },
+                command: "echo".into(),
+                args: Vec::new(),
+                timeout: 30,
+                rules: Vec::new(),
+                surface: Some(crate::config::schema::CallSurface::Direct),
+                suite: None,
+                output_schema: None,
+            });
         global.agents.insert(
             "default".into(),
             AgentProfile {
@@ -754,34 +759,38 @@ mod tests {
             },
         );
         let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
-        let tools = list_tools(&resolved, 0);
+        let tools = list_tools_with(&resolved, 0, Some(test_host(&resolved, 0)));
         let names: Vec<&str> = tools.iter().map(|tool| tool.name()).collect();
-        assert!(names.contains(&"read"));
+        assert!(names.contains(&"run_code"));
+        let sdk = tools
+            .iter()
+            .find(|tool| tool.name() == "run_code")
+            .unwrap()
+            .direct_spec(&dummy_ctx())
+            .unwrap()
+            .description;
+        assert!(sdk.contains("read(args: ReadInput)"));
     }
 
     #[test]
     fn core_bindings_produce_full_builtin_list() {
         let resolved = test_resolved(default_bindings());
-        let tools = list_tools(&resolved, 0);
+        let host = test_host(&resolved, 0);
+        let tools = list_tools_with(&resolved, 0, Some(host));
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(
             tools.len() >= 9,
-            "expected all core tools from DB bindings, got {}",
+            "expected direct tools plus run_code, got {}",
             tools.len()
         );
-        // WP-197: 默认绑定无旧 shell；有 run / wait / kill。
         assert!(!names.contains(&"bash"));
         assert!(!names.contains(&"wait_shell"));
         assert!(!names.contains(&"kill_shell"));
-        assert!(names.contains(&"run"));
-        // Injected with run. Without a code host they stay on this list;
-        // a host bundles them into run_code and they are not Direct names.
-        assert!(names.contains(&"wait"));
-        assert!(names.contains(&"kill"));
+        for code in ["run", "wait", "kill", "read", "glob", "grep", "memory.list"] {
+            assert!(!names.contains(&code), "code tool {code} leaked direct");
+        }
+        assert!(names.contains(&"run_code"));
         assert!(names.contains(&"todo"));
-        assert!(names.contains(&"memory.list"));
-        assert!(names.contains(&"memory.upsert"));
-        assert!(names.contains(&"memory.delete"));
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"subagent_launch"));
         assert!(names.contains(&"subagent_send"));
@@ -789,10 +798,25 @@ mod tests {
         assert!(names.contains(&"subagent_stop"));
         assert!(names.contains(&"subagent_list"));
         assert!(names.contains(&"subagent_delete"));
-        // D2: session_search is bound and listed even when the semantic
-        // engine is cold; the tool itself falls back to lexical search.
         assert!(names.contains(&"session_search"));
         assert!(names.contains(&"litecode_workspace"));
+        assert!(names.contains(&"ask_user"));
+        assert!(names.contains(&"knowledge"));
+
+        let sdk = tools
+            .iter()
+            .find(|tool| tool.name() == "run_code")
+            .unwrap()
+            .direct_spec(&dummy_ctx())
+            .unwrap()
+            .description;
+        for needle in [
+            "run(args: RunInput)",
+            "read(args: ReadInput)",
+            "upsert(args: MemoryUpsertInput)",
+        ] {
+            assert!(sdk.contains(needle), "missing {needle}");
+        }
     }
 
     #[test]
@@ -800,7 +824,10 @@ mod tests {
         let all = builtin_code_surface_tools();
         let code_names: std::collections::HashSet<String> =
             all.iter().map(|tool| tool.name().to_string()).collect();
-        assert!(code_names.contains("code_search"), "code_search must be a code tool");
+        assert!(
+            code_names.contains("code_search"),
+            "code_search must be a code tool"
+        );
         let projected = project_tools(all);
         let direct_names: std::collections::HashSet<String> = projected
             .direct
@@ -808,24 +835,33 @@ mod tests {
             .map(|tool| tool.name().to_string())
             .collect();
         let overlap: Vec<_> = direct_names.intersection(&code_names).cloned().collect();
-        assert!(overlap.is_empty(), "tool surfaced both direct and code: {overlap:?}");
         assert!(
-            projected.code_tools.iter().any(|tool| tool.name() == "code_search"),
+            overlap.is_empty(),
+            "tool surfaced both direct and code: {overlap:?}"
+        );
+        assert!(
+            projected
+                .code_tools
+                .iter()
+                .any(|tool| tool.name() == "code_search"),
             "code_search must survive code projection"
         );
         assert!(
-            !projected.direct.iter().any(|tool| tool.name() == "code_search"),
+            !projected
+                .direct
+                .iter()
+                .any(|tool| tool.name() == "code_search"),
             "code_search must not remain direct"
         );
     }
 
     #[test]
     fn memory_tools_are_on_the_code_surface() {
-        let specs = builtin_code_specs();
+        let tools = builtin_code_surface_tools();
         for name in ["memory.list", "memory.upsert", "memory.delete"] {
             assert!(
-                specs.iter().any(|spec| spec.name == name),
-                "missing code spec {name}"
+                tools.iter().any(|tool| tool.name() == name),
+                "missing code tool {name}"
             );
         }
     }
@@ -833,38 +869,42 @@ mod tests {
     #[test]
     fn scope_table_controls_subagent_and_depth() {
         let primary = test_resolved(default_bindings());
-        let primary_tools = list_tools(&primary, 0);
+        let primary_tools = list_tools_with(&primary, 0, Some(test_host(&primary, 0)));
         let primary_names: Vec<&str> = primary_tools.iter().map(|tool| tool.name()).collect();
         assert!(primary_names.contains(&"subagent_launch"));
         assert!(primary_names.contains(&"plan"));
+        assert!(primary_names.contains(&"run_code"));
 
         let subagent = test_resolved_role(
             default_bindings(),
             crate::config::schema::AgentRole::Subagent,
         );
-        let subagent_tools = list_tools(&subagent, 0);
-        let subagent_names: Vec<&str> = subagent_tools
-            .iter()
-            .map(|tool| tool.name())
-            .collect();
+        let subagent_tools = list_tools_with(&subagent, 0, Some(test_host(&subagent, 0)));
+        let subagent_names: Vec<&str> = subagent_tools.iter().map(|tool| tool.name()).collect();
         assert!(!subagent_names.contains(&"subagent_launch"));
         assert!(!subagent_names.contains(&"plan"));
         assert!(!subagent_names.contains(&"memory.list"));
-        assert!(subagent_names.contains(&"read"));
-
-        let deep_primary_tools = list_tools(&primary, 1);
-        let deep_primary_names: Vec<&str> = deep_primary_tools
+        let subagent_code = subagent_tools
             .iter()
-            .map(|tool| tool.name())
-            .collect();
+            .find(|tool| tool.name() == "run_code")
+            .expect("subagent code transport");
+        assert!(
+            subagent_code
+                .code_bindings()
+                .unwrap()
+                .iter()
+                .any(|name| name == "read")
+        );
+
+        let deep_primary_tools = list_tools_with(&primary, 1, Some(test_host(&primary, 1)));
+        let deep_primary_names: Vec<&str> =
+            deep_primary_tools.iter().map(|tool| tool.name()).collect();
         assert!(!deep_primary_names.contains(&"subagent_launch"));
         assert!(!deep_primary_names.contains(&"plan"));
-        assert!(deep_primary_names.contains(&"read"));
+        assert!(deep_primary_names.contains(&"run_code"));
 
-        let hidden = test_resolved_role(
-            default_bindings(),
-            crate::config::schema::AgentRole::Hidden,
-        );
+        let hidden =
+            test_resolved_role(default_bindings(), crate::config::schema::AgentRole::Hidden);
         assert!(list_tools(&hidden, 0).is_empty());
     }
 
@@ -970,7 +1010,9 @@ mod tests {
 
     #[test]
     fn code_suite_exposes_namespaced_members_even_with_one_member() {
-        use crate::config::schema::{CallSurface, CustomSuiteDefinition, CustomToolDefinition, ToolSchema};
+        use crate::config::schema::{
+            CallSurface, CustomSuiteDefinition, CustomToolDefinition, ToolSchema,
+        };
 
         let mut bindings = default_bindings();
         bindings.insert(
@@ -1016,16 +1058,25 @@ mod tests {
             },
         );
         let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
-        let names: Vec<String> = list_tools(&resolved, 0)
-            .iter()
-            .map(|tool| tool.name().to_string())
-            .collect();
+        let tools = list_tools_with(&resolved, 0, Some(test_host(&resolved, 0)));
+        let names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
         assert!(
-            names.contains(&"deck.only".to_string()),
+            !names.contains(&"deck.only".to_string()),
             "names: {names:?}"
         );
-        assert!(!names.contains(&"only".to_string()), "names: {names:?}");
-        assert!(!names.contains(&"deck".to_string()), "names: {names:?}");
+        assert!(names.contains(&"run_code".to_string()), "names: {names:?}");
+        let transport = tools
+            .iter()
+            .find(|tool| tool.name() == "run_code")
+            .expect("run_code");
+        let bindings: Vec<String> = transport.code_bindings().unwrap().iter().cloned().collect();
+        assert!(
+            bindings.contains(&"deck.only".to_string()),
+            "bindings: {bindings:?}"
+        );
+        let sdk = transport.direct_spec(&dummy_ctx()).unwrap().description;
+        assert!(sdk.contains("deck: {"), "{sdk}");
+        assert!(sdk.contains("only(args:"), "{sdk}");
     }
 
     #[test]
@@ -1092,9 +1143,9 @@ mod tests {
         let resolved = test_resolved(default_bindings());
         let closed = list_tools(&resolved, 1);
         let closed_names: Vec<&str> = closed.iter().map(|tool| tool.name()).collect();
-        assert!(closed_names.contains(&"read"));
-        assert!(closed_names.contains(&"glob"));
-        assert!(closed_names.contains(&"grep"));
+        assert!(!closed_names.contains(&"read"));
+        assert!(!closed_names.contains(&"glob"));
+        assert!(!closed_names.contains(&"grep"));
         assert!(!closed_names.contains(&"run_code"));
 
         let dir = tempfile::tempdir().unwrap();
@@ -1127,16 +1178,22 @@ mod tests {
             .iter()
             .find(|tool| tool.name() == "run_code")
             .unwrap()
-            .description(&dummy_ctx());
+            .direct_spec(&dummy_ctx())
+            .unwrap()
+            .description;
         assert!(child_sdk.contains("declare const tools"));
-        assert!(child_sdk.contains("[\"run\"]"));
-        assert!(child_sdk.contains("[\"wait\"]"));
-        assert!(child_sdk.contains("[\"kill\"]"));
-        assert!(child_sdk.contains("[\"edit\"]"));
-        assert!(child_sdk.contains("[\"apply_edits\"]"));
-        assert!(!child_sdk.contains("[\"bash\"]"));
-        assert!(!child_sdk.contains("[\"wait_shell\"]"));
-        assert!(!child_sdk.contains("[\"kill_shell\"]"));
+        for needle in [
+            "run(args: RunInput)",
+            "wait(args: WaitInput)",
+            "kill(args: KillInput)",
+            "edit(args: EditInput)",
+            "apply_edits(args: ApplyEditsInput)",
+        ] {
+            assert!(child_sdk.contains(needle), "missing {needle}");
+        }
+        assert!(!child_sdk.contains("bash"));
+        assert!(!child_sdk.contains("wait_shell"));
+        assert!(!child_sdk.contains("kill_shell"));
 
         let mut bindings = default_bindings();
         bindings.get_mut("grep").unwrap().enabled = false;
@@ -1156,12 +1213,18 @@ mod tests {
             .iter()
             .find(|tool| tool.name() == "run_code")
             .expect("run_code")
-            .description(&dummy_ctx());
-        assert!(narrow_sdk.contains("[\"read\"]"));
-        assert!(narrow_sdk.contains("[\"glob\"]"));
-        assert!(narrow_sdk.contains("[\"edit\"]"));
-        assert!(narrow_sdk.contains("[\"write\"]"));
-        assert!(!narrow_sdk.contains("[\"grep\"]"));
+            .direct_spec(&dummy_ctx())
+            .unwrap()
+            .description;
+        for needle in [
+            "read(args: ReadInput)",
+            "glob(args: GlobInput)",
+            "edit(args: EditInput)",
+            "write(args: WriteInput)",
+        ] {
+            assert!(narrow_sdk.contains(needle), "missing {needle}");
+        }
+        assert!(!narrow_sdk.contains("grep(args: GrepInput)"));
         assert_ne!(child_sdk, narrow_sdk);
         let whitelist = narrow_tools
             .iter()
@@ -1183,10 +1246,10 @@ mod tests {
                 "write"
             ]
         );
-        assert!(narrow_sdk.contains("[\"run\"]"));
-        assert!(narrow_sdk.contains("[\"wait\"]"));
-        assert!(narrow_sdk.contains("[\"kill\"]"));
-        assert!(narrow_sdk.contains("[\"apply_edits\"]"));
+        assert!(narrow_sdk.contains("run(args: RunInput)"));
+        assert!(narrow_sdk.contains("wait(args: WaitInput)"));
+        assert!(narrow_sdk.contains("kill(args: KillInput)"));
+        assert!(narrow_sdk.contains("apply_edits(args: ApplyEditsInput)"));
     }
 
     #[test]
@@ -1221,10 +1284,10 @@ mod tests {
             "Direct must be empty for webfetch/websearch-only set: {direct_names:?}"
         );
         assert!(
-            projected.whitelist.iter().any(|n| n == "webfetch")
-                && projected.whitelist.iter().any(|n| n == "websearch"),
+            projected.whitelist().iter().any(|n| n == "webfetch")
+                && projected.whitelist().iter().any(|n| n == "websearch"),
             "Code whitelist must admit both: {:?}",
-            projected.whitelist
+            projected.whitelist()
         );
         assert!(
             projected.rejected.is_empty(),

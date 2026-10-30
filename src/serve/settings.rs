@@ -19,7 +19,6 @@ use crate::config::{CommitAck, DocId};
 use crate::mcp::{McpConnectionPool, McpRunState, McpServerSnapshot, McpToolSchema};
 use crate::serve::state::ServeState;
 use crate::tool::availability::available_tools_payload;
-use crate::tool::registry::builtin_code_specs;
 use crate::types::LitecodeError;
 use crate::workspace::filter::{
     WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView,
@@ -326,10 +325,7 @@ async fn put_agent(
              or pick a model declared in the provider catalog"
         )));
     }
-    match state
-        .settings_writer
-        .write_agent(&id, body.profile)
-    {
+    match state.settings_writer.write_agent(&id, body.profile) {
         Ok(ack) => {
             reload_runtime_after_settings_write(&state, &ack, "agent write");
             ok_json(revision_body(ack))
@@ -397,12 +393,6 @@ async fn get_available_tools(State(state): State<ServeState>) -> Response {
             server_ids,
         )
     };
-    let mut candidates = builtin_code_specs();
-    candidates.extend(resolved.custom_tools().iter().filter_map(|def| {
-        crate::tool::spec::FunctionSpec::from_custom_definition(def)
-            .ok()?
-            .into_code()
-    }));
     let mut statuses = HashMap::from([
         ("code_search".to_string(), code_status),
         ("lsp".to_string(), lsp_status),
@@ -420,7 +410,7 @@ async fn get_available_tools(State(state): State<ServeState>) -> Response {
             },
         );
     }
-    let payload = available_tools_payload(&resolved, candidates, statuses);
+    let payload = available_tools_payload(&resolved, statuses);
     ok_json(payload)
 }
 
@@ -443,16 +433,18 @@ async fn list_custom_tools(State(state): State<ServeState>) -> Response {
         state.settings_writer.list_custom_suites(),
         state.settings_writer.list_workspace_custom_suites(&root),
     ) {
-        (Ok(global), Ok(workspace), Ok(global_suites), Ok(workspace_suites)) => ok_json(serde_json::json!({
-            "global": global,
-            "workspace": workspace,
-            "suites": {
-                "global": global_suites.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
-                "workspace": workspace_suites.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
-            },
-            "diagnostics": crate::tool::availability::custom_tool_diagnostics(&resolved),
-            "code_rejections": crate::tool::availability::code_rejections_for(&resolved),
-        })),
+        (Ok(global), Ok(workspace), Ok(global_suites), Ok(workspace_suites)) => {
+            ok_json(serde_json::json!({
+                "global": global,
+                "workspace": workspace,
+                "suites": {
+                    "global": global_suites.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
+                    "workspace": workspace_suites.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
+                },
+                "diagnostics": crate::tool::availability::custom_tool_diagnostics(&resolved),
+                "code_rejections": crate::tool::availability::code_rejections_for(&resolved),
+            }))
+        }
         (Err(e), _, _, _) | (_, Err(e), _, _) | (_, _, Err(e), _) | (_, _, _, Err(e)) => {
             settings_error(e)
         }

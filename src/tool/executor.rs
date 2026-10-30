@@ -19,8 +19,7 @@ use crate::tool::authorize::{AuthResult, authorize};
 use crate::tool::output;
 use crate::tool::resource_gate::{ToolEffects, process_resource_gate};
 use crate::tool::schema_validate::{
-    check_tool_input, invalid_input_for, parse_tool_arguments, schema_validate,
-    unknown_top_level_properties,
+    check_tool_input, invalid_input_for, parse_tool_arguments, unknown_top_level_properties,
 };
 use crate::tool::trait_::{Tool, ToolExecutionContext, ToolSurface};
 use crate::tool::write_lock::{ResourceKey, WorkspaceWriteLock};
@@ -528,7 +527,7 @@ pub async fn execute_tool_call(
     tool.prepare_input(&mut tool_use_input);
     let schema_input = tool.schema_arguments(&tool_use_input);
 
-    if let Err(msg) = check_tool_input(tool.as_ref(), &schema_input) {
+    if let Err(msg) = check_tool_input(tool.as_ref(), ctx, &schema_input) {
         return present_for_caller(
             &origin,
             ToolCallResult::error_with_kind(
@@ -776,9 +775,16 @@ pub async fn execute_tool_call(
             )
         }
     };
-    let unknown = unknown_top_level_properties(&tool.schema(), &effective_input);
+    let unknown = if matches!(origin.caller, ToolCaller::Code { .. }) {
+        Vec::new()
+    } else {
+        let spec = tool.direct_spec(ctx).unwrap_or_else(|| {
+            panic!("direct tool '{tu_name}' has no direct tool spec");
+        });
+        unknown_top_level_properties(&spec.input_schema, &effective_input)
+    };
     let output = if matches!(origin.caller, ToolCaller::Code { .. }) {
-        enforce_code_output(tool.as_ref(), output)
+        output
     } else if tool.is_code_transport() {
         let output = wire_result(attach_unknown_param_warning(output, &unknown));
         if output.content.len() > crate::tools::code::RUN_CODE_VIEW_MAX_BYTES {
@@ -899,31 +905,6 @@ fn is_js_identifier(name: &str) -> bool {
     };
     (first.is_ascii_alphabetic() || first == '_' || first == '$')
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
-}
-
-fn enforce_code_output(tool: &dyn Tool, result: ToolCallResult) -> ToolCallResult {
-    let success = result.error.is_none()
-        && matches!(result.level, ToolSignalLevel::Ok | ToolSignalLevel::Warning);
-    if !success {
-        return result;
-    }
-    let name = tool.name();
-    let Some(data) = result.data.as_ref() else {
-        let reason = format!("tool '{name}' returned success without data");
-        tracing::error!(tool = %name, "{reason}");
-        return ToolCallResult::error_with_kind(ToolErrorKind::Internal, reason, false);
-    };
-    let Some(schema) = tool.data_schema() else {
-        let reason = format!("tool '{name}' is on the code surface without a data schema");
-        tracing::error!(tool = %name, "{reason}");
-        return ToolCallResult::error_with_kind(ToolErrorKind::Internal, reason, false);
-    };
-    if let Err(error) = schema_validate(&schema, data) {
-        let reason = format!("tool '{name}' returned data that does not match its schema: {error}");
-        tracing::error!(tool = %name, "{reason}");
-        return ToolCallResult::error_with_kind(ToolErrorKind::Internal, reason, false);
-    }
-    result
 }
 
 fn note_settled_call(
@@ -1081,8 +1062,6 @@ pub fn items_from_tool_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
 
     /// 2.6: a blocking tool whose work runs in `spawn_blocking` (the fixed
     /// custom/webfetch pattern) must be interruptible by the pipeline timeout —
@@ -1094,11 +1073,11 @@ mod tests {
             fn name(&self) -> &str {
                 "slow"
             }
-            fn schema(&self) -> serde_json::Value {
-                serde_json::json!({"type": "object", "properties": {}})
-            }
-            fn description(&self, _ctx: &Context) -> String {
-                "blocks for a while".into()
+            fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+                Some(crate::tool::DirectToolSpec {
+                    description: "blocks for a while".into(),
+                    input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                })
             }
             fn timeout(&self) -> Option<Duration> {
                 Some(Duration::from_secs(1))
@@ -1206,11 +1185,11 @@ mod tests {
             fn name(&self) -> &str {
                 "commit"
             }
-            fn schema(&self) -> serde_json::Value {
-                serde_json::json!({"type": "object", "properties": {}})
-            }
-            fn description(&self, _ctx: &Context) -> String {
-                "returns after the budget".into()
+            fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+                Some(crate::tool::DirectToolSpec {
+                    description: "returns after the budget".into(),
+                    input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                })
             }
             fn timeout(&self) -> Option<Duration> {
                 Some(Duration::from_secs(1))
@@ -1405,15 +1384,15 @@ mod tests {
         fn name(&self) -> &str {
             "command_shape"
         }
-        fn schema(&self) -> serde_json::Value {
-            serde_json::json!({
-                "type": "object",
-                "properties": {"command": {"type": "string"}},
-                "required": ["command"]
+        fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+            Some(crate::tool::DirectToolSpec {
+                description: "schema probe".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"]
+                }),
             })
-        }
-        fn description(&self, _ctx: &Context) -> String {
-            "schema probe".into()
         }
     }
 
@@ -1421,18 +1400,17 @@ mod tests {
         Arc::new(CommandShapeTool)
     }
 
-
     struct SelfCancellingTool;
 
     impl Tool for SelfCancellingTool {
         fn name(&self) -> &str {
             "self_cancelling"
         }
-        fn schema(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {}})
-        }
-        fn description(&self, _ctx: &Context) -> String {
-            "returns a truthful result after cancellation".into()
+        fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+            Some(crate::tool::DirectToolSpec {
+                description: "returns a truthful result after cancellation".into(),
+                input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            })
         }
         fn execute(
             &self,
@@ -1452,8 +1430,6 @@ mod tests {
         let result = run_schema_tool(Arc::new(SelfCancellingTool), "{}").await;
         assert_eq!(result.content, "file committed");
     }
-
-
 }
 
 /// Code-caller contract checks (merged from phase1_gate, WP-207).
@@ -1478,7 +1454,8 @@ mod code_caller_contract_tests {
     use crate::types::{FunctionToolCall, ToolCallResult};
 
     fn allow_engine(root: &Path) -> PermissionEngine {
-        let resolved = resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new(root));
+        let resolved =
+            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new(root));
         PermissionEngine::resolver(resolved, "default", 0)
     }
 
@@ -1574,21 +1551,26 @@ mod code_caller_contract_tests {
     }
 
     fn has_code(result: &ToolCallResult, code: &str) -> bool {
-        result.diagnostics.iter().any(|diagnostic| diagnostic.code == code)
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == code)
     }
 
     #[tokio::test]
-    async fn unknown_parameter_is_invalid_input() {
+    async fn unknown_parameter_is_invalid_args_through_the_bridge() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
-        let result = call_code(
+        let result = run_program(
             dir.path(),
-            "read",
-            json!({ "path": "a.txt", "nope": true }),
+            "return await tools.read({ path: \"a.txt\", nope: true });",
         )
         .await;
-        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
+        assert!(
+            result.content.contains("invalid_args"),
+            "{}",
+            result.content
+        );
         assert!(result.content.contains("nope"), "{}", result.content);
-        assert!(result.data.is_none());
     }
 }

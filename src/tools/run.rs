@@ -4,7 +4,9 @@
 //! [`RUN_FOREGROUND_WINDOW`] (capped by the enclosing `run_code` budget).
 //! Non-read-only commands hold the workspace locks only until spawn. Returns [`CommandData`] immediately: finished processes carry an
 //! exit code; still-running ones keep `exit_code = null` and remain wait/kill
-//! targets. No `kind`, timeout, promote, or `run_in_background`.
+//! targets. Pass `run_in_background: true` to detach immediately; otherwise a
+//! fast command returns its exit code and a command still alive after the
+//! window returns `exit_code = null`. No `kind`, timeout, or promote knob.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -12,7 +14,6 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::context_pipeline::Context;
 use crate::terminal::{
     AgentJobRegistry, PipeDecision, PipeDetach, PipeRequest, RUN_FOREGROUND_WINDOW, supervise_pipe,
 };
@@ -90,13 +91,7 @@ impl RunTool {
             &[]
         };
         let output = if running {
-            command_job::format_job_output(
-                &self.jobs,
-                job_id,
-                workspace_root,
-                exit_code,
-                notes,
-            )
+            command_job::format_job_output(&self.jobs, job_id, workspace_root, exit_code, notes)
         } else {
             command_job::format_exited_output(&self.jobs, job_id, workspace_root, exit_code, notes)
         };
@@ -111,12 +106,27 @@ impl RunTool {
             Ok(c) => c.to_string(),
             Err(e) => return coded_error("invalid_input", e),
         };
+        let run_in_background = match input.get("run_in_background") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => {
+                return coded_error(
+                    "invalid_input",
+                    "parameter 'run_in_background' must be a boolean",
+                );
+            }
+        };
         if execution.cancel.is_cancelled() {
             return coded_error("cancelled", "run cancelled before spawn");
         }
 
         let message = command_message(&command);
         let scope = crate::tool::run_scope::current().unwrap_or_default();
+        let background_window = if run_in_background {
+            Duration::ZERO
+        } else {
+            self.effective_window(scope.deadline)
+        };
         let (spawned_tx, spawned_rx) = tokio::sync::oneshot::channel();
         let rx = supervise_pipe(
             Arc::clone(&self.jobs),
@@ -129,7 +139,7 @@ impl RunTool {
                 cancel: execution.cancel.clone(),
                 // Exit inside the window returns exit_code; otherwise detach with null.
                 detach: PipeDetach::Background {
-                    window: self.effective_window(scope.deadline),
+                    window: background_window,
                 },
                 on_spawned: Some(spawned_tx),
             },
@@ -150,7 +160,13 @@ impl RunTool {
                 self.jobs
                     .wait_readers(&job_id, command_job::READER_GRACE)
                     .await;
-                self.command_result(&execution.workspace_root, &job_id, exit_code, false, message)
+                self.command_result(
+                    &execution.workspace_root,
+                    &job_id,
+                    exit_code,
+                    false,
+                    message,
+                )
             }
             PipeDecision::Background { job_id } | PipeDecision::Promoted { job_id } => {
                 self.command_result(&execution.workspace_root, &job_id, None, true, message)
@@ -180,28 +196,6 @@ impl Tool for RunTool {
 
     fn surface(&self) -> crate::tool::ToolSurface {
         crate::tool::ToolSurface::Code
-    }
-
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Shell command to run once in the workspace root (not a persistent session). Chain with && when you need cd or env for this call only."
-                }
-            },
-            "required": ["command"]
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(command_job::command_data_schema())
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/run.md"))
     }
 
     fn execute(
@@ -296,18 +290,18 @@ mod tests {
     use super::*;
     use std::path::Path;
     use std::sync::Arc;
-    
-    
 
     use crate::tool::Tool;
-    
-    
+
     use crate::tools::command_job::{StopJob, pid_alive, sleep_shell, test_execution};
     use std::time::Instant;
 
     fn tool() -> (RunTool, Arc<AgentJobRegistry>) {
         let jobs = Arc::new(AgentJobRegistry::new());
-        (RunTool::with_window(Arc::clone(&jobs), Duration::from_millis(500)), jobs)
+        (
+            RunTool::with_window(Arc::clone(&jobs), Duration::from_millis(500)),
+            jobs,
+        )
     }
 
     fn execution(root: &Path) -> ToolExecutionContext {
@@ -334,7 +328,45 @@ mod tests {
         // A small foreground exit keeps its log only until the readers finish,
         // then the row is dropped so no stale job lingers.
         let id = data["id"].as_str().unwrap();
-        assert!(jobs.get(id).is_none(), "sealed foreground job must be dropped");
+        assert!(
+            jobs.get(id).is_none(),
+            "sealed foreground job must be dropped"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn background_flag_returns_before_command_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, jobs) = tool();
+        let session = "sess-run-background";
+        let started = Instant::now();
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "command": sleep_shell(30),
+                    "run_in_background": true
+                }),
+                test_execution(dir.path(), session),
+            )
+            .await;
+        let elapsed = started.elapsed();
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().expect("data");
+        assert!(data["exit_code"].is_null(), "{data}");
+        assert!(
+            elapsed < Duration::from_millis(400),
+            "run blocked for {elapsed:?}"
+        );
+        let id = data["id"].as_str().expect("id").to_string();
+        let _stop = StopJob {
+            jobs: Arc::clone(&jobs),
+            id: id.clone(),
+            session_id: session.into(),
+        };
+        assert!(
+            jobs.get(&id).is_some(),
+            "background job must remain addressable"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -440,7 +472,10 @@ mod tests {
         assert_eq!(data["exit_code"], 0, "{data}");
         assert_eq!(data["output"].as_str().unwrap().trim(), "to-out", "{data}");
         assert_eq!(data["stderr"].as_str().unwrap().trim(), "to-err", "{data}");
-        assert!(!data["output"].as_str().unwrap().contains("[stderr]"), "{data}");
+        assert!(
+            !data["output"].as_str().unwrap().contains("[stderr]"),
+            "{data}"
+        );
         assert!(!data["shell"].as_str().unwrap().is_empty(), "{data}");
         assert_eq!(
             crate::terminal::decode::msys_path_hint("cmd /c dir").is_some(),
@@ -448,5 +483,4 @@ mod tests {
         );
         assert!(crate::terminal::decode::msys_path_hint("ls -la src/a").is_none());
     }
-
 }

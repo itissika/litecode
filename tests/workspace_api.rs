@@ -313,7 +313,7 @@ async fn workspace_git_show_head_index_and_rejects() {
 }
 
 #[tokio::test]
-async fn workspace_preview_reads_and_open_guards() {
+async fn workspace_preview_reads() {
     let _guard = WORKSPACE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -431,41 +431,8 @@ async fn workspace_preview_reads_and_open_guards() {
         .await
         .expect("not db");
     assert_eq!(not_db.status(), 400);
-
-    let missing = client
-        .post(format!("{base}/open"))
-        .json(&serde_json::json!({ "path": "nope.txt" }))
-        .send()
-        .await
-        .expect("missing open");
-    assert_eq!(missing.status(), 404);
-
-    let directory = client
-        .post(format!("{base}/open"))
-        .json(&serde_json::json!({ "path": "sub" }))
-        .send()
-        .await
-        .expect("dir open");
-    assert_eq!(directory.status(), 400);
-
-    let escape = client
-        .post(format!("{base}/open"))
-        .json(&serde_json::json!({ "path": "../secret.txt" }))
-        .send()
-        .await
-        .expect("escape open");
-    assert_eq!(escape.status(), 403);
-
-    #[cfg(not(windows))]
-    {
-        let unsupported = client
-            .post(format!("{base}/open"))
-            .json(&serde_json::json!({ "path": "pic.png" }))
-            .send()
-            .await
-            .expect("open");
-        assert_eq!(unsupported.status(), 501);
-    }
+    // POST /api/workspace/open is intentionally gone; the route-removal
+    // contract is covered by workspace_process_contract.
 }
 
 fn urlencoding_table(table: &str) -> String {

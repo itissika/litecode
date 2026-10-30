@@ -28,6 +28,25 @@ pub struct ToolExecutionContext {
     pub session: Option<crate::session::SessionDataReader>,
 }
 
+/// Provider-facing description and input schema for a direct function call.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirectToolSpec {
+    pub description: String,
+    pub input_schema: Value,
+}
+
+/// Contract supplied by a runtime-defined custom code tool.
+///
+/// Built-in code tools never use this: their public contract lives in the
+/// JS/TS SDK and generated contract. This type is only for custom/MCP tools
+/// that cannot have compile-time TypeScript declarations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicCodeSpec {
+    pub description: String,
+    pub input_schema: Value,
+    pub output_schema: Value,
+}
+
 impl ToolExecutionContext {
     pub fn session_reader(&self) -> crate::types::Result<&crate::session::SessionDataReader> {
         self.session.as_ref().ok_or_else(|| {
@@ -39,7 +58,8 @@ impl ToolExecutionContext {
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
 
-    /// Call surface declared by this tool. Custom and MCP tools keep [`ToolSurface::Direct`].
+    /// Call surface declared by this tool. Custom tools follow their stored
+    /// surface; MCP tools are direct by default.
     fn surface(&self) -> ToolSurface {
         ToolSurface::Direct
     }
@@ -54,21 +74,22 @@ pub trait Tool: Send + Sync {
         false
     }
 
-    fn schema(&self) -> Value;
+    /// Provider-facing direct tool contract. Code-surface tools return None.
+    fn direct_spec(&self, _ctx: &Context) -> Option<DirectToolSpec> {
+        None
+    }
+
+    /// Runtime-defined code tool contract. Built-in code tools return None.
+    fn dynamic_code_spec(&self) -> Option<DynamicCodeSpec> {
+        None
+    }
 
     /// Hook before validation. Code file tools do not rewrite arguments.
     fn prepare_input(&self, _input: &mut Value) {}
 
-    /// Arguments checked against [`schema`](Tool::schema).
+    /// Arguments passed through the same schema projection used for validation.
     fn schema_arguments<'a>(&self, input: &'a Value) -> Cow<'a, Value> {
         Cow::Borrowed(input)
-    }
-
-    /// JSON Schema for [`ToolCallResult::data`]. Direct-call tools may omit it;
-    /// tools projected into a code bundle must provide it so the generated
-    /// interface can expose a stable result type.
-    fn data_schema(&self) -> Option<Value> {
-        None
     }
 
     /// Unit-test / sync helper. Production Agent calls must enter through
@@ -104,8 +125,6 @@ pub trait Tool: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = ToolCallResult> + Send + '_>> {
         self.call_async(input)
     }
-
-    fn description(&self, ctx: &Context) -> String;
 
     /// Safety-net budget for one call. `None` means this tool does not arm a
     /// deadline. The model cannot override it. `run_code.timeout_ms` is the
@@ -189,8 +208,4 @@ pub trait Tool: Send + Sync {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-
-}
+mod tests {}

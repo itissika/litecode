@@ -1,4 +1,3 @@
-use crate::context_pipeline::Context;
 use crate::engines::code_search::{
     DEFAULT_TOP_K, IndexStatus, MAX_TOP_K, code_tokenize, enclosing_scopes, format_breadcrumb,
     resolve_index_view, scope_at,
@@ -73,39 +72,6 @@ impl CodeSearchData {
             message,
         }
     }
-}
-
-fn data_schema() -> Value {
-    serde_json::json!({
-        "type": "object",
-        "additionalProperties": false,
-        "description": "Code-search outcome. Off/warming/failed/busy resolve with ok=false so the program can branch.",
-        "properties": {
-            "ok": { "type": "boolean" },
-            "status": {
-                "type": "string",
-                "enum": [STATUS_OK, STATUS_OFF, STATUS_WARMING, STATUS_FAILED, STATUS_BUSY]
-            },
-            "hits": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "path": { "type": "string" },
-                        "anchor_line": { "type": "integer", "minimum": 1 },
-                        "start_line": { "type": "integer", "minimum": 1 },
-                        "end_line": { "type": "integer", "minimum": 1 },
-                        "symbol": { "type": "string" },
-                        "snippet": { "type": "string", "description": "Source excerpt, at most 24 lines; overlong lines are capped." }
-                    },
-                    "required": ["path", "anchor_line", "start_line", "end_line", "snippet"]
-                }
-            },
-            "message": { "type": "string" }
-        },
-        "required": ["ok", "status", "hits"]
-    })
 }
 
 impl CodeSearchTool {
@@ -302,40 +268,6 @@ impl Tool for CodeSearchTool {
         crate::tool::ToolSurface::Code
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "One natural-language or code-token query."
-                },
-                "include_pattern": {
-                    "type": "string",
-                    "description": "Optional glob filter for workspace paths."
-                },
-                "top_k": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": MAX_TOP_K,
-                    "description": format!("Maximum hits. Default {DEFAULT_TOP_K}, maximum {MAX_TOP_K}.")
-                },
-                "min_score": {
-                    "type": "number",
-                    "minimum": 0.0,
-                    "maximum": 1.0,
-                    "description": "Minimum raw dense cosine similarity. Default 0.80; 0 disables the floor."
-                }
-            },
-            "required": ["query"]
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(data_schema())
-    }
-
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
         true
     }
@@ -369,10 +301,6 @@ impl Tool for CodeSearchTool {
         // Test/synchronous helper: no caller token, so do not queue behind a
         // refresh. Production always enters through `execute`.
         self.search_from_input(input, None)
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/code_search.md"))
     }
 
     fn timeout(&self) -> Option<std::time::Duration> {
@@ -904,10 +832,17 @@ mod tests {
         );
     }
 
+    fn code_search_surface() -> crate::tool::code_contract::CodeSurface {
+        let tool: std::sync::Arc<dyn crate::tool::Tool> =
+            std::sync::Arc::new(CodeSearchTool::new(WorkspaceEngines::new()));
+        crate::tool::code_contract::build_surface(&[tool]).expect("code_search SDK contract")
+    }
+
     #[test]
     fn schema_is_single_query_with_bounded_scores_and_no_paging() {
         assert_eq!((DEFAULT_TOP_K, MAX_TOP_K), (8, 20));
-        let schema = CodeSearchTool::new(WorkspaceEngines::new()).schema();
+        let surface = code_search_surface();
+        let schema = &surface.tools["code_search"].input_schema;
         let properties = schema["properties"].as_object().unwrap();
         assert!(properties.contains_key("query"));
         assert!(!properties.contains_key("offset"));
@@ -925,8 +860,9 @@ mod tests {
     }
 
     #[test]
-    fn data_schema_requires_structured_soft_and_hit_shapes() {
-        let schema = data_schema();
+    fn generated_output_schema_requires_structured_soft_and_hit_shapes() {
+        let surface = code_search_surface();
+        let schema = &surface.tools["code_search"].output_schema;
         assert_eq!(
             schema["required"],
             serde_json::json!(["ok", "status", "hits"])
@@ -950,7 +886,7 @@ mod tests {
         );
         assert!(
             crate::tool::schema_validate(
-                &schema,
+                schema,
                 &serde_json::to_value(&success).expect("serialize success")
             )
             .is_ok(),
@@ -959,7 +895,7 @@ mod tests {
         let soft = CodeSearchData::soft(STATUS_WARMING, WARMING_MESSAGE);
         assert!(
             crate::tool::schema_validate(
-                &schema,
+                schema,
                 &serde_json::to_value(&soft).expect("serialize soft")
             )
             .is_ok(),

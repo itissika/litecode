@@ -1,10 +1,10 @@
 {
-  "content_historical": "invalid input for 'edit': missing required parameter 'path'",
+  "content_historical": "invalid input for 'edit': missing required parameter 'new_string'",
   "covered": true,
   "data": null,
   "error": {
     "kind": "invalid_input",
-    "message": "invalid input for 'edit': missing required parameter 'path'",
+    "message": "invalid input for 'edit': missing required parameter 'new_string'",
     "retryable": false
   },
   "gap": null,

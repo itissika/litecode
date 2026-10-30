@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use crate::config::resolved::ResolvedConfig;
 use crate::config::schema::{AvailableStatus, AvailableTool};
 use crate::tool::capability::{Capability, capability_catalog, member_owner};
-use crate::tool::project::{RejectedTool, project_code_specs};
-use crate::tool::spec::CodeFunctionSpec;
+use crate::tool::custom_spec::custom_function_name;
+use crate::tool::project::RejectedTool;
 use serde::Serialize;
 
 fn project_capability(capability: &Capability) -> AvailableTool {
@@ -57,7 +57,6 @@ pub struct AvailableToolsPayload {
 
 pub fn available_tools_payload(
     resolved: &ResolvedConfig,
-    code_candidates: Vec<CodeFunctionSpec>,
     statuses: HashMap<String, AvailableStatus>,
 ) -> AvailableToolsPayload {
     let catalog = capability_catalog(resolved);
@@ -67,23 +66,32 @@ pub fn available_tools_payload(
     }
     AvailableToolsPayload {
         tools,
-        code_rejections: project_code_specs(code_candidates),
+        code_rejections: code_rejections_for(resolved),
         catalog_errors: catalog.errors,
         custom_diagnostics: custom_tool_diagnostics(resolved),
     }
 }
 
-/// Settings-only code admission. Builtin contracts plus every valid custom
-/// definition; invalid custom definitions are already in
-/// [`custom_tool_diagnostics`], so they are not duplicated here.
+/// Settings-only code admission. Built-in contracts are fixed at build time;
+/// only runtime-defined custom code tools need per-definition validation.
 pub fn code_rejections_for(resolved: &ResolvedConfig) -> Vec<RejectedTool> {
-    let mut specs = crate::tool::registry::builtin_code_specs();
-    specs.extend(resolved.custom_tools().iter().filter_map(|def| {
-        crate::tool::spec::FunctionSpec::from_custom_definition(def)
-            .ok()?
-            .into_code()
-    }));
-    project_code_specs(specs)
+    let mut rejected = Vec::new();
+    for def in resolved.custom_tools() {
+        if def.effective_surface() != crate::config::schema::CallSurface::Code {
+            continue;
+        }
+        if let Err(reason) = crate::tool::dynamic_contract::validate_custom_code_contract(
+            &def,
+            crate::config::schema::CallSurface::Code,
+        ) {
+            rejected.push(RejectedTool {
+                name: custom_function_name(&def),
+                reason,
+            });
+        }
+    }
+    rejected.sort_by(|left, right| left.name.cmp(&right.name));
+    rejected
 }
 
 /// Validate every stored custom definition without mutating it. Invalid entries
@@ -91,7 +99,9 @@ pub fn code_rejections_for(resolved: &ResolvedConfig) -> Vec<RejectedTool> {
 pub fn custom_tool_diagnostics(
     resolved: &ResolvedConfig,
 ) -> Vec<crate::config::schema::CustomToolDiagnostic> {
-    use crate::config::schema::{CustomSuiteDefinition, CustomToolDiagnostic, CustomToolDefinition};
+    use crate::config::schema::{
+        CustomSuiteDefinition, CustomToolDefinition, CustomToolDiagnostic,
+    };
 
     fn suite_issue(
         id: &str,
@@ -202,7 +212,12 @@ pub fn custom_tool_diagnostics(
         &mut out,
     );
     out.sort_by(|left, right| {
-        (left.source.as_str(), left.tool.as_deref(), left.suite.as_deref(), left.field.as_str())
+        (
+            left.source.as_str(),
+            left.tool.as_deref(),
+            left.suite.as_deref(),
+            left.field.as_str(),
+        )
             .cmp(&(
                 right.source.as_str(),
                 right.tool.as_deref(),
@@ -227,8 +242,6 @@ pub fn agent_tool_enabled(resolved: &ResolvedConfig, agent_id: &str, tool_id: &s
         .and_then(|profile| profile.tools.get(&bind_id))
         .is_some_and(|binding| binding.enabled)
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -259,7 +272,7 @@ mod tests {
     fn status_is_projected_without_changing_the_card_set() {
         let resolved = resolved();
         let statuses = HashMap::from([("lsp".to_string(), AvailableStatus::Failed)]);
-        let payload = available_tools_payload(&resolved, Vec::new(), statuses);
+        let payload = available_tools_payload(&resolved, statuses);
         let lsp = payload
             .tools
             .iter()

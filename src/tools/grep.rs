@@ -14,7 +14,6 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::context_pipeline::Context;
 use crate::engines::code_search::{LexicalQuery, lexical_search_for_agent_cancellable};
 use crate::tool::Tool;
 use crate::tool::file_identity;
@@ -86,111 +85,6 @@ impl Tool for GrepTool {
         crate::tool::ToolSurface::Code
     }
 
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Regular expression over file contents, unless literal is true."
-                },
-                "path": {
-                    "type": "string",
-                    "description": "File or directory to search. Defaults to the workspace."
-                },
-                "glob": {
-                    "type": "string",
-                    "description": "Filter which files to search: one glob, or a comma-separated list. A leading ! excludes. Relative to path."
-                },
-                "literal": {
-                    "type": "boolean",
-                    "description": "Search for pattern as plain text. Default false."
-                },
-                "ignore_case": {
-                    "type": "boolean",
-                    "description": "Ignore case when matching. Default false."
-                },
-                "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "default": 40,
-                    "description": "Maximum hits to return. Default 40, maximum 100."
-                },
-                "before": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 5,
-                    "default": 0,
-                    "description": "Lines of context before each hit. Default 0, maximum 5."
-                },
-                "after": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 5,
-                    "default": 0,
-                    "description": "Lines of context after each hit. Default 0, maximum 5."
-                }
-            },
-            "required": ["pattern"],
-            "additionalProperties": false
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "hits": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                            "path": { "type": "string" },
-                            "line": { "type": "integer", "minimum": 1 },
-                            "text": { "type": "string" },
-                            "before": {
-                                "type": "array",
-                                "description": "Exact lines before the hit, when before > 0.",
-                                "items": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "properties": {
-                                        "line": { "type": "integer", "minimum": 1 },
-                                        "text": { "type": "string" }
-                                    },
-                                    "required": ["line", "text"]
-                                }
-                            },
-                            "after": {
-                                "type": "array",
-                                "description": "Exact lines after the hit, when after > 0.",
-                                "items": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "properties": {
-                                        "line": { "type": "integer", "minimum": 1 },
-                                        "text": { "type": "string" }
-                                    },
-                                    "required": ["line", "text"]
-                                }
-                            }
-                        },
-                        "required": ["path", "line", "text"]
-                    }
-                },
-                "truncated": {
-                    "type": "boolean",
-                    "description": "Present and true when the limit or 8K-token data guard removed results or context."
-                },
-                "message": { "type": "string" }
-            },
-            "required": ["hits", "message"]
-        }))
-    }
-
     fn effects(
         &self,
         input: &Value,
@@ -238,10 +132,6 @@ impl Tool for GrepTool {
             },
             GREP_EXAMINE_CAP,
         )
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/grep.md"))
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
@@ -1289,8 +1179,11 @@ mod tests {
     }
 
     #[test]
-    fn context_parameters_are_bounded_and_written_to_the_schema() {
-        let schema = GrepTool.schema();
+    fn context_parameters_are_bounded_and_written_to_the_contract() {
+        let tool: std::sync::Arc<dyn crate::tool::Tool> = std::sync::Arc::new(GrepTool);
+        let surface =
+            crate::tool::code_contract::build_surface(&[tool]).expect("grep JS contract surface");
+        let schema = &surface.tools["grep"].input_schema;
         assert_eq!(schema["properties"]["limit"]["default"], 40);
         assert_eq!(schema["properties"]["limit"]["maximum"], 100);
         assert_eq!(schema["properties"]["before"]["default"], 0);
@@ -1298,7 +1191,7 @@ mod tests {
         assert_eq!(schema["properties"]["after"]["default"], 0);
         assert_eq!(schema["properties"]["after"]["maximum"], 5);
         assert!(schema["properties"].get("context").is_none());
-        let data_schema = GrepTool.data_schema().unwrap();
+        let data_schema = &surface.tools["grep"].output_schema;
         assert_eq!(
             data_schema["properties"]["hits"]["items"]["properties"]["before"]["items"]["required"],
             serde_json::json!(["line", "text"])
@@ -1317,17 +1210,6 @@ mod tests {
             assert!(error.contains(name), "{error}");
             assert!(error.contains("between 0 and 5"), "{error}");
         }
-        let description = GrepTool.description(&crate::context_pipeline::Context {
-            cwd: std::env::current_dir().unwrap(),
-            workspace_paths: crate::config::WorkspacePaths::for_legacy_root(
-                &std::env::current_dir().unwrap(),
-            ),
-            agents_md: None,
-            claude_md: None,
-        });
-        assert!(description.contains("default 40"));
-        assert!(description.contains("`before` and `after`"));
-        assert!(description.contains("8K-token"));
     }
 
     #[test]

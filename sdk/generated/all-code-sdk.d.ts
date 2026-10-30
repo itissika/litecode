@@ -1,0 +1,792 @@
+declare class ToolError extends Error {
+  readonly name: "ToolError";
+  readonly code: string;
+  readonly details?: unknown;
+  readonly retryable?: true;
+  readonly tool: string;
+  readonly seq: number;
+}
+
+/** Any tool call resolves this when the tool did not get the job done. */
+type ToolFailure = {
+  ok: false;
+  reason:
+    | "not_found"
+    | "no_match"
+    | "invalid_args"
+    | "empty"
+    | "permission"
+    | "io"
+    | "conflict"
+    | "stale";
+  message: string;
+};
+
+type ToolResult<T> = T | ToolFailure;
+
+type CsvOptions = {
+  /** Field separator; one character. Default ",". */
+  delimiter?: string;
+  /** Quote character; one character. Default is a double quote. */
+  quote?: string;
+  /** Trim fields while parsing. Default false. */
+  trim?: boolean;
+};
+
+type HistogramBin = {
+  start: number;
+  end: number;
+  count: number;
+};
+
+type DiffLine = {
+  kind: "equal" | "insert" | "delete";
+  text: string;
+};
+
+declare const libs: {
+  stats: {
+    sum(values: number[]): number;
+    mean(values: number[]): number;
+    median(values: number[]): number;
+    variance(values: number[], sample?: boolean): number;
+    stddev(values: number[], sample?: boolean): number;
+    quantile(values: number[], q: number): number;
+    histogram(values: number[], bins?: number): HistogramBin[];
+    min(values: number[]): number;
+    max(values: number[]): number;
+  };
+  csv: {
+    parse(text: string, options?: CsvOptions): string[][];
+    format(rows: Array<Array<unknown>>, options?: CsvOptions): string;
+  };
+  text: {
+    lines(text: string): string[];
+    words(text: string): string[];
+    count(text: string, needle: string): number;
+    normalizeNewlines(text: string): string;
+    truncate(text: string, maxChars: number, suffix?: string): string;
+    diffLines(left: string, right: string): DiffLine[];
+  };
+  data: {
+    groupBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, T[]>;
+    countBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, number>;
+    unique<T>(values: T[]): T[];
+    sortBy<T>(rows: T[], key: string | ((row: T) => unknown), direction?: "asc" | "desc"): T[];
+  };
+};
+
+type FsFailure = { ok: false; reason: "not_found" | "permission" | "io"; message: string };
+
+/** Read-only workspace probes. Synchronous; paths are workspace-relative. */
+declare const fs: {
+  /** One level, sorted by name, at most 500 entries (message says when cut). */
+  ls(path: string): { ok: true; entries: Array<{ name: string; type: "file" | "dir" | "symlink" | "other"; size: number }>; message?: string } | FsFailure;
+  /** mtime is ms since the Unix epoch. */
+  stat(path: string): { ok: true; type: "file" | "dir" | "symlink" | "other"; size: number; mtime: number } | FsFailure;
+  exists(path: string): boolean;
+};
+
+type ApplyEditsData = {
+  ok: true;
+  /** Same length and order as edits. */
+  results: EditData[];
+};
+
+type ApplyEditsInput = {
+  /** Replacements applied serially; later items on the same path see earlier successful writes. */
+  edits: EditInput[];
+};
+
+type BrowserClickData = {
+  ok: true;
+  page_id: string;
+  ref: string;
+  tag: string;
+  text: string;
+  title: string;
+  url: string;
+};
+
+type BrowserClickInput = {
+  /** Element reference from the latest browser_read. */
+  ref: string;
+  /** Optional page id. Omit for the active visible tab. */
+  page_id?: string;
+};
+
+type BrowserCloseData = {
+  ok: true;
+  closed: boolean;
+  id: string;
+  fallback?: boolean;
+};
+
+type BrowserCloseInput = {
+  /** Browser page id from browser_open or browser_list. */
+  page_id: string;
+};
+
+type BrowserElement = {
+  /** Element reference from the latest browser_read. */
+  ref: string;
+  tag: string;
+  text: string;
+  href?: string;
+  type?: string;
+};
+
+type BrowserListData = {
+  ok: true;
+  active_id: string;
+  pages: BrowserPage[];
+};
+
+type BrowserListInput = {};
+
+type BrowserOpenData = BrowserPage & {
+  ok: true;
+};
+
+type BrowserOpenInput = {
+  /** http(s) URL to open in a visible browser tab. */
+  url: string;
+};
+
+type BrowserPage = {
+  active: boolean;
+  agentOwned: boolean;
+  id: string;
+  title: string;
+  url: string;
+  visible: boolean;
+};
+
+type BrowserReadData = {
+  ok: true;
+  elements: BrowserElement[];
+  page_id: string;
+  text: string;
+  title: string;
+  truncated: boolean;
+  url: string;
+};
+
+type BrowserReadInput = {
+  /** Maximum body text characters. @default 12000 @minimum 1000 @maximum 30000 */
+  max_chars?: Integer;
+  /** Optional page id. Omit for the active visible tab. */
+  page_id?: string;
+};
+
+type BrowserTypeData = {
+  ok: true;
+  page_id: string;
+  ref: string;
+  tag: string;
+  title: string;
+  url: string;
+};
+
+type BrowserTypeInput = {
+  /** Input reference from the latest browser_read. */
+  ref: string;
+  /** Text to set on the focused input. */
+  text: string;
+  /** Optional page id. Omit for the active visible tab. */
+  page_id?: string;
+};
+
+type CodeSearchData = {
+  ok: boolean;
+  /** ok is true only for status ok; off/warming/failed/busy are soft domain failures. */
+  status: CodeSearchStatus;
+  hits: CodeSearchHit[];
+  message?: string;
+};
+
+type CodeSearchHit = {
+  /** Source file path. */
+  path: string;
+  /** Query-relevant anchor line. */
+  anchor_line: Integer;
+  /** First line in the returned snippet. */
+  start_line: Integer;
+  /** Last line in the returned snippet. */
+  end_line: Integer;
+  /** Optional AST symbol enclosing the anchor. */
+  symbol?: string;
+  /** Source excerpt, at most 24 lines; overlong lines are capped. */
+  snippet: string;
+};
+
+type CodeSearchInput = {
+  /** One natural-language or code-token query. */
+  query: string;
+  /** Optional glob filter for workspace paths. */
+  include_pattern?: string;
+  /** Minimum raw dense cosine similarity. @default 0.8 @minimum 0 @maximum 1 */
+  min_score?: number;
+  /** Maximum hits. @default 8 @minimum 1 @maximum 20 */
+  top_k?: Integer;
+};
+
+type CodeSearchStatus = "ok" | "off" | "warming" | "failed" | "busy";
+
+type CommandData = {
+  /** Process exit code when finished; null when still running or unavailable. */
+  exit_code: Integer | null;
+  /** While exit_code is null, use with tools.wait / tools.kill in this session. */
+  id: string;
+  /** Stdout plus truncation notes, spill path, or status line. Always present, may be empty. */
+  output: string;
+  /** Shell that ran the command. */
+  shell: string;
+  /** Stderr plus truncation notes. Empty when nothing was written. */
+  stderr: string;
+  /** True when wait observes a kill. */
+  killed?: boolean;
+  /** Warning about the command itself. */
+  message?: string;
+  /**
+   * True when the tool call itself completed; this is not command success.
+   * Check exit_code === 0 for process success. False on soft failures such as
+   * an unreaped kill.
+   */
+  ok?: boolean;
+  /** Present with ok:false; unreaped kill uses still_alive. */
+  reason?: string;
+};
+
+type DiagnosticItem = {
+  /** Severity label supplied by the language server. */
+  severity: string;
+  /** Source file path. */
+  path: string;
+  /** 1-based line number. */
+  line: Integer;
+  /** 1-based UTF-16 column on that line. */
+  character: Integer;
+  /** Human-readable diagnostic. */
+  message: string;
+};
+
+type DiagnosticsData = {
+  ok: true;
+  items: DiagnosticItem[];
+  message: string;
+};
+
+type DiagnosticsInput = PathInput;
+
+type DocumentSymbolData = SymbolsData;
+
+type DocumentSymbolInput = PathInput;
+
+type EditData = {
+  message: string;
+  ok: boolean;
+  path: string;
+  reason?: EditFailureReason;
+};
+
+type EditFailureReason =
+  | "not_found"
+  | "no_match"
+  | "invalid_args"
+  | "empty"
+  | "permission"
+  | "io";
+
+type EditInput = {
+  /** Replacement text. Use an empty string to delete old_string. */
+  new_string: string;
+  /** Exact file text to find. Must match exactly one place. */
+  old_string: string;
+  /** Prefer a workspace-relative path. */
+  path: Path;
+};
+
+type FileRef = {
+  /** File size in bytes. */
+  bytes: Integer;
+  /** sha256 hex of the file bytes. */
+  hash: string;
+  /** Workspace-relative path inside the workspace; requested path outside it. */
+  path: string;
+  /** Absolute path when the file is outside the workspace. */
+  abs?: string;
+};
+
+type FindReferencesData = LocationsData;
+
+type FindReferencesInput = RangeInput;
+
+type GlobData = {
+  ok: true;
+  message: string;
+  /** Matching paths sorted by depth, then parent directory, then name. */
+  paths: string[];
+};
+
+type GlobInput = {
+  /** Glob relative to path, or to the workspace root when path is omitted. */
+  pattern: string;
+  /** Maximum paths to return. @default 1000 @minimum 1 @maximum 5000 */
+  limit?: Integer;
+  /** Optional directory to search under. */
+  path?: Path;
+};
+
+type GoToDefinitionData = LocationsData;
+
+type GoToDefinitionInput = RangeInput;
+
+type GoToImplementationData = LocationsData;
+
+type GoToImplementationInput = RangeInput;
+
+type GrepData = {
+  ok: true;
+  hits: GrepHit[];
+  message: string;
+  /** True when a limit or the 8K-token data guard removed results or context. */
+  truncated?: boolean;
+};
+
+type GrepHit = {
+  /** Source file path. */
+  path: string;
+  /** 1-based match line. */
+  line: Integer;
+  /** Matching line text, capped at 500 characters. */
+  text: string;
+  /** Exact lines before the hit, when before > 0. */
+  before?: LineText[];
+  /** Exact lines after the hit, when after > 0. */
+  after?: LineText[];
+};
+
+type GrepInput = {
+  /** Regular expression over file contents, unless literal is true. */
+  pattern: string;
+  /** Lines of context before each hit. @default 0 @minimum 0 @maximum 5 */
+  before?: Integer;
+  /** Lines of context after each hit. @default 0 @minimum 0 @maximum 5 */
+  after?: Integer;
+  /** One glob or comma-separated globs. A leading ! excludes. Relative to path. */
+  glob?: string;
+  /** Ignore case when matching. @default false */
+  ignore_case?: boolean;
+  /** Maximum hits to return. @default 40 @minimum 1 @maximum 100 */
+  limit?: Integer;
+  /** Search for pattern as plain text. @default false */
+  literal?: boolean;
+  /** File or directory to search. Defaults to the workspace. */
+  path?: Path;
+};
+
+type HoverData = {
+  ok: true;
+  /** Flattened hover text, not raw LSP JSON. */
+  markdown: string;
+  message: string;
+};
+
+type HoverInput = RangeInput;
+
+/** Whole JSON number. The host rejects fractional values. @asType integer */
+type Integer = number;
+
+type KillData = CommandData;
+
+type KillInput = {
+  /** Command.id from a tools.run or tools.wait result whose exit_code is null. */
+  id: string;
+};
+
+type LineText = {
+  /** 1-based source line. */
+  line: Integer;
+  /** Exact line text. */
+  text: string;
+};
+
+type Location = {
+  /** Source file path. */
+  path: string;
+  /** 1-based line number. */
+  line: Integer;
+  /** 1-based UTF-16 column on that line. */
+  character: Integer;
+  /** Optional end column. */
+  end_character?: Integer;
+  /** Optional end line. */
+  end_line?: Integer;
+};
+
+type LocationsData = {
+  ok: true;
+  locations: Location[];
+  message: string;
+};
+
+type MemoryDeleteData = {
+  ok: true;
+  /** Entries after the batch. */
+  count: Integer;
+  /** Deleted ids. */
+  deleted: string[];
+  rejected: RejectedItem[];
+};
+
+type MemoryDeleteInput = {
+  /** Entry ids to delete. */
+  ids: string[];
+};
+
+type MemoryEntry = {
+  kind: MemoryKind;
+  id: string;
+  text: string;
+  updated_at: Integer;
+};
+
+type MemoryKind = "fact" | "preference" | "decision" | "constraint";
+
+type MemoryListData = {
+  ok: true;
+  /** Returned filtered entries. */
+  count: Integer;
+  /** Current entries, in insertion order. */
+  entries: MemoryEntry[];
+  /** Maximum entries the session can hold. */
+  limit: Integer;
+  /** Entries in the whole session memory. */
+  total: Integer;
+  /** Characters across all entry texts. */
+  total_chars: Integer;
+};
+
+type MemoryListInput = {
+  /** Optional kind filter. */
+  kind?: MemoryKind;
+  /** Optional case-insensitive substring over entry text. Max 100 characters. */
+  query?: string;
+};
+
+type MemoryUpsertData = {
+  ok: true;
+  /** New ids. */
+  added: string[];
+  /** Entries after the batch. */
+  count: Integer;
+  rejected: RejectedItem[];
+  /** Characters after the batch. */
+  total_chars: Integer;
+  /** Updated ids. */
+  updated: string[];
+};
+
+type MemoryUpsertEntry = {
+  /** Optional kind; defaults to fact for new entries and keeps the current kind on update. */
+  kind?: string;
+  /** Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry. */
+  text: string;
+  /** Optional existing id. Omit to add or update by text. */
+  id?: string;
+};
+
+type MemoryUpsertInput = {
+  /** Memory entries to add or update. */
+  entries: MemoryUpsertEntry[];
+};
+
+/** Workspace-relative path, or an absolute path when explicitly allowed. */
+type Path = string;
+
+type PathInput = {
+  /** Source file under the workspace; workspace-relative is preferred. */
+  path: Path;
+};
+
+type RangeInput = {
+  /** 1-based line number. */
+  line: Integer;
+  /** 1-based UTF-16 column on that line. */
+  character: Integer;
+  /** Source file under the workspace; workspace-relative is preferred. */
+  path: Path;
+};
+
+type ReadData = {
+  ok: true;
+  /** Line contents for this page, in file order. */
+  lines: string[];
+  message: string;
+  path: string;
+  start_line: Integer;
+};
+
+type ReadInput = {
+  /** Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md. */
+  path: Path;
+  /** First line to read, 1-based, inclusive. @default 1 @minimum 1 */
+  start_line?: Integer;
+  /** Maximum lines to return. @default 2000 @minimum 1 @maximum 5000 */
+  limit?: Integer;
+};
+
+type RejectedItem = {
+  /** 0-based input item index. */
+  index: Integer;
+  /** empty_text | text_too_long | invalid_kind | invalid_id | unknown_id | limit_exceeded. */
+  reason: string;
+  id?: string;
+};
+
+/** run returns ok for a resolved call; exit_code carries the command status. */
+type RunData = CommandData;
+
+type RunInput = {
+  /** Shell command to run once in the workspace root. Chain with && for cd or env changes. */
+  command: string;
+  /**
+   * Return immediately after spawn with exit_code:null and keep the job as a
+   * wait/kill target. Default false: wait up to 30 seconds; longer jobs detach
+   * automatically. @default false
+   */
+  run_in_background?: boolean;
+};
+
+type SymbolInfo = {
+  /** Symbol name. */
+  name: string;
+  /** Symbol kind label supplied by the language server. */
+  kind: string;
+  /** 1-based line number. */
+  line: Integer;
+  /** 1-based UTF-16 column on that line. */
+  character: Integer;
+  /** Optional end column. */
+  end_character?: Integer;
+  /** Optional end line. */
+  end_line?: Integer;
+  /** Optional source file path. */
+  path?: string;
+};
+
+type SymbolsData = {
+  ok: true;
+  message: string;
+  symbols: SymbolInfo[];
+};
+
+type WaitData = CommandData;
+
+type WaitInput = {
+  /** Command.id from a tools.run result whose exit_code is null. */
+  id: string;
+  /** Seconds to block waiting for exit. Values above 300 are clamped to 300. @minimum 1 */
+  sec: Integer;
+};
+
+type WebfetchData = {
+  message: string;
+  ok: boolean;
+  body?: string;
+  format?: WebfetchFormat;
+  status?: Integer;
+  url?: string;
+};
+
+type WebfetchFormat = "text" | "markdown" | "html";
+
+type WebfetchInput = {
+  /** URL to fetch. Only http(s) URLs are accepted. */
+  url: string;
+  /** Desired output format. @default "markdown" */
+  format?: WebfetchFormat;
+};
+
+type WebsearchData = {
+  message: string;
+  ok: boolean;
+  /** At most top_k hits, best first. */
+  results: WebsearchHit[];
+  query?: string;
+};
+
+type WebsearchHit = {
+  /** Leading page text, at most about 300 characters. */
+  snippet: string;
+  title: string;
+  url: string;
+};
+
+type WebsearchInput = {
+  /** Search query. */
+  query: string;
+  /** Number of results. Values above 10 are clamped to 10. @default 5 @minimum 1 */
+  top_k?: Integer;
+};
+
+type WorkspaceSymbolData = SymbolsData;
+
+type WorkspaceSymbolInput = {
+  /** Symbol name or fragment to search across the workspace. */
+  query: string;
+};
+
+type WriteData = {
+  ok: true;
+  /** True when the file did not exist before. */
+  created: boolean;
+  /** File identity after the write. */
+  file: FileRef;
+  /** Post-write warnings such as LSP errors or path-risk notes. */
+  message?: string;
+};
+
+type WriteInput = {
+  /** Content to write to the file. */
+  content: string;
+  /** Prefer a workspace-relative path. */
+  path: Path;
+  /** If true, refuse to overwrite an existing file. @default false */
+  create_only?: boolean;
+  /** sha256 of the current file bytes. Omit to skip the check. A mismatch resolves ok:false reason stale. */
+  expected_hash?: string;
+};
+
+interface Tools {
+  // file
+  /**
+   * Apply several edit replacements serially.
+   */
+  apply_edits(args: ApplyEditsInput): Promise<ToolResult<ApplyEditsData>>;
+  /**
+   * Apply one exact-string replacement.
+   */
+  edit(args: EditInput): Promise<ToolResult<EditData>>;
+  /**
+   * Find files by path glob.
+   */
+  glob(args: GlobInput): Promise<ToolResult<GlobData>>;
+  /**
+   * Search file contents.
+   */
+  grep(args: GrepInput): Promise<ToolResult<GrepData>>;
+  /**
+   * Read lines from one file or archived session transcript.
+   */
+  read(args: ReadInput): Promise<ToolResult<ReadData>>;
+  /**
+   * Replace a file's contents; optional hash and create-only guards.
+   */
+  write(args: WriteInput): Promise<ToolResult<WriteData>>;
+
+  // search
+  /**
+   * Semantic search over the workspace code index.
+   */
+  code_search(args: CodeSearchInput): Promise<ToolResult<CodeSearchData>>;
+
+  // process
+  /**
+   * Terminate a command job in this session.
+   */
+  kill(args: KillInput): Promise<ToolResult<KillData>>;
+  /**
+   * Start one shell command; use run_in_background for a non-blocking job.
+   */
+  run(args: RunInput): Promise<ToolResult<RunData>>;
+  /**
+   * Wait for a still-running command job; exit_code is the command status.
+   */
+  wait(args: WaitInput): Promise<ToolResult<WaitData>>;
+
+  // web
+  /**
+   * Fetch one http(s) URL.
+   */
+  webfetch(args: WebfetchInput): Promise<ToolResult<WebfetchData>>;
+  /**
+   * Search the web.
+   */
+  websearch(args: WebsearchInput): Promise<ToolResult<WebsearchData>>;
+
+  // browser
+  /**
+   * Click one interactive element on the visible page.
+   */
+  browser_click(args: BrowserClickInput): Promise<ToolResult<BrowserClickData>>;
+  /**
+   * Close an agent-owned browser tab.
+   */
+  browser_close(args: BrowserCloseInput): Promise<ToolResult<BrowserCloseData>>;
+  /**
+   * List open browser tabs.
+   */
+  browser_list(args: BrowserListInput): Promise<ToolResult<BrowserListData>>;
+  /**
+   * Open a visible browser tab.
+   */
+  browser_open(args: BrowserOpenInput): Promise<ToolResult<BrowserOpenData>>;
+  /**
+   * Read the current visible browser page.
+   */
+  browser_read(args: BrowserReadInput): Promise<ToolResult<BrowserReadData>>;
+  /**
+   * Type text into one input on the visible page.
+   */
+  browser_type(args: BrowserTypeInput): Promise<ToolResult<BrowserTypeData>>;
+
+  // lsp
+  /**
+   * List diagnostics for one source file.
+   */
+  diagnostics(args: DiagnosticsInput): Promise<ToolResult<DiagnosticsData>>;
+  /**
+   * List symbols in one source file.
+   */
+  document_symbol(args: DocumentSymbolInput): Promise<ToolResult<DocumentSymbolData>>;
+  /**
+   * List references at a file position.
+   */
+  find_references(args: FindReferencesInput): Promise<ToolResult<FindReferencesData>>;
+  /**
+   * Jump to definition at a file position.
+   */
+  go_to_definition(args: GoToDefinitionInput): Promise<ToolResult<GoToDefinitionData>>;
+  /**
+   * Jump to implementations at a file position.
+   */
+  go_to_implementation(args: GoToImplementationInput): Promise<ToolResult<GoToImplementationData>>;
+  /**
+   * Fetch hover docs or type information at a file position.
+   */
+  hover(args: HoverInput): Promise<ToolResult<HoverData>>;
+  /**
+   * Search symbols across the workspace.
+   */
+  workspace_symbol(args: WorkspaceSymbolInput): Promise<ToolResult<WorkspaceSymbolData>>;
+
+  // memory
+  memory: {
+    /**
+     * Delete entries by id from the current session's working memory.
+     */
+    delete(args: MemoryDeleteInput): Promise<ToolResult<MemoryDeleteData>>;
+    /**
+     * List the current session's working memory.
+     */
+    list(args: MemoryListInput): Promise<ToolResult<MemoryListData>>;
+    /**
+     * Add or update small, durable session memory entries.
+     */
+    upsert(args: MemoryUpsertInput): Promise<ToolResult<MemoryUpsertData>>;
+  };
+}
+
+declare const tools: Tools;

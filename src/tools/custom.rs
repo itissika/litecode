@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::schema::{CallSurface, CustomToolDefinition};
 use crate::context_pipeline::Context;
-use crate::tool::spec::{FunctionSpec, custom_description, custom_input_schema};
+use crate::tool::custom_spec::{custom_description, custom_input_schema};
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::{Tool, ToolSurface};
 use crate::tools::custom_hub::{CustomToolExitNotice, CustomToolHub, CustomToolOutcome};
@@ -135,18 +135,11 @@ pub fn validate_custom_code_contract(
     if surface != CallSurface::Code {
         return Ok(());
     }
-    let spec = FunctionSpec::from_custom_definition(def)
-        .map_err(|reason| format!("surface 'code' custom tool cannot be admitted: {reason}"))?;
-    let Some(spec) = spec.into_code() else {
-        return Ok(());
-    };
-    crate::tool::code_manifest::validate_code_contract(&spec)
-        .map(|_| ())
-        .map_err(|reason| {
-            format!(
-                "surface 'code' schema cannot be admitted into run_code: {reason}. Use a simple input/output object schema with no unsupported keywords (no $ref) or declare surface 'direct'."
-            )
-        })
+    crate::tool::dynamic_contract::validate_custom_code_contract(def, surface).map_err(|reason| {
+        format!(
+            "surface 'code' schema cannot be admitted into run_code: {reason}. Use a simple input/output object schema with no unsupported keywords (no $ref) or declare surface 'direct'."
+        )
+    })
 }
 
 impl Tool for CustomTool {
@@ -158,14 +151,25 @@ impl Tool for CustomTool {
         self.config.effective_surface()
     }
 
-    fn schema(&self) -> Value {
-        custom_input_schema(&self.config)
+    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+        (self.config.effective_surface() == CallSurface::Direct).then(|| {
+            crate::tool::DirectToolSpec {
+                description: custom_description(&self.config),
+                input_schema: custom_input_schema(&self.config),
+            }
+        })
     }
 
-    fn data_schema(&self) -> Option<Value> {
-        (self.config.effective_surface() == CallSurface::Code)
-            .then(|| self.config.output_schema.clone())
-            .flatten()
+    fn dynamic_code_spec(&self) -> Option<crate::tool::DynamicCodeSpec> {
+        if self.config.effective_surface() != CallSurface::Code {
+            return None;
+        }
+        let output_schema = self.config.output_schema.clone()?;
+        Some(crate::tool::DynamicCodeSpec {
+            description: custom_description(&self.config),
+            input_schema: custom_input_schema(&self.config),
+            output_schema,
+        })
     }
 
     fn execute(
@@ -229,10 +233,6 @@ impl Tool for CustomTool {
             session: None,
         };
         run_sync_with_lifecycle(&self.config, &child_input, &execution, None)
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        custom_description(&self.config)
     }
 
     fn timeout(&self) -> Option<std::time::Duration> {
@@ -302,7 +302,10 @@ pub fn validate_custom_tool_run(
     if typed
         && result.level != ToolSignalLevel::Error
         && result.error.is_none()
-        && !matches!(serde_json::from_str::<Value>(&result.content), Ok(Value::Object(_)))
+        && !matches!(
+            serde_json::from_str::<Value>(&result.content),
+            Ok(Value::Object(_))
+        )
     {
         return ToolCallResult::error(format!(
             "# validate_custom — FAIL\n\n- tool: `{}`\n- command: `{}`\n- surface: `code`\n- detail: output_schema is declared, so stdout must be a JSON object; got:\n\n{}",
@@ -504,7 +507,10 @@ fn run_sync_with_lifecycle(
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
             match output.status.code() {
-                Some(0) if config.effective_surface() == CallSurface::Code && config.output_schema.is_some() => {
+                Some(0)
+                    if config.effective_surface() == CallSurface::Code
+                        && config.output_schema.is_some() =>
+                {
                     ToolCallResult::ok(stdout.into_owned())
                 }
                 Some(0) => result_from_stdout(stdout.into_owned()),
@@ -990,26 +996,26 @@ mod tests {
         }));
         let tool = CustomTool::new(def.clone(), Arc::new(CustomToolHub::new()));
         assert_eq!(tool.surface(), ToolSurface::Code);
-        assert!(tool.schema().get("properties").is_some());
+        let spec = tool.dynamic_code_spec().expect("code dynamic contract");
+        assert!(spec.input_schema.get("properties").is_some());
         assert!(
-            tool.schema()["properties"]
+            spec.input_schema["properties"]
                 .get("run_in_background")
                 .is_none(),
             "code surface must not advertise background jobs"
         );
-        let data_schema = tool.data_schema().expect("code data schema");
-        assert_eq!(data_schema["properties"]["text"]["type"], "string");
+        assert_eq!(spec.output_schema["properties"]["text"]["type"], "string");
         validate_custom_code_contract(&def, CallSurface::Code)
-        .expect("simple object schema is code-admissible");
+            .expect("simple object schema is code-admissible");
 
         let projected = crate::tool::project_tools(vec![Arc::new(CustomTool::new(
             def,
             Arc::new(CustomToolHub::new()),
         )) as Arc<dyn Tool>]);
         assert!(projected.direct.is_empty());
-        assert_eq!(projected.whitelist, vec!["code_echo".to_string()]);
-        assert!(projected.sdk.contains("code_echo"));
-        assert!(projected.sdk.contains("text"));
+        assert_eq!(projected.whitelist(), vec!["code_echo".to_string()]);
+        assert!(projected.sdk().contains("code_echo"));
+        assert!(projected.sdk().contains("text"));
     }
 
     #[test]
@@ -1023,7 +1029,7 @@ mod tests {
             "item": { "$ref": "#/Item" }
         });
         let error = validate_custom_code_contract(&def, CallSurface::Code)
-        .expect_err("ref must fail admission");
+            .expect_err("ref must fail admission");
         assert!(error.contains("surface 'code'"), "{error}");
         assert!(error.contains("direct"), "{error}");
     }
@@ -1111,8 +1117,12 @@ mod tests {
             def,
             Arc::new(CustomToolHub::new()),
         )) as Arc<dyn Tool>]);
-        assert!(projected.sdk.contains("files"), "{}", projected.sdk);
-        assert!(projected.sdk.contains("TypedEchoData"), "{}", projected.sdk);
+        assert!(projected.sdk().contains("files"), "{}", projected.sdk());
+        assert!(
+            projected.sdk().contains("CustomTypedEchoData"),
+            "{}",
+            projected.sdk()
+        );
         let _ = std::fs::remove_file(&script);
     }
 
@@ -1242,20 +1252,33 @@ mod tests {
             "{}",
             result.content
         );
-        assert!(result.content.contains("code preview:"), "{}", result.content);
-        assert!(result.content.contains("{\"ok\":true}"), "{}", result.content);
+        assert!(
+            result.content.contains("code preview:"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("{\"ok\":true}"),
+            "{}",
+            result.content
+        );
     }
     #[test]
     fn direct_surface_keeps_background_and_has_no_code_output_schema() {
         let def = sh_def("direct_echo", "echo direct-marker", 10);
         let tool = CustomTool::new(def, Arc::new(CustomToolHub::new()));
         assert_eq!(tool.surface(), ToolSurface::Direct);
+        let ctx = Context {
+            cwd: std::env::temp_dir(),
+            workspace_paths: crate::config::WorkspacePaths::for_legacy_root(&std::env::temp_dir()),
+            agents_md: None,
+            claude_md: None,
+        };
+        let spec = tool.direct_spec(&ctx).expect("direct spec");
         assert_eq!(
-            tool.schema()["properties"]["run_in_background"]["type"],
+            spec.input_schema["properties"]["run_in_background"]["type"],
             "boolean"
         );
-        assert!(tool.data_schema().is_none());
+        assert!(tool.dynamic_code_spec().is_none());
     }
-
-
 }

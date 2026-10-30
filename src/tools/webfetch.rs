@@ -4,7 +4,6 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::context_pipeline::Context;
 use crate::tool::Tool;
 use crate::tool::outcome::ToolOutcome;
 use crate::tools::file_path::coded_error;
@@ -197,13 +196,8 @@ fn fetch_hops(start_url: String) -> FetchOutcome {
 
 #[derive(Debug)]
 enum GateError {
-    Hard {
-        code: &'static str,
-        message: String,
-    },
-    Soft {
-        message: String,
-    },
+    Hard { code: &'static str, message: String },
+    Soft { message: String },
 }
 
 /// Reject non-http(s) schemes and any URL resolving to a private/loopback/
@@ -276,10 +270,13 @@ fn resolve_and_validate_public_http_url(
     Ok(addrs)
 }
 
+#[cfg(test)]
 fn validate_public_http_url(parsed: &url::Url) -> Result<(), String> {
-    resolve_and_validate_public_http_url(parsed).map(|_| ()).map_err(|e| match e {
-        GateError::Hard { message, .. } | GateError::Soft { message } => message,
-    })
+    resolve_and_validate_public_http_url(parsed)
+        .map(|_| ())
+        .map_err(|e| match e {
+            GateError::Hard { message, .. } | GateError::Soft { message } => message,
+        })
 }
 
 /// Build a redirect-disabled client that connects only to already-validated IPs.
@@ -375,23 +372,6 @@ struct WebFetchData {
     message: String,
 }
 
-fn webfetch_data_schema() -> Value {
-    serde_json::json!({
-        "type": "object",
-        "additionalProperties": false,
-        "description": "webfetch outcome. Soft failures (HTTP/DNS/timeout/body) resolve with ok=false; hard failures reject ToolError.",
-        "properties": {
-            "ok": { "type": "boolean" },
-            "url": { "type": "string" },
-            "status": { "type": "integer" },
-            "format": { "type": "string", "enum": ["text", "markdown", "html"] },
-            "body": { "type": "string" },
-            "message": { "type": "string" }
-        },
-        "required": ["ok", "message"]
-    })
-}
-
 fn present_webfetch(data: WebFetchData) -> ToolCallResult {
     // Code surface: facts live in data; content is not the contract.
     ToolOutcome::ok(data).into_call_result("")
@@ -404,28 +384,6 @@ impl Tool for WebFetchTool {
 
     fn surface(&self) -> crate::tool::ToolSurface {
         crate::tool::ToolSurface::Code
-    }
-
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "The URL to fetch content from"
-                },
-                "format": {
-                    "type": "string",
-                    "enum": ["text", "markdown", "html"],
-                    "description": "Desired output format (default: markdown)"
-                }
-            },
-            "required": ["url"]
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(webfetch_data_schema())
     }
 
     fn execute(
@@ -471,11 +429,7 @@ impl Tool for WebFetchTool {
         }
 
         match self.fetch_outcome(&url_str) {
-            FetchOutcome::Ok {
-                url,
-                status,
-                body,
-            } => {
+            FetchOutcome::Ok { url, status, body } => {
                 let formatted = match format.as_str() {
                     "html" => body,
                     "text" => strip_html_tags(&body),
@@ -509,10 +463,6 @@ impl Tool for WebFetchTool {
 
     fn max_result_size(&self) -> usize {
         MAX_OUTPUT_BYTES
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/webfetch.md"))
     }
 
     fn timeout(&self) -> Option<std::time::Duration> {
@@ -668,22 +618,20 @@ mod tests {
             // Not a fake-ip DNS environment; literal tests already cover the classifier.
             return;
         }
-        let ips = resolve_and_validate_public_http_url(
-            &url::Url::parse("https://example.com/").unwrap(),
-        )
-        .expect("hostname→198.18 must pass SSRF gate under fake-ip DNS");
+        let ips =
+            resolve_and_validate_public_http_url(&url::Url::parse("https://example.com/").unwrap())
+                .expect("hostname→198.18 must pass SSRF gate under fake-ip DNS");
         assert!(!ips.is_empty());
         for ip in &ips {
-            assert!(
-                !is_non_public_ip(*ip),
-                "resolved {ip} must be gate-public"
-            );
+            assert!(!is_non_public_ip(*ip), "resolved {ip} must be gate-public");
         }
     }
 
     #[test]
     fn non_http_scheme_is_hard_invalid_input() {
-        let tool = WebFetchTool::new(Arc::new(RwLock::new(Some(reqwest::blocking::Client::new()))));
+        let tool = WebFetchTool::new(Arc::new(RwLock::new(
+            Some(reqwest::blocking::Client::new()),
+        )));
         let result = tool.call_inner(serde_json::json!({ "url": "file:///etc/passwd" }));
         assert_eq!(result.level, ToolSignalLevel::Error);
         assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
@@ -692,11 +640,17 @@ mod tests {
 
     #[test]
     fn private_ip_is_hard_permission_denied() {
-        let tool = WebFetchTool::new(Arc::new(RwLock::new(Some(reqwest::blocking::Client::new()))));
+        let tool = WebFetchTool::new(Arc::new(RwLock::new(
+            Some(reqwest::blocking::Client::new()),
+        )));
         let result = tool.call_inner(serde_json::json!({ "url": "http://127.0.0.1/" }));
         assert_eq!(result.level, ToolSignalLevel::Error);
         assert_eq!(result.error_code.as_deref(), Some("permission_denied"));
-        let data_ok = result.data.as_ref().and_then(|d| d.get("ok")).and_then(|v| v.as_bool());
+        let data_ok = result
+            .data
+            .as_ref()
+            .and_then(|d| d.get("ok"))
+            .and_then(|v| v.as_bool());
         assert_ne!(data_ok, Some(false), "SSRF must be ToolError, not ok:false");
     }
 
@@ -728,5 +682,4 @@ mod tests {
         assert_eq!(data["url"], "https://example.com/missing");
         assert!(data.get("body").is_none() || data["body"].is_null());
     }
-
 }

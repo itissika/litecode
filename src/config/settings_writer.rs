@@ -319,10 +319,8 @@ impl SettingsWriter {
         let mut settings = self.load()?;
         let defs = settings.custom_tools.clone();
         for profile in settings.agents.values_mut() {
-            let notes = super::suite_bindings::collapse_custom_suite_bindings(
-                &mut profile.tools,
-                &defs,
-            );
+            let notes =
+                super::suite_bindings::collapse_custom_suite_bindings(&mut profile.tools, &defs);
             for note in notes {
                 tracing::warn!("{note}");
             }
@@ -707,10 +705,9 @@ impl SettingsWriter {
             for (tool_id, binding) in profile.tools.iter_mut() {
                 apply_forced_preset(tool_id, binding, preset, &safe);
             }
-            for note in super::suite_bindings::collapse_custom_suite_bindings(
-                &mut profile.tools,
-                &defs,
-            ) {
+            for note in
+                super::suite_bindings::collapse_custom_suite_bindings(&mut profile.tools, &defs)
+            {
                 tracing::warn!("{note}");
             }
             Ok(false)
@@ -847,9 +844,7 @@ impl SettingsWriter {
                 )));
             }
             for profile in settings.agents.values_mut() {
-                profile
-                    .tools
-                    .remove(&super::suite_bindings::suite_id(id));
+                profile.tools.remove(&super::suite_bindings::suite_id(id));
             }
             Ok(false)
         })
@@ -1237,10 +1232,7 @@ fn merged_custom_rules(
     let mut effective: HashMap<String, (Option<String>, Vec<crate::permission::PolicyRule>)> =
         HashMap::new();
     for tool in global {
-        effective.insert(
-            tool.name.clone(),
-            (tool.suite.clone(), tool.rules.clone()),
-        );
+        effective.insert(tool.name.clone(), (tool.suite.clone(), tool.rules.clone()));
     }
     for (name, tool) in workspace {
         effective.insert(name.clone(), (tool.suite.clone(), tool.rules.clone()));
@@ -1361,6 +1353,7 @@ fn restore_workspace_file(path: &Path, previous: Option<&[u8]>) -> Result<()> {
 ///
 /// Normalizes the body in place (empty name → id, empty schema type → object,
 /// `timeout: 0` → 120) and rejects ids the runtime could not bind.
+#[cfg(test)]
 pub(crate) fn validate_custom_definition(id: &str, def: &mut CustomToolDefinition) -> Result<()> {
     validate_custom_definition_with_suites(id, def, &HashMap::new())
 }
@@ -1440,13 +1433,9 @@ pub(crate) fn custom_definition_diagnostic(
         .map(str::trim)
         .filter(|suite| !suite.is_empty())
         .map(str::to_string);
-    let diag = |field: &str,
-                actual: Option<String>,
-                expected: &str,
-                fix: &str| {
-        let mut message = format!(
-            "{source}: custom tool `{tool}` field `{field}`: expected {expected}"
-        );
+    let diag = |field: &str, actual: Option<String>, expected: &str, fix: &str| {
+        let mut message =
+            format!("{source}: custom tool `{tool}` field `{field}`: expected {expected}");
         if let Some(actual) = actual.as_deref() {
             message.push_str(&format!("; actual `{actual}`"));
         }
@@ -1573,7 +1562,8 @@ pub(crate) fn custom_definition_diagnostic(
                     ),
                 ));
             };
-            if let Some(error) = crate::permission::policy::custom_rule_ids_error(&suite_def.rules) {
+            if let Some(error) = crate::permission::policy::custom_rule_ids_error(&suite_def.rules)
+            {
                 return Some(diag(
                     &format!("suites.{suite_name}.rules"),
                     Some(error),
@@ -1937,8 +1927,7 @@ max_output = 1024
             .expect("suite member inherits a code surface");
 
         def.output_schema = None;
-        let error = validate_custom_definition_with_suites("probe", &mut def, &suites)
-            .unwrap_err();
+        let error = validate_custom_definition_with_suites("probe", &mut def, &suites).unwrap_err();
         assert!(error.to_string().contains("output_schema"), "{error}");
     }
 
@@ -2055,7 +2044,10 @@ max_output = 1024
             &global.into_iter().collect(),
             &workspace.into_iter().collect(),
         );
-        assert!(safe.is_empty(), "workspace suite rules replace global rules");
+        assert!(
+            safe.is_empty(),
+            "workspace suite rules replace global rules"
+        );
     }
 
     #[test]

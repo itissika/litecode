@@ -11,7 +11,6 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::context_pipeline::Context;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::ResourceKey;
@@ -83,7 +82,11 @@ impl EditTool {
         if execution.cancel.is_cancelled() {
             return cancelled_edit();
         }
-        match self.engine.apply_one(&execution, &raw_path, &spec, "replaced").await {
+        match self
+            .engine
+            .apply_one(&execution, &raw_path, &spec, "replaced")
+            .await
+        {
             Ok(result) => result::present_edit(result),
             Err(Cancelled) => cancelled_edit(),
         }
@@ -107,35 +110,6 @@ impl Tool for EditTool {
 
     fn surface(&self) -> crate::tool::ToolSurface {
         crate::tool::ToolSurface::Code
-    }
-
-    fn schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": crate::tools::file_path::FILE_PATH_SCHEMA_HINT
-                },
-                "old_string": {
-                    "type": "string",
-                    "description": format!(
-                        "Exact file text to find. Do not include {}. Must match exactly one place; add surrounding lines if it appears more than once.",
-                        crate::tool::FILE_LINE_PREFIX_HINT
-                    )
-                },
-                "new_string": {
-                    "type": "string",
-                    "description": "Replacement text. Use an empty string to delete old_string."
-                }
-            },
-            "required": ["path", "old_string", "new_string"]
-        })
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        Some(result::edit_result_schema())
     }
 
     fn timeout(&self) -> Option<std::time::Duration> {
@@ -204,13 +178,7 @@ impl Tool for EditTool {
             .expect("test runtime");
         rt.block_on(self.call_for_execution(input, execution))
     }
-
-    fn description(&self, _ctx: &Context) -> String {
-        crate::tools::description_text(include_str!("descriptions/edit.md"))
-    }
 }
 
 /// Re-export for apply_edits / tests that build results without the tool.
-pub use result::{edit_result_schema, present_edit, present_apply_edits};
-pub(crate) use planner::EditSpec;
-
+pub use result::{present_apply_edits, present_edit};
