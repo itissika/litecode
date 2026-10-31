@@ -22,7 +22,7 @@ import { closePanel } from "../dockview/workbench/commands";
 import { useBashStore } from "./bashStore";
 import { useToastStore } from "./toastStore";
 import { useTurnStore } from "./turnStore";
-import { noteSessionFinished } from "./unreadStore";
+import { noteSessionFinished, useUnreadStore } from "./unreadStore";
 import { useMessageStore } from "./messageStore";
 import { openSessionPanel } from "../lib/sessionPanelNav";
 import { deleteRejectedMessage, rpcErrorCode } from "../lib/sessionErrors";
@@ -451,6 +451,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         const exists = state.sessions.some((s) => s.id === session_id);
         if (event === "deleted") {
           useConnectionStore.getState().unsubscribeSession(session_id);
+          // A deleted session can never be read again: drop its sidebar mark
+          // rather than leaving a dot that no row can consume.
+          useUnreadStore.getState().consume(session_id);
           closePanel(`agent-${session_id}`);
           closePanel(`subagent-${session_id}`);
           const deletedSessionIds = {

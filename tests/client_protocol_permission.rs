@@ -92,3 +92,52 @@ async fn ws_bridge_approval_round_trip_with_free_text() {
     assert_eq!(reply.outcome, permission::AskOutcome::Deny);
     assert_eq!(reply.free_text.as_deref(), Some("too broad"));
 }
+
+#[tokio::test]
+async fn ws_bridge_follows_rebound_route_after_reconnect() {
+    use litecode::permission::{AskOutcome, AskPrompt, PermissionRoute};
+    use tokio_util::sync::CancellationToken;
+
+    // The turn's bridge was created while the old connection owned the route.
+    let route = PermissionRoute::default();
+    let (old_tx, old_rx) = mpsc::unbounded_channel::<PendingPermission>();
+    route.bind("old-connection", old_tx);
+    drop(old_rx);
+
+    let sink: Arc<dyn PermissionSink> = Arc::new(WsPermissionBridge::with_route(
+        "s-reconnect",
+        "t-running",
+        "default",
+        route.clone(),
+    ));
+
+    // Reconnect: a new loop binds the same session route. The old loop's
+    // unbind must not clear the new owner.
+    let (new_tx, mut new_rx) = mpsc::unbounded_channel::<PendingPermission>();
+    route.bind("new-connection", new_tx);
+    route.unbind("old-connection");
+
+    let sink2 = sink.clone();
+    let ask = tokio::task::spawn_blocking(move || {
+        sink2.ask(
+            &AskPrompt::approval("plan", "default", "Continue after reconnect"),
+            &CancellationToken::new(),
+        )
+    });
+
+    let perm = tokio::time::timeout(std::time::Duration::from_secs(2), new_rx.recv())
+        .await
+        .expect("the running turn's ask must reach the reconnected connection")
+        .expect("recv");
+    assert_eq!(perm.session_id, "s-reconnect");
+    assert_eq!(perm.turn_id, "t-running");
+    perm.reply_tx
+        .send(AskReply::from_outcome(AskOutcome::Allow { always: false }))
+        .ok();
+
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(2), ask)
+        .await
+        .expect("ask should unblock")
+        .expect("join");
+    assert_eq!(reply.outcome, AskOutcome::Allow { always: false });
+}

@@ -270,4 +270,72 @@ fn expand_braces(pattern: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backslashes_normalize_before_matching() {
+        assert_eq!(normalize_pattern(r"src\lib\a.rs"), "src/lib/a.rs");
+        let m = compile_include_pattern(r"src\lib\*.rs").unwrap();
+        assert!(m.matches("src/lib/a.rs"));
+        assert!(!m.matches("src/lib/a.ts"));
+    }
+
+    #[test]
+    fn lists_split_only_outside_groups() {
+        assert_eq!(
+            split_glob_include_exclude("**/*.rs,!**/target/**"),
+            (Some("**/*.rs".into()), Some("**/target/**".into()))
+        );
+        // The comma inside braces belongs to the pattern, not the list.
+        assert_eq!(
+            split_glob_include_exclude("{a,b}.rs,c.ts"),
+            (Some("{a,b}.rs,c.ts".into()), None)
+        );
+        assert_eq!(
+            split_glob_include_exclude("a.rs\nb.rs"),
+            (Some("a.rs,b.rs".into()), None)
+        );
+    }
+
+    #[test]
+    fn alternates_and_basenames_match_at_any_depth() {
+        let m = compile_include_pattern("**/*.{ts,tsx}").unwrap();
+        assert!(m.matches("web/src/a.ts"));
+        assert!(m.matches("a.tsx"));
+        assert!(!m.matches("a.js"));
+
+        let base = compile_include_pattern("*.md").unwrap();
+        assert!(base.matches("docs/deep/readme.md"), "basename fallback");
+        assert!(!base.matches("docs/deep/readme.mdx"));
+
+        let unicode = compile_include_pattern("知识/*.md").unwrap();
+        assert!(unicode.matches("知识/概念.md"));
+    }
+
+    #[test]
+    fn single_star_and_question_stay_within_a_segment() {
+        let m = compile_include_pattern("src/*.rs").unwrap();
+        assert!(m.matches("src/a.rs"));
+        assert!(!m.matches("src/nested/a.rs"));
+
+        let q = compile_include_pattern("a?.rs").unwrap();
+        assert!(q.matches("ab.rs"));
+        assert!(!q.matches("a.rs"));
+        assert!(!q.matches("abc.rs"));
+    }
+
+    #[test]
+    fn bang_prefix_is_ignored_by_the_include_compiler() {
+        let matchers = compile_include_patterns("a.rs,!b.rs").unwrap();
+        assert_eq!(matchers.len(), 2);
+        assert!(matchers[0].matches("a.rs"));
+        assert!(matchers[1].matches("b.rs"));
+    }
+
+    #[test]
+    fn unclosed_groups_are_reported() {
+        assert!(compile_include_pattern("src/[abc").is_err());
+        assert!(compile_include_pattern("src/{a,b").is_err());
+    }
+}

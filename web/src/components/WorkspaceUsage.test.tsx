@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
   WorkspaceUsageDay,
@@ -7,10 +7,12 @@ import type {
   WorkspaceUsageProvider,
   WorkspaceUsageReport,
 } from "../api/types";
+import { useConnectionStore } from "../stores/connectionStore";
 import {
   bucketDays,
   bucketHours,
   providerBuckets,
+  WorkspaceUsage,
   WorkspaceUsageView,
 } from "./WorkspaceUsage";
 
@@ -431,3 +433,49 @@ describe("WorkspaceUsageView", () => {
     expect(providerBuckets(rows, "all", TODAY)).toHaveLength(3);
   });
 });
+
+describe("WorkspaceUsage popover body", () => {
+  function stubRpc(sendRpc: ReturnType<typeof vi.fn>): void {
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+  }
+
+  afterEach(() => {
+    useConnectionStore.setState({ sendRpc: undefined } as never);
+  });
+
+  it("keeps the block's height, and nothing else, while the first read is in flight", () => {
+    stubRpc(vi.fn(() => new Promise(() => undefined)));
+
+    const { container } = render(<WorkspaceUsage />);
+
+    expect(container.textContent).toBe("");
+    expect(container.firstElementChild).toBeTruthy();
+  });
+
+  it("says the read failed, and says something else when there is simply nothing yet", async () => {
+    stubRpc(vi.fn(async () => Promise.reject(new Error("no socket"))));
+
+    const failed = render(<WorkspaceUsage />);
+    const unavailable = await screen.findByText("Usage temporarily unavailable");
+    expect(unavailable).toBeTruthy();
+    failed.unmount();
+
+    stubRpc(vi.fn(async () => report([])));
+    render(<WorkspaceUsage />);
+
+    const empty = await screen.findByText("No usage records yet");
+    expect(empty).toBeTruthy();
+    // Two different states must never read as the same sentence.
+    expect(empty.textContent).not.toBe(unavailable.textContent);
+  });
+
+  it("renders the panel once the report arrives", async () => {
+    stubRpc(vi.fn(async () => report([day(TODAY, 1_000, 500)])));
+
+    render(<WorkspaceUsage />);
+
+    expect(await screen.findByText("Workspace usage")).toBeTruthy();
+    expect(screen.getByText("Prompt")).toBeTruthy();
+  });
+});
+

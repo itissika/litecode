@@ -236,6 +236,37 @@ describe("SessionList — active session marker", () => {
 });
 
 describe("SessionList — unread marker", () => {
+  it("lights the dot straight from the lifecycle feed", async () => {
+    const target = session("s1", {
+      preview: "finished work",
+      running: true,
+      status: "running",
+    });
+    useConnectionStore.setState({
+      state: "connected",
+      sendRpc: vi.fn(async () => ({ sessions: [target], folders: [] })),
+    } as never);
+
+    render(<SessionList />);
+    await screen.findByText("finished work");
+    expect(document.querySelector('[data-session-unread="true"]')).toBeNull();
+
+    // No dockview is bound, so the transcript is not visible: the settle marks
+    // the row through the same path the wire uses.
+    act(() => {
+      useSessionStore.getState().onSessionLifecycle({
+        session_id: "s1",
+        event: "turn_finished",
+        turn: null,
+        status: "idle",
+      });
+    });
+
+    expect(
+      document.querySelector('[data-session-unread="true"]'),
+    ).toBeTruthy();
+  });
+
   it("shows a dot until the mark is consumed", async () => {
     const target = session("s1", { preview: "finished work" });
     useConnectionStore.setState({

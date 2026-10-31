@@ -1573,4 +1573,153 @@ mod code_caller_contract_tests {
         );
         assert!(result.content.contains("nope"), "{}", result.content);
     }
+
+    #[tokio::test]
+    async fn cross_session_write_lock_conflict_is_reported_without_running() {
+        struct LockOnlyTool {
+            ran: Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl Tool for LockOnlyTool {
+            fn name(&self) -> &str {
+                "lockonly"
+            }
+            fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+                Some(crate::tool::DirectToolSpec {
+                    description: "declares a write".into(),
+                    input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                })
+            }
+            fn effects(
+                &self,
+                _input: &serde_json::Value,
+                _path_mode: crate::workspace::ToolPathMode,
+                _workspace_root: &std::path::Path,
+            ) -> crate::tool::resource_gate::ToolEffects {
+                crate::tool::resource_gate::ToolEffects::write(crate::tool::write_lock::ResourceKey::File(
+                    "/shared".into(),
+                ))
+            }
+            fn resource_keys(
+                &self,
+                _input: &serde_json::Value,
+                _path_mode: crate::workspace::ToolPathMode,
+                _workspace_root: &std::path::Path,
+            ) -> Vec<crate::tool::write_lock::ResourceKey> {
+                vec![crate::tool::write_lock::ResourceKey::File("/shared".into())]
+            }
+            fn execute(
+                &self,
+                _input: serde_json::Value,
+                _execution: ToolExecutionContext,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>>
+            {
+                self.ran
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async move { ToolCallResult::ok("wrote") })
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut global = crate::config::schema::GlobalSettings::default();
+        global.agents.insert(
+            "default".into(),
+            crate::config::schema::AgentProfile {
+                role: crate::config::schema::AgentRole::Primary,
+                model_ref: "default".into(),
+                tools: std::collections::HashMap::from([(
+                    "lockonly".to_string(),
+                    crate::config::schema::AgentToolBinding {
+                        enabled: true,
+                        preset: None,
+                        allowed_tools: None,
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+        let resolved = crate::config::resolved::resolve_without_catalog(
+            global,
+            crate::config::resolved::WorkspaceState::new("/tmp/test"),
+        );
+        let permission = crate::permission::PermissionEngine::resolver(resolved, "default", 0);
+        let ctx = Context {
+            cwd: dir.path().to_path_buf(),
+            workspace_paths: crate::config::WorkspacePaths::for_legacy_root(dir.path()),
+            agents_md: None,
+            claude_md: None,
+        };
+        let sink = crate::permission::sinks::RecordingPermissionSink::from_reply(true, true);
+        let write_lock = Arc::new(WorkspaceWriteLock::new());
+        write_lock
+            .try_acquire(&[crate::tool::write_lock::ResourceKey::File("/shared".into())], "holder")
+            .unwrap();
+
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(LockOnlyTool {
+            ran: Arc::clone(&ran),
+        })];
+        let tu = FunctionToolCall {
+            arguments: "{}".into(),
+            call_id: "call_1".into(),
+            name: "lockonly".into(),
+            namespace: None,
+            id: None,
+            status: None,
+        };
+
+        let result = crate::tool::executor::run_tool(
+            &tu,
+            &tools,
+            &permission,
+            &ctx,
+            "s2",
+            "default",
+            &sink,
+            CancellationToken::new(),
+            dir.path(),
+            4096,
+            None,
+            Arc::clone(&write_lock),
+            None,
+        )
+        .await;
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "a conflicting call must not execute"
+        );
+        assert_eq!(
+            result.error.as_ref().map(|error| error.kind),
+            Some(crate::types::ToolErrorKind::Conflict)
+        );
+        assert!(
+            result.content.contains("holder"),
+            "{}",
+            result.content
+        );
+
+        // Releasing the holder lets the next call through.
+        write_lock.release_all("holder");
+        let result = crate::tool::executor::run_tool(
+            &tu,
+            &tools,
+            &permission,
+            &ctx,
+            "s2",
+            "default",
+            &sink,
+            CancellationToken::new(),
+            dir.path(),
+            4096,
+            None,
+            Arc::clone(&write_lock),
+            None,
+        )
+        .await;
+        assert!(
+            ran.load(std::sync::atomic::Ordering::SeqCst),
+            "the retry must execute"
+        );
+        assert!(result.error.is_none(), "{}", result.content);
+    }
+
 }

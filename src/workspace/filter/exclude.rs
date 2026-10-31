@@ -155,4 +155,41 @@ pub fn path_excluded(rel: &str, preset: FilterPreset) -> bool {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_segments_fold_children_but_not_lookalikes() {
+        let m = ExcludeMatcher::from_globs(["**/node_modules", "target", "**/.git/**"]);
+        assert!(m.matches("node_modules/a/b.js"));
+        assert!(m.matches("web/node_modules/a.js"));
+        assert!(m.matches("crates/x/target/debug/a.rlib"));
+        assert!(m.matches(".git/config"));
+        assert!(!m.matches("my_node_modules/a.js"));
+        assert!(!m.matches("targets/a.rs"));
+    }
+
+    #[test]
+    fn suffix_globs_match_files_at_any_depth() {
+        let m = ExcludeMatcher::from_globs(["**/*.map", "*.min.js"]);
+        assert!(m.matches("dist/app.js.map"));
+        assert!(m.matches("dist/app.min.js"));
+        assert!(!m.matches("app.js"));
+    }
+
+    #[test]
+    fn empty_matcher_matches_nothing() {
+        let m = ExcludeMatcher::from_globs(Vec::<&str>::new());
+        assert!(m.is_empty());
+        assert!(!m.matches("anything/at/all.rs"));
+        assert!(
+            !ExcludeMatcher::for_preset(FilterPreset::Unfiltered).matches("node_modules/x")
+        );
+    }
+
+    #[test]
+    fn paths_are_normalized_before_matching() {
+        let m = ExcludeMatcher::from_globs([r"**\node_modules"]);
+        assert!(m.matches("./web/node_modules/a.js"));
+    }
+}

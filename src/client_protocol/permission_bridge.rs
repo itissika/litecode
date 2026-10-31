@@ -2,32 +2,17 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+pub use crate::permission::PendingPermission;
 use crate::permission::{
-    AskKind, AskOption, AskOutcome, AskPrompt, AskQuestion, AskReply, PermissionSink,
+    AskOutcome, AskPrompt, AskReply, PermissionRoute, PermissionSink,
     blocking_wait_oneshot_cancellable,
 };
-
-pub struct PendingPermission {
-    pub session_id: String,
-    pub agent_name: String,
-    pub turn_id: String,
-    pub request_id: String,
-    pub tool: String,
-    pub rule_id: String,
-    pub summary: String,
-    pub kind: AskKind,
-    pub free_text: bool,
-    pub options: Vec<AskOption>,
-    pub multi_select: bool,
-    pub questions: Vec<AskQuestion>,
-    pub reply_tx: oneshot::Sender<AskReply>,
-}
 
 pub struct WsPermissionBridge {
     session_id: String,
     turn_id: String,
     agent_name: String,
-    tx: mpsc::UnboundedSender<PendingPermission>,
+    route: PermissionRoute,
 }
 
 impl WsPermissionBridge {
@@ -37,11 +22,22 @@ impl WsPermissionBridge {
         agent_name: impl Into<String>,
         tx: mpsc::UnboundedSender<PendingPermission>,
     ) -> Self {
+        Self::with_route(session_id, turn_id, agent_name, PermissionRoute::from(tx))
+    }
+
+    /// The bridge keeps session/turn identity and follows the connection that
+    /// currently owns this session's permission route.
+    pub fn with_route(
+        session_id: impl Into<String>,
+        turn_id: impl Into<String>,
+        agent_name: impl Into<String>,
+        route: PermissionRoute,
+    ) -> Self {
         Self {
             session_id: session_id.into(),
             turn_id: turn_id.into(),
             agent_name: agent_name.into(),
-            tx,
+            route,
         }
     }
 }
@@ -60,25 +56,21 @@ impl PermissionSink for WsPermissionBridge {
             "permission waiting for ui"
         );
         let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .tx
-            .send(PendingPermission {
-                session_id: self.session_id.clone(),
-                agent_name: self.agent_name.clone(),
-                turn_id: self.turn_id.clone(),
-                request_id: Uuid::new_v4().to_string(),
-                tool: prompt.tool.to_string(),
-                rule_id: prompt.rule_id.to_string(),
-                summary: prompt.summary.to_string(),
-                kind: prompt.kind,
-                free_text: prompt.free_text,
-                options: prompt.options.to_vec(),
-                multi_select: prompt.multi_select,
-                questions,
-                reply_tx,
-            })
-            .is_err()
-        {
+        if !self.route.send(PendingPermission {
+            session_id: self.session_id.clone(),
+            agent_name: self.agent_name.clone(),
+            turn_id: self.turn_id.clone(),
+            request_id: Uuid::new_v4().to_string(),
+            tool: prompt.tool.to_string(),
+            rule_id: prompt.rule_id.to_string(),
+            summary: prompt.summary.to_string(),
+            kind: prompt.kind,
+            free_text: prompt.free_text,
+            options: prompt.options.to_vec(),
+            multi_select: prompt.multi_select,
+            questions,
+            reply_tx,
+        }) {
             // WP-186 R5: no WS must not look like user Skip (Deny).
             tracing::warn!(tool = %prompt.tool, "no active websocket for permission");
             return AskReply::from_outcome(AskOutcome::Aborted);
@@ -99,12 +91,9 @@ pub fn ws_permission_sink(
     session_id: &str,
     turn_id: &str,
     agent_name: &str,
-    perm_tx: &mpsc::UnboundedSender<PendingPermission>,
+    route: PermissionRoute,
 ) -> std::sync::Arc<dyn PermissionSink> {
-    std::sync::Arc::new(WsPermissionBridge::new(
-        session_id,
-        turn_id,
-        agent_name,
-        perm_tx.clone(),
+    std::sync::Arc::new(WsPermissionBridge::with_route(
+        session_id, turn_id, agent_name, route,
     ))
 }

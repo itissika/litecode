@@ -1395,4 +1395,43 @@ mod wp143_tests {
             assert_store_consistent(root);
         }
     }
+
+    #[test]
+    fn deleted_file_disappears_from_index_and_reload() {
+        let dir = workspace(4, 0);
+        let root = dir.path();
+        let index = start_fresh_index(root, EMBEDDER_ID_HASH).unwrap();
+        let runtime = CodeSearchRuntime::new(
+            root.to_path_buf(),
+            index,
+            Some(Box::new(HashEmbedder)),
+            None,
+        );
+        refresh_index_incremental(&runtime).unwrap();
+        assert!(runtime.with_index(|i| Ok(i.has_path("f0001.rs"))).unwrap());
+
+        std::fs::remove_file(root.join("f0001.rs")).unwrap();
+        refresh_index_incremental(&runtime).unwrap();
+
+        let (has, paths, chunks, vectors) = runtime
+            .with_index(|i| {
+                Ok((
+                    i.has_path("f0001.rs"),
+                    i.indexed_paths(),
+                    i.chunks().len(),
+                    i.vector_count(),
+                ))
+            })
+            .unwrap();
+        assert!(!has, "deleted path must leave the live index");
+        assert!(!paths.contains("f0001.rs"));
+        assert_eq!(chunks, vectors, "no orphan vectors after a delete");
+        drop(runtime);
+
+        // A reload must not resurrect chunks from the checkpoint.
+        let reloaded = CodeSearchIndex::load(root).unwrap();
+        assert!(!reloaded.has_path("f0001.rs"));
+        assert_store_consistent(root);
+    }
+
 }

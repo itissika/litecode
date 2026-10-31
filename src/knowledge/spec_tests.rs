@@ -1,4 +1,4 @@
-//! Contract tests for `docs/knowledge-references.md`.
+//! Contract tests for knowledge references: extract, resolve, layout.
 //!
 //! The table lives in `tests/fixtures/knowledge_refs/cases.json` so the
 //! frontend can run the same cases. Each case names the spec rule it locks.
@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::index::{self, Content};
+use super::mentions;
 
 type Found = BTreeSet<(String, String, String)>;
 
@@ -56,6 +57,27 @@ fn case_id(case: &Value) -> &str {
 }
 
 // ---------------------------------------------------------------- extract
+
+fn run_extract(case: &Value) -> Result<(), String> {
+    let text = case["text"].as_str().expect("text");
+    let actual: Vec<String> = mentions::extract_cites(text)
+        .iter()
+        .map(|cite| cite.ref_key())
+        .collect();
+    let wanted: Vec<String> = case["refs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|item| item["ref_key"].as_str().expect("ref_key").to_string())
+        .collect();
+    if actual != wanted {
+        return Err(format!(
+            "extract {}: wanted {wanted:?} got {actual:?}",
+            case_id(case)
+        ));
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------- resolve
 
@@ -179,10 +201,97 @@ fn run_resolve(case: &Value) -> Result<(), String> {
 
 // ---------------------------------------------------------------- layout
 
+fn run_layout(case: &Value) -> Result<(), String> {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("knowledge");
+    for (rel, body) in case["knowledge"].as_object().expect("knowledge") {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, body.as_str().expect("knowledge text")).unwrap();
+    }
+    for rel in case["dirs"].as_array().into_iter().flatten() {
+        fs::create_dir_all(root.join(rel.as_str().unwrap())).unwrap();
+    }
+
+    let content = index::compute_once(dir.path());
+    let folders: Vec<Value> = content
+        .folders
+        .iter()
+        .map(|folder| {
+            json!({
+                "id": folder.id,
+                "name": folder.name,
+                "parent_id": folder.parent_id,
+            })
+        })
+        .collect();
+    if Value::Array(folders.clone()) != case["folders"] {
+        return Err(format!(
+            "layout {}: folders wanted {:?} got {folders:?}",
+            case_id(case),
+            case["folders"]
+        ));
+    }
+
+    // Walk order is filesystem order; the contract is the set, not the order.
+    let by_path = |a: &Value, b: &Value| a["path"].as_str().cmp(&b["path"].as_str());
+    let mut unknown: Vec<Value> = content
+        .unknown
+        .iter()
+        .map(|file| json!({"path": file.path, "folder_id": file.folder_id}))
+        .collect();
+    let mut wanted_unknown: Vec<Value> = case["unknown"].as_array().cloned().unwrap_or_default();
+    unknown.sort_by(by_path);
+    wanted_unknown.sort_by(by_path);
+    if unknown != wanted_unknown {
+        return Err(format!(
+            "layout {}: unknown wanted {wanted_unknown:?} got {unknown:?}",
+            case_id(case)
+        ));
+    }
+
+    let mut nodes: Vec<&str> = content.nodes.iter().map(|node| node.path.as_str()).collect();
+    let mut wanted_nodes: Vec<&str> = case["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|path| path.as_str().expect("node path"))
+        .collect();
+    nodes.sort();
+    wanted_nodes.sort();
+    if nodes != wanted_nodes {
+        return Err(format!(
+            "layout {}: nodes wanted {wanted_nodes:?} got {nodes:?}",
+            case_id(case)
+        ));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------- tests
 
 fn cases<'a>(table: &'a Value, section: &str) -> Vec<&'a Value> {
     table[section].as_array().expect(section).iter().collect()
+}
+
+#[test]
+fn extraction_follows_the_spec() {
+    let table = table();
+    let failures: Vec<String> = cases(&table, "extract")
+        .into_iter()
+        .filter_map(|case| run_extract(case).err())
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn layout_follows_the_spec() {
+    let table = table();
+    let failures: Vec<String> = cases(&table, "layout")
+        .into_iter()
+        .filter_map(|case| run_layout(case).err())
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]

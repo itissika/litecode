@@ -149,4 +149,20 @@ describe("unreadStore — lifecycle", () => {
 
     expect(useUnreadStore.getState().unread).toEqual({});
   });
+
+  it("drops the mark when the session is deleted", () => {
+    useSessionStore.setState({
+      sessions: [session({ running: false, status: "idle" })],
+    } as never);
+    useUnreadStore.getState().mark("s1");
+
+    useSessionStore.getState().onSessionLifecycle({
+      session_id: "s1",
+      event: "deleted",
+      turn: null,
+    });
+
+    expect(useSessionStore.getState().sessions).toHaveLength(0);
+    expect(useUnreadStore.getState().unread).toEqual({});
+  });
 });

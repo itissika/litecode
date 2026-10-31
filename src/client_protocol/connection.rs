@@ -763,6 +763,7 @@ pub async fn handle_jsonrpc(
 
             match session.subscribe_checked(&params.session_id).await {
                 Ok(()) => {
+                    session.bind_permission_route(&params.session_id, perm_tx);
                     for msg in session.take_outgoing_for(&params.session_id) {
                         emit(sink, msg);
                     }
@@ -797,6 +798,7 @@ pub async fn handle_jsonrpc(
             match serde_json::from_value::<Params>(rpc.params.clone()) {
                 Ok(params) if !params.session_id.is_empty() => {
                     session.unsubscribe(&params.session_id);
+                    session.unbind_permission_route(&params.session_id);
                     emit(
                         sink,
                         serde_json::to_value(ok_response(id, serde_json::json!({}))).unwrap(),
@@ -1982,6 +1984,10 @@ pub async fn run_session_loop(
     // for every session (including the asking one). No nested select that
     // parks other sessions' RPCs into deferred.
     let mut pending_asks: HashMap<String, PendingAsk> = HashMap::new();
+    // This connection is now the UI owner for sessions it already projects.
+    // A turn that survived a previous socket keeps its bridge; rebinding here
+    // lets its next Ask reach this connection instead of a dead sender.
+    session.bind_all_permission_routes(&perm_tx);
 
     loop {
         finalize_ready_turn(session, &response_tx);
@@ -2256,12 +2262,14 @@ pub async fn run_session_loop(
                     }
                     Some(SessionRequest::SubscribeSession { session_id }) => {
                         session.subscribe(&session_id).await;
+                        session.bind_permission_route(&session_id, &perm_tx);
                         for msg in session.take_outgoing_for(&session_id) {
                             emit(&response_tx, msg);
                         }
                     }
                     Some(SessionRequest::UnsubscribeSession { session_id }) => {
                         session.unsubscribe(&session_id);
+                        session.unbind_permission_route(&session_id);
                     }
                     None => {
                         // B: WS gone — its asks can no longer be answered.
@@ -2329,6 +2337,7 @@ pub async fn run_session_loop(
                     }
                     SessionRequest::SubscribeSession { session_id } => {
                         session.subscribe(&session_id).await;
+                        session.bind_permission_route(&session_id, &perm_tx);
                         if let Some(proj) = session.projection_mut(&session_id) {
                             for msg in proj.take_outgoing() {
                                 emit(&response_tx, msg);
@@ -2337,6 +2346,7 @@ pub async fn run_session_loop(
                     }
                     SessionRequest::UnsubscribeSession { session_id } => {
                         session.unsubscribe(&session_id);
+                        session.unbind_permission_route(&session_id);
                     }
                 }
             }
@@ -2367,12 +2377,14 @@ pub async fn run_session_loop(
                 }
                 SessionRequest::SubscribeSession { session_id } => {
                     session.subscribe(&session_id).await;
+                    session.bind_permission_route(&session_id, &perm_tx);
                     for msg in session.take_outgoing_for(&session_id) {
                         emit(&response_tx, msg);
                     }
                 }
                 SessionRequest::UnsubscribeSession { session_id } => {
                     session.unsubscribe(&session_id);
+                    session.unbind_permission_route(&session_id);
                 }
             }
         }
@@ -2618,7 +2630,7 @@ mod pending_ask_tests {
 
 #[cfg(test)]
 mod ask_loop_tests {
-    use super::{SessionRequest, run_session_loop};
+    use super::{PendingAsk, SessionRequest, retain_and_clear_pending, run_session_loop};
     use crate::client_protocol::controller::SessionController;
     use crate::client_protocol::permission_bridge::PendingPermission;
     use crate::client_protocol::protocol::JsonRpcRequestEnvelope;
@@ -2811,6 +2823,116 @@ mod ask_loop_tests {
         let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn running_turn_ask_reaches_a_reconnected_loop() {
+        use crate::client_protocol::protocol::methods;
+        use crate::permission::AskPrompt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let session_id = sessions
+            .open_session("/proj", "default", None)
+            .await
+            .unwrap();
+        sessions
+            .begin_turn(
+                &session_id,
+                "turn-running".into(),
+                CancellationToken::new(),
+                5,
+                "default",
+                "/proj",
+            )
+            .unwrap();
+
+        // Connection A created the running turn's bridge, then disappeared.
+        let controller_a =
+            SessionController::with_turn_guard(runtime.clone(), None, Arc::clone(&sessions))
+                .unwrap();
+        let (perm_tx_a, perm_rx_a) = mpsc::unbounded_channel();
+        let old_sink = controller_a.permission_sink_for(&session_id, &perm_tx_a, "turn-running");
+        drop(perm_rx_a);
+
+        // Connection B reconnects and subscribes. Its loop must rebind the
+        // session route; the old bridge must follow it for the next Ask.
+        let mut controller_b =
+            SessionController::with_turn_guard(runtime, None, Arc::clone(&sessions)).unwrap();
+        let (request_tx_b, request_rx_b) = mpsc::unbounded_channel();
+        let (response_tx_b, mut response_rx_b) = mpsc::unbounded_channel();
+        let (perm_tx_b, perm_rx_b) = mpsc::unbounded_channel();
+        let hub = Arc::new(crate::terminal::TerminalHub::new());
+        let loop_b = tokio::spawn(async move {
+            run_session_loop(
+                &mut controller_b,
+                request_rx_b,
+                response_tx_b,
+                perm_tx_b,
+                perm_rx_b,
+                hub,
+            )
+            .await;
+        });
+
+        request_tx_b
+            .send(SessionRequest::JsonRpc(JsonRpcRequestEnvelope {
+                jsonrpc: "2.0".into(),
+                id: serde_json::json!(1),
+                method: methods::SESSION_SUBSCRIBE.into(),
+                params: serde_json::json!({"session_id": session_id}),
+            }))
+            .unwrap();
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(2), response_rx_b.recv())
+                .await
+                .expect("subscribe response timeout")
+                .expect("loop closed before subscribe reply");
+            if frame.get("id") == Some(&serde_json::json!(1)) {
+                break;
+            }
+        }
+
+        let ask = tokio::task::spawn_blocking(move || {
+            old_sink.ask(
+                &AskPrompt::approval("plan", "default", "Continue after reconnect"),
+                &CancellationToken::new(),
+            )
+        });
+
+        let pending = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let pending = sessions.pending_permissions_snapshot(&session_id);
+                if !pending.is_empty() {
+                    break pending;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("running turn's ask never reached the reconnected loop");
+
+        request_tx_b
+            .send(SessionRequest::PermissionGrant {
+                request_id: pending[0].request_id.clone(),
+                tool: "plan".into(),
+                approved: true,
+                always: false,
+                free_text: None,
+                selected: Vec::new(),
+                answers: HashMap::new(),
+            })
+            .unwrap();
+
+        let reply = tokio::time::timeout(Duration::from_secs(2), ask)
+            .await
+            .expect("ask should unblock")
+            .expect("join");
+        assert_eq!(reply.outcome, AskOutcome::Allow { always: false });
+
+        let _ = sessions.finish_turn(&session_id, "turn-running");
+        let _ = request_tx_b.send(SessionRequest::Quit);
+        let _ = tokio::time::timeout(Duration::from_secs(2), loop_b).await;
+    }
+
     // ── WP-091 ──
     use super::{DESCENDANT_RUNNING_MESSAGE, SUBAGENT_READONLY_MESSAGE, handle_jsonrpc};
 
@@ -2993,6 +3115,65 @@ mod ask_loop_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disconnect_clears_the_pending_permission_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let (controller, sessions, _parent, child) = wp091_parent_child(dir.path()).await;
+        let project = dir.path().to_string_lossy().to_string();
+        sessions
+            .begin_turn(
+                &child,
+                "t1".into(),
+                CancellationToken::new(),
+                5,
+                "default",
+                &project,
+            )
+            .unwrap();
+        assert!(sessions.upsert_pending_permission(
+            crate::session::pending::PendingPermissionRecord {
+                session_id: child.clone(),
+                turn_id: "t1".into(),
+                request_id: "req1".into(),
+                tool: "write".into(),
+                rule_id: "rule".into(),
+                summary: "write a file".into(),
+                kind: AskKind::Permission,
+                free_text: false,
+                options: Vec::new(),
+                multi_select: false,
+                questions: Vec::new(),
+                call_id: None,
+            }
+        ));
+        assert_eq!(sessions.pending_permissions_snapshot(&child).len(), 1);
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let mut pending = HashMap::new();
+        pending.insert(
+            "req1".to_string(),
+            PendingAsk {
+                session_id: child.clone(),
+                agent_name: "default".into(),
+                tool: "write".into(),
+                rule_id: "rule".into(),
+                reply_tx,
+            },
+        );
+
+        let listed = super::retain_and_clear_pending(&controller, &mut pending);
+        assert_eq!(listed, vec![(child.clone(), "write".to_string())]);
+        assert!(pending.is_empty());
+        assert!(
+            reply_rx.await.is_err(),
+            "the oneshot closes without a Deny/Skip reply"
+        );
+        assert!(
+            sessions.pending_permissions_snapshot(&child).is_empty(),
+            "a rebuilt snapshot must not show a card with no live turn"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wp091_delete_parent_with_running_child_returns_descendant_running() {
         let dir = tempfile::tempdir().unwrap();
         let (mut c, s, parent, child) = wp091_parent_child(dir.path()).await;
@@ -3014,7 +3195,17 @@ mod ask_loop_tests {
             reply["error"]["data"]["running_session_ids"],
             serde_json::json!([child])
         );
+
+        // A rejected delete is a no-op: both rows survive, and the child's log
+        // stays intact until its turn actually ends.
+        assert!(s.data().meta_blocking(&parent).is_ok());
+        assert!(s.data().meta_blocking(&child).is_ok());
+
         assert!(s.finish_turn(&child, "t-run").is_some());
+        let reply = wp091_rpc(&mut c, "session/delete", serde_json::json!({"id": parent})).await;
+        assert!(reply.get("error").is_none(), "{reply}");
+        assert!(s.data().meta_blocking(&parent).is_err());
+        assert!(s.data().meta_blocking(&child).is_err());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3238,6 +3429,11 @@ mod ask_loop_tests {
         assert_eq!(r.last_turn_cancelled_by, None);
 
         // Main session: same rule as last_turn_reason → always null (Q6).
+        // A real main turn has a user message; seed it so the row is listed.
+        // `turn/end` alone is a control row and does not create a list entry.
+        s.data()
+            .insert_items(&parent, &[crate::types::user_text("hello")])
+            .unwrap();
         wp099_turn_end(&s, &parent, "p1", "cancelled", Some("user"));
         let r = row(&c.list_sessions().await.unwrap().sessions, &parent);
         assert_eq!(r.last_turn_cancelled_by, None);

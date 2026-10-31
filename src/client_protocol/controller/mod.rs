@@ -1189,6 +1189,9 @@ pub struct SessionController {
     /// Permission grants that arrived before the matching Ask was registered;
     /// consumed when that Ask is inserted into the pending-ask registry.
     pub(super) stray_grants: VecDeque<SessionRequest>,
+    /// Identifies this connection in the session's permission route. A stale
+    /// connection cannot unbind a newer connection's binding.
+    permission_route_owner: String,
 }
 
 impl SessionController {
@@ -1223,6 +1226,7 @@ impl SessionController {
             _workspace_outgoing: Vec::new(),
             _dummy_deferred: VecDeque::new(),
             stray_grants: VecDeque::new(),
+            permission_route_owner: uuid::Uuid::new_v4().to_string(),
         };
         // SessionRecord creation is handled by `subscribe()` or `open_session()`.
         // The session_id hint no longer pre-loads a Session here.
@@ -1616,6 +1620,34 @@ impl SessionController {
             .unwrap_or(50)
     }
 
+    /// Bind this connection as the session's current permission route. Called
+    /// when a connection subscribes and again when it starts a turn, so a
+    /// running turn's bridge follows reconnects instead of a dead sender.
+    pub(crate) fn bind_permission_route(
+        &self,
+        session_id: &str,
+        perm_tx: &mpsc::UnboundedSender<PendingPermission>,
+    ) {
+        self.sessions
+            .permission_route(session_id)
+            .bind(&self.permission_route_owner, perm_tx.clone());
+    }
+
+    pub(crate) fn unbind_permission_route(&self, session_id: &str) {
+        if let Some(route) = self.sessions.existing_permission_route(session_id) {
+            route.unbind(&self.permission_route_owner);
+        }
+    }
+
+    pub(crate) fn bind_all_permission_routes(
+        &self,
+        perm_tx: &mpsc::UnboundedSender<PendingPermission>,
+    ) {
+        for session_id in self.projections.keys() {
+            self.bind_permission_route(session_id, perm_tx);
+        }
+    }
+
     /// Permission sink for a specific session.
     pub fn permission_sink_for(
         &self,
@@ -1625,12 +1657,9 @@ impl SessionController {
     ) -> Arc<dyn PermissionSink> {
         // 2.14: the caller generates the turn_id BEFORE the sink, so permission
         // wire frames carry a real turn_id (never the old "no-turn" fallback).
-        permission_bridge::ws_permission_sink(
-            session_id,
-            turn_id,
-            &self.runtime.agent_name,
-            perm_tx,
-        )
+        let route = self.sessions.permission_route(session_id);
+        route.bind(&self.permission_route_owner, perm_tx.clone());
+        permission_bridge::ws_permission_sink(session_id, turn_id, &self.runtime.agent_name, route)
     }
 
     /// Clear turn handles for all projections.

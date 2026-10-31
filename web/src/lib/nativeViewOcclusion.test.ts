@@ -41,6 +41,12 @@ function setRect(element: HTMLElement, left: number, top: number, width: number,
   (element as HTMLElement & { checkVisibility: () => boolean }).checkVisibility = () => true;
 }
 
+/** Flip the visibility the manager reads (jsdom has no checkVisibility). */
+function setVisible(element: HTMLElement, visible: boolean): void {
+  (element as HTMLElement & { checkVisibility: () => boolean }).checkVisibility = () =>
+    visible;
+}
+
 function addHost(id: string, doc: Document = document): HTMLElement {
   const host = doc.createElement("div");
   host.dataset.nativeViewHost = "";
@@ -165,6 +171,74 @@ describe("installNativeViewOcclusion", () => {
     resolve?.("data:image/jpeg;base64,c25hcHNob3Q=");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(calls).not.toContain(`hide:browser:${PANEL_ID}`);
+  });
+
+  it("releases a view whose host is no longer visible, then hides it again only when it is", async () => {
+    const calls: string[] = [];
+    window.litecode = bridgeWith(calls);
+    const host = addHost(PANEL_ID);
+    const overlay = addOverlay();
+    installNativeViewOcclusion();
+
+    await vi.waitFor(() => {
+      expect(calls).toEqual([
+        `get:browser:${PANEL_ID}`,
+        `hide:browser:${PANEL_ID}`,
+      ]);
+    });
+    expect(
+      useNativeViewOcclusionStore.getState().placeholders[`browser:${PANEL_ID}`],
+    ).toBeTruthy();
+
+    // The panel went into a hidden tab: a view that cannot be seen must not
+    // stay hidden behind a still frame.
+    setVisible(host, false);
+    window.dispatchEvent(new Event("resize"));
+
+    await vi.waitFor(() => {
+      expect(calls.at(-1)).toBe(`show:browser:${PANEL_ID}`);
+    });
+    expect(
+      useNativeViewOcclusionStore.getState().placeholders[`browser:${PANEL_ID}`],
+    ).toBeUndefined();
+
+    // Coming back with nothing over it must not re-hide: the state was
+    // released, not merely paused.
+    setVisible(host, true);
+    overlay.remove();
+    window.dispatchEvent(new Event("resize"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(calls.filter((call) => call.startsWith("hide:"))).toHaveLength(1);
+
+    // …and the same view is still managed after that round trip.
+    addOverlay();
+    window.dispatchEvent(new Event("resize"));
+
+    await vi.waitFor(() => {
+      expect(calls.filter((call) => call.startsWith("hide:"))).toHaveLength(2);
+    });
+  });
+
+  it("releases a view whose host is removed, without waiting for a resize", async () => {
+    const calls: string[] = [];
+    window.litecode = bridgeWith(calls);
+    const host = addHost(PANEL_ID);
+    addOverlay();
+    installNativeViewOcclusion();
+
+    await vi.waitFor(() => {
+      expect(calls).toContain(`hide:browser:${PANEL_ID}`);
+    });
+
+    host.remove();
+
+    await vi.waitFor(() => {
+      expect(calls.at(-1)).toBe(`show:browser:${PANEL_ID}`);
+    });
+    expect(
+      useNativeViewOcclusionStore.getState().placeholders[`browser:${PANEL_ID}`],
+    ).toBeUndefined();
   });
 
   it("releases every view when the manager stops", async () => {

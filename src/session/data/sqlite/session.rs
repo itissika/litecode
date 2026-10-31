@@ -4350,6 +4350,73 @@ mod tests {
         ));
     }
     #[test]
+    fn stale_expected_max_seq_discards_the_delta_instead_of_writing() {
+        use crate::authority::responses::FunctionToolCall;
+
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let mut rows = vec![WorkingRow::pending(Item::FunctionCall(FunctionToolCall {
+            call_id: "call_1".into(),
+            name: "read".into(),
+            arguments: "{}".into(),
+            id: None,
+            status: None,
+            namespace: None,
+        }))];
+
+        // The caller saw max_seq 3, but this log is empty: a revert happened.
+        let outcome = session
+            .commit_turn_delta_with_orphan_cleanup(&mut rows, &[], 3, "t1", &[])
+            .unwrap();
+        assert!(matches!(outcome, CommitDeltaOutcome::Discarded));
+        assert!(rows.is_empty(), "discard must reload the durable working set");
+        let events = session.load_events().unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|event| event.event_type != EventType::ItemToolCall),
+            "a discarded delta must not reach the transcript"
+        );
+    }
+
+    #[test]
+    fn orphan_output_is_dropped_and_never_persisted() {
+        use crate::authority::responses::{
+            FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
+        };
+
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let mut rows = vec![
+            WorkingRow::pending(Item::FunctionCall(FunctionToolCall {
+                call_id: "call_1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                id: None,
+                status: None,
+                namespace: None,
+            })),
+            WorkingRow::pending(Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                call_id: "missing".into(),
+                output: FunctionCallOutput::Text("late output".into()),
+                id: None,
+                status: None,
+            })),
+        ];
+
+        let outcome = session
+            .commit_turn_delta_with_orphan_cleanup(&mut rows, &[], -1, "t1", &[])
+            .unwrap();
+        assert!(matches!(outcome, CommitDeltaOutcome::Applied { .. }));
+        assert_eq!(rows.len(), 1, "orphan leaves the in-memory working set");
+        let events = session.load_events().unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|event| event.event_type != EventType::ItemToolResult),
+            "an output without its call must not create a result row"
+        );
+    }
+
+    #[test]
     fn tool_result_data_round_trips_beside_the_item_without_entering_it() {
         use crate::authority::responses::{
             FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,

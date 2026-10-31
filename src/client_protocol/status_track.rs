@@ -274,4 +274,88 @@ mod tests {
         assert!(params.contains_key("cancelled_by"), "explicit null");
         assert!(params["cancelled_by"].is_null());
     }
+
+    #[tokio::test]
+    async fn ancestor_status_propagates_once_per_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            dir.path().join("s.db").to_string_lossy().to_string(),
+        ));
+        let root = m.open_session("/proj", "default", None).await.unwrap();
+        let mid = m.test_child_session("/proj", &root, "c1").unwrap();
+        let leaf = m.test_child_session("/proj", &mid, "c2").unwrap();
+        let mut rx = m.subscribe_lifecycle();
+        let _tracker = install_parent_status_hook(&m);
+
+        m.reserve_turn(&leaf, "t".into(), 5, "default", "/proj")
+            .unwrap();
+        let (_tx, turn_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = crate::runtime::TurnHandle {
+            handle: None,
+            rx: turn_rx,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            turn_id: "t".into(),
+            step_max: 5,
+        };
+        m.start_turn(&leaf, handle, "default", "/proj", Arc::clone(&m))
+            .await
+            .unwrap();
+        assert_eq!(m.session_status(&leaf), Some(SessionStatus::Running));
+        assert_eq!(
+            m.session_status(&mid),
+            Some(SessionStatus::RunningWithSubagent)
+        );
+        assert_eq!(
+            m.session_status(&root),
+            Some(SessionStatus::RunningWithSubagent)
+        );
+
+        let mut started: Vec<(String, String)> = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let LifecycleEvent::SessionStatusChanged {
+                session_id,
+                status,
+            } = ev
+            {
+                started.push((session_id, status));
+            }
+        }
+        started.sort();
+        let mut expected = vec![
+            (mid.clone(), "running_with_subagent".to_string()),
+            (root.clone(), "running_with_subagent".to_string()),
+        ];
+        expected.sort();
+        assert_eq!(
+            started, expected,
+            "each ancestor must emit exactly one status_changed on the way up"
+        );
+
+        assert!(m.finish_turn(&leaf, "t").is_some());
+        assert_eq!(m.session_status(&mid), Some(SessionStatus::Idle));
+        assert_eq!(m.session_status(&root), Some(SessionStatus::Idle));
+
+        let mut settled: Vec<(String, String)> = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let LifecycleEvent::SessionStatusChanged {
+                session_id,
+                status,
+            } = ev
+            {
+                settled.push((session_id, status));
+            }
+        }
+        settled.sort();
+        let mut expected_idle = vec![
+            (mid.clone(), "idle".to_string()),
+            (root.clone(), "idle".to_string()),
+        ];
+        expected_idle.sort();
+        assert_eq!(
+            settled, expected_idle,
+            "release must settle every ancestor exactly once"
+        );
+    }
+
 }

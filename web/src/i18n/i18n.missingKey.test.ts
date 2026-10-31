@@ -86,3 +86,55 @@ describe("i18n missing-key / skeleton keys", () => {
     expect(i18n.t("does.not.exist.ever")).toBe("does.not.exist.ever");
   });
 });
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+function flattenKeys(value: Record<string, unknown>, prefix = ""): string[] {
+  return Object.entries(value).flatMap(([key, child]) => {
+    const path = prefix + key;
+    return child && typeof child === "object" && !Array.isArray(child)
+      ? flattenKeys(child as Record<string, unknown>, path + ".")
+      : [path];
+  });
+}
+
+/** i18next plural suffixes are language-specific; compare the base key. */
+function baseKey(key: string): string {
+  return key.replace(/_(zero|one|two|few|many|other)$/, "");
+}
+
+const enKeys = new Set(flattenKeys(en).map(baseKey));
+const zhKeys = new Set(flattenKeys(zhCN).map(baseKey));
+
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir).flatMap((entry) => {
+    const path = join(dir, entry);
+    if (statSync(path).isDirectory()) return sourceFiles(path);
+    if (!/\.(ts|tsx)$/.test(entry)) return [];
+    if (/\.test\.(ts|tsx)$/.test(entry)) return [];
+    return [path];
+  });
+}
+
+describe("i18n locale parity", () => {
+  it("keeps en and zh-CN at the same base-key set", () => {
+    expect([...enKeys].filter((key) => !zhKeys.has(key))).toEqual([]);
+    expect([...zhKeys].filter((key) => !enKeys.has(key))).toEqual([]);
+  });
+
+  it("only uses literal i18n keys that exist in both locales", () => {
+    const root = join(process.cwd(), "src");
+    const used = new Set<string>();
+    for (const file of sourceFiles(root)) {
+      const text = readFileSync(file, "utf8");
+      for (const match of text.matchAll(/i18n\.t\(\s*["']([^"']+)["']/g)) {
+        used.add(match[1]);
+      }
+    }
+
+    const missing = [...used]
+      .filter((key) => !enKeys.has(baseKey(key)) || !zhKeys.has(baseKey(key)))
+      .sort();
+    expect(missing).toEqual([]);
+  });
+});

@@ -203,3 +203,36 @@ async fn a_second_argument_is_a_catchable_type_error() {
     );
     assert!(text.starts_with("run_code ok"), "{text}");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_code_description_only_lists_bound_tools() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = RecordingProvider::new(vec![vec![assistant_text_item("done", "msg_done")]]);
+    let captured_handle = provider.clone();
+    let mut runtime = build_runtime_with_provider(
+        dir.path(),
+        test_agent(vec!["read".into()], "workspace", 3),
+        Arc::new(provider),
+    );
+    runtime.run("what tools are available?").await.expect("turn");
+
+    let captured = captured_handle.captured();
+    let run_code = captured[0]
+        .tools
+        .iter()
+        .find(|tool| tool["name"] == "run_code")
+        .expect("run_code is advertised");
+    let description = run_code["description"].as_str().expect("description");
+    assert!(
+        description.contains("read(args: ReadInput)"),
+        "the bound read tool must be in the SDK: {description}"
+    );
+    assert!(
+        !description.contains("write(args:"),
+        "an unbound tool leaked into the SDK: {description}"
+    );
+    assert!(
+        !description.contains("GrepInput"),
+        "an unbound type leaked into the SDK: {description}"
+    );
+}

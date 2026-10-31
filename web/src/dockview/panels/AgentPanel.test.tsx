@@ -159,6 +159,45 @@ afterEach(() => {
 });
 
 describe("AgentPanel — unread marker", () => {
+  it("clears a mark raised by the lifecycle feed when the panel is activated", () => {
+    seedSession(null);
+    useSessionStore.setState({
+      sessions: useSessionStore
+        .getState()
+        .sessions.map((row) => ({ ...row, running: true, status: "running" as const })),
+    });
+    let activate: ((event: { isActive: boolean }) => void) | undefined;
+    const props = {
+      params: { sessionId: ID },
+      api: {
+        isActive: false,
+        onDidActiveChange: (cb: (event: { isActive: boolean }) => void) => {
+          activate = cb;
+          return { dispose: () => {} };
+        },
+        close: vi.fn(),
+        setTitle: vi.fn(),
+      },
+    } as unknown as IDockviewPanelProps;
+
+    render(<AgentPanel {...props} />);
+
+    // The wire settles the turn while the transcript is hidden: the mark must
+    // come from the lifecycle path, not from a test calling mark() directly.
+    act(() => {
+      useSessionStore.getState().onSessionLifecycle({
+        session_id: ID,
+        event: "turn_finished",
+        turn: null,
+        status: "idle",
+      });
+    });
+    expect(useUnreadStore.getState().unread[ID]).toBe(true);
+
+    act(() => activate?.({ isActive: true }));
+    expect(useUnreadStore.getState().unread[ID]).toBeUndefined();
+  });
+
   it("consumes the mark only once the panel is focused", () => {
     seedSession(null);
     let activate: ((event: { isActive: boolean }) => void) | undefined;

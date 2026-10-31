@@ -416,6 +416,9 @@ impl SessionRecord {
 /// Process-level manager: registry of sessions (durable + live). No wire types.
 pub struct SessionManager {
     records: std::sync::Mutex<HashMap<String, SessionRecord>>,
+    /// Session-level permission routes. A running turn's bridge follows the
+    /// connection currently bound here, so a reconnect does not strand it.
+    permission_routes: std::sync::Mutex<HashMap<String, crate::permission::PermissionRoute>>,
     activity_changed: Condvar,
     /// Process-wide settings write gate. `begin_turn` only from
     /// `reserve_turn` / `reserve_turn_and_claim_pending` / `begin_turn`;
@@ -501,6 +504,7 @@ impl SessionManager {
         let (lifecycle_tx, _) = broadcast::channel(256);
         Self {
             records: std::sync::Mutex::new(HashMap::new()),
+            permission_routes: std::sync::Mutex::new(HashMap::new()),
             activity_changed: Condvar::new(),
             turn_guard,
             data,
@@ -517,6 +521,7 @@ impl SessionManager {
         let (lifecycle_tx, _) = broadcast::channel(256);
         let manager = Self {
             records: std::sync::Mutex::new(HashMap::new()),
+            permission_routes: std::sync::Mutex::new(HashMap::new()),
             activity_changed: Condvar::new(),
             turn_guard,
             data,
@@ -2599,6 +2604,32 @@ impl SessionManager {
         }
     }
 
+    /// Shared route for this session. Created on first use and kept for the
+    /// process lifetime; the bridge and every connection bind the same object.
+    pub fn permission_route(&self, session_id: &str) -> crate::permission::PermissionRoute {
+        self.permission_routes
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_default()
+            .clone()
+    }
+
+    pub fn existing_permission_route(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::permission::PermissionRoute> {
+        self.permission_routes
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+    }
+
+    pub fn remove_permission_route(&self, session_id: &str) {
+        self.permission_routes.lock().unwrap().remove(session_id);
+    }
+
     pub fn last_permission_sink(
         &self,
         session_id: &str,
@@ -2833,6 +2864,9 @@ impl SessionManager {
                 });
                 let mut removed = removed_children;
                 removed.push(session_id.to_string());
+                for removed_id in &removed {
+                    self.remove_permission_route(removed_id);
+                }
                 Ok(removed)
             }
             Err(e) => {
