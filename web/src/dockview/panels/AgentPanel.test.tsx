@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { IDockviewPanelProps } from "dockview-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +8,7 @@ import { useConnectionStore } from "../../stores/connectionStore";
 import { useMessageStore } from "../../stores/messageStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useTurnStore } from "../../stores/turnStore";
+import { useUnreadStore } from "../../stores/unreadStore";
 import { AgentPanel } from "./AgentPanel";
 
 // Keep the writable surface cheap and observable. The variant is surfaced as a
@@ -133,6 +134,7 @@ function panelProps(
     api: {
       isActive: true,
       onDidActiveChange: () => ({ dispose: () => {} }),
+      setActive: vi.fn(),
       close: vi.fn(),
       setTitle: vi.fn(),
     },
@@ -152,7 +154,48 @@ afterEach(() => {
   useMessageStore.getState().reset(ID);
   useTurnStore.getState().resetTurn(ID);
   useSessionStore.setState({ sessions: [], byId: new Map() });
+  useUnreadStore.setState({ unread: {} });
   vi.restoreAllMocks();
+});
+
+describe("AgentPanel — unread marker", () => {
+  it("consumes the mark only once the panel is focused", () => {
+    seedSession(null);
+    let activate: ((event: { isActive: boolean }) => void) | undefined;
+    const props = {
+      params: { sessionId: ID },
+      api: {
+        isActive: false,
+        onDidActiveChange: (
+          cb: (event: { isActive: boolean }) => void,
+        ) => {
+          activate = cb;
+          return { dispose: () => {} };
+        },
+        close: vi.fn(),
+        setTitle: vi.fn(),
+      },
+    } as unknown as IDockviewPanelProps;
+
+    useUnreadStore.getState().mark(ID);
+    render(<AgentPanel {...props} />);
+    expect(useUnreadStore.getState().unread[ID]).toBe(true);
+
+    act(() => activate?.({ isActive: true }));
+    expect(useUnreadStore.getState().unread[ID]).toBeUndefined();
+  });
+});
+
+describe("AgentPanel — pointer activation", () => {
+  it("activates the panel on a content pointerdown", () => {
+    seedSession(null);
+    const props = panelProps(ID);
+    render(<AgentPanel {...props} />);
+
+    fireEvent.pointerDown(screen.getByTestId("chat-input"));
+
+    expect(props.api.setActive).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("AgentPanel — fail-closed identity classification", () => {

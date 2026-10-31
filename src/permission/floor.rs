@@ -71,19 +71,12 @@ mod tests {
 
     #[test]
     fn run_hits_the_dangerous_command_floor() {
-        let hit = check_floor(
-            "run",
-            &serde_json::json!({"command": "rm -rf /"}),
-            &ctx(),
-        )
-        .expect("floor");
+        let hit =
+            check_floor("run", &serde_json::json!({"command": "rm -rf /"}), &ctx()).expect("floor");
         assert_eq!(hit.rule_id, "floor_dangerous_command");
         assert_eq!(hit.action, PermissionAction::Deny);
-        assert!(
-            check_floor("run", &serde_json::json!({"command": "ls"}), &ctx()).is_none()
-        );
+        assert!(check_floor("run", &serde_json::json!({"command": "ls"}), &ctx()).is_none());
     }
-
 }
 
 /// `path` is the code-tool argument. `file_path` is still denied when a caller

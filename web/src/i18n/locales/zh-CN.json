@@ -461,6 +461,7 @@
   },
   "session": {
     "noPreview": "无预览",
+    "deleteSession": "删除会话",
     "workspaceUsage": "工作区用量",
     "planExecute": "执行计划",
     "planExecutePrompt": "按当前计划开始执行。",
@@ -572,6 +573,9 @@
     },
     "requestsSessions": "{{requests}} 请求 · 共 {{sessions}} 会话",
     "chartAria": "工作区 token 用量，横轴为{{axis}}，柱高为 prompt 合计，悬停查看单列",
+    "providerChartAria": "{{provider}} token 用量，横轴为{{axis}}，柱高为 prompt 合计，悬停查看单列",
+    "byProvider": "按 Provider",
+    "providerUnknown": "未知（历史压缩）",
     "noRecordsPeriod": "该时段暂无记录",
     "unavailable": "用量暂不可用",
     "noRecords": "暂无用量记录",

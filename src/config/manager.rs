@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use crate::provider_catalog::{self, ProviderCatalog};
 
+use super::binding_scope::scope_of;
 use super::global_db;
 use super::resolved::{ResolvedConfig, WorkspaceState, resolve};
-use super::binding_scope::scope_of;
 use super::schema::{AgentRole, GlobalSettings};
 use super::workspace::{self, init_workspace, load_workspace_state};
 
@@ -256,7 +256,7 @@ fn validate_mcp_servers(global: &GlobalSettings) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use crate::config::schema::{AgentProfile, AgentRole, AgentToolBinding};
     use std::collections::HashMap;
 
@@ -291,5 +291,4 @@ mod tests {
         let err = ConfigManager::validate(&global).unwrap_err();
         assert!(err.to_string().contains("subagent_launch"));
     }
-
 }

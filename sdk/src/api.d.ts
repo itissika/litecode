@@ -67,9 +67,9 @@ type RangeInput = {
 type ReadInput = {
   /** Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md. */
   path: Path;
-  /** First line to read, 1-based, inclusive. @default 1 @minimum 1 */
+  /** First line to read, 1-based, inclusive. @default 1 */
   start_line?: Integer;
-  /** Maximum lines to return. @default 2000 @minimum 1 @maximum 5000 */
+  /** Lines to return. 1–5000. @default 2000 */
   limit?: Integer;
 };
 
@@ -156,7 +156,7 @@ type ApplyEditsData = {
 type GlobInput = {
   /** Glob relative to path, or to the workspace root when path is omitted. */
   pattern: string;
-  /** Maximum paths to return. @default 1000 @minimum 1 @maximum 5000 */
+  /** Maximum paths to return. 1–5000. @default 1000 */
   limit?: Integer;
   /** Optional directory to search under. */
   path?: Path;
@@ -171,15 +171,15 @@ type GlobData = {
 type GrepInput = {
   /** Regular expression over file contents, unless literal is true. */
   pattern: string;
-  /** Lines of context before each hit. @default 0 @minimum 0 @maximum 5 */
+  /** Lines of context before each hit. 0–10. @default 0 */
   before?: Integer;
-  /** Lines of context after each hit. @default 0 @minimum 0 @maximum 5 */
+  /** Lines of context after each hit. 0–10. @default 0 */
   after?: Integer;
   /** One glob or comma-separated globs. A leading ! excludes. Relative to path. */
   glob?: string;
   /** Ignore case when matching. @default false */
   ignore_case?: boolean;
-  /** Maximum hits to return. @default 40 @minimum 1 @maximum 100 */
+  /** Maximum hits to return. 1–100. @default 40 */
   limit?: Integer;
   /** Search for pattern as plain text. @default false */
   literal?: boolean;
@@ -219,6 +219,12 @@ type CodeSearchHit = {
   end_line: Integer;
   /** Optional AST symbol enclosing the anchor. */
   symbol?: string;
+  /** Which retrieval leg(s) admitted this chunk. */
+  via: "lex" | "dense" | "both";
+  /** Raw dense cosine similarity; 0.0 means the hit is lexical-only. */
+  dense_similarity: number;
+  /** The anchor line itself, cheap enough for a table cell. */
+  text: string;
   /** Source excerpt, at most 24 lines; overlong lines are capped. */
   snippet: string;
 };
@@ -228,15 +234,52 @@ type CodeSearchInput = {
   query: string;
   /** Optional glob filter for workspace paths. */
   include_pattern?: string;
-  /** Minimum raw dense cosine similarity. @default 0.8 @minimum 0 @maximum 1 */
+  /**
+   * Minimum raw dense cosine similarity for dense-only hits. 0–1. Lexical
+   * hits are not subject to this floor; 0 disables it. @default 0.8
+   */
   min_score?: number;
-  /** Maximum hits. @default 8 @minimum 1 @maximum 20 */
+  /** Maximum hits. 1–20. @default 8 */
   top_k?: Integer;
 };
 
 type CodeSearchData = {
   /** Empty if the search completed but found no matching chunks. */
   hits: CodeSearchHit[];
+  message?: string;
+};
+
+type SessionSearchHit = {
+  /** Shortest unique session handle, also accepted by `session_id`. */
+  session: string;
+  /** Relative age of the session's last update. */
+  age: string;
+  /** 1-based rendered transcript line of the hit. */
+  line: Integer;
+  /** Content role of the row. */
+  role: "conversation" | "reasoning" | "action" | "outcome" | "unknown";
+  /** Evidence that found this row, in rank order: `exact`, `prox`, `lex`, `sem`, `fuzzy`, joined by `+`. */
+  via: string;
+  /** Collapsed one-line hit text. */
+  summary: string;
+};
+
+type SessionSearchInput = {
+  /** What to find in past session transcripts. Literal words or a phrase. */
+  query: string;
+  /** Optional session scope: full id, unique prefix, or the handle from a result. */
+  session_id?: string;
+  /** Maximum rows. 1–50. @default 20 */
+  limit?: Integer;
+};
+
+type SessionSearchData = {
+  /** Flat rank order; not grouped by session. */
+  hits: SessionSearchHit[];
+  /** Total matching rows before `limit` is applied. */
+  total: Integer;
+  /** True when `total` exceeds the returned rows. */
+  truncated: boolean;
   message?: string;
 };
 
@@ -254,7 +297,7 @@ type RunInput = {
 type WaitInput = {
   /** Command.id from a tools.process.run result whose exit_code is null. */
   id: string;
-  /** Seconds to block waiting for exit. Values above 300 are clamped to 300. @minimum 1 */
+  /** Seconds to block waiting for exit. 1–300. */
   sec: Integer;
 };
 
@@ -303,7 +346,7 @@ type WebfetchData = {
 };
 
 type WebsearchHit = {
-  /** Leading page text, at most about 300 characters. */
+  /** Query-relevant excerpt from the page, as returned by the provider. */
   snippet: string;
   title: string;
   url: string;
@@ -312,7 +355,7 @@ type WebsearchHit = {
 type WebsearchInput = {
   /** Search query. */
   query: string;
-  /** Number of results. Values above 10 are clamped to 10. @default 5 @minimum 1 */
+  /** Number of results, best first. 1–100. @default 10 */
   top_k?: Integer;
 };
 
@@ -430,7 +473,7 @@ type BrowserListData = {
 };
 
 type BrowserReadInput = {
-  /** Maximum body text characters. @default 12000 @minimum 1000 @maximum 30000 */
+  /** Maximum body text characters. 1000–30000. @default 12000 */
   max_chars?: Integer;
   /** Optional page id. Omit for the active visible tab. */
   page_id?: string;
@@ -438,6 +481,8 @@ type BrowserReadInput = {
 
 type BrowserReadData = {
   elements: BrowserElement[];
+  /** Set when max_chars was clamped into range. */
+  message?: string;
   page_id: string;
   text: string;
   title: string;
@@ -488,16 +533,28 @@ type HoverInput = RangeInput;
 type WorkspaceSymbolInput = {
   /** Symbol name or fragment to search across the workspace. */
   query: string;
+  /**
+   * Optional source file that selects/starts the project's language server.
+   * Required only when more than one server is running.
+   */
+  path?: string;
 };
+
+/** Truthful index state of the language server that produced this result. */
+type LspDataState = "ok" | "partial" | "unknown";
 
 type DiagnosticsData = {
   items: DiagnosticItem[];
   message: string;
+  /** `partial`/`unknown` means an empty result is not a confirmed miss. */
+  state: LspDataState;
 };
 
 type SymbolsData = {
   message: string;
   symbols: SymbolInfo[];
+  /** `partial`/`unknown` means an empty result is not a confirmed miss. */
+  state: LspDataState;
 };
 
 type DocumentSymbolData = SymbolsData;
@@ -506,6 +563,8 @@ type WorkspaceSymbolData = SymbolsData;
 type LocationsData = {
   locations: Location[];
   message: string;
+  /** `partial`/`unknown` means an empty result is not a confirmed miss. */
+  state: LspDataState;
 };
 
 type FindReferencesData = LocationsData;
@@ -516,6 +575,8 @@ type HoverData = {
   /** Flattened hover text, not raw LSP JSON. */
   markdown: string;
   message: string;
+  /** `partial`/`unknown` means an empty result is not a confirmed miss. */
+  state: LspDataState;
 };
 
 interface FileTools {
@@ -541,6 +602,9 @@ interface FileTools {
 interface SearchTools {
   /** Semantic search over the workspace code index. @tool code_search @suite search @input CodeSearchInput @output CodeSearchData */
   code_search(args: CodeSearchInput): Promise<ToolResult<CodeSearchData>>;
+
+  /** Search past session transcripts. @tool session_search @suite search @input SessionSearchInput @output SessionSearchData */
+  session_search(args: SessionSearchInput): Promise<ToolResult<SessionSearchData>>;
 }
 
 interface ProcessTools {

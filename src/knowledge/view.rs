@@ -50,7 +50,7 @@ The only citation that names a node is `[@ key="seq"]`. Lookup uses the key.
 
 A file citation is `[@ file="src/a.rs"]`. It names a workspace path, not a node. A file and a directory both count. `..` and an absolute path are not a path.
 
-A symbol citation is `[@ file="src/a.rs" symbol="impl Store › fn save"]`. `symbol` is the ancestor chain and is the identity. A symbol citation takes no `lines`; `lines` on it is an error. A chain that is missing or not unique is an error. When git can answer, a chain whose body on disk differs from that file at HEAD is a warning. Commit that file and the warning goes away. Without git, only existence is checked.
+A symbol citation is `[@ file="src/a.rs" symbol="impl Store › fn save"]`. `symbol` is the ancestor chain and is the identity. A symbol citation takes no `lines`; `lines` on it is an error. A chain that is missing or not unique is an error.
 
 A line range is `[@ file="src/a.rs" lines="4-9"]` (or `lines="4"`) and has no symbol. A malformed range, or one past the end of the file, is an error.
 
@@ -76,7 +76,6 @@ Warnings:
 
 - The file name does not match the key.
 - An enabled node cites a disabled or pending node.
-- A symbol citation's body on disk differs from that file at HEAD.
 
 ## Notes
 
@@ -95,50 +94,27 @@ pub fn guide() -> &'static str {
 
 pub struct Counts {
     pub total: usize,
-    pub verified: usize,
-    pub isolated: usize,
     pub enabled: usize,
-    pub disabled: usize,
     pub pending: usize,
-    pub warning: usize,
-    pub error: usize,
+    /// Nodes the resolver marked with at least one error.
+    pub error_nodes: usize,
 }
 
-pub fn counts(nodes: &[&Node], issues: &[Issue], incoming: impl Fn(&str) -> usize) -> Counts {
+pub fn counts(nodes: &[&Node], issues: &[Issue]) -> Counts {
     let mut out = Counts {
         total: nodes.len(),
-        verified: 0,
-        isolated: 0,
         enabled: 0,
-        disabled: 0,
         pending: 0,
-        warning: issues
-            .iter()
-            .filter(|issue| issue.severity == Severity::Warning)
-            .count(),
-        error: issues
-            .iter()
-            .filter(|issue| issue.severity == Severity::Error)
-            .count(),
+        error_nodes: 0,
     };
     for node in nodes {
         match node.status {
             Status::Enabled => out.enabled += 1,
-            Status::Disabled => out.disabled += 1,
+            Status::Disabled => {}
             Status::Pending => out.pending += 1,
         }
-        let node_issues: Vec<_> = issues
-            .iter()
-            .filter(|issue| issue.node_id == node.id)
-            .collect();
-        let has_error = node_issues
-            .iter()
-            .any(|issue| issue.severity == Severity::Error);
-        if node.status == Status::Enabled && !has_error {
-            out.verified += 1;
-        }
-        if incoming(&node.key) == 0 && node.relations.is_empty() {
-            out.isolated += 1;
+        if has_error(node, issues) {
+            out.error_nodes += 1;
         }
     }
     out
@@ -146,20 +122,16 @@ pub fn counts(nodes: &[&Node], issues: &[Issue], incoming: impl Fn(&str) -> usiz
 
 pub fn stats_line(counts: &Counts) -> String {
     format!(
-        "Total {} · Verified {} · Isolated {} · Enabled {} · Disabled {} · Pending {} · Warning {} · Error {}",
-        counts.total,
-        counts.verified,
-        counts.isolated,
-        counts.enabled,
-        counts.disabled,
-        counts.pending,
-        counts.warning,
-        counts.error
+        "Total {} · Enabled {} · Pending {} · With errors {}",
+        counts.total, counts.enabled, counts.pending, counts.error_nodes
     )
 }
 
-const STATS_LEGEND: &str = "\
-Verified = enabled and no error. Isolated = nothing cites it and it cites nothing. Warning and Error count issues; the other numbers count nodes.";
+fn has_error(node: &Node, issues: &[Issue]) -> bool {
+    issues
+        .iter()
+        .any(|issue| issue.node_id == node.id && issue.severity == Severity::Error)
+}
 
 pub fn section(title: &str, body: &str) -> String {
     let body = body.trim();
@@ -481,7 +453,6 @@ fn listed<'a>(
     incoming: &impl Fn(&str) -> usize,
     now: SystemTime,
     path_prefix: &str,
-    mention_check: bool,
 ) -> String {
     nodes.sort_by(|a, b| b.modified.cmp(&a.modified));
     let hidden = nodes.len().saturating_sub(CARD_LIMIT);
@@ -489,10 +460,6 @@ fn listed<'a>(
     let body = folder_tree(nodes, None, issues_for, incoming, now, path_prefix);
     if hidden == 0 || body.is_empty() {
         body
-    } else if mention_check {
-        format!(
-            "{body}\n\n{hidden} more omitted. Use `knowledge check` or `knowledge list` to see the rest."
-        )
     } else {
         format!("{body}\n\n{hidden} more omitted. Use `knowledge list` to see the rest.")
     }
@@ -502,36 +469,30 @@ pub fn dashboard(
     nodes: &[Node],
     issues: &[Issue],
     incoming: impl Fn(&str) -> usize,
-    reminder: Option<&str>,
     now: SystemTime,
     root: Option<&str>,
     unknown: &[String],
 ) -> String {
     let refs: Vec<&Node> = nodes.iter().collect();
-    let stats = counts(&refs, issues, &incoming);
+    let stats = counts(&refs, issues);
     let prefix = root.unwrap_or("");
     let recent: Vec<&Node> = nodes
         .iter()
-        .filter(|node| {
-            is_verified(node, issues)
-                && !is_isolated(node, &incoming)
-                && !worth_noting(node, issues, &incoming)
-        })
+        .filter(|node| node.status == Status::Enabled && !has_error(node, issues))
         .collect();
-    let noting: Vec<&Node> = nodes
+    let attention: Vec<&Node> = nodes
         .iter()
-        .filter(|node| worth_noting(node, issues, &incoming))
+        .filter(|node| has_error(node, issues))
         .collect();
 
     let issues_for = |node: &Node| -> Vec<Issue> {
         issues
             .iter()
-            .filter(|issue| issue.node_id == node.id)
+            .filter(|issue| issue.node_id == node.id && issue.severity == Severity::Error)
             .cloned()
             .collect()
     };
-    let mention_check = stats.warning > 0 || stats.error > 0;
-    let mut status = format!("{}\n\n{STATS_LEGEND}", stats_line(&stats));
+    let mut status = stats_line(&stats);
     let note = root_note(root);
     if !note.is_empty() {
         status.push_str("\n\n");
@@ -547,32 +508,14 @@ pub fn dashboard(
         section("# Status", &status),
         section(
             "## Recent nodes",
-            &listed(recent, &issues_for, &incoming, now, prefix, mention_check),
+            &listed(recent, &issues_for, &incoming, now, prefix),
         ),
         section(
-            "## Worth noting",
-            &listed(noting, &issues_for, &incoming, now, prefix, mention_check),
+            "## Needs attention",
+            &listed(attention, &issues_for, &incoming, now, prefix),
         ),
-        section("# Notice", reminder.unwrap_or("")),
         section("# Commands", BUTTONS),
     ])
-}
-
-pub fn is_verified(node: &Node, issues: &[Issue]) -> bool {
-    node.status == Status::Enabled
-        && !issues
-            .iter()
-            .any(|issue| issue.node_id == node.id && issue.severity == Severity::Error)
-}
-
-pub fn is_isolated(node: &Node, incoming: impl Fn(&str) -> usize) -> bool {
-    incoming(&node.key) == 0 && node.relations.is_empty()
-}
-
-pub fn worth_noting(node: &Node, issues: &[Issue], incoming: impl Fn(&str) -> usize) -> bool {
-    node.status != Status::Enabled
-        || is_isolated(node, &incoming)
-        || issues.iter().any(|issue| issue.node_id == node.id)
 }
 
 pub fn page(body: &str, cap: usize) -> (String, Option<String>) {
@@ -594,8 +537,4 @@ fn join_sections(parts: &[String]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

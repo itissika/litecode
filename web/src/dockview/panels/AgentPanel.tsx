@@ -97,7 +97,7 @@ export function AgentPanel(props: IDockviewPanelProps) {
   const explicitRootIntent = params.sessionKind === "root";
   // Subscription lifecycle (re-armed on every reconnect, closes on a missing
   // session, released on real unmount) lives in the shared bootstrap hook.
-  const { isActive, session, preview } = useSessionPanelBootstrap(
+  const { isActive, session, title } = useSessionPanelBootstrap(
     props.api,
     sessionId,
   );
@@ -116,13 +116,13 @@ export function AgentPanel(props: IDockviewPanelProps) {
   // intent fails closed.
   const knownChild = session !== undefined && !!session.parent_session_id;
   const writable = !knownChild && (explicitRootIntent || session !== undefined);
-  // Mirror the session-list preview as the tab title. The default dockview
-  // tab clamps/truncates the text, so we get the same "summary" form the
-  // SessionItem shows. Falls back to "NEW" for a writable session that has no
-  // preview yet (a freshly created one); a child keeps its short id.
+  // Mirror the session-list name as the tab title. The default dockview tab
+  // clamps/truncates the text, so we get the same form the SessionItem shows.
+  // Falls back to "NEW" for a writable session with no name yet (a freshly
+  // created one); a child keeps its short id.
   useEffect(() => {
-    props.api.setTitle(preview || fallbackSessionTitle(sessionId, writable));
-  }, [props.api, sessionId, preview, writable]);
+    props.api.setTitle(title || fallbackSessionTitle(sessionId, writable));
+  }, [props.api, sessionId, title, writable]);
 
   const close = () => {
     props.api.close();
@@ -134,11 +134,19 @@ export function AgentPanel(props: IDockviewPanelProps) {
 
   return (
     <AgentErrorBoundary onClose={close}>
-      {writable ? (
-        <AgentChatShell sessionId={sessionId} isActive={isActive} />
-      ) : (
-        <SubagentReadOnlyContent sessionId={sessionId} isActive={isActive} />
-      )}
+      {/* Dockview only activates a group from DOM focus inside its content.
+          Pointerdown capture makes any click here count, so the unfocused veil
+          clears even when a programmatic panel switch left focus behind. */}
+      <div
+        className="flex h-full min-h-0 flex-col"
+        onPointerDownCapture={() => props.api.setActive()}
+      >
+        {writable ? (
+          <AgentChatShell sessionId={sessionId} isActive={isActive} />
+        ) : (
+          <SubagentReadOnlyContent sessionId={sessionId} isActive={isActive} />
+        )}
+      </div>
     </AgentErrorBoundary>
   );
 }

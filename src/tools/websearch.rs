@@ -9,10 +9,10 @@ use crate::tool::outcome::ToolOutcome;
 use crate::tools::file_path::coded_error;
 use crate::types::ToolCallResult;
 
-/// Default and ceiling for `top_k` (WP-210 J/Q14).
-const DEFAULT_TOP_K: u32 = 5;
-const MAX_TOP_K: u32 = 10;
-const SNIPPET_CHARS: usize = 300;
+/// Exa's documented `numResults` (numResults: default 10, range 1-100).
+/// The default follows the provider default; the ceiling is the public limit.
+const DEFAULT_TOP_K: u32 = 10;
+const MAX_TOP_K: u32 = 100;
 
 pub struct WebSearchTool {
     client: Arc<RwLock<Option<reqwest::blocking::Client>>>,
@@ -178,35 +178,26 @@ fn parse_hits(text: &str, top_k: usize) -> Vec<SearchHit> {
     hits
 }
 
+/// Append one body line to the hit. Exa sizes highlights to the query's
+/// relevance and documents that there is no character budget to tune, so keep
+/// the provider text as returned instead of re-truncating it.
 fn push_snippet(snippet: &mut String, text: &str) {
-    let used = snippet.chars().count();
-    if used >= SNIPPET_CHARS || text.is_empty() {
+    if text.is_empty() {
         return;
     }
     if !snippet.is_empty() {
         snippet.push(' ');
     }
-    let room = SNIPPET_CHARS - used;
-    let count = text.chars().count();
-    snippet.extend(text.chars().take(room));
-    if count > room {
-        snippet.push('…');
-    }
+    snippet.push_str(text);
 }
 
-fn parse_top_k(input: &Value) -> Result<u32, String> {
-    match input.get("top_k") {
-        None | Some(Value::Null) => Ok(DEFAULT_TOP_K),
-        Some(value) => {
-            let k = value
-                .as_u64()
-                .ok_or_else(|| crate::tool::expected_type("top_k", "integer", value))?;
-            if k < 1 {
-                return Err(crate::tool::must_be("top_k", "a positive integer (>= 1)"));
-            }
-            Ok((k as u32).min(MAX_TOP_K))
-        }
-    }
+fn parse_top_k(input: &Value) -> Result<(u32, Option<String>), String> {
+    let clamped =
+        crate::tool::clamp::clamp_int(input, "top_k", 1, u64::from(MAX_TOP_K), "results")?;
+    Ok(match clamped {
+        None => (DEFAULT_TOP_K, None),
+        Some(clamped) => (clamped.value as u32, clamped.note),
+    })
 }
 
 fn present_websearch(data: WebSearchData) -> ToolCallResult {
@@ -252,19 +243,22 @@ impl Tool for WebSearchTool {
             Ok(s) => s.to_string(),
             Err(e) => return coded_error("invalid_input", e),
         };
-        let top_k = match parse_top_k(&input) {
-            Ok(k) => k,
+        let (top_k, top_k_note) = match parse_top_k(&input) {
+            Ok(parsed) => parsed,
             Err(e) => return coded_error("invalid_input", e),
         };
 
         match self.search_outcome(&query, top_k) {
             SearchOutcome::Ok { text } => {
                 let results = parse_hits(&text, top_k as usize);
-                let message = if results.is_empty() {
+                let mut message = if results.is_empty() {
                     "No results.".to_string()
                 } else {
                     format!("{} results.", results.len())
                 };
+                if let Some(note) = top_k_note {
+                    message = format!("{message} {note}");
+                }
                 present_websearch(WebSearchData {
                     query: Some(query),
                     results,
@@ -276,8 +270,9 @@ impl Tool for WebSearchTool {
         }
     }
 
+    /// Aligned with the provider MCP server's own 60s search budget.
     fn timeout(&self) -> Option<std::time::Duration> {
-        Some(std::time::Duration::from_secs(30))
+        Some(std::time::Duration::from_secs(60))
     }
 }
 
@@ -336,12 +331,26 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(parse_top_k(&serde_json::json!({})).unwrap(), DEFAULT_TOP_K);
+        assert_eq!(
+            parse_top_k(&serde_json::json!({})).unwrap(),
+            (DEFAULT_TOP_K, None)
+        );
         assert_eq!(
             parse_top_k(&serde_json::json!({"top_k": 50})).unwrap(),
-            MAX_TOP_K
+            (50, None)
         );
-        assert!(parse_top_k(&serde_json::json!({"top_k": 0})).is_err());
+        let (top_k, note) = parse_top_k(&serde_json::json!({"top_k": 500})).unwrap();
+        assert_eq!(top_k, MAX_TOP_K);
+        assert_eq!(
+            note.as_deref(),
+            Some("`top_k` was reduced from 500 to 100 results.")
+        );
+        let (top_k, note) = parse_top_k(&serde_json::json!({"top_k": 0})).unwrap();
+        assert_eq!(top_k, 1);
+        assert_eq!(
+            note.as_deref(),
+            Some("`top_k` was raised from 0 to 1 results.")
+        );
         let tool: std::sync::Arc<dyn crate::tool::Tool> = Arc::new(WebSearchTool::new(
             Arc::new(RwLock::new(None)),
             Arc::new(RwLock::new(None)),

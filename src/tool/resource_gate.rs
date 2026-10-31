@@ -543,11 +543,8 @@ mod tests {
         let cancel = CancellationToken::new();
         let gate2 = gate.clone();
         let cancel2 = cancel.clone();
-        let waiting = tokio::spawn(async move {
-            gate2
-                .acquire(&write_key("held"), &cancel2)
-                .await
-        });
+        let waiting =
+            tokio::spawn(async move { gate2.acquire(&write_key("held"), &cancel2).await });
         until_queued(&gate, &key, 1).await;
         cancel.cancel();
         assert!(waiting.await.unwrap().is_err(), "cancelled waiter entered");

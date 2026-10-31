@@ -47,7 +47,7 @@ export interface KnowledgeNode {
 
 /**
  * Every problem code the backend snapshot can carry
- * (`docs/knowledge-references.md` §6). Declaration codes have no `refKey`.
+ * (`docs/knowledge-references.md` §5). Declaration codes have no `refKey`.
  */
 export type KnowledgeIssueCode =
   | "duplicate_key"
@@ -64,7 +64,6 @@ export type KnowledgeIssueCode =
   | "unsupported_language"
   | "missing_symbol"
   | "ambiguous_symbol"
-  | "symbol_drift"
   | "line_out_of_range";
 
 type KnowledgeIssueSeverity = "error" | "warning";

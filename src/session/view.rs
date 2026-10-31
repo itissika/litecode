@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::session::SurfaceOp;
-use crate::session::event::{EventType, SessionEvent, Seq, spine_working_payload};
+use crate::session::event::{EventType, Seq, SessionEvent, spine_working_payload};
 use crate::session::media::item_has_media;
 use crate::session::model::LogState;
 use crate::session::surface::{
@@ -59,7 +59,10 @@ impl WorkingView {
     /// checkpoint, a checkpoint newer than the named one, or a fold that does not
     /// begin with the checkpoint — so the caller falls back to
     /// [`Self::from_events`] instead of guessing.
-    pub fn from_events_anchored(events: &[SessionEvent], anchor: Option<FoldAnchor>) -> Result<Self> {
+    pub fn from_events_anchored(
+        events: &[SessionEvent],
+        anchor: Option<FoldAnchor>,
+    ) -> Result<Self> {
         let mut view = Self {
             anchor,
             ..Self::default()
@@ -168,12 +171,15 @@ impl WorkingView {
     /// Model-visible rows in surface order, with the skip rules applied.
     pub fn rows(&self) -> Result<Vec<WorkingRow>> {
         let pairs = project_working_payloads(&self.surface, |seq| {
-            self.payloads.get(&seq).cloned().ok_or_else(|| match self.unparsed.get(&seq) {
-                Some(message) => LitecodeError::InvalidSessionEvent(message.clone()),
-                None => {
-                    LitecodeError::InvalidSessionEvent(format!("surface seq {seq} missing from view"))
-                }
-            })
+            self.payloads
+                .get(&seq)
+                .cloned()
+                .ok_or_else(|| match self.unparsed.get(&seq) {
+                    Some(message) => LitecodeError::InvalidSessionEvent(message.clone()),
+                    None => LitecodeError::InvalidSessionEvent(format!(
+                        "surface seq {seq} missing from view"
+                    )),
+                })
         })?;
         Ok(pairs
             .into_iter()
@@ -254,9 +260,7 @@ impl WorkingView {
             for event in &events {
                 // A gap means rows above the fold were deleted (revert); what we
                 // read is then not a suffix of the log this view was built from.
-                if event.seq != expected
-                    || crate::session::surface::is_retroactive(event, held)
-                {
+                if event.seq != expected || crate::session::surface::is_retroactive(event, held) {
                     return false;
                 }
                 expected += 1;
@@ -333,6 +337,7 @@ mod anchored_fold_tests {
                 from,
                 to,
                 at: None,
+                provider_id: None,
             })
             .expect("body"),
             surface_op: None,
@@ -435,6 +440,7 @@ mod anchored_fold_tests {
                 from: 1,
                 to: 3,
                 at: None,
+                provider_id: None,
             })
             .expect("body"),
             result_data: None,
@@ -463,6 +469,7 @@ mod anchored_fold_tests {
                     from: 1,
                     to: 3,
                     at: None,
+                    provider_id: None,
                 })
                 .expect("body"),
                 surface_op: None,
@@ -494,8 +501,7 @@ mod anchored_fold_tests {
             checkpoint: 99,
         };
         // EventLog seqs are dense, so `start` is also the slice index.
-        let err =
-            WorkingView::from_events_anchored(&log.events()[1..], Some(anchor)).unwrap_err();
+        let err = WorkingView::from_events_anchored(&log.events()[1..], Some(anchor)).unwrap_err();
         assert!(
             err.to_string().contains("anchored checkpoint"),
             "unexpected error: {err}"

@@ -16,9 +16,9 @@ use crate::types::{LitecodeError, Result};
 
 pub use blob::{gc_unreferenced, put_bytes, put_text, read_bytes};
 pub use command::{
-    CommitKind, CommitReceipt, DirtySession, MutationId, ReadValue, SessionFolderRow,
-    SessionListPreview, SessionListRow, SessionMutation, SessionRead, SessionRevision,
-    SurfaceReplacement,
+    CommitKind, CommitReceipt, DirtySession, MAX_STREAM_BATCH_ROWS, MutationId, ReadValue,
+    SessionFolderRow, SessionListPreview, SessionListRow, SessionMutation, SessionRead,
+    SessionRevision, StreamItemUpdate, SurfaceReplacement,
 };
 pub use reader::SessionReadPool;
 pub use writer::{FaultKind, WRITER_QUEUE_CAPACITY};
@@ -413,6 +413,21 @@ impl SessionData {
         }
     }
 
+    /// Whether the session has any `item/user` or `item/assistant` row.
+    ///
+    /// The sidebar's list visibility uses this only for rows with no preview
+    /// text: control rows such as `model/changed` must not count as content.
+    pub fn has_conversation_rows_blocking(&self, session_id: &str) -> Result<bool> {
+        match self.read_blocking(SessionRead::HasConversationRows {
+            session_id: session_id.to_string(),
+        })? {
+            ReadValue::Count(count) => Ok(count > 0),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected conversation-row count".into(),
+            )),
+        }
+    }
+
     pub fn list_folders_blocking(&self) -> Result<Vec<SessionFolderRow>> {
         match self.read_blocking(SessionRead::ListFolders)? {
             ReadValue::Folders(v) => Ok(v),
@@ -546,6 +561,7 @@ impl SessionData {
             at: None,
             expected_prefix: None,
             usage: None,
+            provider_id: None,
         })?;
         Ok(())
     }

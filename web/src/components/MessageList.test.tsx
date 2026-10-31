@@ -33,6 +33,9 @@ const virtualOptions = vi.hoisted(() => ({
   current: null as null | { paddingEnd?: number },
 }));
 
+/** Visible range reported by the virtualizer mock; lets a test separate range from overscan. */
+const virtualRange = vi.hoisted(() => ({ startIndex: null as number | null }));
+
 /** Every virtualizer.scrollToOffset call, so the glide can be asserted. */
 const virtualizerScrolls = vi.hoisted(() => [] as { offset: number }[]);
 
@@ -60,6 +63,10 @@ vi.mock("@tanstack/react-virtual", () => ({
       getOffsetForIndex: (index: number) =>
         index >= 0 && index < count ? ([index * 200, "start"] as const) : undefined,
       getTotalSize: () => count * 200 + (options.paddingEnd ?? 0),
+      range:
+        virtualRange.startIndex === null
+          ? null
+          : { startIndex: virtualRange.startIndex, endIndex: virtualRange.startIndex },
       measureElement: () => {},
       containerRef: () => {},
       scrollToEnd: (opts?: { behavior?: string }) => {
@@ -186,6 +193,7 @@ afterEach(() => {
   useMessageStore.setState({ bySession: new Map() });
   clearFoldCardOpen("session-1");
   turnState.recallPendingMessages.mockClear();
+  virtualRange.startIndex = null;
   const slice = turnState.byId.get("session-1");
   if (slice) {
     slice.compacting = false;
@@ -1257,6 +1265,63 @@ describe("MessageList subagent_exit mark", () => {
     );
     expect(screen.queryByText(/The following background/)).toBeNull();
     expect(screen.queryByText(/^done$/)).toBeNull();
+  });
+});
+
+describe("MessageList history paging", () => {
+  const rows: HumanRow[] = Array.from({ length: 8 }, (_, index) => ({
+    seq: index * 2,
+    kind: "item/user",
+    state: "final",
+    body: userTextItem(`message ${index}`),
+  }));
+
+  it("mirrors the virtual total on the container before a prepend anchor", () => {
+    render(
+      <MessageList
+        messages={[rows[0]!]}
+        loadingHistory={false}
+        canLoadMore
+        onLoadMore={() => {}}
+        isRunning={false}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    const container = screen.getByTestId("message-list")
+      .firstElementChild as HTMLElement;
+    expect(container.style.height).toBe("200px");
+  });
+
+  it("waits for the visible first item, not an overscan copy of it", () => {
+    const onLoadMore = vi.fn();
+    virtualRange.startIndex = 6;
+    const { rerender } = render(
+      <MessageList
+        messages={rows}
+        loadingHistory={false}
+        canLoadMore
+        onLoadMore={onLoadMore}
+        isRunning={false}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    expect(onLoadMore).not.toHaveBeenCalled();
+
+    virtualRange.startIndex = 0;
+    rerender(
+      <MessageList
+        messages={rows}
+        loadingHistory={false}
+        canLoadMore
+        onLoadMore={onLoadMore}
+        isRunning={false}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
   });
 });
 

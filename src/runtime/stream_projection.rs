@@ -66,6 +66,7 @@ use std::time::{Duration, Instant};
 use crate::authority::responses::Item;
 use crate::llm::{StreamItemAccumulator, item_id_of, mark_items_incomplete};
 use crate::runtime::observer::{InternalEvent, RuntimeObserver};
+use crate::session::data::{MAX_STREAM_BATCH_ROWS, StreamItemUpdate};
 use crate::session::{Seq, SessionManager};
 use crate::types::{LitecodeError, Result, StreamEvents};
 
@@ -389,25 +390,39 @@ impl StreamProjection {
         ids.sort_by_key(|id| state.open.get(id).map(|row| row.seq));
         let mut seqs = Vec::with_capacity(ids.len());
         let mut assistant_preview = None;
-        for id in ids {
-            let Some(seq) = state.open.get(&id).map(|row| row.seq) else {
+        while !ids.is_empty() {
+            let take = ids.len().min(MAX_STREAM_BATCH_ROWS);
+            let chunk_ids: Vec<String> = ids.drain(..take).collect();
+            let mut chunk = Vec::with_capacity(chunk_ids.len());
+            for id in chunk_ids {
+                let Some(seq) = state.open.get(&id).map(|row| row.seq) else {
+                    continue;
+                };
+                let Some(item) = state.seen.get(&id).cloned() else {
+                    continue;
+                };
+                chunk.push(StreamItemUpdate { seq, item });
+            }
+            if chunk.is_empty() {
                 continue;
-            };
-            let Some(item) = state.seen.get(&id).cloned() else {
-                continue;
-            };
-            match self
-                .sessions
-                .update_stream_item(&self.session_id, seq, &item)
-            {
+            }
+            let chunk_seqs: Vec<Seq> = chunk.iter().map(|row| row.seq).collect();
+            let chunk_preview = chunk
+                .iter()
+                .filter_map(|row| {
+                    let preview =
+                        crate::session::data::sqlite::session::Session::last_assistant_message_preview(
+                            std::slice::from_ref(&row.item),
+                        );
+                    (!preview.is_empty()).then_some(preview)
+                })
+                .last();
+            match self.sessions.update_stream_items(&self.session_id, chunk) {
                 Ok(()) => {
-                    let preview = crate::session::data::sqlite::session::Session::last_assistant_message_preview(
-                        std::slice::from_ref(&item),
-                    );
-                    if !preview.is_empty() {
+                    if let Some(preview) = chunk_preview {
                         assistant_preview = Some(preview);
                     }
-                    seqs.push(seq);
+                    seqs.extend(chunk_seqs);
                 }
                 Err(error) => {
                     self.fail(state, error);
@@ -581,7 +596,7 @@ mod tests {
     use super::*;
     use crate::authority::responses::ResponseStreamEvent;
     use crate::config::TurnGuard;
-    use crate::runtime::observer::NoopObserver;
+    use crate::runtime::observer::{InternalEvent, NoopObserver, RuntimeObserver};
     use crate::session::FaultKind;
 
     /// A recorded GPT-family response: twelve reasoning items (three of them with
@@ -740,12 +755,38 @@ mod tests {
     }
 
     fn projection_for(f: &Fixture) -> SharedStreamProjection {
+        projection_with_observer(f, Arc::new(NoopObserver))
+    }
+
+    fn projection_with_observer(
+        f: &Fixture,
+        observer: Arc<dyn RuntimeObserver>,
+    ) -> SharedStreamProjection {
         StreamProjection::new(
             Arc::clone(&f.sessions),
-            Arc::new(NoopObserver),
+            observer,
             f.sid.clone(),
             "turn-1".into(),
         )
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        restamps: std::sync::Mutex<Vec<Vec<Seq>>>,
+    }
+
+    impl RecordingObserver {
+        fn restamps(&self) -> Vec<Vec<Seq>> {
+            self.restamps.lock().expect("restamps").clone()
+        }
+    }
+
+    impl RuntimeObserver for RecordingObserver {
+        fn on_internal(&self, event: InternalEvent) {
+            if let InternalEvent::BufferRestamp { seqs } = event {
+                self.restamps.lock().expect("restamps").push(seqs);
+            }
+        }
     }
 
     fn summary_texts(body: &str) -> Vec<String> {
@@ -1014,5 +1055,254 @@ mod tests {
             rows[0].state, "final",
             "settle_open must still seal after a failed update; left in_progress would be the bug"
         );
+    }
+
+    /// A multi-row batch is one transaction: the injected failure must leave
+    /// every row in flight, and settle must still seal all of them.
+    #[test]
+    fn flush_batch_failure_does_not_publish_and_settle_seals() {
+        let f = Fixture::open();
+        let observer = Arc::new(RecordingObserver::default());
+        let projection = projection_with_observer(&f, observer.clone());
+        projection.observe(&added_event("msg_a", 0, false));
+        projection.observe(&added_event("msg_b", 1, false));
+        assert_eq!(f.rows().len(), 2);
+        let restamps_before_flush = observer.restamps().len();
+
+        f.sessions.data().hooks().inject(FaultKind::BeforeCommit);
+        {
+            let mut state = projection.lock();
+            state.dirty.insert("msg_a".into());
+            state.dirty.insert("msg_b".into());
+            projection.flush(&mut state);
+            assert!(
+                state.failed.is_some(),
+                "the batch write failure must be retained"
+            );
+        }
+        assert_eq!(
+            observer.restamps().len(),
+            restamps_before_flush,
+            "a failed batch must not publish any row"
+        );
+
+        let err = projection
+            .settle(None)
+            .expect_err("batch write failure must surface through settle");
+        assert!(
+            err.to_string().contains("before commit")
+                || err.to_string().contains("streamed output")
+                || err.to_string().contains("Session"),
+            "settle must carry the write failure, got {err}"
+        );
+
+        let rows = f.rows();
+        assert_eq!(rows.len(), 2, "both row identities must remain");
+        assert!(
+            rows.iter().all(|row| row.state == "final"),
+            "settle_open must seal both rows after a failed batch"
+        );
+    }
+
+    /// More dirty rows than the cap must be written in multiple chunks without
+    /// losing any row or leaving the projection failed.
+    #[test]
+    fn flush_chunks_above_the_batch_cap_and_publishes_once() {
+        let f = Fixture::open();
+        let observer = Arc::new(RecordingObserver::default());
+        let projection = projection_with_observer(&f, observer.clone());
+        let ids: Vec<String> = (0..MAX_STREAM_BATCH_ROWS + 2)
+            .map(|index| format!("msg_{index}"))
+            .collect();
+        for (index, id) in ids.iter().enumerate() {
+            projection.observe(&added_event(id, index as u32, false));
+        }
+        let restamps_before_flush = observer.restamps().len();
+
+        {
+            let mut state = projection.lock();
+            for id in &ids {
+                state.dirty.insert(id.clone());
+            }
+            projection.flush(&mut state);
+            assert!(state.failed.is_none(), "chunked flush must not fail");
+            assert!(state.dirty.is_empty(), "every dirty row must be drained");
+        }
+
+        let rows = f.rows();
+        assert_eq!(rows.len(), ids.len());
+        assert!(
+            rows.iter().all(|row| row.state == "in_progress"),
+            "a flush checkpoint must not seal rows"
+        );
+        let seqs: Vec<Seq> = rows.iter().map(|row| row.seq as u64).collect();
+        let restamps = observer.restamps();
+        assert_eq!(
+            restamps.len(),
+            restamps_before_flush + 1,
+            "the chunked flush must publish exactly once"
+        );
+        assert_eq!(
+            restamps.last(),
+            Some(&seqs),
+            "chunked flush must publish all rows in one restamp"
+        );
+
+        projection.settle(None).expect("settle chunked rows");
+        let rows = f.rows();
+        assert_eq!(rows.len(), ids.len());
+        assert!(
+            rows.iter().all(|row| row.state == "final"),
+            "every row must settle after a chunked flush"
+        );
+    }
+
+    /// One flush carrying reasoning, a message, and a tool call must commit all
+    /// three rows before it publishes them.
+    #[test]
+    fn flush_batches_open_rows_and_publishes_after_commit() {
+        use crate::authority::responses::{
+            FunctionToolCall, OutputItem, OutputStatus, ResponseFunctionCallArgumentsDeltaEvent,
+            ResponseOutputItemAddedEvent, ResponseReasoningTextDeltaEvent, ResponseTextDeltaEvent,
+        };
+
+        let f = Fixture::open();
+        let observer = Arc::new(RecordingObserver::default());
+        let projection = projection_with_observer(&f, observer.clone());
+        let tool_added =
+            ResponseStreamEvent::ResponseOutputItemAdded(ResponseOutputItemAddedEvent {
+                sequence_number: 3,
+                output_index: 2,
+                item: OutputItem::FunctionCall(FunctionToolCall {
+                    id: Some("call_1".into()),
+                    call_id: "call_1".into(),
+                    name: "shell".into(),
+                    arguments: String::new(),
+                    status: Some(OutputStatus::InProgress),
+                    namespace: None,
+                }),
+            });
+        projection.observe(&added_event("rs_1", 0, true));
+        projection.observe(&added_event("msg_1", 1, false));
+        projection.observe(&tool_added);
+        {
+            let mut state = projection.lock();
+            // Hold the coalescing window so the three deltas land in one flush.
+            state.last_flush = Some(Instant::now() + Duration::from_secs(60));
+        }
+        projection.observe(&ResponseStreamEvent::ResponseReasoningTextDelta(
+            ResponseReasoningTextDeltaEvent {
+                sequence_number: 10,
+                item_id: "rs_1".into(),
+                output_index: 0,
+                content_index: 0,
+                delta: "thinking".into(),
+            },
+        ));
+        projection.observe(&ResponseStreamEvent::ResponseOutputTextDelta(
+            ResponseTextDeltaEvent {
+                sequence_number: 11,
+                item_id: "msg_1".into(),
+                output_index: 1,
+                content_index: 0,
+                delta: "hello".into(),
+                logprobs: None,
+            },
+        ));
+        projection.observe(&ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(
+            ResponseFunctionCallArgumentsDeltaEvent {
+                sequence_number: 12,
+                item_id: "call_1".into(),
+                output_index: 2,
+                delta: r#"{"cmd":"echo hi"}"#.into(),
+            },
+        ));
+        let restamps_before_flush = observer.restamps().len();
+
+        {
+            let mut state = projection.lock();
+            assert_eq!(state.dirty.len(), 3, "one flush must see all three rows");
+            projection.flush(&mut state);
+            assert!(state.failed.is_none(), "batch flush must not fail");
+        }
+
+        let rows = f.rows();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|row| row.state == "in_progress"));
+        assert_eq!(rows[0].item_type, "reasoning");
+        assert_eq!(rows[1].item_type, "message");
+        assert_eq!(rows[2].item_type, "function_call");
+        assert!(rows[0].body.contains("thinking"));
+        assert!(rows[1].body.contains("hello"));
+        assert!(rows[2].body.contains("echo hi"));
+        let seqs: Vec<Seq> = rows.iter().map(|row| row.seq as u64).collect();
+        let restamps = observer.restamps();
+        assert_eq!(
+            restamps.len(),
+            restamps_before_flush + 1,
+            "the batch flush must publish exactly once"
+        );
+        assert_eq!(
+            restamps.last(),
+            Some(&seqs),
+            "all rows must publish after the batch committed"
+        );
+    }
+
+    /// A settled row inside a batch must roll back earlier rows in the same
+    /// transaction instead of leaving a partial update.
+    #[test]
+    fn flush_batch_with_settled_row_fails_without_partial_write() {
+        use crate::authority::responses::ResponseTextDeltaEvent;
+
+        let f = Fixture::open();
+        let projection = projection_for(&f);
+        projection.observe(&added_event("msg_a", 0, false));
+        projection.observe(&added_event("msg_b", 1, false));
+        {
+            let mut state = projection.lock();
+            state.last_flush = Some(Instant::now() + Duration::from_secs(60));
+        }
+        projection.observe(&ResponseStreamEvent::ResponseOutputTextDelta(
+            ResponseTextDeltaEvent {
+                sequence_number: 10,
+                item_id: "msg_a".into(),
+                output_index: 0,
+                content_index: 0,
+                delta: "a body".into(),
+                logprobs: None,
+            },
+        ));
+        {
+            let mut state = projection.lock();
+            state.dirty.insert("msg_b".into());
+        }
+
+        let rows = f.rows();
+        let before_a = rows[0].body.clone();
+        let seq_b = rows[1].seq as Seq;
+        let ResponseStreamEvent::ResponseOutputItemDone(done) = done_event("msg_b", 1) else {
+            unreachable!("the helper returns output_item.done");
+        };
+        let item = Item::from(done.item);
+        f.sessions
+            .seal_stream_item(&f.sid, seq_b, &item)
+            .expect("settle msg_b behind the projection");
+
+        {
+            let mut state = projection.lock();
+            assert_eq!(state.dirty.len(), 2, "both rows must be in the batch");
+            projection.flush(&mut state);
+            let error = state.failed.as_ref().expect("the settled row must fail");
+            assert!(
+                error.to_string().contains("in flight"),
+                "the refusal must come from the settled row, got {error}"
+            );
+        }
+
+        let rows = f.rows();
+        assert_eq!(rows[0].body, before_a, "the earlier row must roll back");
+        assert_eq!(rows[0].state, "in_progress");
+        assert_eq!(rows[1].state, "final");
     }
 }

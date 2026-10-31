@@ -2,12 +2,15 @@ import type * as Monaco from "monaco-editor";
 
 import type { LspResult } from "../api/types";
 import type { WireEnvelope } from "../api/agentWs";
+import { readFile } from "../api/workspace";
 import {
   useConnectionStore,
   attachSiblingStores,
 } from "../stores/connectionStore";
 import { useEditorStore } from "../stores/editorStore";
 import { useEngineStore } from "../stores/engineStore";
+import { fileKindFromPath, isTextKind } from "./fileKind";
+import { languageFromPath } from "../utils/language";
 
 const LSP_LANGUAGES = [
   "rust",
@@ -467,6 +470,92 @@ function parseLocations(
   }
   const one = parseLocation(monaco, result, projectRoot, sourceModel);
   return one ? [one] : [];
+}
+
+/** How many referenced files one peek may materialize. */
+export const PEEK_MODEL_FILE_LIMIT = 8;
+/** Bigger files are not worth a peek model; the preview would stall the peek. */
+export const PEEK_MODEL_MAX_CHARS = 2_000_000;
+
+export interface PeekModelTarget {
+  /** `uri.toString()` — the key Monaco's model service uses. */
+  key: string;
+  /** Workspace-relative path, spelled the way the editor `path` prop is. */
+  rel: string;
+}
+
+/**
+ * Referenced files a peek cannot render yet.
+ *
+ * Monaco's standalone text model service resolves models through the model
+ * service and nothing else, so a peek into a file that has no model keeps
+ * showing the previous file's code (the widget's title updates first). Knowing
+ * which targets need a model is kept separate from fetching them so it stays
+ * testable without a Monaco instance.
+ */
+export function peekModelTargets(
+  candidates: readonly { key: string; scheme: string; rel: string }[],
+  options: {
+    sourceKey?: string | null;
+    isKnown: (key: string) => boolean;
+    limit?: number;
+  },
+): PeekModelTarget[] {
+  const limit = options.limit ?? PEEK_MODEL_FILE_LIMIT;
+  const seen = new Set<string>();
+  const targets: PeekModelTarget[] = [];
+  for (const candidate of candidates) {
+    if (targets.length >= limit) break;
+    if (candidate.scheme !== "file" || seen.has(candidate.key)) continue;
+    seen.add(candidate.key);
+    if (options.sourceKey && candidate.key === options.sourceKey) continue;
+    if (options.isKnown(candidate.key)) continue;
+    const rel = candidate.rel;
+    // Absolute leftovers (drive, UNC, or a foreign POSIX root) have no model
+    // inside the workspace; reading them would just 404.
+    if (!rel || rel.startsWith("/") || /^[A-Za-z]:\//.test(rel)) continue;
+    if (!isTextKind(fileKindFromPath(rel))) continue;
+    targets.push({ key: candidate.key, rel });
+  }
+  return targets;
+}
+
+/** Give Monaco a model for every peek target that lacks one. */
+async function ensurePeekModels(
+  monaco: typeof import("monaco-editor"),
+  locations: readonly Monaco.languages.Location[],
+  projectRoot: string,
+  sourceModel?: Monaco.editor.ITextModel,
+): Promise<void> {
+  const targets = peekModelTargets(
+    locations.map((location) => ({
+      key: location.uri.toString(),
+      scheme: location.uri.scheme,
+      rel: relPathFromLspUri(location.uri.toString(), projectRoot),
+    })),
+    {
+      sourceKey: sourceModel?.uri.toString() ?? null,
+      isKnown: (key) => {
+        const model = monaco.editor.getModel(monaco.Uri.parse(key));
+        return Boolean(model && !model.isDisposed());
+      },
+    },
+  );
+  await Promise.all(
+    targets.map(async ({ key, rel }) => {
+      try {
+        const text = await readFile(rel);
+        if (text.length > PEEK_MODEL_MAX_CHARS) return;
+        const uri = monaco.Uri.parse(key);
+        // A pane may have opened the file while the read was in flight.
+        const existing = monaco.editor.getModel(uri);
+        if (existing && !existing.isDisposed()) return;
+        monaco.editor.createModel(text, languageFromPath(rel), uri);
+      } catch (e) {
+        warnLsp("peek model", e);
+      }
+    }),
+  );
 }
 
 function parseHover(result: unknown): {
@@ -1155,7 +1244,9 @@ function registerWorkspaceLsp(
     return async (model, position) => {
       const got = await requestAtPosition(method, model, position);
       if (!got) return null;
-      return parseLocations(monaco, got.result, got.projectRoot, model);
+      const locations = parseLocations(monaco, got.result, got.projectRoot, model);
+      await ensurePeekModels(monaco, locations, got.projectRoot, model);
+      return locations;
     };
   };
 
@@ -1183,7 +1274,9 @@ function registerWorkspaceLsp(
         },
       );
       if (!got) return [];
-      return parseLocations(monaco, got.result, got.projectRoot, model);
+      const locations = parseLocations(monaco, got.result, got.projectRoot, model);
+      await ensurePeekModels(monaco, locations, got.projectRoot, model);
+      return locations;
     },
   };
 

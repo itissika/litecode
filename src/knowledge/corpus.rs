@@ -219,10 +219,4 @@ fn nodes_from_parsed(files: Vec<LoadedFile>) -> (Vec<Node>, Vec<String>) {
 }
 
 #[cfg(test)]
-mod fixture_tests {
-    
-    
-
-    
-
-}
+mod fixture_tests {}

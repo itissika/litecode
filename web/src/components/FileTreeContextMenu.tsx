@@ -55,6 +55,7 @@ export function FileTreeContextMenu({
     <div
       ref={ref}
       role="menu"
+      data-litecode-overlay="context-menu"
       className="fixed z-50 min-w-[198px] rounded border border-(--_dk-line) bg-(--_dk-editor) py-1 text-sm shadow-lg"
       style={{ left: pos.left, top: pos.top }}
     >

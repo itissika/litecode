@@ -227,10 +227,8 @@ impl ReadTool {
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
         crate::tool::require_nonempty_string(input, "path")?;
-        if let Some(message) = limit_error(input) {
-            return Err(message);
-        }
-        let _ = resolve_start_line(input)?;
+        parse_limit(input)?;
+        resolve_start_line(input)?;
         Ok(())
     }
 }
@@ -239,19 +237,12 @@ fn coded(code: &str, message: impl Into<String>) -> ToolCallResult {
     crate::tools::file_path::coded_error(code, message)
 }
 
-fn limit_error(input: &Value) -> Option<String> {
-    let Some(value) = input.get("limit").filter(|value| !value.is_null()) else {
-        return None;
-    };
-    let Some(limit) = value.as_u64() else {
-        return Some("parameter 'limit' must be an integer".into());
-    };
-    if !(1..=MAX_LINE_LIMIT as u64).contains(&limit) {
-        return Some(format!(
-            "parameter 'limit' must be between 1 and {MAX_LINE_LIMIT}"
-        ));
-    }
-    None
+fn parse_limit(input: &Value) -> Result<(usize, Option<String>), String> {
+    let clamped = crate::tool::clamp::clamp_int(input, "limit", 1, MAX_LINE_LIMIT as u64, "lines")?;
+    Ok(match clamped {
+        None => (DEFAULT_LINE_LIMIT, None),
+        Some(clamped) => (clamped.value as usize, clamped.note),
+    })
 }
 
 fn read_virtual_session(
@@ -293,21 +284,18 @@ fn render_projection_page(
     hidden_seqs: &[i64],
     data_path: &str,
 ) -> ToolCallResult {
-    let start_line = match resolve_start_line(input) {
+    let (start_line, start_note) = match resolve_start_line(input) {
         Ok(line) => line,
         Err(msg) => return coded("invalid_input", msg),
     };
-    if let Some(message) = limit_error(input) {
-        return coded("invalid_input", message);
-    }
-    let limit = input
-        .get("limit")
-        .and_then(Value::as_u64)
-        .map(|n| n as usize)
-        .unwrap_or(DEFAULT_LINE_LIMIT);
+    let (limit, limit_note) = match parse_limit(input) {
+        Ok(limit) => limit,
+        Err(msg) => return coded("invalid_input", msg),
+    };
+    let note = join_notes(start_note, limit_note);
     let total_lines = file.total_lines();
     if start_line > total_lines {
-        return past_eof_page(data_path, start_line, total_lines);
+        return past_eof_page(data_path, start_line, total_lines, note.as_deref());
     }
     let start = start_line.saturating_sub(1);
     let end = (start + limit).min(total_lines);
@@ -323,6 +311,7 @@ fn render_projection_page(
             end,
             total_lines,
             "These session lines are already in the context window.",
+            note.as_deref(),
             Vec::new(),
         );
     }
@@ -350,27 +339,25 @@ fn render_projection_page(
         end,
         total_lines,
         "",
+        note.as_deref(),
         line_capped,
     )
 }
 
 fn render_text_page(content: &str, input: &Value, path: &str) -> ToolCallResult {
     let lines: Vec<&str> = content.lines().collect();
-    let start_line = match resolve_start_line(input) {
+    let (start_line, start_note) = match resolve_start_line(input) {
         Ok(line) => line,
         Err(msg) => return coded("invalid_input", msg),
     };
-    if let Some(message) = limit_error(input) {
-        return coded("invalid_input", message);
-    }
-    let limit = input
-        .get("limit")
-        .and_then(Value::as_u64)
-        .map(|n| n as usize)
-        .unwrap_or(DEFAULT_LINE_LIMIT);
+    let (limit, limit_note) = match parse_limit(input) {
+        Ok(limit) => limit,
+        Err(msg) => return coded("invalid_input", msg),
+    };
+    let note = join_notes(start_note, limit_note);
     let total_lines = lines.len();
     if start_line > total_lines {
-        return past_eof_page(path, start_line, total_lines);
+        return past_eof_page(path, start_line, total_lines, note.as_deref());
     }
     let start = start_line.saturating_sub(1);
     let end = (start + limit).min(total_lines);
@@ -383,12 +370,26 @@ fn render_text_page(content: &str, input: &Value, path: &str) -> ToolCallResult 
         }
         out.push(text);
     }
-    finish_read(path, start_line, out, end, total_lines, "", line_capped)
+    finish_read(
+        path,
+        start_line,
+        out,
+        end,
+        total_lines,
+        "",
+        note.as_deref(),
+        line_capped,
+    )
 }
 
 /// `start_line` beyond the last line (including an empty file): resolve an
 /// empty window and say how long the file is, instead of rejecting.
-fn past_eof_page(path: &str, start_line: usize, total_lines: usize) -> ToolCallResult {
+fn past_eof_page(
+    path: &str,
+    start_line: usize,
+    total_lines: usize,
+    note: Option<&str>,
+) -> ToolCallResult {
     let message = format!("File has {total_lines} lines; start_line {start_line} is past the end.");
     finish_read(
         path,
@@ -397,6 +398,7 @@ fn past_eof_page(path: &str, start_line: usize, total_lines: usize) -> ToolCallR
         total_lines,
         total_lines,
         &message,
+        note,
         Vec::new(),
     )
 }
@@ -408,6 +410,7 @@ fn finish_read(
     covered_end: usize,
     total_lines: usize,
     preset_message: &str,
+    note: Option<&str>,
     line_capped: Vec<usize>,
 ) -> ToolCallResult {
     // WP-210 H: paging guidance only when the file is not finished; a capped
@@ -421,6 +424,9 @@ fn finish_read(
             "Showing lines {start_line}–{covered_end} of {total_lines}. Continue with start_line={}.",
             covered_end + 1
         ));
+    }
+    if let Some(note) = note {
+        parts.push(note.to_string());
     }
     if !line_capped.is_empty() {
         parts.push(capped_note(&line_capped));
@@ -465,19 +471,20 @@ fn data_line_text(line: &str) -> (String, bool) {
     }
 }
 
-fn line_number(value: &Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
+fn resolve_start_line(input: &Value) -> Result<(usize, Option<String>), String> {
+    let clamped = crate::tool::clamp::clamp_int(input, "start_line", 1, u64::MAX, "")?;
+    Ok(match clamped {
+        None => (1, None),
+        Some(clamped) => (clamped.value as usize, clamped.note),
+    })
 }
 
-fn resolve_start_line(input: &Value) -> Result<usize, String> {
-    let Some(value) = input.get("start_line").filter(|value| !value.is_null()) else {
-        return Ok(1);
-    };
-    match line_number(value) {
-        Some(n) if n >= 1 => Ok(n as usize),
-        _ => Err("parameter 'start_line' must be an integer >= 1".into()),
+fn join_notes(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (None, None) => None,
+        (Some(first), None) => Some(first),
+        (None, Some(second)) => Some(second),
+        (Some(first), Some(second)) => Some(format!("{first} {second}")),
     }
 }
 
@@ -686,6 +693,31 @@ mod tests {
                 .contains("start_line=2001"),
             "{}",
             data["message"]
+        );
+    }
+
+    #[test]
+    fn test_read_limit_and_start_line_are_clamped_with_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "line1\nline2\nline3\n").unwrap();
+        let result = ReadTool::default().call(serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "start_line": 0,
+            "limit": 6000
+        }));
+        assert!(result.error_code.is_none(), "{}", result.content);
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["start_line"], 1);
+        assert_eq!(page_lines(&result), ["line1", "line2", "line3"]);
+        let message = data["message"].as_str().unwrap();
+        assert!(
+            message.contains("`start_line` was raised from 0 to 1"),
+            "{message}"
+        );
+        assert!(
+            message.contains("`limit` was reduced from 6000 to 5000 lines"),
+            "{message}"
         );
     }
 

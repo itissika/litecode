@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { groupRole, isUsableCenter, type GroupFacts } from "./model";
-import { centerGroups, whereIs } from "./queries";
+import {
+  activeCenterSessionIds,
+  centerGroups,
+  watchActiveCenterSessionIds,
+  whereIs,
+} from "./queries";
 import { bindDockview } from "./host";
 
 function facts(patch: Partial<GroupFacts>): GroupFacts {
@@ -88,5 +93,68 @@ describe("center group queries", () => {
       window: { dockId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
     });
     bindDockview(null);
+  });
+
+  it("reports the session each live center group shows, not its edge or anchor", () => {
+    const panel = (sessionId: string) => ({
+      id: `agent-${sessionId}`,
+      params: { sessionId },
+      api: { component: "agent" },
+    });
+    const main = {
+      api: { id: "main", location: { type: "grid" }, isVisible: true },
+      activePanel: panel("s1"),
+      panels: [panel("s1"), panel("s2")],
+    };
+    const anchor = {
+      api: { id: "anchor", location: { type: "grid" }, isVisible: false },
+      activePanel: panel("s3"),
+      panels: [panel("s3")],
+    };
+    const edge = {
+      api: { id: "edge", location: { type: "edge" }, isVisible: true },
+      activePanel: {
+        id: "sessions",
+        params: {},
+        api: { component: "sessions" },
+      },
+      panels: [],
+    };
+    bindDockview({ groups: [main, anchor, edge] } as never);
+
+    expect(activeCenterSessionIds()).toEqual(["s1"]);
+    bindDockview(null);
+  });
+
+  it("re-reads after the next frame when a restore lands without a layout event", async () => {
+    let groups: unknown[] = [];
+    const api = {
+      get groups() {
+        return groups;
+      },
+      getPanel: () => undefined,
+      onDidLayoutChange: () => ({ dispose: () => {} }),
+    };
+    bindDockview(api as never);
+    const seen: string[][] = [];
+    const stop = watchActiveCenterSessionIds((ids) => seen.push([...ids]));
+    try {
+      groups = [
+        {
+          api: { id: "main", location: { type: "grid" }, isVisible: true },
+          activePanel: {
+            id: "agent-s1",
+            params: { sessionId: "s1" },
+            api: { component: "agent" },
+          },
+          panels: [],
+        },
+      ];
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      expect(seen.at(-1)).toEqual(["s1"]);
+    } finally {
+      stop();
+      bindDockview(null);
+    }
   });
 });

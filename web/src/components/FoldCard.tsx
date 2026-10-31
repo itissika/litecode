@@ -48,6 +48,12 @@ interface FoldCardProps {
   /** When set, a one-line summary stays visible while collapsed (body hidden). */
   summaryMode?: boolean;
   summary?: ReactNode;
+  /**
+   * Skip the entrance-animation readiness gate. Use for cards mounted inside an
+   * already-open compact surface (e.g. a popover), where waiting for the
+   * transcript entrance would swallow the first click.
+   */
+  readyOnMount?: boolean;
   /** Header chevron (default: shown). */
   showArrow?: boolean;
   /** Skip the body grid-row expand/collapse transition (compact surfaces). */
@@ -84,6 +90,7 @@ export function FoldCard({
   edgeBlur = true,
   summaryMode = false,
   summary,
+  readyOnMount = false,
   showArrow = true,
   instantBody = false,
   children,
@@ -109,7 +116,7 @@ export function FoldCard({
   // otherwise it would mount collapsed, measure short, then pop open 260ms
   // later and jitter the virtual list.
   const [ready, setReady] = useState(
-    summaryMode || streaming === true || open === true,
+    readyOnMount || summaryMode || streaming === true || open === true,
   );
   useLayoutEffect(() => {
     if (open && !ready) setReady(true);

@@ -44,7 +44,7 @@ import i18n from "../i18n";
 /*
  * The knowledge panel consumes the backend snapshot
  * (`GET /api/workspace/knowledge` + `knowledge/changed`,
- * `docs/knowledge-references.md` §10–11). Corpus membership, folders, and
+ * `docs/knowledge-references.md` §9–10). Corpus membership, folders, and
  * every citation verdict come from there; this store never walks the tree,
  * stats a cited path, or asks `/symbol-refs`. Local writes (explicit user
  * saves) show at once and stay overlaid until a snapshot carries them.
@@ -174,7 +174,7 @@ interface KnowledgeStore {
   refsByNode: KnowledgeRefIndex;
   /** Snapshot `ready`. False: citations show "checking", never an error. */
   ready: boolean;
-  /** Snapshot `version` / `epoch` last applied (accept rule, §10.2). */
+  /** Snapshot `version` / `epoch` last applied (accept rule, §9.2). */
   version: number;
   epoch: string;
   /** Markdown files with no declaration. Shown in the side list, not on the canvas. */
@@ -491,7 +491,7 @@ function reuseNodes(previous: Map<string, KnowledgeNode>, next: KnowledgeNode[])
 
 /**
  * Apply one snapshot. Returns false when the accept rule rejects it: an older
- * version of the same epoch (§10.2). Re-applying the current version is
+ * version of the same epoch (§9.2). Re-applying the current version is
  * allowed (it retires local overlays the snapshot now carries).
  */
 function applyView(set: SetState, get: GetState, view: KnowledgeView): boolean {

@@ -27,8 +27,14 @@ fn title_is_revision_neutral_and_visible_in_meta_and_list() {
 
     let after = data.meta_blocking(&sid).unwrap();
     assert_eq!(after.title.as_deref(), Some("Release checklist"));
-    assert_eq!(after.preview, before.preview, "title must not overwrite preview");
-    assert_eq!(after.updated_at, before.updated_at, "title must not reorder the sidebar");
+    assert_eq!(
+        after.preview, before.preview,
+        "title must not overwrite preview"
+    );
+    assert_eq!(
+        after.updated_at, before.updated_at,
+        "title must not reorder the sidebar"
+    );
     assert_eq!(
         data.revision_blocking(&sid).unwrap(),
         revision,
@@ -63,10 +69,14 @@ fn folder_crud_move_and_delete_returns_sessions_to_ungrouped() {
     assert_eq!(folders[0].id, folder);
     assert_eq!(folders[0].name, "Work");
 
-    data.set_session_folder_blocking(&sid, Some(&folder)).unwrap();
+    data.set_session_folder_blocking(&sid, Some(&folder))
+        .unwrap();
     let meta = data.meta_blocking(&sid).unwrap();
     assert_eq!(meta.folder_id.as_deref(), Some(folder.as_str()));
-    assert_eq!(meta.updated_at, updated_at, "moving must not reorder the sidebar");
+    assert_eq!(
+        meta.updated_at, updated_at,
+        "moving must not reorder the sidebar"
+    );
     assert_eq!(
         data.revision_blocking(&sid).unwrap(),
         revision,
@@ -82,10 +92,7 @@ fn folder_crud_move_and_delete_returns_sessions_to_ungrouped() {
 
     data.rename_session_folder_blocking(&folder, "Planning")
         .unwrap();
-    assert_eq!(
-        data.list_folders_blocking().unwrap()[0].name,
-        "Planning"
-    );
+    assert_eq!(data.list_folders_blocking().unwrap()[0].name, "Planning");
 
     data.delete_session_folder_blocking(&folder).unwrap();
     assert!(data.list_folders_blocking().unwrap().is_empty());
@@ -132,16 +139,14 @@ fn root_list_caps_each_folder_bucket_separately() {
     let data = fixture.data.clone();
     let folder = data.create_session_folder_blocking("Archive").unwrap();
     let filed = create_with_preview(&fixture, "filed, older than the rest");
-    data.set_session_folder_blocking(&filed, Some(&folder)).unwrap();
+    data.set_session_folder_blocking(&filed, Some(&folder))
+        .unwrap();
 
     // Make the filed root older than every ungrouped root. With a global
     // LIMIT 50 it would fall off the list; per-folder buckets must keep it.
     let conn = rusqlite::Connection::open(fixture.db_path()).unwrap();
-    conn.execute(
-        "UPDATE sessions SET updated_at = 1 WHERE id = ?1",
-        [&filed],
-    )
-    .unwrap();
+    conn.execute("UPDATE sessions SET updated_at = 1 WHERE id = ?1", [&filed])
+        .unwrap();
     for _ in 0..55 {
         fixture.create("/proj", "default", None);
     }

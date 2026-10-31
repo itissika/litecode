@@ -239,7 +239,6 @@ export type LitecodeDesktopBridge = {
   browserSetVisible(input: { id: string; visible: boolean }): void;
   browserSetActive(input: { id: string; active: boolean }): void;
   browserDestroy(id: string): void;
-  browserSetObscured(obscured: boolean): void;
   nativeViewSetOccluded(input: NativeViewOccludedInput): void;
   nativeViewGetSnapshot(input: NativeViewRef): Promise<string>;
   appViewCreate(input: AppViewCreateInput): Promise<AppViewState>;

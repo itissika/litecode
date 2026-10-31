@@ -1092,7 +1092,10 @@ pub async fn handle_jsonrpc(
                     return false;
                 }
             };
-            match session.rename_session_folder(&params.id, &params.name).await {
+            match session
+                .rename_session_folder(&params.id, &params.name)
+                .await
+            {
                 Ok(()) => {
                     for msg in session.take_all_outgoing() {
                         emit(sink, msg);
@@ -1189,32 +1192,31 @@ pub async fn handle_jsonrpc(
             );
         }
 
-        methods::WORKSPACE_USAGE => {
-            match session.sessions.workspace_usage() {
-                Ok(usage) => {
-                    let payload = crate::client_protocol::protocol::WorkspaceUsageReport {
-                        days: usage.days,
-                        hours: usage.hours,
-                        today: usage.today,
-                        totals: usage.totals,
-                        requests: usage.requests,
-                        session_count: usage.session_count,
-                    };
-                    emit(
-                        sink,
-                        serde_json::to_value(ok_response(
-                            id,
-                            serde_json::to_value(payload).unwrap_or_default(),
-                        ))
-                        .unwrap(),
-                    );
-                }
-                Err(err) => emit(
+        methods::WORKSPACE_USAGE => match session.sessions.workspace_usage() {
+            Ok(usage) => {
+                let payload = crate::client_protocol::protocol::WorkspaceUsageReport {
+                    days: usage.days,
+                    hours: usage.hours,
+                    today: usage.today,
+                    totals: usage.totals,
+                    requests: usage.requests,
+                    providers: usage.providers,
+                    session_count: usage.session_count,
+                };
+                emit(
                     sink,
-                    serde_json::to_value(err_response(id, -32000, err.to_string())).unwrap(),
-                ),
+                    serde_json::to_value(ok_response(
+                        id,
+                        serde_json::to_value(payload).unwrap_or_default(),
+                    ))
+                    .unwrap(),
+                );
             }
-        }
+            Err(err) => emit(
+                sink,
+                serde_json::to_value(err_response(id, -32000, err.to_string())).unwrap(),
+            ),
+        },
 
         methods::SESSION_USAGE => {
             #[derive(serde::Deserialize)]

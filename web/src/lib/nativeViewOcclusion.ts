@@ -34,8 +34,58 @@ type WindowContext = {
   stopped: boolean;
 };
 
-const OVERLAY_SELECTOR = "[data-litecode-overlay]";
+const OVERLAY_ATTRIBUTE = "data-litecode-overlay";
+const OVERLAY_SELECTOR = `[${OVERLAY_ATTRIBUTE}]`;
 const HOST_SELECTOR = "[data-native-view-host]";
+const TAB_DRAG_TARGET = ".dv-tab, .dv-void-container";
+const TAB_DRAG_THRESHOLD = 4;
+
+type OverlayPolicy = "snapshot-first" | "instant";
+
+type OverlayEntry = {
+  element: HTMLElement;
+  policy: OverlayPolicy;
+};
+
+/** Small, transient surfaces must disappear from under the pointer at once. */
+const INSTANT_OVERLAY_KINDS = new Set([
+  "context-menu",
+  "toast",
+  "tooltip",
+  "click-shield",
+  "splash",
+  "tab-drag",
+]);
+
+/** Menus owned by libraries have no hook for our own attribute. */
+const THIRD_PARTY_OVERLAY_SELECTORS = [
+  ".dv-context-menu",
+  ".monaco-menu",
+] as const;
+
+function overlayPolicy(kind: string | null): OverlayPolicy {
+  return kind && INSTANT_OVERLAY_KINDS.has(kind) ? "instant" : "snapshot-first";
+}
+
+function collectOverlays(doc: Document): OverlayEntry[] {
+  const entries: OverlayEntry[] = [];
+  const seen = new Set<Element>();
+  for (const element of doc.querySelectorAll<HTMLElement>(OVERLAY_SELECTOR)) {
+    seen.add(element);
+    entries.push({
+      element,
+      policy: overlayPolicy(element.getAttribute(OVERLAY_ATTRIBUTE)),
+    });
+  }
+  for (const selector of THIRD_PARTY_OVERLAY_SELECTORS) {
+    for (const element of doc.querySelectorAll<HTMLElement>(selector)) {
+      if (seen.has(element)) continue;
+      seen.add(element);
+      entries.push({ element, policy: "instant" });
+    }
+  }
+  return entries;
+}
 
 let installedStop: (() => void) | null = null;
 let tokenSeq = 0;
@@ -67,7 +117,7 @@ function stillCovered(ctx: WindowContext, host: HTMLElement): boolean {
   if (!host.isConnected) return false;
   const hostRect = elementRect(host);
   if (!hostRect) return false;
-  for (const element of ctx.doc.querySelectorAll<HTMLElement>(OVERLAY_SELECTOR)) {
+  for (const { element } of collectOverlays(ctx.doc)) {
     const rect = elementRect(element);
     if (rect && rectsOverlap(hostRect, rect)) return true;
   }
@@ -103,12 +153,26 @@ function release(ctx: WindowContext, key: string): void {
   void nextFrame(ctx.win).then(clear);
 }
 
+async function readSnapshot(
+  bridge: OcclusionBridge,
+  kind: NativeViewKind,
+  id: string,
+): Promise<string> {
+  try {
+    const snapshot = await bridge.nativeViewGetSnapshot({ kind, id });
+    return typeof snapshot === "string" ? snapshot : "";
+  } catch {
+    return "";
+  }
+}
+
 async function hold(
   ctx: WindowContext,
   host: HTMLElement,
   kind: NativeViewKind,
   id: string,
   key: string,
+  policy: OverlayPolicy,
 ): Promise<void> {
   const existing = ctx.states.get(key);
   if (existing?.occluded || existing?.pending) return;
@@ -121,19 +185,29 @@ async function hold(
     id,
     key,
     token: ++tokenSeq,
-    pending: true,
+    pending: policy === "snapshot-first",
     occluded: false,
     placeholder: false,
   };
   ctx.states.set(key, state);
 
-  let dataUrl = "";
-  try {
-    const snapshot = await bridge.nativeViewGetSnapshot({ kind, id });
-    dataUrl = typeof snapshot === "string" ? snapshot : "";
-  } catch {
-    dataUrl = "";
+  if (policy === "instant") {
+    // A menu must never wait behind an asynchronous snapshot.
+    state.occluded = true;
+    state.placeholder = true;
+    useNativeViewOcclusionStore.getState().setPlaceholder(kind, id, "");
+    bridge.nativeViewSetOccluded({ kind, id, occluded: true });
+
+    void readSnapshot(bridge, kind, id).then((dataUrl) => {
+      if (ctx.stopped || ctx.states.get(key)?.token !== state.token) return;
+      if (dataUrl) {
+        useNativeViewOcclusionStore.getState().setPlaceholder(kind, id, dataUrl);
+      }
+    });
+    return;
   }
+
+  const dataUrl = await readSnapshot(bridge, kind, id);
 
   if (ctx.stopped || ctx.states.get(key)?.token !== state.token) return;
   if (!stillCovered(ctx, host)) {
@@ -160,11 +234,10 @@ async function hold(
   bridge.nativeViewSetOccluded({ kind, id, occluded: true });
 }
 
-function overlapsAny(hostRect: OverlayRect, overlays: OverlayRect[]): boolean {
-  return overlays.some((overlay) => rectsOverlap(hostRect, overlay));
-}
-
-function createContext(win: Window): WindowContext {
+function createContext(
+  win: Window,
+  bridge: () => OcclusionBridge | undefined,
+): WindowContext {
   const doc = win.document;
   const states = new Map<string, HostState>();
   let scheduled = false;
@@ -175,7 +248,7 @@ function createContext(win: Window): WindowContext {
     win,
     doc,
     states,
-    bridge: () => bridgeOf(win),
+    bridge,
     stopped: false,
     schedule: () => undefined,
     stop: () => undefined,
@@ -205,12 +278,12 @@ function createContext(win: Window): WindowContext {
   const reconcile = async (): Promise<void> => {
     if (ctx.stopped || !ctx.bridge()) return;
 
-    const overlays: OverlayRect[] = [];
+    const overlays: Array<{ rect: OverlayRect; policy: OverlayPolicy }> = [];
     const nextObserved = new Set<Element>();
-    for (const element of doc.querySelectorAll<HTMLElement>(OVERLAY_SELECTOR)) {
+    for (const { element, policy } of collectOverlays(doc)) {
       const rect = elementRect(element);
       if (!rect) continue;
-      overlays.push(rect);
+      overlays.push({ rect, policy });
       observe(element, nextObserved);
     }
 
@@ -230,8 +303,14 @@ function createContext(win: Window): WindowContext {
         continue;
       }
 
-      if (overlapsAny(rect, overlays)) {
-        await hold(ctx, host, kind, id, key);
+      const hits = overlays.filter(({ rect: overlay }) =>
+        rectsOverlap(rect, overlay),
+      );
+      if (hits.length > 0) {
+        const policy = hits.some((hit) => hit.policy === "instant")
+          ? "instant"
+          : "snapshot-first";
+        await hold(ctx, host, kind, id, key, policy);
       } else {
         release(ctx, key);
       }
@@ -316,22 +395,105 @@ function createContext(win: Window): WindowContext {
   return ctx;
 }
 
+/** A tab drag is a transient full-window overlay, not a second hide switch. */
+function installTabDrag(
+  win: Window,
+  contexts: Map<Window, WindowContext>,
+): () => void {
+  let dragging = false;
+  let painted = false;
+  let startX = 0;
+  let startY = 0;
+  const overlays = new Map<Window, HTMLElement>();
+
+  const removeOverlays = () => {
+    for (const [win, overlay] of overlays) {
+      overlay.remove();
+      contexts.get(win)?.schedule();
+    }
+    overlays.clear();
+  };
+
+  const finish = () => {
+    if (!dragging) return;
+    dragging = false;
+    painted = false;
+    removeOverlays();
+    win.removeEventListener("pointermove", onPointerMove, true);
+    win.removeEventListener("pointerup", finish, true);
+    win.removeEventListener("pointercancel", finish, true);
+  };
+
+  const paint = () => {
+    if (painted) return;
+    painted = true;
+    for (const ctx of contexts.values()) {
+      const body = ctx.doc.body;
+      if (!body) continue;
+      const overlay = ctx.doc.createElement("div");
+      overlay.setAttribute(OVERLAY_ATTRIBUTE, "tab-drag");
+      overlay.setAttribute("aria-hidden", "true");
+      overlay.style.position = "fixed";
+      overlay.style.top = "0";
+      overlay.style.right = "0";
+      overlay.style.bottom = "0";
+      overlay.style.left = "0";
+      overlay.style.pointerEvents = "none";
+      overlay.style.background = "transparent";
+      body.appendChild(overlay);
+      overlays.set(ctx.win, overlay);
+      ctx.schedule();
+    }
+  };
+
+  const onPointerMove = (event: PointerEvent) => {
+    if (!dragging || painted) return;
+    if (
+      Math.abs(event.clientX - startX) + Math.abs(event.clientY - startY) <
+      TAB_DRAG_THRESHOLD
+    ) {
+      return;
+    }
+    paint();
+  };
+
+  const onPointerDown = (event: PointerEvent) => {
+    if (event.button !== 0) return;
+    const target = event.target as Node | null;
+    if (!target || target.nodeType !== 1) return;
+    if (!(target as Element).closest(TAB_DRAG_TARGET)) return;
+    finish();
+    dragging = true;
+    startX = event.clientX;
+    startY = event.clientY;
+    win.addEventListener("pointermove", onPointerMove, true);
+    win.addEventListener("pointerup", finish, true);
+    win.addEventListener("pointercancel", finish, true);
+  };
+
+  win.addEventListener("pointerdown", onPointerDown, true);
+  return () => {
+    finish();
+    win.removeEventListener("pointerdown", onPointerDown, true);
+  };
+}
+
 /**
  * Central renderer-side manager for workbench overlays over native views.
- * Install once in the main renderer. Phase 1 is main-window only: popout
- * renderers cannot send trusted IPC, so they stay on the old chrome lease.
+ * Install once in the main renderer; it owns the main and popout documents
+ * and sends per-view IPC through the main renderer's trusted bridge.
  */
 export function installNativeViewOcclusion(): () => void {
   if (installedStop) return installedStop;
 
   const contexts = new Map<Window, WindowContext>();
+  const mainBridge = () => bridgeOf(window);
   const stopWindows = subscribeWindows((entry) => {
-    // Popout renderers are deliberately not trusted for IPC. Phase 1 keeps
-    // them on the old chrome lease; the main window owns this manager.
-    if (entry.dockId !== null) return () => undefined;
-    const ctx = createContext(entry.window);
+    const ctx = createContext(entry.window, mainBridge);
     contexts.set(entry.window, ctx);
+    const stopDrag = installTabDrag(entry.window, contexts);
     return () => {
+      stopDrag();
       ctx.stop();
       contexts.delete(entry.window);
     };

@@ -22,6 +22,16 @@ export interface GroupFacts {
   width: number | undefined;
   height: number | undefined;
   popoutUrl?: string;
+  /**
+   * The tab the group shows. This survives the group losing keyboard focus,
+   * unlike the panel API's `isActive` (which also requires the group to be
+   * active), so a sidebar marker can stay on the session the agent area shows.
+   */
+  activePanel?: {
+    id: string;
+    component: string | undefined;
+    params: Record<string, unknown>;
+  };
   panels: { id: string; component: string | undefined }[];
 }
 

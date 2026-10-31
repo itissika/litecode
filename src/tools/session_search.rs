@@ -1,16 +1,29 @@
-//! Agent `session_search` — one token-bounded view over past session transcripts.
+//! Agent `session_search` — a flat table over past session transcripts.
 
+use serde::Serialize;
 use serde_json::Value;
 
-use crate::context_pipeline::Context;
 use crate::engines::session_search::{self, ContextWindowExclude};
 use crate::engines::{RetrievalFilters, WorkspaceEngines};
 use crate::tool::Tool;
+use crate::tool::outcome::ToolOutcome;
 use crate::tool::trait_::ToolExecutionContext;
-use crate::types::ToolCallResult;
+use crate::types::{ToolCallResult, ToolErrorKind};
+
+const DEFAULT_LIMIT: usize = 20;
+const MAX_LIMIT: usize = 50;
 
 pub struct SessionSearchTool {
     engines: WorkspaceEngines,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct SessionSearchData {
+    hits: Vec<session_search::SessionTableHit>,
+    total: usize,
+    truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
 }
 
 impl SessionSearchTool {
@@ -25,6 +38,8 @@ impl SessionSearchTool {
         query: &str,
         session_id: Option<&str>,
         active_session_id: Option<&str>,
+        limit: usize,
+        limit_note: Option<String>,
     ) -> ToolCallResult {
         let include_session = match session_id {
             Some(refer) if !refer.trim().is_empty() => {
@@ -52,11 +67,6 @@ impl SessionSearchTool {
         // Read-only on purpose: the session ANN is refreshed by the idle tick in
         // `serve::router::listen`, and the sparse ledger by the refresh a search
         // dispatches behind it — never in front of the query that needs it.
-        // Refreshing inline put a reconcile in front of the query that asked for
-        // it, and left the lane unusable whenever the two overlapped — a session
-        // corpus moves on every turn, so "refresh on demand" meant "refresh
-        // always, right here". A stale index is the accepted price; being wrong
-        // is not.
         let semantic_ready = matches!(
             self.engines.session_semantic_gate(),
             crate::engines::CodeSearchCallGate::Ready
@@ -78,25 +88,42 @@ impl SessionSearchTool {
             Err(e) => return ToolCallResult::error(e.to_string()),
         };
 
-        let view = match session_search::build_agent_view(reader, &bundle.ranked, workspace_root) {
-            Ok(view) => view,
+        let table = match session_search::build_agent_table(reader, &bundle.ranked, limit) {
+            Ok(table) => table,
             Err(e) => return ToolCallResult::error(e.to_string()),
         };
 
         let sync = crate::tools::sync_pct_for_workspace(&self.engines, Some(workspace_root));
-        let mut body = String::new();
+        let truncated = table.total > table.hits.len();
+        let mut notes = Vec::new();
         if !semantic_ready {
             // Honest degradation: never look like a full lexical+semantic fusion.
-            body.push_str("semantic: unavailable (lexical only)\n");
+            notes.push("semantic: unavailable (lexical only)".to_string());
         }
-        if view.trim().is_empty() {
-            body.push_str(&format!(
+        if table.hits.is_empty() {
+            notes.push(format!(
                 "No matching session transcript context for query '{query}'."
             ));
-        } else {
-            body.push_str(&view);
+        } else if truncated {
+            notes.push(format!(
+                "Showing {} of {} hits; narrow the query or raise limit.",
+                table.hits.len(),
+                table.total
+            ));
         }
-        ToolCallResult::ok(crate::tools::prepend_sync_pct(sync.as_ref(), &body))
+        if let Some(note) = limit_note {
+            notes.push(note);
+        }
+        let message = (!notes.is_empty()).then(|| notes.join("\n"));
+        let content =
+            crate::tools::prepend_sync_pct(sync.as_ref(), message.as_deref().unwrap_or(""));
+        let data = SessionSearchData {
+            hits: table.hits,
+            total: table.total,
+            truncated,
+            message,
+        };
+        ToolOutcome::ok(data).into_call_result(content)
     }
 }
 
@@ -105,30 +132,8 @@ impl Tool for SessionSearchTool {
         "session_search"
     }
 
-    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-        let description =
-            crate::tools::description_text(include_str!("descriptions/session_search.md"));
-        let input_schema = {
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "What to find in past session transcripts. Literal words or a phrase. A multi-word query matches rows that contain most of those words (a literal phrase matches verbatim). Separate alternatives with | (any may match, e.g. 'retry|重试'); matching is case-insensitive and literal, so separators count. The current session's live context window is never searched."
-                    },
-                    "session_id": {
-                        "type": "string",
-                        "description": "Optional session scope: full id, unique prefix, or the handle shown in a result."
-                    }
-                },
-                "required": ["query"]
-            })
-        };
-        Some(crate::tool::DirectToolSpec {
-            description,
-            input_schema,
-        })
+    fn surface(&self) -> crate::tool::ToolSurface {
+        crate::tool::ToolSurface::Code
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
@@ -182,6 +187,19 @@ impl SessionSearchTool {
         let session_id = input["session_id"]
             .as_str()
             .filter(|s| !s.trim().is_empty());
+        let (limit, limit_note) =
+            match crate::tool::clamp::clamp_int(&input, "limit", 1, MAX_LIMIT as u64, "hits") {
+                Ok(Some(clamped)) => (clamped.value as usize, clamped.note),
+                Ok(None) => (DEFAULT_LIMIT, None),
+                Err(error) => {
+                    return ToolCallResult::error_with_kind(
+                        ToolErrorKind::InvalidInput,
+                        error,
+                        false,
+                    )
+                    .with_error_code("invalid_input");
+                }
+            };
         let active = if execution.session_id.is_empty() {
             None
         } else {
@@ -193,6 +211,8 @@ impl SessionSearchTool {
             query.trim(),
             session_id,
             active,
+            limit,
+            limit_note,
         )
     }
 }
@@ -204,23 +224,6 @@ mod tests {
     use crate::session::{SessionData, WorkspaceWriteLease};
     use crate::types::ToolSignalLevel;
     use crate::types::user_text;
-
-    fn call_ok(
-        tool: &SessionSearchTool,
-        root: &std::path::Path,
-        input: Value,
-        active: &str,
-    ) -> String {
-        let r = call(tool, root, input, active);
-        assert_eq!(
-            r.level,
-            ToolSignalLevel::Ok,
-            "expected ok, got {:?}: {}",
-            r.level,
-            r.content
-        );
-        r.content
-    }
 
     fn call(
         tool: &SessionSearchTool,
@@ -246,6 +249,31 @@ mod tests {
                 )),
             },
         ))
+    }
+
+    fn call_ok(
+        tool: &SessionSearchTool,
+        root: &std::path::Path,
+        input: Value,
+        active: &str,
+    ) -> ToolCallResult {
+        let r = call(tool, root, input, active);
+        assert_eq!(
+            r.level,
+            ToolSignalLevel::Ok,
+            "expected ok, got {:?}: {}",
+            r.level,
+            r.content
+        );
+        r
+    }
+
+    fn hits(result: &ToolCallResult) -> Vec<&Value> {
+        result.data.as_ref().expect("session_search returns data")["hits"]
+            .as_array()
+            .expect("data.hits")
+            .iter()
+            .collect()
     }
 
     fn seed_session(root: &std::path::Path, text: &str) -> String {
@@ -278,48 +306,60 @@ mod tests {
         let root = dir.path();
         seed_session(root, "COLD_LEXICAL_ONLY_TOKEN");
         let tool = SessionSearchTool::new(WorkspaceEngines::new());
-        let out = call_ok(
+        let result = call_ok(
             &tool,
             root,
             serde_json::json!({ "query": "COLD_LEXICAL_ONLY_TOKEN" }),
             "",
         );
-        assert!(out.contains("COLD_LEXICAL_ONLY_TOKEN"), "{out}");
+        let rows = hits(&result);
+        assert!(!rows.is_empty(), "{:?}", result.data);
+        let row = &rows[0];
+        assert_eq!(row["role"], "conversation");
+        assert!(
+            row["summary"]
+                .as_str()
+                .unwrap()
+                .contains("COLD_LEXICAL_ONLY_TOKEN")
+        );
+        let via = row["via"].as_str().unwrap();
+        assert!(
+            via.split('+').any(|part| part == "lex" || part == "exact"),
+            "{via}"
+        );
+        assert!(
+            result
+                .content
+                .contains("semantic: unavailable (lexical only)")
+        );
     }
 
     #[test]
-    fn a_result_over_budget_names_the_file_that_holds_the_rest() {
+    fn limit_is_applied_after_total_and_is_reported() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let mut items = Vec::new();
-        for i in 0..120 {
-            items.push(user_text(format!(
-                "PAGE_TOKEN_{i:03} shared PAGE_NEEDLE {}",
-                "word ".repeat(80)
-            )));
-        }
+        let items: Vec<_> = (0..25)
+            .map(|i| user_text(format!("LIMIT_TOKEN {i:02} with shared needle")))
+            .collect();
         seed_items(root, &items);
-
         let tool = warmed_tool(root);
-        let out = call_ok(
+        let result = call_ok(
             &tool,
             root,
-            serde_json::json!({ "query": "PAGE_NEEDLE" }),
+            serde_json::json!({ "query": "LIMIT_TOKEN", "limit": 5 }),
             "",
         );
-        assert!(!out.contains("offset"), "paging is gone:\n{out}");
+        let rows = hits(&result);
+        assert_eq!(rows.len(), 5, "{:?}", result.data);
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["total"], 25);
+        assert_eq!(data["truncated"], true);
         assert!(
-            out.matches(": user").count() < 120,
-            "the view must not carry every hit:\n{out}"
+            data["message"]
+                .as_str()
+                .unwrap()
+                .contains("Showing 5 of 25")
         );
-        let location = crate::engines::session_search::named_spill_location(&out).expect(&out);
-        assert!(
-            location.starts_with(".litecode/bash/session_search_"),
-            "{out}"
-        );
-        let spilled = std::fs::read_to_string(root.join(location)).unwrap();
-        assert!(spilled.contains("Remaining "), "{spilled}");
-        assert!(spilled.contains("PAGE_NEEDLE"), "{spilled}");
     }
 
     #[test]
@@ -353,8 +393,12 @@ mod tests {
             &sid,
         );
         assert!(
-            archived.contains("ARCHIVED_OLD_MARKER"),
-            "archived detail should still search:\n{archived}"
+            hits(&archived).iter().any(|row| row["summary"]
+                .as_str()
+                .unwrap()
+                .contains("ARCHIVED_OLD_MARKER")),
+            "archived detail should still search: {:?}",
+            archived.data
         );
         let live = call_ok(
             &tool,
@@ -363,8 +407,12 @@ mod tests {
             &sid,
         );
         assert!(
-            live.contains("No matching session transcript"),
-            "live window must stay excluded:\n{live}"
+            live.data.as_ref().unwrap()["message"]
+                .as_str()
+                .unwrap()
+                .contains("No matching session transcript"),
+            "live window must stay excluded: {:?}",
+            live.data
         );
     }
 
@@ -374,26 +422,17 @@ mod tests {
         let root = dir.path();
         let sid = seed_session(root, "alpha\nSEARCH_READ_ALIGN_TOKEN here\ndelta");
         let tool = warmed_tool(root);
-        let out = call_ok(
+        let result = call_ok(
             &tool,
             root,
             serde_json::json!({ "query": "SEARCH_READ_ALIGN_TOKEN" }),
             "",
         );
-        // A hit is a label line (`L2-4: user`) plus the indented lines of that
-        // range: reading the range must land on the very same rendering.
-        let hit = out
-            .lines()
-            .find(|l| l.starts_with('L') && l.contains(": "))
-            .expect(&format!("hit line missing:\n{out}"));
-        let range = hit.split(':').next().unwrap().trim_start_matches('L');
-        let (start_line, end_line) = match range.split_once('-') {
-            Some((a, b)) => (a.parse::<u32>().expect(hit), b.parse::<u32>().expect(hit)),
-            None => {
-                let n = range.parse::<u32>().expect(hit);
-                (n, n)
-            }
-        };
+        let rows = hits(&result);
+        let line = rows
+            .first()
+            .and_then(|row| row["line"].as_u64())
+            .expect("hit line") as u32;
         let path = transcript_file::virtual_path_for(&sid);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -402,8 +441,8 @@ mod tests {
         let read = rt.block_on(crate::tools::read::ReadTool::default().execute(
             serde_json::json!({
                 "path": path,
-                "start_line": start_line,
-                "limit": end_line - start_line + 1,
+                "start_line": line,
+                "limit": 1,
             }),
             ToolExecutionContext {
                 path_mode: crate::workspace::ToolPathMode::All,
@@ -425,14 +464,10 @@ mod tests {
             .iter()
             .filter_map(|l| l.as_str())
             .collect();
-        assert_eq!(
-            lines.len(),
-            (end_line - start_line + 1) as usize,
-            "read at L{start_line}-{end_line} must cover the hit range: {data}"
-        );
+        assert_eq!(lines.len(), 1, "read at L{line} must cover the hit: {data}");
         assert!(
-            lines.iter().any(|l| l.contains("SEARCH_READ_ALIGN_TOKEN")),
-            "read at L{start_line}-{end_line} should contain the hit: {data}"
+            lines[0].contains("SEARCH_READ_ALIGN_TOKEN"),
+            "read at L{line} should contain the hit: {data}"
         );
     }
 
@@ -447,24 +482,25 @@ mod tests {
         engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
         // Warm but no worker_pid ⇒ session_semantic_gate = Wait ⇒ lexical only.
         let tool = SessionSearchTool::new(engines);
-        let out = call_ok(
+        let result = call_ok(
             &tool,
             root,
             serde_json::json!({ "query": "UNIQUE_SESSION_SEARCH_TOKEN" }),
             "",
         );
-        let first = out.lines().next().unwrap_or("");
+        let first = result.content.lines().next().unwrap_or("");
         assert!(
             first.starts_with("sync_pct:"),
-            "first line must be sync_pct, got: {first:?}\n{out}"
+            "first line must be sync_pct, got: {first:?}\n{}",
+            result.content
         );
         assert!(
-            out.contains("semantic: unavailable (lexical only)"),
-            "must declare lexical-only degradation:\n{out}"
-        );
-        assert!(
-            out.contains("UNIQUE_SESSION_SEARCH_TOKEN") || out.contains("No matching"),
-            "unexpected body:\n{out}"
+            result.data.as_ref().unwrap()["message"]
+                .as_str()
+                .unwrap()
+                .contains("semantic: unavailable (lexical only)"),
+            "must declare lexical-only degradation: {:?}",
+            result.data
         );
         let _ = id;
     }

@@ -43,6 +43,10 @@ pub struct SearchHit {
     /// Lexical-only hits use 0.0 because they carry no semantic confidence.
     #[serde(default)]
     pub dense_similarity: f64,
+    /// True when the lexical leg admitted this chunk, regardless of its dense
+    /// similarity. The tool uses this to keep exact matches above a dense floor.
+    #[serde(default)]
+    pub lexical_match: bool,
 }
 
 /// Dense ANN only (kept for tests / ablations).
@@ -61,7 +65,7 @@ pub fn semantic_search(
         }
         let score = 1.0 / (1.0 + dist as f64);
         let dense_similarity = dense_similarity_from_distance(dist);
-        if let Some(h) = hit_from_chunk(index, id, score, dense_similarity) {
+        if let Some(h) = hit_from_chunk(index, id, score, dense_similarity, false) {
             hits.push(h);
         }
     }
@@ -83,6 +87,7 @@ pub fn bm25_rrf_search(
 
     let mut rrf: HashMap<u64, f64> = HashMap::new();
     let mut dense_similarity: HashMap<u64, f64> = HashMap::new();
+    let mut lexical: HashSet<u64> = HashSet::new();
     for (rank, (id, dist)) in dense.iter().enumerate() {
         if !apply_glob(index, *id, glob_filter) {
             continue;
@@ -94,18 +99,26 @@ pub fn bm25_rrf_search(
         if !apply_glob(index, *id, glob_filter) {
             continue;
         }
+        lexical.insert(*id);
         *rrf.entry(*id).or_insert(0.0) += 1.0 / (RRF_K as f64 + rank as f64 + 1.0);
     }
 
-    let mut ranked: Vec<(u64, f64, f64)> = rrf
+    let mut ranked: Vec<(u64, f64, f64, bool)> = rrf
         .into_iter()
-        .map(|(id, score)| (id, score, dense_similarity.get(&id).copied().unwrap_or(0.0)))
+        .map(|(id, score)| {
+            (
+                id,
+                score,
+                dense_similarity.get(&id).copied().unwrap_or(0.0),
+                lexical.contains(&id),
+            )
+        })
         .collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut hits = Vec::new();
-    for (id, score, dense_similarity) in ranked {
-        if let Some(h) = hit_from_chunk(index, id, score, dense_similarity) {
+    for (id, score, dense_similarity, lexical_match) in ranked {
+        if let Some(h) = hit_from_chunk(index, id, score, dense_similarity, lexical_match) {
             hits.push(h);
         }
     }
@@ -174,7 +187,8 @@ pub fn bm25_cc_search(
     let mut hits = Vec::new();
     for (id, score) in ranked {
         let dense_similarity = dense_confidence.get(&id).copied().unwrap_or(0.0);
-        if let Some(h) = hit_from_chunk(index, id, score, dense_similarity) {
+        let lexical_match = sparse_norm.contains_key(&id);
+        if let Some(h) = hit_from_chunk(index, id, score, dense_similarity, lexical_match) {
             hits.push(h);
         }
     }
@@ -213,6 +227,7 @@ fn hit_from_chunk(
     chunk_id: u64,
     score: f64,
     dense_similarity: f64,
+    lexical_match: bool,
 ) -> Option<SearchHit> {
     let chunk = index.chunks().get(&chunk_id)?;
     Some(SearchHit {
@@ -222,6 +237,7 @@ fn hit_from_chunk(
         summary: chunk.summary(),
         score,
         dense_similarity,
+        lexical_match,
     })
 }
 

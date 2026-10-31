@@ -26,6 +26,7 @@ function renderCard(
   props: {
     streaming?: boolean;
     defaultOpen?: boolean;
+    readyOnMount?: boolean;
   } = {},
 ) {
   const { streaming, defaultOpen, ...rest } = props;
@@ -95,6 +96,13 @@ describe("FoldCard mount defaults", () => {
   it("mounts open when defaultOpen with no persisted state", () => {
     renderCard({ defaultOpen: true });
     expect(header().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("toggles immediately when mounted inside an already-open surface", () => {
+    renderCard({ readyOnMount: true });
+    fireEvent.click(header());
+    expect(header().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("body")).toBeTruthy();
   });
 });
 

@@ -27,7 +27,10 @@ fn confine(root: &Path, raw: &str) -> Result<PathBuf, Value> {
         match component {
             Component::ParentDir => {
                 if !normal.pop() {
-                    return Err(failure("permission", format!("{raw} is outside the workspace")));
+                    return Err(failure(
+                        "permission",
+                        format!("{raw} is outside the workspace"),
+                    ));
                 }
             }
             Component::CurDir => {}
@@ -37,12 +40,18 @@ fn confine(root: &Path, raw: &str) -> Result<PathBuf, Value> {
     let root_real = crate::config::path::canon_abs(root).unwrap_or_else(|_| root.to_path_buf());
     let inside = |path: &Path| path.starts_with(root) || path.starts_with(&root_real);
     if !inside(&normal) {
-        return Err(failure("permission", format!("{raw} is outside the workspace")));
+        return Err(failure(
+            "permission",
+            format!("{raw} is outside the workspace"),
+        ));
     }
     if let Ok(real) = crate::config::path::canon_abs(&normal)
         && !inside(&real)
     {
-        return Err(failure("permission", format!("{raw} resolves outside the workspace")));
+        return Err(failure(
+            "permission",
+            format!("{raw} resolves outside the workspace"),
+        ));
     }
     Ok(normal)
 }
@@ -107,7 +116,9 @@ pub fn ls(root: &Path, raw: &str) -> Value {
     if total > LS_CAP {
         out.insert(
             "message".into(),
-            Value::String(format!("showing {LS_CAP} of {total} entries; use tools.file.glob to filter")),
+            Value::String(format!(
+                "showing {LS_CAP} of {total} entries; use tools.file.glob to filter"
+            )),
         );
     }
     Value::Object(out)
@@ -163,7 +174,14 @@ mod tests {
         assert_eq!(listed["entries"][0]["size"], 2);
 
         let info = stat(root, "src/a.rs");
-        assert_eq!((info["ok"].clone(), info["type"].clone(), info["size"].clone()), (json!(true), json!("file"), json!(9)));
+        assert_eq!(
+            (
+                info["ok"].clone(),
+                info["type"].clone(),
+                info["size"].clone()
+            ),
+            (json!(true), json!("file"), json!(9))
+        );
         assert!(info["mtime"].as_u64().unwrap() > 0);
         assert!(exists(root, "src"));
         assert!(!exists(root, "nope"));

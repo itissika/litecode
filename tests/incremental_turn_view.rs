@@ -71,10 +71,7 @@ fn a_turn_view_extends_with_only_the_new_rows() {
     }
     let synced = pipeline.working_set();
     assert_eq!(synced.len(), 40);
-    assert_eq!(
-        synced,
-        fx.data.working_set_blocking(&sid).expect("durable")
-    );
+    assert_eq!(synced, fx.data.working_set_blocking(&sid).expect("durable"));
 }
 
 #[test]
@@ -114,7 +111,10 @@ fn a_seal_inside_the_turn_is_refreshed_in_place() {
         .build_view(&sessions, &sid, &baseline, &model())
         .expect("build view");
 
-    assert!(pipeline.last_sync_incremental(), "the suffix is a plain append");
+    assert!(
+        pipeline.last_sync_incremental(),
+        "the suffix is a plain append"
+    );
     let synced = pipeline.working_set();
     assert_eq!(synced, fx.data.working_set_blocking(&sid).expect("durable"));
     let sealed = synced
@@ -208,7 +208,10 @@ fn a_revert_under_the_fold_forces_a_rebuild() {
 
     let pipeline = pipeline(&fx);
     assert_eq!(
-        pipeline.begin_turn(&sessions, &sid).expect("begin turn").len(),
+        pipeline
+            .begin_turn(&sessions, &sid)
+            .expect("begin turn")
+            .len(),
         4
     );
 
@@ -248,7 +251,10 @@ fn a_revert_drops_the_projection_fold() {
     let fx = SessionDataFixture::new();
     let sessions = Arc::new(fx.manager());
     let sid = fx.create("/p", "agent", None);
-    fx.insert_items(&sid, &[user_text("row 0"), user_text("row 1"), user_text("row 2")]);
+    fx.insert_items(
+        &sid,
+        &[user_text("row 0"), user_text("row 1"), user_text("row 2")],
+    );
 
     let mut projection =
         Projection::new_with_model(sid.clone(), Arc::clone(&sessions), 10_000, Some(model()));

@@ -19,10 +19,10 @@
 //! numbers are injected as numbers.
 
 mod boundary;
-mod fs;
 mod budget;
 mod calls;
 mod engine;
+mod fs;
 mod heap;
 mod json;
 mod output;
@@ -326,8 +326,7 @@ impl Failure {
         source_lines: u32,
     ) -> Self {
         let message = message.into();
-        let (location, at_end_of_input) =
-            locate_syntax(stack.as_deref(), &message, source_lines);
+        let (location, at_end_of_input) = locate_syntax(stack.as_deref(), &message, source_lines);
         let mut failure = Self::new(FailureKind::Syntax, message, stack, None);
         failure.location = location;
         failure.at_end_of_input = at_end_of_input;

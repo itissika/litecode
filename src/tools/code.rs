@@ -1133,18 +1133,11 @@ fn present_returned_value(value: &Json) -> Result<Value, String> {
 }
 
 fn parse_run_timeout_ms(input: &Value) -> Result<u64, String> {
-    match input.get("timeout_ms").filter(|value| !value.is_null()) {
-        None => Ok(DEFAULT_RUN_TIMEOUT_MS),
-        Some(value) => {
-            let timeout_ms = value
-                .as_u64()
-                .ok_or_else(|| "parameter 'timeout_ms' expected a positive integer".to_string())?;
-            if timeout_ms == 0 {
-                return Err("parameter 'timeout_ms' must be a positive integer".to_string());
-            }
-            Ok(timeout_ms.min(MAX_RUN_TIMEOUT_MS))
-        }
-    }
+    let clamped = crate::tool::clamp::clamp_int(input, "timeout_ms", 1, MAX_RUN_TIMEOUT_MS, "ms")?;
+    Ok(match clamped {
+        None => DEFAULT_RUN_TIMEOUT_MS,
+        Some(clamped) => clamped.value,
+    })
 }
 
 impl Tool for CodeTool {
@@ -1170,8 +1163,7 @@ impl Tool for CodeTool {
                     },
                     "timeout_ms": {
                         "type": "integer",
-                        "minimum": 1,
-                        "description": "Total program budget. Time spent waiting for approval is not counted. Defaults to 120000; values above 600000 are clamped."
+                        "description": "1–600000 ms. Default 120000."
                     }
                 },
                 "required": ["code"],
@@ -1201,11 +1193,7 @@ impl Tool for CodeTool {
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
         crate::tool::require_nonempty_string(input, "code")?;
-        if let Some(value) = input.get("timeout_ms").filter(|value| !value.is_null())
-            && (value.as_u64().is_none_or(|timeout| timeout == 0))
-        {
-            return Err("parameter 'timeout_ms' must be a positive integer".to_string());
-        }
+        parse_run_timeout_ms(input)?;
         Ok(())
     }
 

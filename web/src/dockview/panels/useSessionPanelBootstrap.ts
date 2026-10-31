@@ -3,9 +3,11 @@ import type { DockviewPanelApi } from "dockview-react";
 
 import type { SessionInfo } from "../../api/types";
 import { releaseSessionTab } from "../../components/sessionTeardown";
+import { sessionTitle } from "../../lib/sessionDisplay";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useToastStore } from "../../stores/toastStore";
+import { useUnreadStore } from "../../stores/unreadStore";
 
 /**
  * Connection lifecycle shared by the session dock panels (writable
@@ -16,12 +18,12 @@ import { useToastStore } from "../../stores/toastStore";
  * - closes the panel with a toast when the session no longer exists (any
  *   other failure waits for the next "connected" transition);
  * - releases the subscription and local projection only on real unmount.
- * Returns the active flag plus the session's list entry and trimmed preview.
+ * Returns the active flag plus the session's list entry and display name.
  */
 export function useSessionPanelBootstrap(
   api: DockviewPanelApi,
   sessionId: string,
-): { isActive: boolean; session: SessionInfo | undefined; preview: string } {
+): { isActive: boolean; session: SessionInfo | undefined; title: string } {
   const connState = useConnectionStore((s) => s.state);
   const [isActive, setIsActive] = useState(api.isActive);
 
@@ -29,6 +31,13 @@ export function useSessionPanelBootstrap(
     const d = api.onDidActiveChange((e) => setIsActive(e.isActive));
     return () => d.dispose();
   }, [api]);
+
+  // Seeing the transcript is what reads the session: the sidebar dot clears
+  // only when this panel is focused, not merely rendered behind another tab.
+  useEffect(() => {
+    if (!isActive || !sessionId) return;
+    useUnreadStore.getState().consume(sessionId);
+  }, [isActive, sessionId]);
 
   useEffect(() => {
     if (!sessionId || connState !== "connected") return;
@@ -59,11 +68,8 @@ export function useSessionPanelBootstrap(
     };
   }, [sessionId]);
 
-  const preview = useSessionStore(
-    (s) => s.sessions.find((x) => x.id === sessionId)?.preview?.trim() ?? "",
-  );
   const session = useSessionStore((s) =>
     s.sessions.find((x) => x.id === sessionId),
   );
-  return { isActive, session, preview };
+  return { isActive, session, title: sessionTitle(session) };
 }

@@ -17,7 +17,7 @@ use tokio::time::Duration;
 use crate::lsp::conn::LspDiagnosticEvent;
 use crate::lsp::deps;
 use crate::lsp::format::{format_action_result, format_error_diagnostics_block};
-use crate::lsp::server::{LspServer, MAX_AUTO_RESTARTS, RESTART_COOLDOWN};
+use crate::lsp::server::{IndexReadiness, LspServer, MAX_AUTO_RESTARTS, RESTART_COOLDOWN};
 
 /// Restart budget after an LSP server exit: a server that survived at least
 /// `RESTART_COOLDOWN` and then *exited on its own* resets the budget. Watchdog
@@ -67,14 +67,22 @@ pub struct LspToolOutput {
     /// The server answered `-32801 ContentModified` for at least one request:
     /// it is updating and the result may be incomplete. Retry later.
     pub content_modified: bool,
+    /// What the server last told us about its index; never inferred from time.
+    pub(crate) readiness: IndexReadiness,
 }
 
 impl LspToolOutput {
-    pub fn new(text: String, raw: Value, content_modified: bool) -> Self {
+    pub(crate) fn new(
+        text: String,
+        raw: Value,
+        content_modified: bool,
+        readiness: IndexReadiness,
+    ) -> Self {
         Self {
             text,
             raw,
             content_modified,
+            readiness,
         }
     }
 }
@@ -899,17 +907,25 @@ impl LspHub {
             .await
     }
 
-    /// `workspace/symbol` without a file hint: use any Running language server.
-    /// Agent `workspace_symbol` only takes `{ query }` (no path scope — hub has none).
+    /// `workspace/symbol`. Without a path, exactly one Running server must
+    /// exist; with a path, that file selects/starts its server through the same
+    /// document path as every other navigation call.
     pub async fn workspace_symbol_outcome(
         self: &Arc<Self>,
         query: &str,
+        file_path: Option<&Path>,
     ) -> Result<LspToolOutput> {
+        if let Some(path) = file_path {
+            return self
+                .tool_action_async("workspaceSymbol", path, None, None, Some(query))
+                .await;
+        }
+
         let _ = self.ensure_probed().await;
         if !self.is_active() {
             return Err(LitecodeError::ToolExecution("LSP hub not active".into()));
         }
-        let server = {
+        let servers: Vec<Arc<LspServer>> = {
             let inner = self
                 .inner
                 .lock()
@@ -917,33 +933,37 @@ impl LspHub {
             inner
                 .servers
                 .values()
-                .find(|s| s.is_running())
+                .filter(|s| s.is_running())
                 .cloned()
-                .ok_or_else(|| {
-                    LitecodeError::ToolExecution(
-                        "no language server is running for workspace symbol search;                          open a source file or wait for Settings → Engines → LSP"
-                            .into(),
-                    )
-                })?
+                .collect()
+        };
+        let server = match servers.as_slice() {
+            [server] => Arc::clone(server),
+            [] => {
+                return Err(LitecodeError::ToolExecution(
+                    "no language server is running for workspace symbol search; open a source file, pass a path, or wait for Settings → Engines → LSP"
+                        .into(),
+                ));
+            }
+            _ => {
+                return Err(LitecodeError::ToolExecution(format!(
+                    "{} language servers are running; pass a source file path to choose the project",
+                    servers.len()
+                )));
+            }
         };
         let mut modified = false;
-        // WP-206 ③: same index-not-ready path as hover/definition (empty during
-        // the cold-start grace → Err "index not ready" → tool `unavailable`).
-        let result = take_reply(
-            server
-                .request_nav_with_retry(
-                    "workspace/symbol",
-                    serde_json::json!({ "query": query }),
-                )
-                .await?,
-            &mut modified,
-        );
+        let (reply, readiness) = server
+            .request_nav_with_retry("workspace/symbol", serde_json::json!({ "query": query }))
+            .await?;
+        let result = take_reply(reply, &mut modified);
         let root = self.workspace_root();
         let roots: Vec<&Path> = root.as_deref().into_iter().collect();
         Ok(LspToolOutput::new(
             format_action_result("workspaceSymbol", &result, &roots),
             result,
             modified,
+            readiness,
         ))
     }
 
@@ -1027,6 +1047,7 @@ impl LspHub {
         if file_path.is_file() {
             ensure_open_document(&server, &file_path, &uri).await?;
         }
+        let mut readiness = server.index_readiness();
 
         let result = match action {
             "goToDefinition" => {
@@ -1038,33 +1059,37 @@ impl LspHub {
                     .request_nav_with_retry("textDocument/definition", params.clone())
                     .await
                 {
-                    Ok(LspReply::ContentModified) => {
+                    Ok((LspReply::ContentModified, current)) => {
+                        readiness = current;
                         // Server is updating: return the empty result, no fallback resend.
                         modified = true;
                         Value::Null
                     }
-                    Ok(LspReply::Value(result))
-                        if !crate::lsp::format::extract_locations(&result).is_empty() =>
-                    {
-                        result
-                    }
-                    Ok(LspReply::Value(empty)) => {
-                        // Settled empty definition — try typeDefinition before confirming miss.
-                        match server
-                            .request_nav_with_retry("textDocument/typeDefinition", params)
-                            .await
-                        {
-                            Ok(LspReply::Value(typed))
-                                if !crate::lsp::format::extract_locations(&typed).is_empty() =>
+                    Ok((LspReply::Value(result), current)) => {
+                        readiness = current;
+                        if !crate::lsp::format::extract_locations(&result).is_empty() {
+                            result
+                        } else {
+                            // Settled empty definition — try typeDefinition before confirming miss.
+                            match server
+                                .request_nav_with_retry("textDocument/typeDefinition", params)
+                                .await
                             {
-                                typed
+                                Ok((LspReply::Value(typed), current)) => {
+                                    readiness = current;
+                                    if !crate::lsp::format::extract_locations(&typed).is_empty() {
+                                        typed
+                                    } else {
+                                        result
+                                    }
+                                }
+                                Ok((LspReply::ContentModified, current)) => {
+                                    readiness = current;
+                                    modified = true;
+                                    result
+                                }
+                                Err(_) => result,
                             }
-                            Ok(LspReply::ContentModified) => {
-                                modified = true;
-                                empty
-                            }
-                            Ok(_) => empty,
-                            Err(_) => empty,
                         }
                     }
                     Err(inconclusive) => {
@@ -1073,17 +1098,19 @@ impl LspHub {
                             .request_nav_with_retry("textDocument/typeDefinition", params)
                             .await
                         {
-                            Ok(LspReply::Value(typed))
+                            Ok((LspReply::Value(typed), current))
                                 if !crate::lsp::format::extract_locations(&typed).is_empty() =>
                             {
+                                readiness = current;
                                 typed
                             }
-                            _ => return Err(inconclusive),
+                            Ok(_) => return Err(inconclusive),
+                            Err(_) => return Err(inconclusive),
                         }
                     }
                 }
             }
-            "findReferences" => take_reply(
+            "findReferences" => take_nav_reply(
                 server
                     .request_nav_with_retry(
                         "textDocument/references",
@@ -1095,8 +1122,9 @@ impl LspHub {
                     )
                     .await?,
                 &mut modified,
+                &mut readiness,
             ),
-            "hover" => take_reply(
+            "hover" => take_nav_reply(
                 server
                     .request_nav_with_retry(
                         "textDocument/hover",
@@ -1107,8 +1135,9 @@ impl LspHub {
                     )
                     .await?,
                 &mut modified,
+                &mut readiness,
             ),
-            "goToImplementation" => take_reply(
+            "goToImplementation" => take_nav_reply(
                 server
                     .request_nav_with_retry(
                         "textDocument/implementation",
@@ -1119,9 +1148,9 @@ impl LspHub {
                     )
                     .await?,
                 &mut modified,
+                &mut readiness,
             ),
-            // WP-206 ③: symbols go through the nav index-not-ready gate.
-            "documentSymbol" => take_reply(
+            "documentSymbol" => take_nav_reply(
                 server
                     .request_nav_with_retry(
                         "textDocument/documentSymbol",
@@ -1129,10 +1158,11 @@ impl LspHub {
                     )
                     .await?,
                 &mut modified,
+                &mut readiness,
             ),
             "workspaceSymbol" => {
                 // file_path selects/starts the LS; query filters workspace symbols.
-                take_reply(
+                take_nav_reply(
                     server
                         .request_nav_with_retry(
                             "workspace/symbol",
@@ -1140,6 +1170,7 @@ impl LspHub {
                         )
                         .await?,
                     &mut modified,
+                    &mut readiness,
                 )
             }
             "prepareCallHierarchy" => take_reply(
@@ -1172,6 +1203,7 @@ impl LspHub {
                         "No call hierarchy item at position".into(),
                         Value::Null,
                         modified,
+                        readiness,
                     ));
                 };
                 let method = if action == "incomingCalls" {
@@ -1186,12 +1218,12 @@ impl LspHub {
                     &mut modified,
                 )
             }
-            // WP-206 ③: not running / unpublished inside grace → Err (unavailable);
-            // unpublished after grace → empty success.
             "diagnostics" => {
-                server
+                let value = server
                     .wait_file_diagnostics_gated(&uri, Duration::from_secs(3))
-                    .await?
+                    .await?;
+                readiness = server.index_readiness();
+                value
             }
             other => {
                 return Err(LitecodeError::ToolExecution(format!(
@@ -1206,6 +1238,7 @@ impl LspHub {
             format_action_result(action, &result, &roots),
             result,
             modified,
+            readiness,
         ))
     }
 }
@@ -1216,6 +1249,16 @@ fn take_reply(reply: LspReply, modified: &mut bool) -> Value {
         *modified = true;
     }
     reply.into_value()
+}
+
+/// Carry the server's readiness alongside the reply; the tool reports it.
+fn take_nav_reply(
+    outcome: (LspReply, IndexReadiness),
+    modified: &mut bool,
+    readiness: &mut IndexReadiness,
+) -> Value {
+    *readiness = outcome.1;
+    take_reply(outcome.0, modified)
 }
 
 pub(crate) fn normalize_lsp_action(action: &str) -> &str {
@@ -1355,5 +1398,4 @@ mod tests {
             2
         );
     }
-
 }

@@ -88,11 +88,11 @@ describe("knowledgeRailBadge", () => {
     code: "missing_file",
     message: "missing",
   });
-  const drift = (nodeId: string): KnowledgeIssue => ({
+  const warn = (nodeId: string): KnowledgeIssue => ({
     nodeId,
     severity: "warning",
-    code: "symbol_drift",
-    message: "drift",
+    code: "filename_mismatch",
+    message: "mismatch",
   });
   const inactive = (nodeId: string): KnowledgeIssue => ({
     nodeId,
@@ -102,14 +102,14 @@ describe("knowledgeRailBadge", () => {
   });
 
   it("counts nodes with errors ahead of warnings", () => {
-    expect(knowledgeRailBadge([error("a"), error("a"), drift("b")])).toEqual({
+    expect(knowledgeRailBadge([error("a"), error("a"), warn("b")])).toEqual({
       tone: "error",
       count: 1,
     });
   });
 
   it("counts warning nodes when nothing is an error", () => {
-    expect(knowledgeRailBadge([drift("a"), inactive("a"), drift("b")])).toEqual({
+    expect(knowledgeRailBadge([warn("a"), inactive("a"), warn("b")])).toEqual({
       tone: "warning",
       count: 2,
     });
@@ -140,11 +140,11 @@ describe("knowledgeListAlert", () => {
 });
 
 describe("knowledgeAttentionWarnings", () => {
-  const drift: KnowledgeIssue = {
+  const warn: KnowledgeIssue = {
     nodeId: "a",
     severity: "warning",
-    code: "symbol_drift",
-    message: "drift",
+    code: "filename_mismatch",
+    message: "mismatch",
   };
   const mismatch: KnowledgeIssue = {
     nodeId: "a",
@@ -167,8 +167,8 @@ describe("knowledgeAttentionWarnings", () => {
 
   it("keeps attention warnings and drops errors and inactive citations", () => {
     expect(
-      knowledgeAttentionWarnings([mismatch, inactive, error, drift]),
-    ).toEqual([mismatch, drift]);
+      knowledgeAttentionWarnings([mismatch, inactive, error, warn]),
+    ).toEqual([mismatch, warn]);
   });
 
   it("stays empty for a node with no attention warnings", () => {

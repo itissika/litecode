@@ -1331,10 +1331,8 @@ fn snapshot_cutoff_time(retention_days: u64) -> SystemTime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::snapshot_paths::{
-        SNAPSHOTS_ROOT_ENV, snapshots_dir_for_workspace,
-    };
-    
+    use crate::session::snapshot_paths::{SNAPSHOTS_ROOT_ENV, snapshots_dir_for_workspace};
+
     use std::sync::Arc as StdArc;
 
     fn env_lock() -> &'static std::sync::Mutex<()> {
@@ -1606,5 +1604,4 @@ mod tests {
             );
         });
     }
-
 }

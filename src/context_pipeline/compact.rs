@@ -1809,6 +1809,9 @@ impl CompactPolicy {
                 // Already captured off the response stream; persisting it is what
                 // stops the summarizer call from being an unrecorded cost.
                 usage: artifact.usage.clone(),
+                // The summarizer inherits the main binding, so its provider is the
+                // same one the turn is using. Persist it for per-provider spend.
+                provider_id: Some(request.target.provider_id.clone()),
             },
         ) {
             Ok(receipt) => receipt,
@@ -3654,6 +3657,20 @@ max_output = 8192
             .unwrap();
         assert!(did, "a provider prompt over 80% must compact");
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let compacted = sessions
+            .data()
+            .events_blocking(&sid)
+            .expect("compaction events")
+            .into_iter()
+            .find(|event| event.event_type == crate::session::event::EventType::Compacted)
+            .expect("compacted row");
+        let body: crate::session::model::CompactedBody =
+            serde_json::from_value(compacted.data).expect("compacted body");
+        assert_eq!(
+            body.provider_id.as_deref(),
+            Some("p"),
+            "the summarizer bill must name the provider that paid for it"
+        );
 
         let stale = ProviderPromptBaseline::default();
         stale.record(9_000, header);

@@ -79,4 +79,29 @@ describe("bindWorkbenchKeys", () => {
     stop();
     useEditorStore.setState({ save: previous });
   });
+
+  it("saves when a focused widget stops keydown before it bubbles", () => {
+    const save = vi.fn(async () => {});
+    const previous = useEditorStore.getState().save;
+    useEditorStore.setState({ save });
+    bindWindowRegistry(popoutEvents().api);
+    const stop = bindWorkbenchKeys();
+    const widget = document.createElement("div");
+    widget.addEventListener("keydown", (event) => event.stopPropagation());
+    document.body.appendChild(widget);
+
+    widget.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "s",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+    expect(save).toHaveBeenCalledTimes(1);
+    widget.remove();
+    stop();
+    useEditorStore.setState({ save: previous });
+  });
 });

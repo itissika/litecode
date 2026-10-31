@@ -997,6 +997,20 @@ export interface WorkspaceUsageHour {
 }
 
 /**
+ * One provider's slice of workspace spend, with the same buckets as the
+ * workspace totals.
+ *
+ * `provider_id === null` is an explicit unknown bucket: a bill whose row carries
+ * no provider. Today that is only a compacted row written before provider
+ * attribution existed.
+ */
+export interface WorkspaceUsageProvider {
+  provider_id: string | null;
+  days: WorkspaceUsageDay[];
+  hours: WorkspaceUsageHour[];
+}
+
+/**
  * Workspace-wide bills (`workspace/usage`) — authoritative rows only.
  *
  * A session from before usage was recorded is absent, never estimated.
@@ -1014,6 +1028,8 @@ export interface WorkspaceUsageReport {
     cache_miss_tokens: number;
   };
   requests: number;
+  /** Per-provider slices of the same bills; unknown bills are one entry. */
+  providers: WorkspaceUsageProvider[];
   /** Sessions that paid at least one bill. */
   session_count: number;
 }

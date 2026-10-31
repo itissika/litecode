@@ -293,7 +293,7 @@ describe("SubagentReadOnlyPanel — full read-only transcript", () => {
     expect(replay).not.toHaveBeenCalled();
   });
 
-  it("updates the tab title from the session preview", () => {
+  it("updates the tab title from the session name", () => {
     seedSession("root");
     seedChild([userRow(0, "hi")]);
     const props = panelProps(CHILD);

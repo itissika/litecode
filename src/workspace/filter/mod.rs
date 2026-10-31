@@ -141,7 +141,4 @@ pub use workspace_excludes::{
 pub(crate) use workspace_excludes::{lock_excludes_cache_for_test, with_excludes_cache_for_test};
 
 #[cfg(test)]
-mod corpus_note_tests {
-    
-
-}
+mod corpus_note_tests {}

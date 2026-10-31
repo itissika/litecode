@@ -314,11 +314,7 @@ fn ask_cli_one_question(
 }
 
 #[cfg(test)]
-mod wp081_cli_tests {
-    
-    
-
-}
+mod wp081_cli_tests {}
 
 fn ask_cli_ask_user(
     summary: &str,

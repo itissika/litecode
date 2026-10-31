@@ -7,7 +7,6 @@ pub mod document;
 pub mod fsref;
 pub mod index;
 pub mod mentions;
-pub mod reminder;
 pub mod root;
 pub mod status;
 pub mod validate;

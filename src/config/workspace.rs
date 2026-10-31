@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use super::global_db::tools::is_workspace_optional;
 use super::resolved::{WorkspacePaths, WorkspaceState};
-use super::schema::{CustomSuiteDefinition, CustomToolDefinition, McpServerDefinition, ToolReadiness};
+use super::schema::{
+    CustomSuiteDefinition, CustomToolDefinition, McpServerDefinition, ToolReadiness,
+};
 
 const CLAUDE_MD_SHELL: &str =
     "# Litecode workspace contract\n\n<!-- Add project instructions here -->\n";
@@ -326,9 +328,13 @@ fn reject_loaded_custom_tool(
         return Some("custom tool command must not be empty".into());
     }
     let mut checked = def.clone();
-    crate::config::settings_writer::validate_custom_definition_with_suites(key, &mut checked, suites)
-        .err()
-        .map(|error| error.to_string())
+    crate::config::settings_writer::validate_custom_definition_with_suites(
+        key,
+        &mut checked,
+        suites,
+    )
+    .err()
+    .map(|error| error.to_string())
 }
 
 pub fn workspace_engine_desired(workspace_root: &Path, id: &str) -> bool {

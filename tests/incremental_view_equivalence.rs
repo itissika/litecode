@@ -173,7 +173,11 @@ fn a_seal_rewrites_a_row_without_appending_one() {
     assert!(view.refresh(&events[1]).expect("refresh"));
     assert!(view.in_progress_seqs().is_empty());
     assert_eq!(view.rows().unwrap(), frozen_rows(&events).unwrap());
-    assert_eq!(view.max_seq(), Some(1), "a seal must not move the high-water");
+    assert_eq!(
+        view.max_seq(),
+        Some(1),
+        "a seal must not move the high-water"
+    );
 }
 
 #[test]
@@ -201,7 +205,11 @@ fn a_replacement_reports_media_from_the_row_it_shadows() {
     let view = WorkingView::from_events(&events).expect("fold");
     let rows = view.rows().expect("rows");
     assert_eq!(rows, frozen_rows(&events).unwrap());
-    assert_eq!(rows.len(), 1, "both shadowed rows collapse into the replacement");
+    assert_eq!(
+        rows.len(),
+        1,
+        "both shadowed rows collapse into the replacement"
+    );
     assert!(rows[0].replacement_media, "source row 0 carried an image");
 
     // Without a media source the flag stays off in both implementations.
@@ -241,8 +249,17 @@ fn retroactive_ops_are_classified_exhaustively() {
     assert!(!SurfaceOp::Append.is_retroactive(Some(9)));
 
     let replace = SurfaceOp::Replace { start: 3, end: 5 };
-    assert!(!replace.is_retroactive(None), "empty view has nothing to rewrite");
-    assert!(!replace.is_retroactive(Some(2)), "start sits above the held high-water");
-    assert!(replace.is_retroactive(Some(3)), "start touches a folded row");
+    assert!(
+        !replace.is_retroactive(None),
+        "empty view has nothing to rewrite"
+    );
+    assert!(
+        !replace.is_retroactive(Some(2)),
+        "start sits above the held high-water"
+    );
+    assert!(
+        replace.is_retroactive(Some(3)),
+        "start touches a folded row"
+    );
     assert!(replace.is_retroactive(Some(9)));
 }

@@ -1,0 +1,6 @@
+{
+  "name": "litecode-workspace",
+  "private": true,
+  "description": "Repo-root marker so Corepack resolves the pinned pnpm for pnpm --dir sdk ... (no dependencies here; web/ and desktop/ use npm).",
+  "packageManager": "pnpm@11.28.5"
+}

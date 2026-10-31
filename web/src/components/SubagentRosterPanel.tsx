@@ -10,6 +10,7 @@ import {
 } from "../api/adapter";
 import type { AgentRunState, HumanRow } from "../api/types";
 import { formatElapsed } from "../lib/bashLive";
+import { sessionActivity } from "../lib/sessionDisplay";
 import { openSubagentPanel } from "../lib/sessionPanelNav";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useMessageStore } from "../stores/messageStore";
@@ -176,7 +177,7 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
         stoppedBy: s.last_turn_cancelled_by,
         launchFailed: info?.finished === "failed",
         finished: info ? info.finished : "finished",
-        preview: s.assistant_preview || s.preview || undefined,
+        preview: sessionActivity(s) || undefined,
         busy: sessionBusy(s),
       });
     }
@@ -203,7 +204,7 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
         stoppedBy: session?.last_turn_cancelled_by,
         launchFailed: info?.finished === "failed",
         finished: info ? info.finished : "finished",
-        preview: session?.assistant_preview || session?.preview || undefined,
+        preview: sessionActivity(session) || undefined,
         busy: sessionBusy(session),
       });
     }

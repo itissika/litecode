@@ -18,12 +18,14 @@ import type { SessionInfo } from "../api/types";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useToastStore } from "../stores/toastStore";
+import { useUnreadStore } from "../stores/unreadStore";
 import { SessionItem, SESSION_DRAG_MIME } from "./SessionItem";
 import { SessionFolderHeader } from "./SessionFolderHeader";
 import { FileTreeContextMenu, type FileTreeMenuItem } from "./FileTreeContextMenu";
 import { Popover } from "./ui/Popover";
 import { WorkspaceUsage } from "./WorkspaceUsage";
 import { openSessionPanel } from "../lib/sessionPanelNav";
+import { watchActiveCenterSessionIds } from "../dockview/workbench/queries";
 import i18n from "../i18n";
 
 const COLLAPSED_KEY = "litecode.sessionFolders.collapsed";
@@ -131,6 +133,9 @@ export function SessionList() {
 
   // The server also lists subagent CHILD sessions (the roster needs them to
   // label a child that was never subscribed), so filter the sidebar to roots.
+  // That is the only rule here: emptiness / visibility is decided by the
+  // server's list projection (`SessionListRow::is_listed`), never re-derived
+  // in the sidebar.
   const roots = useMemo(
     () => sessions.filter((s) => !s.parent_session_id),
     [sessions],
@@ -154,6 +159,10 @@ export function SessionList() {
   }, [roots, orderedFolders]);
 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(loadCollapsed);
+  // Sessions currently shown by the agent-area groups. Tracked from the
+  // workbench (not panel isActive) so the marker survives clicking the list.
+  const [activeSessionIds, setActiveSessionIds] = useState<readonly string[]>([]);
+  const unread = useUnreadStore((s) => s.unread);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
@@ -170,6 +179,8 @@ export function SessionList() {
       // localStorage can be unavailable; collapsing is still session-local.
     }
   }, [collapsed]);
+
+  useEffect(() => watchActiveCenterSessionIds(setActiveSessionIds), []);
 
   useEffect(() => {
     if (!creatingFolder) return;
@@ -276,6 +287,8 @@ export function SessionList() {
       session={session}
       now={now}
       indentPx={grouped ? GROUPED_ROW_INDENT_PX : undefined}
+      focused={activeSessionIds.includes(session.id)}
+      unread={unread[session.id] === true}
       onOpen={handleSessionClick}
       onDelete={deleteSession}
       onContextMenu={(event: MouseEvent) => {

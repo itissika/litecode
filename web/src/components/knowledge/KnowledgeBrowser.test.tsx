@@ -34,11 +34,11 @@ afterEach(() => {
   cleanup();
 });
 
-const drift: KnowledgeIssue = {
+const mismatch: KnowledgeIssue = {
   nodeId: "session",
   severity: "warning",
-  code: "symbol_drift",
-  message: 'Symbol "run" in "src/a.rs" differs from HEAD.',
+  code: "filename_mismatch",
+  message: 'Filename "b.md" does not match declaration "a".',
 };
 
 const inactive: KnowledgeIssue = {
@@ -52,7 +52,7 @@ describe("KnowledgeBrowser attention mark", () => {
   it("puts the amber exclamation after a warning node title only", () => {
     useKnowledgeStore.setState({
       issuesByNode: new Map([
-        ["session", [drift]],
+        ["session", [mismatch]],
         ["seq", [inactive]],
       ]),
     });

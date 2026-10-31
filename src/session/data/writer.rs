@@ -12,7 +12,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::types::{LitecodeError, Result};
 
-use super::command::{CommitKind, CommitReceipt, SessionMutation};
+use super::command::{
+    CommitKind, CommitReceipt, MAX_STREAM_BATCH_ROWS, SessionMutation, StreamItemUpdate,
+};
 use super::sqlite::conn::SharedDb;
 use super::sqlite::folders;
 use super::sqlite::ops;
@@ -477,6 +479,9 @@ fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitR
             "injected fault before begin".into(),
         ));
     }
+    if let SessionMutation::UpdateStreamItems { rows, .. } = &mutation {
+        validate_stream_updates(rows)?;
+    }
     if mutation.session_id().is_none()
         && let Some(receipt) = ops::load_operation_by_id(state.db.conn(), mutation.operation_id())?
     {
@@ -675,6 +680,33 @@ fn folder_receipt() -> CommitReceipt {
     }
 }
 
+fn validate_stream_updates(rows: &[StreamItemUpdate]) -> Result<()> {
+    if rows.is_empty() {
+        return Err(LitecodeError::InvalidSessionEvent(
+            "UpdateStreamItems: empty batch".into(),
+        ));
+    }
+    if rows.len() > MAX_STREAM_BATCH_ROWS {
+        return Err(LitecodeError::InvalidSessionEvent(format!(
+            "UpdateStreamItems: {} rows exceeds the {MAX_STREAM_BATCH_ROWS}-row limit",
+            rows.len()
+        )));
+    }
+    let mut previous = None;
+    for row in rows {
+        if let Some(previous) = previous
+            && row.seq <= previous
+        {
+            return Err(LitecodeError::InvalidSessionEvent(format!(
+                "UpdateStreamItems: rows must be strictly ordered by seq; {} follows {previous}",
+                row.seq
+            )));
+        }
+        previous = Some(row.seq);
+    }
+    Ok(())
+}
+
 fn ensure_live<'a>(state: &'a mut WriterState, session_id: &str) -> Result<&'a mut Session> {
     if !state.live.contains_key(session_id) {
         let session =
@@ -799,6 +831,24 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             {
                 let session = ensure_live(state, &session_id)?;
                 session.update_stream_item(seq, &item)?;
+            }
+            bump_receipt_revision_only(
+                state,
+                &session_id,
+                &operation_id.0,
+                expected_revision,
+                CommitKind::MetaUpdated,
+            )
+        }
+        SessionMutation::UpdateStreamItems {
+            session_id,
+            expected_revision,
+            operation_id,
+            rows,
+        } => {
+            {
+                let session = ensure_live(state, &session_id)?;
+                session.update_stream_items(rows)?;
             }
             bump_receipt_revision_only(
                 state,
@@ -939,6 +989,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             at,
             expected_prefix,
             usage,
+            provider_id,
         } => {
             let seq = {
                 let session = ensure_live(state, &session_id)?;
@@ -948,6 +999,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                     token_estimate,
                     expected_prefix,
                     usage.as_ref(),
+                    provider_id.as_deref(),
                     at,
                 )?
             };

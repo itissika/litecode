@@ -14,7 +14,7 @@ use crate::authority::responses::{
     AssistantRole, InputMessage, InputRole, MessageItem, OutputStatus,
 };
 use crate::platform_knobs::{ContextMode, ThinkingTier};
-use crate::session::data::command::{SessionListPreview, UserAnchorWindow};
+use crate::session::data::command::{SessionListPreview, StreamItemUpdate, UserAnchorWindow};
 use crate::session::estimate::compute_token_estimate;
 use crate::session::event::{
     EventDraft, EventType, Seq, SessionEvent, finalize_draft, item_from_event,
@@ -172,8 +172,6 @@ pub struct ProviderUsageSeries {
     pub requests: u64,
 }
 
-
-
 /// One hour of today (server-local), for the `日` view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceUsageHour {
@@ -198,6 +196,19 @@ pub struct WorkspaceUsageDay {
     pub miss: u64,
 }
 
+/// One provider's share of workspace spend, with the same buckets as the
+/// workspace totals.
+///
+/// `provider_id` is `None` for a bill whose row carries no provider. Today that
+/// is only a compacted row written before provider attribution existed; the
+/// client shows it as an explicit unknown bucket rather than guessing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceUsageProvider {
+    pub provider_id: Option<String>,
+    pub days: Vec<WorkspaceUsageDay>,
+    pub hours: Vec<WorkspaceUsageHour>,
+}
+
 /// Whole-workspace bills, read straight off `transcript_items`.
 ///
 /// Only rows that carry a readable provider bill are counted. A session from
@@ -211,6 +222,9 @@ pub struct WorkspaceUsage {
     pub today: String,
     pub totals: ProviderUsage,
     pub requests: u64,
+    /// Per-provider slices of the same rows. Unknown bills are one entry with
+    /// `provider_id: None`, so provider totals still reconcile with `totals`.
+    pub providers: Vec<WorkspaceUsageProvider>,
     /// Sessions that paid at least one bill.
     pub session_count: u64,
 }
@@ -2772,6 +2786,23 @@ impl Session {
         self.bump_stream_preview(&tx, item)
     }
 
+    /// Replace several in-flight rows under one write lock and one preview
+    /// update. The writer has already validated order, uniqueness and size.
+    pub fn update_stream_items(&self, rows: Vec<StreamItemUpdate>) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let _gate = self.lock_write();
+        let tx = self.conn();
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            update_event_row(&tx, &self.id, &self.data_root, row.seq, &row.item)?;
+            self.projection.borrow_mut().touch_item(row.seq, &row.item);
+            items.push(row.item);
+        }
+        self.bump_stream_preview_items(&tx, &items)
+    }
+
     /// Settle a row opened by [`Self::begin_stream_item`].
     ///
     /// The payload must be the **authoritative** one: the copy the terminal
@@ -2789,10 +2820,14 @@ impl Session {
 
     /// Session-list preview and `updated_at` for a streaming row that just moved.
     fn bump_stream_preview(&self, tx: &Connection, item: &Item) -> Result<()> {
-        let user = Self::last_user_message_preview(std::slice::from_ref(item));
-        let assistant = Self::last_assistant_message_preview(std::slice::from_ref(item));
+        self.bump_stream_preview_items(tx, std::slice::from_ref(item))
+    }
+
+    fn bump_stream_preview_items(&self, tx: &Connection, items: &[Item]) -> Result<()> {
+        let user = Self::last_user_message_preview(items);
+        let assistant = Self::last_assistant_message_preview(items);
         if !user.is_empty() || !assistant.is_empty() {
-            let _ = write_session_list_previews(tx, &self.id, std::slice::from_ref(item))?;
+            let _ = write_session_list_previews(tx, &self.id, items)?;
         } else {
             let now = chrono::Utc::now().timestamp_millis();
             tx.execute(
@@ -3531,7 +3566,7 @@ impl Session {
     /// §5.1 compact success — summary checkpoint with empty keep (summary-only view).
     pub fn apply_compact_checkpoint(&self, summary: &str, token_estimate: i64) -> Result<i64> {
         // `kept_from_seq = N` (checkpoint) → no pre-existing detail in the view.
-        self.apply_compact_checkpoint_checked(summary, None, token_estimate, None, None, None)
+        self.apply_compact_checkpoint_checked(summary, None, token_estimate, None, None, None, None)
     }
 
     /// Pi-style keep-recent compact:
@@ -3557,6 +3592,7 @@ impl Session {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -3569,6 +3605,7 @@ impl Session {
         token_estimate: i64,
         expected_view_len: Option<usize>,
         usage: Option<&ProviderUsage>,
+        provider_id: Option<&str>,
         at: Option<Seq>,
     ) -> Result<i64> {
         let _gate = self.lock_write();
@@ -3591,6 +3628,7 @@ impl Session {
             from,
             to,
             at,
+            provider_id: provider_id.map(str::to_string),
         };
         let draft = EventDraft {
             time: now,
@@ -4145,9 +4183,26 @@ mod tests {
                 42,
                 None,
                 Some(&usage),
+                Some("opencode-go"),
                 None,
             )
             .unwrap();
+
+        let body: String = session
+            .conn()
+            .query_row(
+                "SELECT body FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
+                rusqlite::params![session.id, checkpoint],
+                |row| row.get(0),
+            )
+            .expect("compacted body");
+        let body: crate::session::model::CompactedBody =
+            serde_json::from_str(&body).expect("compacted body parses");
+        assert_eq!(
+            body.provider_id.as_deref(),
+            Some("opencode-go"),
+            "the summarizer's provider is durable on the checkpoint row"
+        );
 
         let series = super::super::read::provider_usage_series(session.conn(), &session.id, 10)
             .expect("series reads");
@@ -4156,11 +4211,52 @@ mod tests {
         assert_eq!(series.samples[0].kind, ProviderUsageKind::Compaction);
         assert_eq!(series.samples[0].prompt, 120_000);
         assert_eq!(series.samples[0].miss, 20_000, "hit + miss is the prompt");
-        assert_eq!(series.samples[0].model, None, "a summary body carries no model");
+        assert_eq!(
+            series.samples[0].model, None,
+            "a summary body carries no model"
+        );
         assert_eq!(series.requests, 1);
         assert_eq!(series.totals.prompt_tokens, 120_000);
         assert_eq!(series.totals.completion_tokens, 1_800);
-        assert_eq!(series.compactions.len(), 1, "the mark and the bill are one row");
+        assert_eq!(
+            series.compactions.len(),
+            1,
+            "the mark and the bill are one row"
+        );
+    }
+
+    #[test]
+    fn legacy_compacted_body_has_no_provider() {
+        let body: crate::session::model::CompactedBody =
+            serde_json::from_str(r#"{"summary":"old","from":0,"to":1}"#)
+                .expect("legacy body parses");
+        assert_eq!(body.provider_id, None);
+    }
+
+    #[test]
+    fn compacted_body_roundtrips_provider_id_and_omits_unknown() {
+        let body = CompactedBody {
+            summary: "new".into(),
+            from: 0,
+            to: 2,
+            at: Some(3),
+            provider_id: Some("opencode-go".into()),
+        };
+        let json = serde_json::to_value(&body).expect("serialize compacted body");
+        assert_eq!(json["provider_id"], "opencode-go");
+        let decoded: CompactedBody =
+            serde_json::from_value(json).expect("deserialize compacted body");
+        assert_eq!(decoded, body);
+
+        let unknown = CompactedBody {
+            provider_id: None,
+            ..body
+        };
+        let json = serde_json::to_value(&unknown).expect("serialize legacy body");
+        assert!(
+            json.get("provider_id").is_none(),
+            "unknown attribution must stay absent on the wire"
+        );
     }
 
     #[test]

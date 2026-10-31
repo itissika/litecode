@@ -353,6 +353,36 @@ mod tests {
     }
 
     #[test]
+    fn builtin_input_schemas_have_no_hard_numeric_bounds() {
+        fn check(tool: &str, value: &Value, path: &str) {
+            match value {
+                Value::Object(object) => {
+                    for key in ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"] {
+                        assert!(
+                            !object.contains_key(key),
+                            "{tool} input schema sets {path}.{key}: numeric budgets are clamped, not rejected"
+                        );
+                    }
+                    for (key, child) in object {
+                        check(tool, child, &format!("{path}.{key}"));
+                    }
+                }
+                Value::Array(items) => {
+                    for (index, child) in items.iter().enumerate() {
+                        check(tool, child, &format!("{path}[{index}]"));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let builtins = builtins();
+        for (name, tool) in &builtins.contract.tools {
+            check(name, &tool.input_schema, "input");
+        }
+    }
+
+    #[test]
     fn builtin_contract_names_match_registry() {
         let tools = crate::tool::registry::builtin_code_surface_tools();
         let mut actual: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();

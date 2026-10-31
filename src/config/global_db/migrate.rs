@@ -191,9 +191,8 @@ fn ensure_agent_tools_preset(conn: &Connection) -> Result<()> {
     if had_manual {
         let policy = if had_policy { "policy_json" } else { "NULL" };
         let path_mode = if had_path_mode { "path_mode" } else { "NULL" };
-        let sql = format!(
-            "SELECT agent_id, tool_id, {policy}, {path_mode} FROM agent_tools LIMIT 20"
-        );
+        let sql =
+            format!("SELECT agent_id, tool_id, {policy}, {path_mode} FROM agent_tools LIMIT 20");
         let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {

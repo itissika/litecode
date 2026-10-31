@@ -12,7 +12,12 @@ pub fn suite_id(name: &str) -> String {
 fn groups(defs: &[CustomToolDefinition]) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for def in defs {
-        if let Some(suite) = def.suite.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(suite) = def
+            .suite
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             out.entry(suite.to_string())
                 .or_default()
                 .push(def.name.clone());
@@ -41,15 +46,17 @@ pub fn collapse_custom_suite_bindings(
         let existing = tools.remove(&id);
         let legacy: Vec<(String, AgentToolBinding)> = members
             .iter()
-            .filter_map(|member| tools.remove(member).map(|binding| (member.clone(), binding)))
+            .filter_map(|member| {
+                tools
+                    .remove(member)
+                    .map(|binding| (member.clone(), binding))
+            })
             .collect();
         if existing.is_none() && legacy.is_empty() {
             continue;
         }
 
-        let enabled = existing
-            .as_ref()
-            .is_some_and(|binding| binding.enabled)
+        let enabled = existing.as_ref().is_some_and(|binding| binding.enabled)
             || legacy.iter().any(|(_, binding)| binding.enabled);
         let preset = existing
             .as_ref()

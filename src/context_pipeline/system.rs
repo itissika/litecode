@@ -1,10 +1,10 @@
 use crate::config::AgentConfig;
 use crate::config::global_db::{
-    CITATION_PROMPT, HARNESS_SYSTEM, HARNESS_TOOLS, builtin_prompt_for, is_builtin_prompt_marker,
+    CITATION_PROMPT, HARNESS_SYSTEM, builtin_prompt_for, is_builtin_prompt_marker,
 };
 use crate::context_pipeline::env::Context;
 
-/// Unified entry: harness header + editable layers + tool rules + citations
+/// Unified entry: harness header + editable layers + citations
 /// + process-snapshotted `AGENTS.md` then `CLAUDE.md`.
 /// Hidden agents get the editable body only.
 pub fn build_system_prompt(
@@ -26,15 +26,14 @@ pub fn build_system_prompt(
 }
 
 /// Fixed LiteCode layers around the editable block. An empty editable block still
-/// gets the header, tool rules, and citations.
+/// gets the header and citations.
 fn splice_harness(editable: &str) -> String {
-    let mut parts = Vec::with_capacity(4);
+    let mut parts = Vec::with_capacity(3);
     parts.push(HARNESS_SYSTEM.trim());
     let editable = editable.trim();
     if !editable.is_empty() {
         parts.push(editable);
     }
-    parts.push(HARNESS_TOOLS.trim());
     parts.push(CITATION_PROMPT.trim());
     parts.join("\n\n")
 }

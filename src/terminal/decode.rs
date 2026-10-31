@@ -75,7 +75,10 @@ impl StreamDecoder {
         }
         match (std::str::from_utf8(&pending), self.fallback) {
             (Ok(text), _) => text.to_string(),
-            (Err(_), Some(encoding)) => encoding.decode_without_bom_handling(&pending).0.into_owned(),
+            (Err(_), Some(encoding)) => encoding
+                .decode_without_bom_handling(&pending)
+                .0
+                .into_owned(),
             (Err(_), None) => String::from_utf8_lossy(&pending).into_owned(),
         }
     }

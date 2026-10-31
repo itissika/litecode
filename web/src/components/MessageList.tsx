@@ -150,10 +150,11 @@ export const MessageList = memo(function MessageList({
     setStick: view.setStick,
   });
 
-  // The virtualizer owns main-axis position (`transform`) and the inner
-  // container's height, and writes both before paint when a measurement
-  // lands. React must not set either, or the next render would put the
-  // estimate back for a frame.
+  // The virtualizer owns main-axis position (`transform`) and writes it
+  // directly before paint. React also mirrors `totalSize` as the inner height:
+  // the scroll range must already be current when a prepend anchor scrolls,
+  // otherwise the browser clamps `scrollTop` to the old range. A measurement
+  // still writes the height directly before React catches up.
   const itemStyle: CSSProperties = {
     position: "absolute",
     top: 0,
@@ -193,7 +194,11 @@ export const MessageList = memo(function MessageList({
       {showList && (
         <div
           ref={view.virtualizer.containerRef}
-          style={{ width: "100%", position: "relative" }}
+          style={{
+            width: "100%",
+            position: "relative",
+            height: view.totalSize,
+          }}
         >
           {canLoadMore ? (
             <div

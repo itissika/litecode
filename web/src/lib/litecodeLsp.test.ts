@@ -8,6 +8,7 @@ import {
   monacoCompletionTriggerToLsp,
   parseDiagnosticsSnapshot,
   parseDidChangeAck,
+  peekModelTargets,
   relPathFromLspUri,
   shouldApplyPublishedDiagnostics,
   toFileUri,
@@ -215,5 +216,60 @@ describe("monacoChangeToLsp", () => {
       },
       text: "xy",
     });
+  });
+});
+
+describe("peekModelTargets", () => {
+  const candidate = (rel: string) => ({ key: `file:///${rel}`, scheme: "file", rel });
+  const none = () => false;
+
+  it("collects missing workspace files once", () => {
+    const targets = peekModelTargets(
+      [candidate("web/src/a.ts"), candidate("web/src/a.ts"), candidate("web/src/b.rs")],
+      { isKnown: none },
+    );
+    expect(targets.map((t) => t.rel)).toEqual(["web/src/a.ts", "web/src/b.rs"]);
+  });
+
+  it("skips the source model, models that exist, and other schemes", () => {
+    const targets = peekModelTargets(
+      [
+        candidate("web/src/self.ts"),
+        candidate("web/src/open.ts"),
+        { key: "git-show:/head/web/src/a.rs", scheme: "git-show", rel: "web/src/a.rs" },
+        candidate("web/src/closed.ts"),
+      ],
+      {
+        sourceKey: "file:///web/src/self.ts",
+        isKnown: (key) => key === "file:///web/src/open.ts",
+      },
+    );
+    expect(targets.map((t) => t.rel)).toEqual(["web/src/closed.ts"]);
+  });
+
+  it("caps how many files one peek materializes", () => {
+    const targets = peekModelTargets(
+      [candidate("a.ts"), candidate("b.ts"), candidate("c.ts")],
+      { isKnown: none, limit: 2 },
+    );
+    expect(targets).toHaveLength(2);
+  });
+
+  it("skips binary files and paths outside the workspace", () => {
+    const targets = peekModelTargets(
+      [
+        candidate("assets/logo.png"),
+        candidate("out/app.wasm"),
+        { key: "file:///E:/elsewhere/a.rs", scheme: "file", rel: "E:/elsewhere/a.rs" },
+        {
+          key: "file:///home/user/.rustup/lib.rs",
+          scheme: "file",
+          rel: "/home/user/.rustup/lib.rs",
+        },
+        candidate("web/src/kept.ts"),
+      ],
+      { isKnown: none },
+    );
+    expect(targets.map((t) => t.rel)).toEqual(["web/src/kept.ts"]);
   });
 });

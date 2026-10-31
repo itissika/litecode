@@ -67,7 +67,11 @@ impl EditEngine {
             _ => match std::fs::read(&path) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    let reason = if error.kind() == std::io::ErrorKind::NotFound { "not_found" } else { "io" };
+                    let reason = if error.kind() == std::io::ErrorKind::NotFound {
+                        "not_found"
+                    } else {
+                        "io"
+                    };
                     return Ok(EditResult::failure(
                         raw_path,
                         format!("read {path_display}: {error}"),
@@ -90,7 +94,9 @@ impl EditEngine {
             Ok(edited) => edited,
             Err(PlanFail::Cancelled) => return Err(Cancelled),
             Err(PlanFail::EmptyFile) => {
-                return Ok(EditResult::failure(raw_path, planner::EMPTY_FILE_MESSAGE).because("empty"));
+                return Ok(
+                    EditResult::failure(raw_path, planner::EMPTY_FILE_MESSAGE).because("empty")
+                );
             }
             Err(PlanFail::Reject(reason)) => {
                 let code = match reason.code() {
@@ -104,11 +110,10 @@ impl EditEngine {
             return Err(Cancelled);
         }
         if edited == content {
-            return Ok(EditResult::failure(
-                raw_path,
-                "replacement does not change the file",
-            )
-            .because("invalid_args"));
+            return Ok(
+                EditResult::failure(raw_path, "replacement does not change the file")
+                    .because("invalid_args"),
+            );
         }
         let to_write = text_codec::reattach_utf8_bom(decoded.has_bom, &edited);
         match (&self.ide, &workspace_relative) {

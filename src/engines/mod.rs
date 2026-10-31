@@ -97,6 +97,8 @@ pub enum RetrievalHit {
         summary: String,
         score: f64,
         dense_similarity: f64,
+        /// The lexical leg admitted this chunk. A dense floor must not drop it.
+        lexical_match: bool,
     },
     Session {
         session_id: String,
@@ -116,6 +118,7 @@ impl RetrievalHit {
             summary: h.summary,
             score: h.score,
             dense_similarity: h.dense_similarity,
+            lexical_match: h.lexical_match,
         }
     }
 
@@ -200,18 +203,18 @@ pub enum CodeSearchCallGate {
 
 /// Keep Code hits whose raw dense similarity meets an optional absolute floor.
 /// Fusion `score` is query-local and deliberately never consulted here.
+/// Lexical hits bypass the floor: BM25 found them even when their dense
+/// confidence is 0.0, so applying the floor to them would erase an exact match.
 fn retain_code_hits_at_or_above(hits: &mut Vec<RetrievalHit>, min_score: Option<f64>) {
     let Some(floor) = min_score.filter(|floor| *floor > 0.0) else {
         return;
     };
-    // Only the unified search's Code arm reaches this helper, and that arm is
-    // produced by the semantic branch. Human/LexicalLane text results are a
-    // separate SearchHit list and carry dense_similarity 0.0, so they are never
-    // rejected by the semantic confidence floor.
     hits.retain(|hit| match hit {
         RetrievalHit::Code {
-            dense_similarity, ..
-        } => *dense_similarity >= floor,
+            dense_similarity,
+            lexical_match,
+            ..
+        } => *lexical_match || *dense_similarity >= floor,
         _ => true,
     });
 }
@@ -601,6 +604,7 @@ impl WorkspaceEngines {
                                         summary,
                                         score,
                                         dense_similarity,
+                                        lexical_match,
                                     } => Some(code_search::SearchHit {
                                         path,
                                         start_line,
@@ -608,6 +612,7 @@ impl WorkspaceEngines {
                                         summary,
                                         score,
                                         dense_similarity,
+                                        lexical_match,
                                     }),
                                     _ => None,
                                 })
@@ -1323,6 +1328,10 @@ mod tests {
     use super::*;
 
     fn code_hit(dense_similarity: f64) -> RetrievalHit {
+        code_hit_with_lexical(dense_similarity, false)
+    }
+
+    fn code_hit_with_lexical(dense_similarity: f64, lexical_match: bool) -> RetrievalHit {
         RetrievalHit::Code {
             path: "a.rs".into(),
             start_line: 1,
@@ -1330,6 +1339,7 @@ mod tests {
             summary: "summary".into(),
             score: 0.99,
             dense_similarity,
+            lexical_match,
         }
     }
 
@@ -1350,6 +1360,24 @@ mod tests {
     }
 
     #[test]
+    fn lexical_hits_survive_a_dense_floor() {
+        let mut hits = vec![
+            code_hit_with_lexical(0.0, true),
+            code_hit_with_lexical(0.2, true),
+            code_hit_with_lexical(0.2, false),
+        ];
+        retain_code_hits_at_or_above(&mut hits, Some(0.80));
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().all(|hit| matches!(
+            hit,
+            RetrievalHit::Code {
+                lexical_match: true,
+                ..
+            }
+        )));
+    }
+
+    #[test]
     fn zero_or_absent_code_floor_disables_filtering() {
         let mut hits = vec![code_hit(0.0), code_hit(0.2)];
         retain_code_hits_at_or_above(&mut hits, None);
@@ -1359,5 +1387,4 @@ mod tests {
     }
 
     // ---- WP-167: deferred LSP availability probe ----
-
 }

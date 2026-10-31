@@ -20,7 +20,6 @@ export interface KnowledgeView {
   version: number;
   epoch: string;
   ready: boolean;
-  head: string | null;
   root: string;
   visibility: KnowledgeVisibility;
   nodes: KnowledgeNode[];
@@ -57,7 +56,7 @@ export function knowledgeNodeIds(
 }
 
 /**
- * Accept rule for snapshots and pushes (§10.2): a larger version, or any
+ * Accept rule for snapshots and pushes (§9.2): a larger version, or any
  * version from a different epoch (the server restarted).
  */
 export function acceptsKnowledgeVersion(
@@ -154,7 +153,6 @@ export function knowledgeViewFromWire(wire: WireKnowledgeSnapshot): KnowledgeVie
     version: wire.version,
     epoch: wire.epoch,
     ready: wire.ready,
-    head: wire.head ?? null,
     root: wire.root ?? KNOWLEDGE_ROOT,
     visibility: wire.visibility === "public" ? "public" : "private",
     nodes,

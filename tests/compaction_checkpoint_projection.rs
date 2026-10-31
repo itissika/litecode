@@ -298,6 +298,7 @@ fn legacy_labeled_checkpoint_body_loads_and_projects_without_the_label() {
             at: None,
             expected_prefix: None,
             usage: None,
+            provider_id: None,
         })
         .unwrap();
     let rows = sessions.data().working_set_blocking(&sid).unwrap();

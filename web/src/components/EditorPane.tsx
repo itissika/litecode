@@ -121,6 +121,7 @@ export function EditorPane({
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const addToChatRef = useRef<{ dispose: () => void } | null>(null);
+  const focusSubRef = useRef<{ dispose: () => void } | null>(null);
   const spanDragCleanup = useRef<(() => void) | null>(null);
   const quickDiffRef = useRef<GitQuickDiffHandle | null>(null);
   const sizeStop = useRef<(() => void) | null>(null);
@@ -132,6 +133,7 @@ export function EditorPane({
       sizeStop.current?.();
       sizeStop.current = null;
       addToChatRef.current?.dispose();
+      focusSubRef.current?.dispose();
       spanDragCleanup.current?.();
       quickDiffRef.current?.dispose();
       quickDiffRef.current = null;
@@ -433,9 +435,19 @@ export function EditorPane({
                   );
                   if (model) {
                     _editor.setModel(model);
+                    // A peek can materialize the model before this pane opens.
+                    // The tab's disk read is the authority, so replace a stale
+                    // snapshot instead of showing (and syncing) it.
+                    if (tab && !tab.loading && model.getValue() !== tab.content) {
+                      model.setValue(tab.content);
+                    }
                   }
                   syncLspRegistration(monaco);
                   bindEditorToLsp(monaco, _editor);
+                  focusSubRef.current?.dispose();
+                  focusSubRef.current = _editor.onDidFocusEditorText(() => {
+                    useEditorStore.setState({ activePath: pathRef.current });
+                  });
                   addToChatRef.current?.dispose();
                   addToChatRef.current = _editor.addAction({
                     id: "litecode.add-selection-to-chat",
@@ -491,6 +503,9 @@ export function EditorPane({
                     '"JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
                   lineNumbers: "on",
                   scrollBeyondLastLine: false,
+                  // Word wrap by default; Monaco 0.57 no longer ships the
+                  // Alt+Z toggle command, so there is no in-editor switch.
+                  wordWrap: "on",
                   // Sized by observeHostSize in onMount: the built-in observer
                   // cannot follow the panel into a popout document.
                   automaticLayout: false,

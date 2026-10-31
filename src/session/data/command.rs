@@ -65,6 +65,32 @@ pub struct SessionListRow {
     pub folder_id: Option<String>,
 }
 
+impl SessionListRow {
+    /// List visibility that needs no transcript lookup: a child session, a
+    /// user-claimed row (title / folder), something to render (preview text),
+    /// or a live turn.
+    ///
+    /// Control-only rows (`model/changed`, `turn/start`, reminders) have none
+    /// of these; [`Self::is_listed`] adds the one durable check that can still
+    /// prove the user talked to the session.
+    pub fn is_listed_by_projection(&self, running: bool, busy: bool) -> bool {
+        self.parent_session_id.is_some()
+            || running
+            || busy
+            || self.title.is_some()
+            || self.folder_id.is_some()
+            || !self.preview.trim().is_empty()
+            || !self.assistant_preview.trim().is_empty()
+    }
+
+    /// The full `session/list` visibility rule. `has_conversation` is the
+    /// user/assistant row check; callers resolve it lazily so the common
+    /// (visible) row never pays for a transcript query.
+    pub fn is_listed(&self, running: bool, busy: bool, has_conversation: bool) -> bool {
+        self.is_listed_by_projection(running, busy) || has_conversation
+    }
+}
+
 /// One folder row for the session sidebar. Display-only and workspace-local.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFolderRow {
@@ -127,6 +153,19 @@ pub struct SurfaceReplacement {
     pub source_seqs: Vec<Seq>,
 }
 
+/// One row rewrite in a batch of in-flight stream checkpoints.
+#[derive(Debug, Clone)]
+pub struct StreamItemUpdate {
+    pub seq: Seq,
+    pub item: Item,
+}
+
+/// Hard upper bound for one stream-checkpoint batch.
+///
+/// The projection chunks at this size; the writer rejects anything larger so
+/// a caller cannot turn one flush into an unbounded transaction.
+pub const MAX_STREAM_BATCH_ROWS: usize = 8;
+
 #[derive(Debug)]
 pub enum SessionMutation {
     Create {
@@ -181,6 +220,18 @@ pub enum SessionMutation {
         seq: Seq,
         item: Item,
     },
+    /// Replace several in-flight rows in one atomic write.
+    ///
+    /// Every row must still be in flight; a settled row rejects the whole
+    /// batch. Rows must be unique and strictly ordered by `seq`. This is a
+    /// physical checkpoint batch, not a retryable operation: it leaves no
+    /// `session_operations` receipt and advances revision once.
+    UpdateStreamItems {
+        session_id: String,
+        expected_revision: u64,
+        operation_id: MutationId,
+        rows: Vec<StreamItemUpdate>,
+    },
     /// Settle a row opened by [`Self::BeginStreamItem`] with its **authoritative**
     /// payload — the terminal response's copy of the item, which is the only
     /// version the provider will accept back on replay.
@@ -234,6 +285,9 @@ pub enum SessionMutation {
         /// Bill for the summarizer request that produced `summary`. Stored on the
         /// checkpoint row itself, so the call is never silently free.
         usage: Option<crate::session::store::ProviderUsage>,
+        /// Provider that paid the summarizer request. `None` for synthetic
+        /// checkpoints and callers that predate provider attribution.
+        provider_id: Option<String>,
     },
     /// One atomic batch of mechanical-prune surface replacements. Every
     /// replacement is a new log event; the original rows are never deleted.
@@ -347,6 +401,7 @@ impl SessionMutation {
             | Self::PersistItem { operation_id, .. }
             | Self::BeginStreamItem { operation_id, .. }
             | Self::UpdateStreamItem { operation_id, .. }
+            | Self::UpdateStreamItems { operation_id, .. }
             | Self::SealStreamItem { operation_id, .. }
             | Self::AppendReminder { operation_id, .. }
             | Self::AppendPlanExecute { operation_id, .. }
@@ -383,6 +438,7 @@ impl SessionMutation {
             | Self::PersistItem { session_id, .. }
             | Self::BeginStreamItem { session_id, .. }
             | Self::UpdateStreamItem { session_id, .. }
+            | Self::UpdateStreamItems { session_id, .. }
             | Self::SealStreamItem { session_id, .. }
             | Self::AppendReminder { session_id, .. }
             | Self::AppendPlanExecute { session_id, .. }
@@ -427,6 +483,9 @@ impl SessionMutation {
                 expected_revision, ..
             }
             | Self::UpdateStreamItem {
+                expected_revision, ..
+            }
+            | Self::UpdateStreamItems {
                 expected_revision, ..
             }
             | Self::SealStreamItem {
@@ -553,6 +612,11 @@ pub enum SessionRead {
     UserDetailCount {
         session_id: String,
     },
+    /// Whether the session has any `item/user` or `item/assistant` row.
+    /// Control rows (`model/changed`, reminders) do not count.
+    HasConversationRows {
+        session_id: String,
+    },
     /// Snapshot stem (`seq + 1`) when `seq` is an `item/user` row.
     UserAnchorStem {
         session_id: String,
@@ -670,4 +734,78 @@ pub enum ReadValue {
     /// WP-186 durable pending user-gate asks.
     PendingPermissions(Vec<crate::session::pending::PendingPermissionRecord>),
     Empty,
+}
+
+#[cfg(test)]
+mod list_visibility_tests {
+    use super::SessionListRow;
+
+    fn row() -> SessionListRow {
+        SessionListRow {
+            id: "s".into(),
+            project: "/p".into(),
+            updated_at: 0,
+            preview: String::new(),
+            assistant_preview: String::new(),
+            agent_id: "default".into(),
+            model_id: None,
+            parent_session_id: None,
+            parent_call_id: None,
+            responsibility: String::new(),
+            title: None,
+            folder_id: None,
+        }
+    }
+
+    #[test]
+    fn control_only_root_is_not_listed() {
+        assert!(!row().is_listed_by_projection(false, false));
+        assert!(!row().is_listed(false, false, false));
+    }
+
+    #[test]
+    fn conversation_row_lists_a_textless_session() {
+        assert!(!row().is_listed_by_projection(false, false));
+        assert!(row().is_listed(false, false, true));
+    }
+
+    #[test]
+    fn preview_or_assistant_preview_lists_without_a_query() {
+        let mut user = row();
+        user.preview = "hello".into();
+        assert!(user.is_listed_by_projection(false, false));
+
+        let mut assistant = row();
+        assistant.assistant_preview = "done".into();
+        assert!(assistant.is_listed_by_projection(false, false));
+
+        let mut blank = row();
+        blank.preview = "   ".into();
+        assert!(!blank.is_listed_by_projection(false, false));
+    }
+
+    #[test]
+    fn title_or_folder_lists_an_empty_session() {
+        let mut titled = row();
+        titled.title = Some("Planning".into());
+        assert!(titled.is_listed_by_projection(false, false));
+
+        let mut foldered = row();
+        foldered.folder_id = Some("f".into());
+        assert!(foldered.is_listed_by_projection(false, false));
+    }
+
+    #[test]
+    fn live_turn_lists_an_empty_session() {
+        assert!(row().is_listed_by_projection(true, false));
+        assert!(row().is_listed_by_projection(false, true));
+    }
+
+    #[test]
+    fn child_sessions_always_list() {
+        let mut child = row();
+        child.parent_session_id = Some("parent".into());
+        assert!(child.is_listed_by_projection(false, false));
+        assert!(child.is_listed(false, false, false));
+    }
 }

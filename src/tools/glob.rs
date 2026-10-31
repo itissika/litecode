@@ -100,8 +100,8 @@ impl GlobTool {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
-        let limit = match parse_glob_limit(&input) {
-            Ok(limit) => limit,
+        let (limit, limit_note) = match parse_glob_limit(&input) {
+            Ok(parsed) => parsed,
             Err(error) => return coded("invalid_input", error),
         };
         let outside = path_arg.is_some_and(|path| {
@@ -118,7 +118,7 @@ impl GlobTool {
                 Ok(r) => r,
                 Err(e) => return crate::tools::file_path::litecode_error(e),
             };
-            return finish_glob(&results.hits, limit, outside);
+            return finish_glob(&results.hits, limit, outside, limit_note.as_deref());
         }
 
         let search_path = match path_arg {
@@ -154,11 +154,15 @@ impl GlobTool {
         )
         .is_some()
         {
-            let mut result = finish_glob(&[], limit, outside);
+            let mut message =
+                "Path is hidden by default search filters (.gitignore / workspace excludes)."
+                    .to_string();
+            if let Some(note) = limit_note.as_deref() {
+                message = format!("{message} {note}");
+            }
+            let mut result = finish_glob(&[], limit, outside, None);
             if let Some(data) = result.data.as_mut() {
-                data["message"] = serde_json::json!(
-                    "Path is hidden by default search filters (.gitignore / workspace excludes)."
-                );
+                data["message"] = serde_json::json!(message);
             }
             return result;
         }
@@ -173,7 +177,7 @@ impl GlobTool {
             Ok(r) => r,
             Err(e) => return crate::tools::file_path::litecode_error(e),
         };
-        finish_glob(&results.hits, limit, outside)
+        finish_glob(&results.hits, limit, outside, limit_note.as_deref())
     }
 }
 
@@ -193,26 +197,19 @@ impl GlobListing {
     }
 }
 
-fn parse_glob_limit(input: &Value) -> std::result::Result<usize, String> {
-    let Some(value) = input.get("limit").filter(|value| !value.is_null()) else {
-        return Ok(DEFAULT_GLOB_LIMIT);
-    };
-    let Some(limit) = value.as_u64() else {
-        return Err("parameter 'limit' must be an integer".into());
-    };
-    if !(1..=MAX_GLOB_LIMIT as u64).contains(&limit) {
-        return Err(format!(
-            "parameter 'limit' must be between 1 and {MAX_GLOB_LIMIT}"
-        ));
-    }
-    Ok(limit as usize)
+fn parse_glob_limit(input: &Value) -> std::result::Result<(usize, Option<String>), String> {
+    let clamped = crate::tool::clamp::clamp_int(input, "limit", 1, MAX_GLOB_LIMIT as u64, "paths")?;
+    Ok(match clamped {
+        None => (DEFAULT_GLOB_LIMIT, None),
+        Some(clamped) => (clamped.value as usize, clamped.note),
+    })
 }
 
 fn coded(code: &str, message: impl Into<String>) -> ToolCallResult {
     crate::tools::file_path::coded_error(code, message)
 }
 
-fn finish_glob(hits: &[String], limit: usize, outside: bool) -> ToolCallResult {
+fn finish_glob(hits: &[String], limit: usize, outside: bool, note: Option<&str>) -> ToolCallResult {
     let truncated = hits.len() > limit;
     let page_hits = if truncated {
         hits[..limit].to_vec()
@@ -231,6 +228,13 @@ fn finish_glob(hits: &[String], limit: usize, outside: bool) -> ToolCallResult {
     }
     if outside {
         let note = "Paths outside the workspace are absolute.";
+        if message.is_empty() {
+            message = note.into();
+        } else {
+            message = format!("{message} {note}");
+        }
+    }
+    if let Some(note) = note {
         if message.is_empty() {
             message = note.into();
         } else {
@@ -495,6 +499,22 @@ mod tests {
         glob_result_in(root, input)
             .data
             .expect("glob must return structured data")
+    }
+
+    #[test]
+    fn over_budget_limit_is_clamped_with_a_note() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+        let data = glob_data_in(
+            dir.path(),
+            serde_json::json!({"pattern": "**/*", "limit": 6000}),
+        );
+        let message = data["message"].as_str().unwrap();
+        assert!(
+            message.contains("`limit` was reduced from 6000 to 5000 paths"),
+            "{message}"
+        );
+        assert_eq!(data["paths"].as_array().unwrap().len(), 1);
     }
 
     #[test]

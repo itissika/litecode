@@ -14,7 +14,7 @@ import { useSessionPanelBootstrap } from "./useSessionPanelBootstrap";
  */
 export function SubagentReadOnlyPanel(props: IDockviewPanelProps) {
   const sessionId = (props.params as { sessionId?: string }).sessionId ?? "";
-  const { isActive, session, preview } = useSessionPanelBootstrap(
+  const { isActive, session, title } = useSessionPanelBootstrap(
     props.api,
     sessionId,
   );
@@ -31,8 +31,8 @@ export function SubagentReadOnlyPanel(props: IDockviewPanelProps) {
     window.setTimeout(() => openSessionPanel(sessionId), 0);
   };
   useEffect(() => {
-    props.api.setTitle(preview || sessionId.slice(0, 8));
-  }, [props.api, sessionId, preview]);
+    props.api.setTitle(title || sessionId.slice(0, 8));
+  }, [props.api, sessionId, title]);
 
   if (!sessionId) {
     return (

@@ -90,18 +90,9 @@ fn all_tools(ids: &[&str]) -> HashMap<String, litecode::config::schema::AgentToo
 fn safe_run_matrix_readonly_allow_others_deny_floor_hard_deny() {
     let _grants = grant_lock();
     let dir = TempDir::new().unwrap();
-    let engine = engine_for(
-        "default",
-        AgentRole::Primary,
-        0,
-        safe_tools(&["run"]),
-    );
+    let engine = engine_for("default", AgentRole::Primary, 0, safe_tools(&["run"]));
 
-    let ls = engine.evaluate_tool(
-        "run",
-        &serde_json::json!({"command": "ls"}),
-        dir.path(),
-    );
+    let ls = engine.evaluate_tool("run", &serde_json::json!({"command": "ls"}), dir.path());
     assert_eq!(ls.action, PermissionAction::Allow);
     assert_eq!(ls.rule_id, "readonly_command");
 
@@ -168,16 +159,8 @@ fn floor_blocks_sensitive_commands_under_unrestricted_all_preset() {
     // All preset → Unrestricted path mode (presets.rs ALL→Unrestricted). The floor
     // (G4) must still hard-deny sensitive commands unconditionally — a user
     // configurable preset must never weaken it.
-    let engine = engine_for(
-        "default",
-        AgentRole::Primary,
-        0,
-        all_tools(&["run"]),
-    );
-    assert_eq!(
-        engine.path_mode("run"),
-        BindingPathMode::Unrestricted
-    );
+    let engine = engine_for("default", AgentRole::Primary, 0, all_tools(&["run"]));
+    assert_eq!(engine.path_mode("run"), BindingPathMode::Unrestricted);
 
     let eval = engine.evaluate_tool(
         "run",
@@ -431,4 +414,3 @@ async fn authorize_invalid_json_arguments_denied() {
         "invalid JSON must not reach Ask sink"
     );
 }
-

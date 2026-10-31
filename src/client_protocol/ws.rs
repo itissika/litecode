@@ -163,7 +163,7 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
             match broadcast_rx.recv().await {
                 Ok(change) => {
                     // `.git` never reaches `workspace/changed`. `history` is a
-                    // branch-tip move (commit log + knowledge drift). Index,
+                    // branch-tip move (commit log). Index,
                     // upstream refs, and a bare `.git` event only need status.
                     if let Some(refresh) = crate::workspace::git_meta_refresh(&change) {
                         let history = matches!(refresh, crate::workspace::GitMetaRefresh::History);

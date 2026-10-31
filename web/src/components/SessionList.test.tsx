@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../api/types";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
+import { useUnreadStore } from "../stores/unreadStore";
+import { bindDockview } from "../dockview/workbench/host";
 import { SessionList } from "./SessionList";
 
 function session(id: string, patch: Partial<SessionInfo> = {}): SessionInfo {
@@ -27,6 +29,7 @@ function session(id: string, patch: Partial<SessionInfo> = {}): SessionInfo {
 
 beforeEach(() => {
   window.localStorage.clear();
+  useUnreadStore.setState({ unread: {} });
   useSessionStore.setState({
     sessions: [],
     sessionsLoading: false,
@@ -36,6 +39,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  bindDockview(null);
+  useUnreadStore.setState({ unread: {} });
   useSessionStore.setState({
     sessions: [],
     sessionsLoading: false,
@@ -180,6 +185,79 @@ describe("SessionList — folders and titles", () => {
       title: "Renamed",
     });
     expect(await screen.findByText("Renamed")).toBeTruthy();
+  });
+});
+
+describe("SessionList — active session marker", () => {
+  it("marks the session the agent area shows, and only that one", async () => {
+    const shown = session("s-shown", { preview: "shown work" });
+    const hidden = session("s-hidden", { preview: "hidden work" });
+    useConnectionStore.setState({
+      state: "connected",
+      sendRpc: vi.fn(async () => ({ sessions: [shown, hidden], folders: [] })),
+    } as never);
+
+    const activePanel = {
+      id: "agent-s-shown",
+      params: { sessionId: "s-shown" },
+      api: { component: "agent" },
+    };
+    bindDockview({
+      groups: [
+        {
+          api: { id: "center", location: { type: "grid" }, isVisible: true },
+          activePanel,
+          panels: [activePanel],
+        },
+        {
+          api: { id: "sessions", location: { type: "edge" }, isVisible: true },
+          activePanel: {
+            id: "sessions",
+            params: {},
+            api: { component: "sessions" },
+          },
+          panels: [],
+        },
+      ],
+      getPanel: () => undefined,
+      onDidLayoutChange: () => ({ dispose: () => {} }),
+    } as never);
+
+    render(<SessionList />);
+
+    const row = (await screen.findByText("shown work")).closest(
+      "[data-session-active]",
+    );
+    expect(row?.getAttribute("data-session-active")).toBe("true");
+    expect(
+      screen.getByText("hidden work").closest("[data-session-active]"),
+    ).toBeNull();
+  });
+});
+
+describe("SessionList — unread marker", () => {
+  it("shows a dot until the mark is consumed", async () => {
+    const target = session("s1", { preview: "finished work" });
+    useConnectionStore.setState({
+      state: "connected",
+      sendRpc: vi.fn(async () => ({ sessions: [target], folders: [] })),
+    } as never);
+
+    render(<SessionList />);
+    await screen.findByText("finished work");
+    expect(
+      document.querySelector('[data-session-unread="true"]'),
+    ).toBeNull();
+
+    act(() => useUnreadStore.getState().mark("s1"));
+    expect(
+      document.querySelector('[data-session-unread="true"]'),
+    ).toBeTruthy();
+
+    act(() => useUnreadStore.getState().consume("s1"));
+    expect(
+      document.querySelector('[data-session-unread="true"]'),
+    ).toBeNull();
   });
 });
 

@@ -2,6 +2,7 @@ pub mod agent_bindings;
 pub mod authorize;
 pub mod availability;
 pub mod capability;
+pub mod clamp;
 pub mod code_contract;
 pub mod code_sdk;
 pub mod coords;

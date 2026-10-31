@@ -1,6 +1,7 @@
 //! Code-surface wait on a `run` job (`wait`).
 //!
-//! `sec` is required. Values above [`MAX_WAIT_SECS`] are silently clamped.
+//! `sec` is required. Values outside the budget are clamped and the clamp is
+//! reported in the job notes.
 //! A positive wait registers a snapshot waiter. The cancel token is only for
 //! that wait; it does not kill the job.
 
@@ -28,19 +29,11 @@ impl WaitTool {
         Self { jobs }
     }
 
-    /// Parse required `sec` and silently clamp to [`MAX_WAIT_SECS`].
-    fn parse_sec(input: &Value) -> Result<u64, String> {
-        let value = input
-            .get("sec")
-            .filter(|value| !value.is_null())
+    /// Parse required `sec` and clamp it into `1..=MAX_WAIT_SECS`.
+    fn parse_sec(input: &Value) -> Result<(u64, Option<String>), String> {
+        let clamped = crate::tool::clamp::clamp_int(input, "sec", 1, MAX_WAIT_SECS, "seconds")?
             .ok_or_else(|| crate::tool::must_be("sec", "a positive integer"))?;
-        let seconds = value
-            .as_u64()
-            .ok_or_else(|| crate::tool::expected_type("sec", "integer", value))?;
-        if seconds < 1 {
-            return Err(crate::tool::must_be("sec", "a positive integer (>= 1)"));
-        }
-        Ok(seconds.min(MAX_WAIT_SECS))
+        Ok((clamped.value, clamped.note))
     }
 
     fn present(
@@ -76,8 +69,8 @@ impl WaitTool {
             Ok(id) => id.to_string(),
             Err(error) => return coded_error("invalid_input", error),
         };
-        let sec = match Self::parse_sec(&input) {
-            Ok(seconds) => seconds,
+        let (sec, sec_note) = match Self::parse_sec(&input) {
+            Ok(parsed) => parsed,
             Err(error) => return coded_error("invalid_input", error),
         };
         if !command_job::owns_session(&self.jobs, &execution.session_id, &job_id) {
@@ -115,17 +108,17 @@ impl WaitTool {
                     &execution,
                     &job_id,
                     command_job::code_i32(notice.exit_code),
-                    None,
+                    sec_note.as_deref(),
                     killed,
                 )
             }
-            WaitOutcome::TimedOut => self.present(
-                &execution,
-                &job_id,
-                None,
-                Some("wait budget elapsed; process still running"),
-                false,
-            ),
+            WaitOutcome::TimedOut => {
+                let timed_out = match sec_note.as_deref() {
+                    Some(note) => format!("{note} wait budget elapsed; process still running"),
+                    None => "wait budget elapsed; process still running".to_string(),
+                };
+                self.present(&execution, &job_id, None, Some(&timed_out), false)
+            }
             WaitOutcome::Cancelled => coded_error("cancelled", "wait cancelled"),
             WaitOutcome::UnknownId(_) => {
                 command_job::not_found(&self.jobs, &execution.session_id, &job_id)
@@ -183,6 +176,20 @@ mod tests {
     fn tool() -> (WaitTool, Arc<AgentJobRegistry>) {
         let jobs = Arc::new(AgentJobRegistry::new());
         (WaitTool::new(Arc::clone(&jobs)), jobs)
+    }
+
+    #[test]
+    fn sec_is_clamped_with_a_note_instead_of_rejected() {
+        let (sec, note) = WaitTool::parse_sec(&serde_json::json!({"sec": 900})).unwrap();
+        assert_eq!(sec, MAX_WAIT_SECS);
+        assert_eq!(
+            note.as_deref(),
+            Some("`sec` was reduced from 900 to 300 seconds.")
+        );
+        let (sec, note) = WaitTool::parse_sec(&serde_json::json!({"sec": 0})).unwrap();
+        assert_eq!(sec, 1);
+        assert!(note.unwrap().contains("raised from 0"));
+        assert!(WaitTool::parse_sec(&serde_json::json!({})).is_err());
     }
 
     async fn start_sleep(

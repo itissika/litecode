@@ -1,6 +1,6 @@
 import { apiFetch } from "./auth";
 
-/** Wire shapes of `GET /api/workspace/knowledge` (`docs/knowledge-references.md` §10.1). */
+/** Wire shapes of `GET /api/workspace/knowledge` (`docs/knowledge-references.md` §9.1). */
 type WireSeverity = "error" | "warning";
 
 interface WireKnowledgeIssue {
@@ -53,7 +53,6 @@ export interface WireKnowledgeSnapshot {
   ready: boolean;
   root: string | null;
   visibility: "public" | "private";
-  head: string | null;
   folders: { id: string; name: string; parent_id: string | null }[];
   unknown: { path: string; name: string; folder_id: string | null }[];
   nodes: WireKnowledgeNode[];

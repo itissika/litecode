@@ -96,7 +96,6 @@ const STATUS_TONE: Record<KnowledgeRefStatus, "ok" | "checking" | "error" | "dri
   ok: "ok",
   checking: "checking",
   inactive_target: "ok",
-  symbol_drift: "drift",
   dangling_relation: "error",
   self_relation: "error",
   missing_file: "error",

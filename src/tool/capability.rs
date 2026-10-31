@@ -3,15 +3,15 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::config::binding_scope::{scope_of, BindingScope};
+use crate::config::binding_scope::{BindingScope, scope_of};
 use crate::config::global_db::tools::{
-    MEMORY_TOOL_IDS, core_configurable_tools, core_none_tools, mcp_catalog_id,
-    network_core_tools, optional_builtin_ids,
+    MEMORY_TOOL_IDS, core_configurable_tools, core_none_tools, mcp_catalog_id, network_core_tools,
+    optional_builtin_ids,
 };
 use crate::config::resolved::ResolvedConfig;
 use crate::config::schema::{
-    AgentRole, AvailableKind, CallSurface, CustomToolDefinition, PermissionSurface, ToolOrigin,
-    SUBAGENT_CAPABILITY_ID, SUBAGENT_MEMBER_TOOL_IDS,
+    AgentRole, AvailableKind, CallSurface, CustomToolDefinition, PermissionSurface,
+    SUBAGENT_CAPABILITY_ID, SUBAGENT_MEMBER_TOOL_IDS, ToolOrigin,
 };
 use crate::permission::has_permission_preset;
 use crate::tools::browser::{BROWSER_CARD_ID, BROWSER_CODE_TOOL_NAMES};
@@ -86,7 +86,9 @@ pub struct CapabilityCatalog {
 
 impl CapabilityCatalog {
     pub fn get(&self, id: &str) -> Option<&Capability> {
-        self.capabilities.iter().find(|capability| capability.id == id)
+        self.capabilities
+            .iter()
+            .find(|capability| capability.id == id)
     }
 
     pub fn selected_for_agent<'a>(
@@ -251,11 +253,9 @@ fn push_custom(
 
 fn push_mcp(catalog: &mut CapabilityCatalog, resolved: &ResolvedConfig, server_id: &str) {
     let id = mcp_catalog_id(server_id);
-    let origin = resolved
-        .mcp_origin(server_id)
-        .unwrap_or(ToolOrigin::Global);
-    let overridden = origin == ToolOrigin::Workspace
-        && resolved.global_mcp_servers().contains_key(server_id);
+    let origin = resolved.mcp_origin(server_id).unwrap_or(ToolOrigin::Global);
+    let overridden =
+        origin == ToolOrigin::Workspace && resolved.global_mcp_servers().contains_key(server_id);
     push_capability(
         catalog,
         Capability {
@@ -495,9 +495,9 @@ pub fn member_capability_id(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::WorkspaceState;
     use crate::config::resolved::resolve_without_catalog;
     use crate::config::schema::{AgentProfile, AgentToolBinding, GlobalSettings};
-    use crate::config::WorkspaceState;
     use std::collections::HashMap;
 
     fn resolved() -> ResolvedConfig {
@@ -561,7 +561,10 @@ mod tests {
             Some("memory")
         );
         assert!(catalog.get("memory.list").is_none());
-        assert_eq!(catalog.member_capability_id("browser_open"), Some("browser"));
+        assert_eq!(
+            catalog.member_capability_id("browser_open"),
+            Some("browser")
+        );
         assert_eq!(
             catalog.member_capability_id("subagent_launch"),
             Some("subagent_tools")
@@ -591,8 +594,12 @@ mod tests {
                 rules: Vec::new(),
             },
         );
-        global.custom_tools.push(custom("suite_a", Some("deck"), Some("Deck")));
-        global.custom_tools.push(custom("suite_b", Some("deck"), None));
+        global
+            .custom_tools
+            .push(custom("suite_a", Some("deck"), Some("Deck")));
+        global
+            .custom_tools
+            .push(custom("suite_b", Some("deck"), None));
         global.custom_tools.push(custom("single", None, None));
         let catalog = capability_catalog(&resolve_without_catalog(
             global,
@@ -600,7 +607,10 @@ mod tests {
         ));
         let deck = catalog.get("suite:deck").expect("suite card");
         assert_eq!(deck.label.as_deref(), Some("Deck"));
-        assert_eq!(deck.member_ids().collect::<Vec<_>>(), ["suite_a", "suite_b"]);
+        assert_eq!(
+            deck.member_ids().collect::<Vec<_>>(),
+            ["suite_a", "suite_b"]
+        );
         assert!(catalog.get("single").is_some());
         assert_eq!(catalog.member_capability_id("suite_a"), Some("suite:deck"));
     }
@@ -736,7 +746,11 @@ mod tests {
         let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
         let catalog = capability_catalog(&resolved);
         let selected = catalog.selected_for_agent(&resolved, "default", 0);
-        assert!(selected.iter().any(|capability| capability.id == "session_search"));
+        assert!(
+            selected
+                .iter()
+                .any(|capability| capability.id == "session_search")
+        );
         assert!(!selected.iter().any(|capability| capability.id == "lsp"));
     }
 }

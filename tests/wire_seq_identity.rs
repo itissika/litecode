@@ -55,6 +55,7 @@ fn apply_compact(sessions: &SessionManager, sid: &str, summary: &str) {
             at: None,
             expected_prefix: None,
             usage: None,
+            provider_id: None,
         })
         .unwrap();
 }

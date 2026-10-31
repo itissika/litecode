@@ -591,6 +591,9 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         // used only for admission/schema rendering; live calls get the bound
         // WorkspaceEngines adapter from capability instantiation.
         Arc::new(CodeSearchTool::new(WorkspaceEngines::new())),
+        // Engine-backed and Code-only; its cold adapter is used for admission
+        // and for the generated SDK contract.
+        Arc::new(SessionSearchTool::new(WorkspaceEngines::new())),
     ];
     // WP-210 I: the seven LSP navigation tools are Code-surface too (cold
     // engines; admission only needs their contracts).
@@ -798,7 +801,7 @@ mod tests {
         assert!(names.contains(&"subagent_stop"));
         assert!(names.contains(&"subagent_list"));
         assert!(names.contains(&"subagent_delete"));
-        assert!(names.contains(&"session_search"));
+        assert!(!names.contains(&"session_search"));
         assert!(names.contains(&"litecode_workspace"));
         assert!(names.contains(&"ask_user"));
         assert!(names.contains(&"knowledge"));
@@ -828,6 +831,10 @@ mod tests {
             code_names.contains("code_search"),
             "code_search must be a code tool"
         );
+        assert!(
+            code_names.contains("session_search"),
+            "session_search must be a code tool"
+        );
         let projected = project_tools(all);
         let direct_names: std::collections::HashSet<String> = projected
             .direct
@@ -845,6 +852,13 @@ mod tests {
                 .iter()
                 .any(|tool| tool.name() == "code_search"),
             "code_search must survive code projection"
+        );
+        assert!(
+            projected
+                .code_tools
+                .iter()
+                .any(|tool| tool.name() == "session_search"),
+            "session_search must survive code projection"
         );
         assert!(
             !projected
@@ -1242,6 +1256,7 @@ mod tests {
                 "kill",
                 "read",
                 "run",
+                "session_search",
                 "wait",
                 "write"
             ]

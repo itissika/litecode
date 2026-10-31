@@ -57,7 +57,6 @@ function snapshot(
     ready: true,
     root: "knowledge",
     visibility: "public",
-    head: null,
     folders: [],
     unknown: [],
     nodes,

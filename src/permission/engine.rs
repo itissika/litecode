@@ -43,9 +43,8 @@ impl PermissionEngine {
         } else {
             PermissionView::Primary
         };
-        let member_owner = Arc::new(
-            crate::tool::capability::capability_catalog(&resolved).member_owner,
-        );
+        let member_owner =
+            Arc::new(crate::tool::capability::capability_catalog(&resolved).member_owner);
         Self {
             resolved,
             agent_id,
@@ -129,18 +128,14 @@ impl PermissionEngine {
             .rsplit_once('.')
             .map(|(_, member)| member)
             .unwrap_or(tool_name);
-        let (definition, suites) = if let Some(tool) = self.resolved.workspace_custom_tools().get(member)
+        let (definition, suites) = if let Some(tool) =
+            self.resolved.workspace_custom_tools().get(member)
             && crate::config::global_db::tools::is_custom_tool_identity(member, &tool.name)
         {
             (tool, self.resolved.workspace_custom_suites())
-        } else if let Some(tool) = self
-            .resolved
-            .global_custom_tools()
-            .iter()
-            .find(|tool| {
-                crate::config::global_db::tools::is_custom_tool_identity(member, &tool.name)
-            })
-        {
+        } else if let Some(tool) = self.resolved.global_custom_tools().iter().find(|tool| {
+            crate::config::global_db::tools::is_custom_tool_identity(member, &tool.name)
+        }) {
             (tool, self.resolved.global_custom_suites())
         } else {
             return None;
@@ -322,7 +317,9 @@ mod tests {
             ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
         let engine = PermissionEngine::resolver(resolved, "default", 0);
 
-        let binding = engine.binding("subagent_launch").expect("capability binding");
+        let binding = engine
+            .binding("subagent_launch")
+            .expect("capability binding");
         assert!(binding.enabled);
         assert_eq!(
             engine
@@ -439,10 +436,7 @@ mod tests {
             action: PermissionAction::Allow,
         };
         for tools in [
-            vec![
-                named_tool("run", vec![]),
-                named_tool("write", vec![]),
-            ],
+            vec![named_tool("run", vec![]), named_tool("write", vec![])],
             vec![
                 named_tool("run", vec![open.clone()]),
                 named_tool("write", vec![open]),

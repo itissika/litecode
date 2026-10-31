@@ -3,7 +3,8 @@
 //! Catalog card id remains `"lsp"` (engine Ready + agent bind). Instantiation
 //! injects these seven Code tools — Direct never exposes a tool named `"lsp"`.
 //! Positioning is `path` + 1-based `line` + 1-based UTF-16 `character`
-//! (no `text` substring resolve). `workspace_symbol` takes `{ query }` only.
+//! (no `text` substring resolve). `workspace_symbol` takes `{ query }` and an
+//! optional `path`, which selects/starts the project's server.
 
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -20,6 +21,7 @@ use crate::lsp::format::{
     MAX_DIAGNOSTIC_ITEMS, MAX_LOCATIONS, MAX_SYMBOLS, extract_diagnostic_items,
     extract_hover_markdown, extract_location_items, extract_symbol_items,
 };
+use crate::lsp::server::IndexReadiness;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
@@ -243,6 +245,14 @@ impl Tool for LspOpTool {
         match self.op {
             LspOp::WorkspaceSymbol => {
                 crate::tool::require_nonempty_string_trimmed(input, "query")?;
+                if let Some(path) = input.get("path") {
+                    let path = path
+                        .as_str()
+                        .ok_or_else(|| crate::tool::expected_type("path", "string", path))?;
+                    if path.trim().is_empty() {
+                        return Err(crate::tool::must_be_nonempty_string("path"));
+                    }
+                }
                 Ok(())
             }
             LspOp::Diagnostics | LspOp::DocumentSymbol => {
@@ -312,7 +322,19 @@ impl LspOpTool {
 
         if self.op == LspOp::WorkspaceSymbol {
             let query = input["query"].as_str().expect("validated").to_string();
-            return match self.shared.hub.workspace_symbol_outcome(&query).await {
+            let path = match lsp_path(&input) {
+                Some(path) => match resolve_in_workspace(&workspace_root, path) {
+                    Ok(path) => Some(path),
+                    Err(msg) => return coded("invalid_input", msg),
+                },
+                None => None,
+            };
+            return match self
+                .shared
+                .hub
+                .workspace_symbol_outcome(&query, path.as_deref())
+                .await
+            {
                 Ok(out) => finish_symbols(out, true, &roots),
                 Err(e) => map_lsp_query_error(e),
             };
@@ -495,25 +517,70 @@ fn map_lsp_query_error(err: impl std::fmt::Display) -> ToolCallResult {
     coded(code, msg)
 }
 
+fn finish_with_state(
+    result: ToolCallResult,
+    readiness: IndexReadiness,
+    content_modified: bool,
+) -> ToolCallResult {
+    let result = match readiness {
+        IndexReadiness::Ready => result,
+        IndexReadiness::Indexing => {
+            result.with_warning("language server is still indexing; result may be incomplete")
+        }
+        IndexReadiness::Unknown => result.with_warning(
+            "language server has not reported its index state; result may be incomplete",
+        ),
+    };
+    with_content_modified(result, content_modified)
+}
+
+fn state_note(readiness: IndexReadiness) -> &'static str {
+    match readiness {
+        IndexReadiness::Ready => "",
+        IndexReadiness::Indexing => " Index is still building; results may be incomplete.",
+        IndexReadiness::Unknown => " Index state is unknown; results may be incomplete.",
+    }
+}
+
 fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCallResult {
     let mut locations = extract_location_items(&out.raw, roots);
     let truncated = locations.len() > MAX_LOCATIONS;
     if truncated {
         locations.truncate(MAX_LOCATIONS);
     }
+    if locations.is_empty() && out.readiness == IndexReadiness::Indexing {
+        return coded(
+            "unavailable",
+            "language server index is still building; no locations would be inconclusive. Retry when indexing finishes.",
+        );
+    }
     let message = if locations.is_empty() {
-        "No locations found (language server ready; no definition/reference at this position)."
-            .to_string()
+        match out.readiness {
+            IndexReadiness::Ready => {
+                "No locations found (language server ready; no definition/reference at this position)."
+                    .to_string()
+            }
+            _ => "No locations reported. The language server has not reported its index state, so this is not a confirmed miss.".to_string(),
+        }
     } else if truncated {
-        format!("Returning first {MAX_LOCATIONS} locations (more omitted).")
+        format!(
+            "Returning first {MAX_LOCATIONS} locations (more omitted).{}",
+            state_note(out.readiness)
+        )
     } else {
-        format!("{} location(s).", locations.len())
+        format!(
+            "{} location(s).{}",
+            locations.len(),
+            state_note(out.readiness)
+        )
     };
-    with_content_modified(
+    finish_with_state(
         crate::tool::outcome::ok_data(serde_json::json!({
             "locations": locations,
             "message": message,
+            "state": out.readiness.as_str(),
         })),
+        out.readiness,
         out.content_modified,
     )
 }
@@ -521,17 +588,28 @@ fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCall
 fn finish_hover(out: crate::lsp::LspToolOutput) -> ToolCallResult {
     let markdown = extract_hover_markdown(&out.raw);
     let empty = markdown.trim().is_empty() || markdown == "No hover information available";
+    if empty && out.readiness == IndexReadiness::Indexing {
+        return coded(
+            "unavailable",
+            "language server index is still building; an empty hover would be inconclusive. Retry when indexing finishes.",
+        );
+    }
     let message = if empty {
-        "No hover information available.".to_string()
+        match out.readiness {
+            IndexReadiness::Ready => "No hover information available.".to_string(),
+            _ => "No hover information reported. The language server has not reported its index state, so this is not a confirmed miss.".to_string(),
+        }
     } else {
-        "Hover information.".to_string()
+        format!("Hover information.{}", state_note(out.readiness))
     };
     let markdown = if empty { String::new() } else { markdown };
-    with_content_modified(
+    finish_with_state(
         crate::tool::outcome::ok_data(serde_json::json!({
             "markdown": markdown,
             "message": message,
+            "state": out.readiness.as_str(),
         })),
+        out.readiness,
         out.content_modified,
     )
 }
@@ -542,18 +620,36 @@ fn finish_diagnostics(out: crate::lsp::LspToolOutput, file_path: &str) -> ToolCa
     if truncated {
         items.truncate(MAX_DIAGNOSTIC_ITEMS);
     }
+    if items.is_empty() && out.readiness == IndexReadiness::Indexing {
+        return coded(
+            "unavailable",
+            "language server index is still building; no diagnostics would be inconclusive. Retry when indexing finishes.",
+        );
+    }
     let message = if items.is_empty() {
-        "No diagnostics.".to_string()
+        match out.readiness {
+            IndexReadiness::Ready => "No diagnostics.".to_string(),
+            _ => "No diagnostics reported. The language server has not reported its index state, so this is not a confirmed clean file.".to_string(),
+        }
     } else if truncated {
-        format!("Returning first {MAX_DIAGNOSTIC_ITEMS} diagnostics (more omitted).")
+        format!(
+            "Returning first {MAX_DIAGNOSTIC_ITEMS} diagnostics (more omitted).{}",
+            state_note(out.readiness)
+        )
     } else {
-        format!("{} diagnostic(s).", items.len())
+        format!(
+            "{} diagnostic(s).{}",
+            items.len(),
+            state_note(out.readiness)
+        )
     };
-    with_content_modified(
+    finish_with_state(
         crate::tool::outcome::ok_data(serde_json::json!({
             "items": items,
             "message": message,
+            "state": out.readiness.as_str(),
         })),
+        out.readiness,
         out.content_modified,
     )
 }
@@ -568,22 +664,35 @@ fn finish_symbols(
     if truncated {
         symbols.truncate(MAX_SYMBOLS);
     }
+    if symbols.is_empty() && out.readiness == IndexReadiness::Indexing {
+        return coded(
+            "unavailable",
+            "language server index is still building; no symbols would be inconclusive. Retry when indexing finishes.",
+        );
+    }
     let message = if symbols.is_empty() {
-        "No symbols found.".to_string()
+        match out.readiness {
+            IndexReadiness::Ready => "No symbols found.".to_string(),
+            _ => "No symbols reported. The language server has not reported its index state, so this is not a confirmed miss.".to_string(),
+        }
     } else if truncated {
-        format!("Returning first {MAX_SYMBOLS} symbols (more omitted).")
+        format!(
+            "Returning first {MAX_SYMBOLS} symbols (more omitted).{}",
+            state_note(out.readiness)
+        )
     } else {
-        format!("{} symbol(s).", symbols.len())
+        format!("{} symbol(s).{}", symbols.len(), state_note(out.readiness))
     };
-    with_content_modified(
+    finish_with_state(
         crate::tool::outcome::ok_data(serde_json::json!({
             "symbols": symbols,
             "message": message,
+            "state": out.readiness.as_str(),
         })),
+        out.readiness,
         out.content_modified,
     )
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_symbol_schema_is_query_only() {
+    fn workspace_symbol_schema_has_query_and_optional_path() {
         let engines = WorkspaceEngines::new();
         let tool = all_code_tools(engines, PathBuf::from("."))
             .into_iter()
@@ -676,14 +785,22 @@ mod tests {
             .expect("workspace_symbol JS contract");
         let schema = &surface.tools["workspace_symbol"].input_schema;
         assert!(schema["properties"].get("query").is_some());
-        assert!(schema["properties"].get("path").is_none());
+        assert!(schema["properties"].get("path").is_some());
         assert!(schema["properties"].get("file_path").is_none());
         assert!(schema["properties"].get("line").is_none());
         assert!(
             tool.validate_input(&serde_json::json!({ "query": "Foo" }))
                 .is_ok()
         );
+        assert!(
+            tool.validate_input(&serde_json::json!({ "query": "Foo", "path": "src/main.rs" }))
+                .is_ok()
+        );
         assert!(tool.validate_input(&serde_json::json!({})).is_err());
+        assert!(
+            tool.validate_input(&serde_json::json!({ "query": "Foo", "path": "" }))
+                .is_err()
+        );
     }
 
     #[test]
@@ -733,7 +850,12 @@ mod tests {
 
     #[test]
     fn finish_locations_empty_resolves_with_empty_array() {
-        let out = crate::lsp::LspToolOutput::new("No locations found".into(), Value::Null, false);
+        let out = crate::lsp::LspToolOutput::new(
+            "No locations found".into(),
+            Value::Null,
+            false,
+            IndexReadiness::Ready,
+        );
         let result = finish_locations(out, &[]);
         assert_eq!(result.level, crate::types::result::ToolSignalLevel::Ok);
         assert!(result.error.is_none());
@@ -782,7 +904,7 @@ mod tests {
             mk(&ws.path().join("a").join("b.rs")),
             mk(&other.path().join("c.rs"))
         ]);
-        let out = crate::lsp::LspToolOutput::new(String::new(), raw, false);
+        let out = crate::lsp::LspToolOutput::new(String::new(), raw, false, IndexReadiness::Ready);
         let result = finish_locations(out, &[ws.path()]);
         let data = result.data.expect("data");
         assert_eq!(data["locations"][0]["path"], "a/b.rs");
@@ -794,12 +916,89 @@ mod tests {
     }
 
     #[test]
+    fn unknown_empty_is_not_a_confirmed_miss() {
+        let out = crate::lsp::LspToolOutput::new(
+            String::new(),
+            Value::Null,
+            false,
+            IndexReadiness::Unknown,
+        );
+        let result = finish_symbols(out, true, &[]);
+        assert_eq!(result.level, crate::types::result::ToolSignalLevel::Warning);
+        assert!(result.error.is_none());
+        let data = result.data.as_ref().expect("data");
+        assert_eq!(data["state"], "unknown");
+        assert!(
+            data["message"]
+                .as_str()
+                .unwrap()
+                .contains("not a confirmed miss"),
+            "{data}"
+        );
+        assert!(
+            result
+                .warning_status
+                .as_deref()
+                .unwrap_or_default()
+                .contains("has not reported its index state"),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn indexing_empty_is_unavailable() {
+        let out = crate::lsp::LspToolOutput::new(
+            String::new(),
+            Value::Null,
+            false,
+            IndexReadiness::Indexing,
+        );
+        let result = finish_symbols(out, true, &[]);
+        assert_eq!(result.error_code.as_deref(), Some("unavailable"));
+        assert!(result.data.is_none());
+    }
+
+    #[test]
+    fn diagnostics_unknown_empty_is_not_a_confirmed_clean_file() {
+        let out = crate::lsp::LspToolOutput::new(
+            String::new(),
+            Value::Array(vec![]),
+            false,
+            IndexReadiness::Unknown,
+        );
+        let result = finish_diagnostics(out, "src/a.rs");
+        assert!(result.error.is_none());
+        let data = result.data.as_ref().expect("data");
+        assert_eq!(data["state"], "unknown");
+        assert!(
+            data["message"]
+                .as_str()
+                .unwrap()
+                .contains("not a confirmed clean file"),
+            "{data}"
+        );
+    }
+
+    #[test]
+    fn diagnostics_indexing_empty_is_unavailable() {
+        let out = crate::lsp::LspToolOutput::new(
+            String::new(),
+            Value::Array(vec![]),
+            false,
+            IndexReadiness::Indexing,
+        );
+        let result = finish_diagnostics(out, "src/a.rs");
+        assert_eq!(result.error_code.as_deref(), Some("unavailable"));
+        assert!(result.data.is_none());
+    }
+
+    #[test]
     fn finish_symbols_workspace_paths_relative() {
         let ws = tempfile::tempdir().unwrap();
         let raw = serde_json::json!([{ "name": "f", "kind": 12, "location": {
             "uri": crate::lsp::uri::file_to_uri(&ws.path().join("m.rs")),
             "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 1 } } } }]);
-        let out = crate::lsp::LspToolOutput::new(String::new(), raw, false);
+        let out = crate::lsp::LspToolOutput::new(String::new(), raw, false, IndexReadiness::Ready);
         let data = finish_symbols(out, true, &[ws.path()]).data.expect("data");
         assert_eq!(data["symbols"][0]["path"], "m.rs");
         assert_eq!(data["symbols"][0]["line"], 5);

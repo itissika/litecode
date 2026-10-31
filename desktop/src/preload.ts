@@ -272,9 +272,6 @@ const bridge = {
   browserDestroy: (id: string): void => {
     ipcRenderer.send("litecode:browser-destroy", id);
   },
-  browserSetObscured: (obscured: boolean): void => {
-    ipcRenderer.sendSync("litecode:browser-set-obscured", obscured);
-  },
   nativeViewSetOccluded: (input: NativeViewOccludedInput): void => {
     ipcRenderer.send(NATIVE_VIEW_SET_OCCLUDED_CHANNEL, input);
   },

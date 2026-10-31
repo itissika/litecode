@@ -7,7 +7,7 @@ y : 414
 domain : knowledge
 ```
 
-**准入：** A1/A3。KR-INV-1..3：引用成立与否只看工作区磁盘真实内容；同一 HEAD 下任意入口（提醒、工具、API、消息展开）必须同结论；前端只消费后端快照。这是知识域的总不变量，其它解析/索引节点都服从它。
+**准入：** A1/A3。KR-INV-1..3：引用成立与否只看工作区磁盘真实内容；同一份磁盘状态下任意入口（提醒、工具、API、消息展开）必须同结论；前端只消费后端快照。这是知识域的总不变量，其它解析/索引节点都服从它。
 
 依据：[@ file="docs/knowledge-references.md"]、[@ file="src/knowledge/index.rs" symbol="fn compute_once"]、[@ file="src/knowledge/spec_tests.rs"]。
 上层：[@ key="knowledge"]。

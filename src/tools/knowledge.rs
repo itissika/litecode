@@ -15,7 +15,7 @@ use crate::knowledge::document::{self, Status};
 use crate::knowledge::mentions::{self, is_knowledge_key, normalize_key};
 use crate::knowledge::root::{self, KnowledgeRoot};
 use crate::knowledge::validate::Issue;
-use crate::knowledge::{reminder, view};
+use crate::knowledge::view;
 use crate::tool::trait_::{Tool, ToolExecutionContext};
 use crate::tool::write_lock::ResourceKey;
 use crate::types::ToolCallResult;
@@ -71,12 +71,10 @@ impl KnowledgeTool {
         }
         let issues = issues_of(workspace, &corpus);
         let now = SystemTime::now();
-        let reminder = reminder::section(workspace, &corpus);
         ToolCallResult::ok(view::dashboard(
             &corpus.nodes,
             &issues,
             |key| corpus.incoming(key).len(),
-            reminder.as_deref(),
             now,
             corpus.root.as_deref(),
             &corpus.unknown,

@@ -80,7 +80,25 @@ pub(crate) struct OpenDocEntry {
 const MAX_OPEN_DOCS: usize = 20;
 const MIN_OPEN_DURATION: Duration = Duration::from_secs(30);
 const POST_INIT_DRAIN_QUIET: Duration = Duration::from_millis(150);
-const INDEX_GRACE: Duration = Duration::from_secs(20);
+
+/// What we actually know about the server's index. `Unknown` is not `Ready`:
+/// a server that never reported status must not produce a confident miss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndexReadiness {
+    Ready,
+    Indexing,
+    Unknown,
+}
+
+impl IndexReadiness {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ok",
+            Self::Indexing => "partial",
+            Self::Unknown => "unknown",
+        }
+    }
+}
 
 struct DocState {
     open_docs: VecDeque<OpenDocEntry>,
@@ -285,17 +303,23 @@ impl LspServer {
         conn::configuration_response(request)
     }
 
-    pub(crate) fn index_ready_for_empty_miss(&self) -> bool {
-        self.io.index_settled.load(Ordering::SeqCst) || self.spawned_at.elapsed() >= INDEX_GRACE
+    pub(crate) fn index_readiness(&self) -> IndexReadiness {
+        if self.io.index_settled.load(Ordering::SeqCst) {
+            IndexReadiness::Ready
+        } else if self.io.index_status_seen.load(Ordering::SeqCst) {
+            IndexReadiness::Indexing
+        } else {
+            IndexReadiness::Unknown
+        }
     }
 
-    /// WP-206 ③: diagnostics for the agent tool, gated on the same index-not-ready
-    /// rule as navigation ([`Self::index_ready_for_empty_miss`]).
+    /// Diagnostics for the agent tool.
     ///
     /// - server not running → `Err` "index not ready" (tool maps to `unavailable`);
     /// - a publish covering the synced version arrived within `budget` → those diagnostics;
-    /// - nothing published yet, still inside `INDEX_GRACE` / not settled → `Err` (unavailable);
-    /// - nothing published and the grace has expired → empty success (truly no diagnostics).
+    /// - nothing published and the server is still indexing → `Err` (unavailable);
+    /// - nothing published and readiness is Ready or Unknown → empty success.
+    ///   The tool surfaces Unknown as a warning, never as a confident miss.
     pub(crate) async fn wait_file_diagnostics_gated(
         &self,
         uri: &str,
@@ -306,7 +330,7 @@ impl LspServer {
         }
         let diags = self.io.wait_diagnostics(uri, budget).await;
         let fresh = self.io.diagnostics_are_current(uri);
-        match diagnostics_gate(self.is_running(), fresh, self.index_ready_for_empty_miss()) {
+        match diagnostics_gate(self.is_running(), fresh, self.index_readiness()) {
             DiagnosticsGate::Fresh => Ok(diags),
             DiagnosticsGate::SettledEmpty => Ok(Value::Array(vec![])),
             DiagnosticsGate::NotReady => {
@@ -319,41 +343,49 @@ impl LspServer {
         &self,
         method: &str,
         params: Value,
-    ) -> Result<crate::lsp::conn::LspReply> {
+    ) -> Result<(crate::lsp::conn::LspReply, IndexReadiness)> {
         use crate::lsp::conn::LspReply;
 
         // ContentModified ends the call at once (no resend; ISSUE-047).
         let mut result = match self.send_request_outcome(method, params.clone()).await? {
             LspReply::Value(v) => v,
-            LspReply::ContentModified => return Ok(LspReply::ContentModified),
+            LspReply::ContentModified => {
+                return Ok((LspReply::ContentModified, self.index_readiness()));
+            }
         };
         if !nav_empty(method, &result) {
-            self.io.index_settled.store(true, Ordering::SeqCst);
-            return Ok(LspReply::Value(result));
+            return Ok((LspReply::Value(result), self.index_readiness()));
         }
-
-        if self.index_ready_for_empty_miss() {
-            self.io.index_settled.store(true, Ordering::SeqCst);
-            return Ok(LspReply::Value(result));
+        if self.index_readiness() == IndexReadiness::Ready {
+            return Ok((LspReply::Value(result), IndexReadiness::Ready));
         }
 
         for delay_ms in [500_u64, 1000, 2000, 3000] {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             result = match self.send_request_outcome(method, params.clone()).await? {
                 LspReply::Value(v) => v,
-                LspReply::ContentModified => return Ok(LspReply::ContentModified),
+                LspReply::ContentModified => {
+                    return Ok((LspReply::ContentModified, self.index_readiness()));
+                }
             };
             if !nav_empty(method, &result) {
-                self.io.index_settled.store(true, Ordering::SeqCst);
-                return Ok(LspReply::Value(result));
+                return Ok((LspReply::Value(result), self.index_readiness()));
             }
-            if self.index_ready_for_empty_miss() {
-                self.io.index_settled.store(true, Ordering::SeqCst);
-                return Ok(LspReply::Value(result));
+            let readiness = self.index_readiness();
+            if readiness == IndexReadiness::Ready {
+                return Ok((LspReply::Value(result), readiness));
             }
         }
 
-        Err(index_not_ready_error(method))
+        let readiness = self.index_readiness();
+        if readiness == IndexReadiness::Indexing {
+            Err(index_not_ready_error(method))
+        } else {
+            // The server never told us where it is. An empty result is not
+            // evidence of absence; let the tool report `unknown` instead of
+            // silently claiming "not found".
+            Ok((LspReply::Value(result), IndexReadiness::Unknown))
+        }
     }
 
     pub(crate) async fn send_request(&self, method: &str, params: Value) -> Result<Value> {
@@ -969,29 +1001,31 @@ pub(crate) fn nav_empty(method: &str, result: &Value) -> bool {
 pub(crate) enum DiagnosticsGate {
     /// A publish covering the current document version exists.
     Fresh,
-    /// Nothing published, but the index is settled / grace expired → empty success.
+    /// Nothing published, but the index is settled or unknown → empty success.
     SettledEmpty,
-    /// Not running, or running without a publish inside the grace → `unavailable`.
+    /// Not running, or still indexing → `unavailable`.
     NotReady,
 }
 
-/// WP-206 ③ decision table (dig-survey Q5).
-pub(crate) fn diagnostics_gate(server_ready: bool, fresh: bool, index_ready: bool) -> DiagnosticsGate {
+pub(crate) fn diagnostics_gate(
+    server_ready: bool,
+    fresh: bool,
+    readiness: IndexReadiness,
+) -> DiagnosticsGate {
     if !server_ready {
         DiagnosticsGate::NotReady
     } else if fresh {
         DiagnosticsGate::Fresh
-    } else if index_ready {
-        DiagnosticsGate::SettledEmpty
-    } else {
+    } else if readiness == IndexReadiness::Indexing {
         DiagnosticsGate::NotReady
+    } else {
+        DiagnosticsGate::SettledEmpty
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn nav_empty_symbols_by_array_len() {
@@ -1012,15 +1046,18 @@ mod tests {
     #[test]
     fn diagnostics_gate_table() {
         use DiagnosticsGate::*;
+        use IndexReadiness::*;
         // not running → unavailable regardless of cache
-        assert_eq!(diagnostics_gate(false, true, true), NotReady);
-        assert_eq!(diagnostics_gate(false, false, false), NotReady);
+        assert_eq!(diagnostics_gate(false, true, Ready), NotReady);
+        assert_eq!(diagnostics_gate(false, false, Unknown), NotReady);
         // running + published → real result
-        assert_eq!(diagnostics_gate(true, true, false), Fresh);
-        assert_eq!(diagnostics_gate(true, true, true), Fresh);
-        // running, not yet published: inside grace → unavailable; expired → empty success
-        assert_eq!(diagnostics_gate(true, false, false), NotReady);
-        assert_eq!(diagnostics_gate(true, false, true), SettledEmpty);
+        assert_eq!(diagnostics_gate(true, true, Indexing), Fresh);
+        assert_eq!(diagnostics_gate(true, true, Ready), Fresh);
+        // running, not yet published: indexing → unavailable;
+        // ready or unknown → empty success (the tool warns for unknown)
+        assert_eq!(diagnostics_gate(true, false, Indexing), NotReady);
+        assert_eq!(diagnostics_gate(true, false, Ready), SettledEmpty);
+        assert_eq!(diagnostics_gate(true, false, Unknown), SettledEmpty);
     }
 
     #[test]
@@ -1029,5 +1066,4 @@ mod tests {
         assert!(msg.contains("index not ready"), "{msg}");
         assert!(msg.contains("workspace/symbol"), "{msg}");
     }
-
 }

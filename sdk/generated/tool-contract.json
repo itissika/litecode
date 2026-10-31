@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "7578f4598a770dc7b4dc73775e2d4b618249e7c9e4875ee18d335dd835b3a21a",
+  "sdk_hash": "f322241aebb2ef256a1e09f0cd76c0cd6fcd697b6eee7b61d109e4934fe9c25c",
   "tools": {
     "apply_edits": {
       "path": [
@@ -196,10 +196,8 @@
           },
           "limit": {
             "type": "integer",
-            "description": "Maximum paths to return.",
-            "default": 1000,
-            "minimum": 1,
-            "maximum": 5000
+            "description": "Maximum paths to return. 1–5000.",
+            "default": 1000
           },
           "path": {
             "type": "string",
@@ -264,17 +262,13 @@
           },
           "before": {
             "type": "integer",
-            "description": "Lines of context before each hit.",
-            "default": 0,
-            "minimum": 0,
-            "maximum": 5
+            "description": "Lines of context before each hit. 0–10.",
+            "default": 0
           },
           "after": {
             "type": "integer",
-            "description": "Lines of context after each hit.",
-            "default": 0,
-            "minimum": 0,
-            "maximum": 5
+            "description": "Lines of context after each hit. 0–10.",
+            "default": 0
           },
           "glob": {
             "type": "string",
@@ -287,10 +281,8 @@
           },
           "limit": {
             "type": "integer",
-            "description": "Maximum hits to return.",
-            "default": 40,
-            "minimum": 1,
-            "maximum": 100
+            "description": "Maximum hits to return. 1–100.",
+            "default": 40
           },
           "literal": {
             "type": "boolean",
@@ -384,15 +376,12 @@
           "start_line": {
             "type": "integer",
             "description": "First line to read, 1-based, inclusive.",
-            "default": 1,
-            "minimum": 1
+            "default": 1
           },
           "limit": {
             "type": "integer",
-            "description": "Maximum lines to return.",
-            "default": 2000,
-            "minimum": 1,
-            "maximum": 5000
+            "description": "Lines to return. 1–5000.",
+            "default": 2000
           }
         },
         "required": [
@@ -562,17 +551,13 @@
           },
           "min_score": {
             "type": "number",
-            "description": "Minimum raw dense cosine similarity.",
-            "default": 0.8,
-            "minimum": 0,
-            "maximum": 1
+            "description": "Minimum raw dense cosine similarity for dense-only hits. 0–1. Lexical hits are not subject to this floor; 0 disables it.",
+            "default": 0.8
           },
           "top_k": {
             "type": "integer",
-            "description": "Maximum hits.",
-            "default": 8,
-            "minimum": 1,
-            "maximum": 20
+            "description": "Maximum hits. 1–20.",
+            "default": 8
           }
         },
         "required": [
@@ -608,6 +593,23 @@
                   "type": "string",
                   "description": "Optional AST symbol enclosing the anchor."
                 },
+                "via": {
+                  "type": "string",
+                  "enum": [
+                    "lex",
+                    "dense",
+                    "both"
+                  ],
+                  "description": "Which retrieval leg(s) admitted this chunk."
+                },
+                "dense_similarity": {
+                  "type": "number",
+                  "description": "Raw dense cosine similarity; 0.0 means the hit is lexical-only."
+                },
+                "text": {
+                  "type": "string",
+                  "description": "The anchor line itself, cheap enough for a table cell."
+                },
                 "snippet": {
                   "type": "string",
                   "description": "Source excerpt, at most 24 lines; overlong lines are capped."
@@ -618,6 +620,9 @@
                 "anchor_line",
                 "start_line",
                 "end_line",
+                "via",
+                "dense_similarity",
+                "text",
                 "snippet"
               ],
               "additionalProperties": false
@@ -635,6 +640,122 @@
         "required": [
           "ok",
           "hits"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "session_search": {
+      "path": [
+        "search",
+        "session_search"
+      ],
+      "suite": "search",
+      "tool": "session_search",
+      "doc": "Search past session transcripts.",
+      "signature": "session_search(args: SessionSearchInput): Promise<ToolResult<SessionSearchData>>;",
+      "input_type": "SessionSearchInput",
+      "output_type": "SessionSearchData",
+      "type_deps": [
+        "Integer",
+        "SessionSearchData",
+        "SessionSearchHit",
+        "SessionSearchInput"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "What to find in past session transcripts. Literal words or a phrase."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Optional session scope: full id, unique prefix, or the handle from a result."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum rows. 1–50.",
+            "default": 20
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "session": {
+                  "type": "string",
+                  "description": "Shortest unique session handle, also accepted by `session_id`."
+                },
+                "age": {
+                  "type": "string",
+                  "description": "Relative age of the session's last update."
+                },
+                "line": {
+                  "type": "integer",
+                  "description": "1-based rendered transcript line of the hit."
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "conversation",
+                    "reasoning",
+                    "action",
+                    "outcome",
+                    "unknown"
+                  ],
+                  "description": "Content role of the row."
+                },
+                "via": {
+                  "type": "string",
+                  "description": "Evidence that found this row, in rank order: `exact`, `prox`, `lex`, `sem`, `fuzzy`, joined by `+`."
+                },
+                "summary": {
+                  "type": "string",
+                  "description": "Collapsed one-line hit text."
+                }
+              },
+              "required": [
+                "session",
+                "age",
+                "line",
+                "role",
+                "via",
+                "summary"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Flat rank order; not grouped by session."
+          },
+          "total": {
+            "type": "integer",
+            "description": "Total matching rows before `limit` is applied."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when `total` exceeds the returned rows."
+          },
+          "message": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ok",
+          "hits",
+          "total",
+          "truncated"
         ],
         "additionalProperties": false
       }
@@ -841,8 +962,7 @@
           },
           "sec": {
             "type": "integer",
-            "description": "Seconds to block waiting for exit. Values above 300 are clamped to 300.",
-            "minimum": 1
+            "description": "Seconds to block waiting for exit. 1–300."
           }
         },
         "required": [
@@ -1008,9 +1128,8 @@
           },
           "top_k": {
             "type": "integer",
-            "description": "Number of results. Values above 10 are clamped to 10.",
-            "default": 5,
-            "minimum": 1
+            "description": "Number of results, best first. 1–100.",
+            "default": 10
           }
         },
         "required": [
@@ -1031,7 +1150,7 @@
               "properties": {
                 "snippet": {
                   "type": "string",
-                  "description": "Leading page text, at most about 300 characters."
+                  "description": "Query-relevant excerpt from the page, as returned by the provider."
                 },
                 "title": {
                   "type": "string"
@@ -1352,10 +1471,8 @@
         "properties": {
           "max_chars": {
             "type": "integer",
-            "description": "Maximum body text characters.",
-            "default": 12000,
-            "minimum": 1000,
-            "maximum": 30000
+            "description": "Maximum body text characters. 1000–30000.",
+            "default": 12000
           },
           "page_id": {
             "type": "string",
@@ -1396,6 +1513,10 @@
               ],
               "additionalProperties": false
             }
+          },
+          "message": {
+            "type": "string",
+            "description": "Set when max_chars was clamped into range."
           },
           "page_id": {
             "type": "string"
@@ -1516,6 +1637,7 @@
         "DiagnosticsData",
         "DiagnosticsInput",
         "Integer",
+        "LspDataState",
         "Path",
         "PathInput"
       ],
@@ -1574,6 +1696,15 @@
           "message": {
             "type": "string"
           },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "partial",
+              "unknown"
+            ],
+            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -1582,7 +1713,8 @@
         "required": [
           "ok",
           "items",
-          "message"
+          "message",
+          "state"
         ],
         "additionalProperties": false
       }
@@ -1602,6 +1734,7 @@
         "DocumentSymbolData",
         "DocumentSymbolInput",
         "Integer",
+        "LspDataState",
         "Path",
         "PathInput",
         "SymbolInfo",
@@ -1669,6 +1802,15 @@
               "additionalProperties": false
             }
           },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "partial",
+              "unknown"
+            ],
+            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -1677,7 +1819,8 @@
         "required": [
           "ok",
           "message",
-          "symbols"
+          "symbols",
+          "state"
         ],
         "additionalProperties": false
       }
@@ -1699,6 +1842,7 @@
         "Integer",
         "Location",
         "LocationsData",
+        "LspDataState",
         "Path",
         "RangeInput"
       ],
@@ -1765,6 +1909,15 @@
           "message": {
             "type": "string"
           },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "partial",
+              "unknown"
+            ],
+            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -1773,7 +1926,8 @@
         "required": [
           "ok",
           "locations",
-          "message"
+          "message",
+          "state"
         ],
         "additionalProperties": false
       }
@@ -1795,6 +1949,7 @@
         "Integer",
         "Location",
         "LocationsData",
+        "LspDataState",
         "Path",
         "RangeInput"
       ],
@@ -1861,6 +2016,15 @@
           "message": {
             "type": "string"
           },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "partial",
+              "unknown"
+            ],
+            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -1869,7 +2033,8 @@
         "required": [
           "ok",
           "locations",
-          "message"
+          "message",
+          "state"
         ],
         "additionalProperties": false
       }
@@ -1891,6 +2056,7 @@
         "Integer",
         "Location",
         "LocationsData",
+        "LspDataState",
         "Path",
         "RangeInput"
       ],
@@ -1957,6 +2123,15 @@
           "message": {
             "type": "string"
           },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "partial",
+              "unknown"
+            ],
+            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -1965,7 +2140,8 @@
         "required": [
           "ok",
           "locations",
-          "message"
+          "message",
+          "state"
         ],
         "additionalProperties": false
       }
@@ -1985,6 +2161,7 @@
         "HoverData",
         "HoverInput",
         "Integer",
+        "LspDataState",
         "Path",
         "RangeInput"
       ],
@@ -2021,6 +2198,15 @@
           "message": {
             "type": "string"
           },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "partial",
+              "unknown"
+            ],
+            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -2029,7 +2215,8 @@
         "required": [
           "ok",
           "markdown",
-          "message"
+          "message",
+          "state"
         ],
         "additionalProperties": false
       }
@@ -2047,6 +2234,7 @@
       "output_type": "WorkspaceSymbolData",
       "type_deps": [
         "Integer",
+        "LspDataState",
         "SymbolInfo",
         "SymbolsData",
         "WorkspaceSymbolData",
@@ -2058,6 +2246,10 @@
           "query": {
             "type": "string",
             "description": "Symbol name or fragment to search across the workspace."
+          },
+          "path": {
+            "type": "string",
+            "description": "Optional source file that selects/starts the project's language server. Required only when more than one server is running."
           }
         },
         "required": [
@@ -2114,6 +2306,15 @@
               "additionalProperties": false
             }
           },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "partial",
+              "unknown"
+            ],
+            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -2122,7 +2323,8 @@
         "required": [
           "ok",
           "message",
-          "symbols"
+          "symbols",
+          "state"
         ],
         "additionalProperties": false
       }

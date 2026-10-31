@@ -155,6 +155,10 @@ pub struct CompactedBody {
     /// have none and fall back to their own seq; never used for the shadow range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Seq>,
+    /// Provider that paid the summarizer request which produced this summary.
+    /// Legacy rows have none; they are counted under an unknown provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
 }
 
 /// The only persisted SessionMeta fields. Live and catalog projections do not

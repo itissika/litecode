@@ -8,7 +8,6 @@
 //! non-hidden agent.
 
 pub const HARNESS_SYSTEM: &str = include_str!("prompts/harness/system.md");
-pub const HARNESS_TOOLS: &str = include_str!("prompts/harness/tools.md");
 pub const ORCHESTRATOR_PROMPT: &str = concat!(
     include_str!("prompts/orchestrator/identity.md"),
     "\n",

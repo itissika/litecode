@@ -97,6 +97,9 @@ pub fn execute(
         SessionRead::UserDetailCount { session_id } => {
             Ok(ReadValue::Count(user_detail_count(conn, &session_id)?))
         }
+        SessionRead::HasConversationRows { session_id } => {
+            Ok(ReadValue::Count(has_conversation_rows(conn, &session_id)?))
+        }
         SessionRead::UserAnchorStem { session_id, seq } => {
             Ok(ReadValue::Count(user_anchor_stem(conn, &session_id, seq)?))
         }
@@ -289,21 +292,23 @@ pub(super) fn provider_usage_series(
     }
     let samples = bills
         .into_iter()
-        .map(|(seq, turn_id, at_ms, body, kind, usage)| session::ProviderUsageSample {
-            seq,
-            turn_id,
-            at_ms,
-            prompt: usage.prompt_tokens,
-            completion: usage.completion_tokens,
-            hit: usage.cache_hit_tokens,
-            miss: usage.cache_miss_tokens,
-            kind,
-            // A checkpoint body is a summary, not a request header: no model.
-            model: match kind {
-                session::ProviderUsageKind::Request => body.as_deref().and_then(request_model),
-                session::ProviderUsageKind::Compaction => None,
+        .map(
+            |(seq, turn_id, at_ms, body, kind, usage)| session::ProviderUsageSample {
+                seq,
+                turn_id,
+                at_ms,
+                prompt: usage.prompt_tokens,
+                completion: usage.completion_tokens,
+                hit: usage.cache_hit_tokens,
+                miss: usage.cache_miss_tokens,
+                kind,
+                // A checkpoint body is a summary, not a request header: no model.
+                model: match kind {
+                    session::ProviderUsageKind::Request => body.as_deref().and_then(request_model),
+                    session::ProviderUsageKind::Compaction => None,
+                },
             },
-        })
+        )
         .collect();
 
     let mut stmt = conn.prepare(
@@ -331,6 +336,11 @@ pub(super) fn provider_usage_series(
     })
 }
 
+#[derive(Default)]
+struct ProviderUsageBuckets {
+    days: Vec<session::WorkspaceUsageDay>,
+    hours: Vec<session::WorkspaceUsageHour>,
+}
 
 /// Whole-workspace spend, from authoritative bills only.
 ///
@@ -343,9 +353,17 @@ pub(super) fn provider_usage_series(
 /// numbers can never disagree with the chart under them.
 pub(super) fn workspace_usage(conn: &Connection) -> Result<session::WorkspaceUsage> {
     const BILL: &str = "provider_usage IS NOT NULL AND json_valid(provider_usage)";
+    // Provider identity rides on the row body. Invalid or absent bodies degrade
+    // to the explicit unknown bucket; they must never fail the whole read.
+    const PROVIDER: &str = concat!(
+        "CASE WHEN json_valid(body) THEN ",
+        "CASE WHEN json_type(body, '$.provider_id') = 'text' ",
+        "THEN NULLIF(json_extract(body, '$.provider_id'), '') END END"
+    );
 
     let mut stmt = conn.prepare(&format!(
         "SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime') AS day,
+                {PROVIDER} AS provider_id,
                 count(*),
                 COALESCE(SUM(json_extract(provider_usage, '$.prompt_tokens')), 0),
                 COALESCE(SUM(json_extract(provider_usage, '$.completion_tokens')), 0),
@@ -353,26 +371,32 @@ pub(super) fn workspace_usage(conn: &Connection) -> Result<session::WorkspaceUsa
                 COALESCE(SUM(json_extract(provider_usage, '$.cache_miss_tokens')), 0)
          FROM transcript_items
          WHERE {BILL}
-         GROUP BY day
-         ORDER BY day ASC"
+         GROUP BY day, provider_id
+         ORDER BY day ASC, provider_id ASC",
+        BILL = BILL,
+        PROVIDER = PROVIDER
     ))?;
-    let days = stmt
+    let rows = stmt
         .query_map([], |row| {
             Ok((
                 row.get::<_, Option<String>>(0)?,
-                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, i64>(4)?,
                 row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     let mut totals = session::ProviderUsage::default();
     let mut requests = 0u64;
-    let mut buckets = Vec::with_capacity(days.len());
-    for (day, count, prompt, completion, hit, miss) in days {
+    let mut day_buckets: std::collections::BTreeMap<String, session::WorkspaceUsageDay> =
+        std::collections::BTreeMap::new();
+    let mut providers: std::collections::BTreeMap<Option<String>, ProviderUsageBuckets> =
+        std::collections::BTreeMap::new();
+    for (day, provider_id, count, prompt, completion, hit, miss) in rows {
         let count = count.max(0) as u64;
         let prompt = prompt.max(0) as u64;
         let completion = completion.max(0) as u64;
@@ -383,14 +407,37 @@ pub(super) fn workspace_usage(conn: &Connection) -> Result<session::WorkspaceUsa
         totals.completion_tokens = totals.completion_tokens.saturating_add(completion);
         totals.cache_hit_tokens = totals.cache_hit_tokens.saturating_add(hit);
         totals.cache_miss_tokens = totals.cache_miss_tokens.saturating_add(miss);
-        buckets.push(session::WorkspaceUsageDay {
-            day: day.unwrap_or_default(),
-            requests: count,
-            prompt,
-            completion,
-            hit,
-            miss,
-        });
+
+        let day = day.unwrap_or_default();
+        let overall =
+            day_buckets
+                .entry(day.clone())
+                .or_insert_with(|| session::WorkspaceUsageDay {
+                    day: day.clone(),
+                    requests: 0,
+                    prompt: 0,
+                    completion: 0,
+                    hit: 0,
+                    miss: 0,
+                });
+        overall.requests = overall.requests.saturating_add(count);
+        overall.prompt = overall.prompt.saturating_add(prompt);
+        overall.completion = overall.completion.saturating_add(completion);
+        overall.hit = overall.hit.saturating_add(hit);
+        overall.miss = overall.miss.saturating_add(miss);
+
+        providers
+            .entry(provider_id)
+            .or_default()
+            .days
+            .push(session::WorkspaceUsageDay {
+                day,
+                requests: count,
+                prompt,
+                completion,
+                hit,
+                miss,
+            });
     }
 
     // Today by hour: the `日` view is a within-day question, and a single day
@@ -402,14 +449,13 @@ pub(super) fn workspace_usage(conn: &Connection) -> Result<session::WorkspaceUsa
         .and_hms_opt(0, 0, 0)
         .and_then(|naive| {
             use chrono::TimeZone;
-            chrono::Local
-                .from_local_datetime(&naive)
-                .earliest()
+            chrono::Local.from_local_datetime(&naive).earliest()
         })
         .map(|at| at.timestamp_millis())
         .unwrap_or(0);
     let mut hour_stmt = conn.prepare(&format!(
         "SELECT CAST(strftime('%H', created_at / 1000, 'unixepoch', 'localtime') AS INTEGER) AS hour,
+                {PROVIDER} AS provider_id,
                 count(*),
                 COALESCE(SUM(json_extract(provider_usage, '$.prompt_tokens')), 0),
                 COALESCE(SUM(json_extract(provider_usage, '$.completion_tokens')), 0),
@@ -417,39 +463,113 @@ pub(super) fn workspace_usage(conn: &Connection) -> Result<session::WorkspaceUsa
                 COALESCE(SUM(json_extract(provider_usage, '$.cache_miss_tokens')), 0)
          FROM transcript_items
          WHERE {BILL} AND created_at >= ?1
-         GROUP BY hour
-         ORDER BY hour ASC",
-        BILL = BILL
+         GROUP BY hour, provider_id
+         ORDER BY hour ASC, provider_id ASC",
+        BILL = BILL,
+        PROVIDER = PROVIDER
     ))?;
-    let hours = hour_stmt
+    let rows = hour_stmt
         .query_map(rusqlite::params![today_start_ms], |row| {
-            Ok(session::WorkspaceUsageHour {
-                hour: row.get::<_, i64>(0)?.clamp(0, 23) as u32,
-                requests: row.get::<_, i64>(1)?.max(0) as u64,
-                prompt: row.get::<_, i64>(2)?.max(0) as u64,
-                completion: row.get::<_, i64>(3)?.max(0) as u64,
-                hit: row.get::<_, i64>(4)?.max(0) as u64,
-                miss: row.get::<_, i64>(5)?.max(0) as u64,
-            })
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
+    let mut hour_buckets: std::collections::BTreeMap<u32, session::WorkspaceUsageHour> =
+        std::collections::BTreeMap::new();
+    for (hour, provider_id, count, prompt, completion, hit, miss) in rows {
+        let hour = hour.clamp(0, 23) as u32;
+        let count = count.max(0) as u64;
+        let prompt = prompt.max(0) as u64;
+        let completion = completion.max(0) as u64;
+        let hit = hit.max(0) as u64;
+        let miss = miss.max(0) as u64;
+
+        let overall = hour_buckets
+            .entry(hour)
+            .or_insert_with(|| session::WorkspaceUsageHour {
+                hour,
+                requests: 0,
+                prompt: 0,
+                completion: 0,
+                hit: 0,
+                miss: 0,
+            });
+        overall.requests = overall.requests.saturating_add(count);
+        overall.prompt = overall.prompt.saturating_add(prompt);
+        overall.completion = overall.completion.saturating_add(completion);
+        overall.hit = overall.hit.saturating_add(hit);
+        overall.miss = overall.miss.saturating_add(miss);
+
+        providers
+            .entry(provider_id)
+            .or_default()
+            .hours
+            .push(session::WorkspaceUsageHour {
+                hour,
+                requests: count,
+                prompt,
+                completion,
+                hit,
+                miss,
+            });
+    }
+
     // One integer for the header. The overview does not rank sessions, and a
     // per-session breakdown is a different question from workspace spend.
-    let session_count = conn.query_row(
-        &format!(
-            "SELECT COUNT(DISTINCT session_id) FROM transcript_items WHERE {BILL}"
-        ),
-        [],
-        |row| row.get::<_, i64>(0),
-    )?.max(0) as u64;
+    let session_count = conn
+        .query_row(
+            &format!("SELECT COUNT(DISTINCT session_id) FROM transcript_items WHERE {BILL}"),
+            [],
+            |row| row.get::<_, i64>(0),
+        )?
+        .max(0) as u64;
+
+    // Rank by what the provider billed over all history; the unknown bucket
+    // always sits last so it cannot outrank a named provider. Stable ids break
+    // ties, keeping the panel order deterministic across reads.
+    let mut providers: Vec<(u64, session::WorkspaceUsageProvider)> = providers
+        .into_iter()
+        .map(|(provider_id, buckets)| {
+            let billed = buckets.days.iter().fold(0u64, |sum, day| {
+                sum.saturating_add(day.prompt.saturating_add(day.completion))
+            });
+            (
+                billed,
+                session::WorkspaceUsageProvider {
+                    provider_id,
+                    days: buckets.days,
+                    hours: buckets.hours,
+                },
+            )
+        })
+        .collect();
+    providers.sort_by(|(a_billed, a), (b_billed, b)| {
+        a.provider_id
+            .is_none()
+            .cmp(&b.provider_id.is_none())
+            .then_with(|| b_billed.cmp(a_billed))
+            .then_with(|| a.provider_id.cmp(&b.provider_id))
+    });
+    let providers = providers
+        .into_iter()
+        .map(|(_, provider)| provider)
+        .collect();
 
     Ok(session::WorkspaceUsage {
-        days: buckets,
-        hours,
+        days: day_buckets.into_values().collect(),
+        hours: hour_buckets.into_values().collect(),
         today,
         totals,
         requests,
+        providers,
         session_count,
     })
 }
@@ -655,7 +775,9 @@ mod anchored_load_tests {
         );
         let rows = read(&fx);
         assert_eq!(
-            rows.iter().filter_map(|row| row.log_seq).collect::<Vec<_>>(),
+            rows.iter()
+                .filter_map(|row| row.log_seq)
+                .collect::<Vec<_>>(),
             vec![3, 1, 2],
             "checkpoint first, then the kept rows"
         );
@@ -670,7 +792,9 @@ mod anchored_load_tests {
         fx.append("c");
         let rows = read(&fx);
         assert_eq!(
-            rows.iter().filter_map(|row| row.log_seq).collect::<Vec<_>>(),
+            rows.iter()
+                .filter_map(|row| row.log_seq)
+                .collect::<Vec<_>>(),
             vec![2, 3],
             "the summary, then the row appended after it"
         );
@@ -692,10 +816,59 @@ mod anchored_load_tests {
         let conn = open_readonly(&fx.dir.path().join("sessions.db")).expect("ro");
         let error = load_working_set(&conn, &fx.sid, fx.dir.path())
             .expect_err("a pointer at a non-checkpoint row must not read as a summary");
-        assert!(error.to_string().contains("checkpoint"), "unexpected: {error}");
+        assert!(
+            error.to_string().contains("checkpoint"),
+            "unexpected: {error}"
+        );
     }
 }
 
+#[cfg(test)]
+mod conversation_rows_tests {
+    use tempfile::TempDir;
+
+    use super::has_conversation_rows;
+    use crate::session::data::sqlite::conn::open_readonly;
+    use crate::session::{SessionData, WorkspaceWriteLease};
+    use crate::types::user_text;
+
+    /// Only user/assistant rows are conversation. A control row such as
+    /// `model/changed` must not make an empty session look like one.
+    #[test]
+    fn control_rows_do_not_count_as_conversation() {
+        let dir = TempDir::new().expect("tempdir");
+        let lease = WorkspaceWriteLease::acquire(dir.path()).expect("lease");
+        let db = dir.path().join("sessions.db");
+        let data = SessionData::open(&lease, &db).expect("open");
+
+        let with_user = data.create_session("/p", "default", None).expect("create");
+        data.insert_items(&with_user, &[user_text("hello")])
+            .expect("items");
+        let control_only = data.create_session("/p", "default", None).expect("create");
+        data.shutdown();
+
+        // The data layer has no public `append event` path; poke the row the
+        // writer would have produced for a model switch.
+        let conn = rusqlite::Connection::open(&db).expect("rw");
+        conn.execute(
+            "INSERT INTO transcript_items
+                (session_id, seq, item_type, kind, body, token_estimate, created_at, event_type, surface_op)
+             VALUES (?1, 0, 'model/changed', 'model/changed', '{}', 0, 0, 'model/changed', '')",
+            rusqlite::params![control_only],
+        )
+        .expect("control row");
+
+        let ro = open_readonly(&db).expect("ro");
+        assert_eq!(
+            has_conversation_rows(&ro, &with_user).expect("user count"),
+            1
+        );
+        assert_eq!(
+            has_conversation_rows(&ro, &control_only).expect("control count"),
+            0
+        );
+    }
+}
 
 fn list_sessions(conn: &Connection) -> Result<Vec<SessionListRow>> {
     // Roots are capped per sidebar bucket rather than globally: a session the
@@ -767,6 +940,22 @@ fn list_session_ids(conn: &Connection) -> Result<Vec<String>> {
     let rows = stmt.query_map([], |row| row.get(0))?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+/// 1 when the session has at least one user or assistant item row.
+///
+/// Control rows (`model/changed`, `turn/start`, reminders) are not content:
+/// they must not make an otherwise empty session look like a conversation.
+fn has_conversation_rows(conn: &Connection, session_id: &str) -> Result<i64> {
+    conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM transcript_items
+             WHERE session_id = ?1 AND kind IN ('item/user', 'item/assistant')
+         )",
+        rusqlite::params![session_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 fn list_sessions_for_gc(conn: &Connection) -> Result<Vec<(String, i64)>> {
@@ -1091,5 +1280,208 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+
+#[cfg(test)]
+mod workspace_usage_tests {
+    use std::collections::BTreeMap;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use tempfile::TempDir;
+
+    use super::workspace_usage;
+    use crate::config::TurnGuard;
+    use crate::session::data::command::{MutationId, SessionMutation};
+    use crate::session::data::sqlite::conn::open_readonly;
+    use crate::session::manager::SessionManager;
+    use crate::session::store::{ProviderUsage, WorkspaceUsageProvider};
+    use crate::types::user_text;
+
+    fn usage(prompt: u64, hit: u64, completion: u64) -> ProviderUsage {
+        ProviderUsage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            cache_hit_tokens: hit,
+            cache_miss_tokens: prompt - hit,
+        }
+    }
+
+    fn manager_fixture() -> (TempDir, SessionManager, String) {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = dir.path().join("sessions.db").to_string_lossy().into_owned();
+        let manager = SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db_path.clone(),
+        );
+        (dir, manager, db_path)
+    }
+
+    fn bill(manager: &SessionManager, session_id: &str, provider_id: &str, amount: u64) {
+        let header = manager
+            .append_request_origin(
+                session_id,
+                &serde_json::json!({
+                    "schema": 1,
+                    "provider_id": provider_id,
+                    "model_ref": "test/model",
+                }),
+            )
+            .expect("request header");
+        manager
+            .record_provider_usage(session_id, header, &usage(amount, amount / 2, 10))
+            .expect("request bill");
+    }
+
+    fn compact_as(
+        manager: &SessionManager,
+        session_id: &str,
+        provider_id: Option<&str>,
+        amount: u64,
+    ) {
+        manager
+            .data()
+            .insert_items(session_id, &[user_text("seed")])
+            .expect("seed row");
+        let expected = manager
+            .data()
+            .revision_blocking(session_id)
+            .expect("revision");
+        manager
+            .mutate_blocking(SessionMutation::Compact {
+                session_id: session_id.to_string(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+                summary: format!("summary-{}", provider_id.unwrap_or("unknown")),
+                token_estimate: 1,
+                kept_from: None,
+                at: None,
+                expected_prefix: None,
+                usage: Some(usage(amount, amount / 2, 5)),
+                provider_id: provider_id.map(str::to_string),
+            })
+            .expect("compact bill");
+    }
+
+    fn provider_prompt(provider: &WorkspaceUsageProvider) -> u64 {
+        provider.days.iter().map(|day| day.prompt).sum()
+    }
+
+    #[test]
+    fn groups_request_and_compaction_bills_by_provider_and_reconciles_totals() {
+        let (_dir, manager, db_path) = manager_fixture();
+        let first = manager.open_session_sync("/p", "default", None).unwrap();
+        let second = manager.open_session_sync("/p", "default", None).unwrap();
+
+        bill(&manager, &first, "alpha", 100);
+        bill(&manager, &first, "beta", 200);
+        bill(&manager, &second, "alpha", 50);
+        compact_as(&manager, &first, Some("alpha"), 10);
+        compact_as(&manager, &second, None, 500);
+
+        let conn = open_readonly(Path::new(&db_path)).expect("read connection");
+        let workspace = workspace_usage(&conn).expect("workspace usage");
+        assert_eq!(workspace.requests, 5, "three requests plus two summary calls");
+        assert_eq!(workspace.totals.prompt_tokens, 860);
+        assert_eq!(workspace.totals.completion_tokens, 40);
+        assert_eq!(
+            workspace
+                .providers
+                .iter()
+                .map(provider_prompt)
+                .sum::<u64>(),
+            workspace.totals.prompt_tokens,
+            "named and unknown provider buckets must reconcile with the header"
+        );
+        assert_eq!(
+            workspace
+                .providers
+                .iter()
+                .flat_map(|provider| provider.days.iter())
+                .map(|day| day.requests)
+                .sum::<u64>(),
+            workspace.requests
+        );
+        assert_eq!(
+            workspace
+                .providers
+                .iter()
+                .flat_map(|provider| provider.hours.iter())
+                .map(|hour| hour.prompt)
+                .sum::<u64>(),
+            workspace.totals.prompt_tokens,
+            "today's provider slices must reconcile with the same total"
+        );
+
+        let by_provider: BTreeMap<Option<String>, u64> = workspace
+            .providers
+            .iter()
+            .map(|provider| (provider.provider_id.clone(), provider_prompt(provider)))
+            .collect();
+        assert_eq!(by_provider.get(&Some("alpha".into())), Some(&160));
+        assert_eq!(by_provider.get(&Some("beta".into())), Some(&200));
+        assert_eq!(by_provider.get(&None), Some(&500));
+        assert_eq!(
+            workspace
+                .providers
+                .last()
+                .and_then(|provider| provider.provider_id.clone()),
+            None,
+            "unknown must stay last even when it billed more than every named provider"
+        );
+    }
+
+    #[test]
+    fn invalid_body_degrades_to_unknown_instead_of_failing_the_read() {
+        let (_dir, manager, db_path) = manager_fixture();
+        let session_id = manager.open_session_sync("/p", "default", None).unwrap();
+        bill(&manager, &session_id, "alpha", 42);
+
+        let write = rusqlite::Connection::open(&db_path).expect("write connection");
+        write
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .expect("busy timeout");
+        write
+            .execute(
+                "UPDATE transcript_items SET body = '{not-json' WHERE session_id = ?1",
+                rusqlite::params![session_id],
+            )
+            .expect("poison body");
+
+        let conn = open_readonly(Path::new(&db_path)).expect("read connection");
+        let workspace = workspace_usage(&conn).expect("invalid bodies must not fail the read");
+        assert_eq!(workspace.requests, 1);
+        assert_eq!(workspace.totals.prompt_tokens, 42);
+        assert_eq!(workspace.providers.len(), 1);
+        assert_eq!(workspace.providers[0].provider_id, None);
+        assert_eq!(provider_prompt(&workspace.providers[0]), 42);
+    }
+
+    #[test]
+    fn non_text_provider_id_degrades_to_unknown_instead_of_failing_the_read() {
+        let (_dir, manager, db_path) = manager_fixture();
+        let session_id = manager.open_session_sync("/p", "default", None).unwrap();
+        bill(&manager, &session_id, "alpha", 42);
+
+        let write = rusqlite::Connection::open(&db_path).expect("write connection");
+        write
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .expect("busy timeout");
+        write
+            .execute(
+                "UPDATE transcript_items SET body = '{\"provider_id\": 7}' WHERE session_id = ?1",
+                rusqlite::params![session_id],
+            )
+            .expect("poison provider id type");
+
+        let conn = open_readonly(Path::new(&db_path)).expect("read connection");
+        let workspace =
+            workspace_usage(&conn).expect("non-text provider ids must not fail the read");
+        assert_eq!(workspace.requests, 1);
+        assert_eq!(workspace.providers.len(), 1);
+        assert_eq!(workspace.providers[0].provider_id, None);
+        assert_eq!(provider_prompt(&workspace.providers[0]), 42);
     }
 }

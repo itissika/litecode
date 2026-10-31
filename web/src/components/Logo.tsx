@@ -150,6 +150,7 @@ function SplashOverlay({ children }: { children: React.ReactNode }) {
 
   return (
     <div
+      data-litecode-overlay="splash"
       style={{
         position: "fixed",
         inset: 0,

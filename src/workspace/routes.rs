@@ -810,7 +810,7 @@ async fn get_symbol_at(
 ///
 /// Never computes: it returns the last published snapshot (`ready: false`
 /// while the first build is still running). Contract in
-/// `docs/knowledge-references.md` §10.
+/// `docs/knowledge-references.md` §9.
 async fn get_knowledge(State(state): State<ServeState>) -> Response {
     let _lap = crate::telemetry::latency::lap("knowledge_api.get");
     let root = state.workspace.sandbox().root().to_path_buf();

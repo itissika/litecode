@@ -4,11 +4,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { KnowledgeIssue } from "../../lib/knowledge/types";
 import { KnowledgeAttentionIcon } from "./KnowledgeAttentionIcon";
 
-const drift: KnowledgeIssue = {
+const mismatch: KnowledgeIssue = {
   nodeId: "a",
   severity: "warning",
-  code: "symbol_drift",
-  message: 'Symbol "run" in "src/a.rs" differs from HEAD.',
+  code: "filename_mismatch",
+  message: 'Filename "b.md" does not match declaration "a".',
 };
 
 afterEach(() => {
@@ -22,8 +22,8 @@ describe("KnowledgeAttentionIcon", () => {
   });
 
   it("marks the warnings with their messages as the title", () => {
-    render(<KnowledgeAttentionIcon warnings={[drift]} />);
+    render(<KnowledgeAttentionIcon warnings={[mismatch]} />);
     const mark = screen.getByRole("img", { name: "1 issues need attention" });
-    expect(mark.getAttribute("title")).toBe(drift.message);
+    expect(mark.getAttribute("title")).toBe(mismatch.message);
   });
 });

@@ -60,7 +60,8 @@ impl RejectReason {
             } => "replacement does not change the matched text".into(),
             Self::ReadLinePrefix { ranges } => {
                 if ranges.is_empty() {
-                    "old_string includes a read line-number prefix; strip the prefixes and retry".into()
+                    "old_string includes a read line-number prefix; strip the prefixes and retry"
+                        .into()
                 } else {
                     let lines = format_lines(ranges);
                     format!(
@@ -109,11 +110,7 @@ pub(super) enum ResolveOutcome {
     Reject(RejectReason),
 }
 
-pub(super) fn resolve_one(
-    content: &str,
-    old_string: &str,
-    new_string: &str,
-) -> ResolveOutcome {
+pub(super) fn resolve_one(content: &str, old_string: &str, new_string: &str) -> ResolveOutcome {
     if old_string.is_empty() {
         return ResolveOutcome::Reject(RejectReason::EmptyOldString);
     }
@@ -319,5 +316,4 @@ mod tests {
         let indent = diagnose_structural_miss(&format!("{line}\n"), &format!("    {line}"));
         assert!(matches!(indent, Some(RejectReason::WhitespaceOnly { .. })));
     }
-
 }

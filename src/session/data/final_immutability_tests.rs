@@ -18,7 +18,7 @@ use std::sync::Arc;
 use rusqlite::Connection;
 use tempfile::TempDir;
 
-use super::command::{MutationId, SessionMutation};
+use super::command::{MAX_STREAM_BATCH_ROWS, MutationId, SessionMutation, StreamItemUpdate};
 use super::sqlite::session::SessionApply;
 use crate::authority::responses::{
     AssistantRole, FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall, MessageItem,
@@ -26,6 +26,20 @@ use crate::authority::responses::{
 };
 use crate::session::{SessionData, WorkspaceWriteLease};
 use crate::types::{Item, assistant_text, user_text};
+
+fn streaming_item(id: &str, text: &str) -> Item {
+    Item::Message(MessageItem::Output(OutputMessage {
+        id: id.into(),
+        role: AssistantRole::Assistant,
+        content: vec![OutputMessageContent::OutputText(OutputTextContent {
+            text: text.into(),
+            annotations: vec![],
+            logprobs: None,
+        })],
+        status: OutputStatus::InProgress,
+        phase: None,
+    }))
+}
 
 struct Fixture {
     dir: TempDir,
@@ -124,6 +138,39 @@ impl Fixture {
         it.collect::<rusqlite::Result<Vec<_>>>().expect("collect")
     }
 
+    fn in_progress_bodies(&self) -> BTreeMap<i64, String> {
+        let conn = self.db();
+        let mut stmt = conn
+            .prepare(
+                "SELECT seq, ifnull(body, '') FROM transcript_items
+                 WHERE session_id = ?1 AND state = 'in_progress' ORDER BY seq",
+            )
+            .expect("prepare");
+        let it = stmt
+            .query_map(rusqlite::params![self.sid], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
+            .expect("query");
+        it.collect::<rusqlite::Result<BTreeMap<_, _>>>()
+            .expect("collect")
+    }
+
+    fn in_progress_body_refs(&self) -> Vec<Option<String>> {
+        let conn = self.db();
+        let mut stmt = conn
+            .prepare(
+                "SELECT body_ref FROM transcript_items
+                 WHERE session_id = ?1 AND state = 'in_progress' ORDER BY seq",
+            )
+            .expect("prepare");
+        let it = stmt
+            .query_map(rusqlite::params![self.sid], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .expect("query");
+        it.collect::<rusqlite::Result<Vec<_>>>().expect("collect")
+    }
+
     /// Open a row the way the streaming path does: in flight because the caller
     /// says so, not because the payload happens to carry `status`.
     fn streaming(&self, id: &str, text: &str) -> SessionMutation {
@@ -131,17 +178,7 @@ impl Fixture {
             session_id: self.sid.clone(),
             expected_revision: 0,
             operation_id: MutationId::new(),
-            item: Item::Message(MessageItem::Output(OutputMessage {
-                id: id.into(),
-                role: AssistantRole::Assistant,
-                content: vec![OutputMessageContent::OutputText(OutputTextContent {
-                    text: text.into(),
-                    annotations: vec![],
-                    logprobs: None,
-                })],
-                status: OutputStatus::InProgress,
-                phase: None,
-            })),
+            item: streaming_item(id, text),
             turn_id: "t-stream".into(),
         }
     }
@@ -167,17 +204,7 @@ impl Fixture {
             expected_revision: 0,
             operation_id: MutationId::new(),
             seq: seq as u64,
-            item: Item::Message(MessageItem::Output(OutputMessage {
-                id: id.into(),
-                role: AssistantRole::Assistant,
-                content: vec![OutputMessageContent::OutputText(OutputTextContent {
-                    text: text.into(),
-                    annotations: vec![],
-                    logprobs: None,
-                })],
-                status: OutputStatus::InProgress,
-                phase: None,
-            })),
+            item: streaming_item(id, text),
         }
     }
 
@@ -267,6 +294,301 @@ fn stream_micro_writes_do_not_accumulate_operation_or_dirty_rows() {
         0,
         "the legacy per-mutation log must stay retired"
     );
+}
+
+#[test]
+fn batch_stream_updates_commit_once_and_keep_rows_in_flight() {
+    let f = open();
+    let receipts_before = f.count_rows("session_operations");
+    let dirty_before = f.latest_change_id();
+    let ids = ["asst_a", "asst_b", "asst_c"];
+    for (index, id) in ids.iter().enumerate() {
+        f.mutate(f.with_rev(f.streaming(id, &format!("start-{index}"))));
+    }
+    let seqs = f.in_progress_seqs();
+    assert_eq!(seqs.len(), ids.len());
+
+    let revision_before = f.rev();
+    let rows = seqs
+        .iter()
+        .zip(ids.iter())
+        .map(|(seq, id)| StreamItemUpdate {
+            seq: *seq as u64,
+            item: streaming_item(id, &format!("batch-{id}")),
+        })
+        .collect();
+    let receipt = f.mutate(SessionMutation::UpdateStreamItems {
+        session_id: f.sid.clone(),
+        expected_revision: revision_before,
+        operation_id: MutationId::new(),
+        rows,
+    });
+
+    assert_eq!(receipt.revision, revision_before + 1);
+    assert_eq!(
+        receipt.outcome,
+        crate::session::data::command::CommitKind::MetaUpdated
+    );
+    assert_eq!(f.rev(), revision_before + 1);
+    assert_eq!(
+        f.count_rows("session_operations"),
+        receipts_before,
+        "a stream checkpoint batch is not a retryable operation"
+    );
+    assert_eq!(
+        f.latest_change_id(),
+        dirty_before,
+        "in-flight rows still do not wake search"
+    );
+
+    let bodies = f.in_progress_bodies();
+    for (seq, id) in seqs.iter().zip(ids.iter()) {
+        let body = bodies.get(seq).expect("row stays in flight");
+        assert!(
+            body.contains(&format!("batch-{id}")),
+            "row {seq} body did not receive the batch update: {body}"
+        );
+    }
+}
+
+#[test]
+fn batch_stream_updates_reject_settled_row_atomically() {
+    let f = open();
+    for id in ["asst_a", "asst_b", "asst_c"] {
+        f.mutate(f.with_rev(f.streaming(id, "start")));
+    }
+    let seqs = f.in_progress_seqs();
+    assert_eq!(seqs.len(), 3);
+    let sealed_seq = seqs[1];
+    f.mutate(f.with_rev(SessionMutation::SealStreamItem {
+        session_id: f.sid.clone(),
+        expected_revision: 0,
+        operation_id: MutationId::new(),
+        seq: sealed_seq as u64,
+        item: f.finished("asst_b", "sealed"),
+    }));
+
+    let in_progress_before = f.in_progress_bodies();
+    let settled_before = f.settled();
+    let revision_before = f.rev();
+    let rows = seqs
+        .iter()
+        .enumerate()
+        .map(|(index, seq)| StreamItemUpdate {
+            seq: *seq as u64,
+            item: streaming_item(["asst_a", "asst_b", "asst_c"][index], "late"),
+        })
+        .collect();
+    let error = f
+        .mutate_result(SessionMutation::UpdateStreamItems {
+            session_id: f.sid.clone(),
+            expected_revision: revision_before,
+            operation_id: MutationId::new(),
+            rows,
+        })
+        .expect_err("a settled row must reject the whole batch");
+
+    assert!(
+        error.to_string().contains("only a row in flight"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(f.rev(), revision_before);
+    assert_eq!(f.in_progress_bodies(), in_progress_before);
+    assert_eq!(f.settled(), settled_before);
+}
+
+#[test]
+fn batch_stream_updates_reject_duplicate_and_unsorted_rows() {
+    let f = open();
+    for id in ["asst_a", "asst_b"] {
+        f.mutate(f.with_rev(f.streaming(id, "start")));
+    }
+    let seqs = f.in_progress_seqs();
+    assert_eq!(seqs.len(), 2);
+    let revision_before = f.rev();
+    let bodies_before = f.in_progress_bodies();
+
+    let duplicate = vec![
+        StreamItemUpdate {
+            seq: seqs[0] as u64,
+            item: streaming_item("asst_a", "duplicate"),
+        },
+        StreamItemUpdate {
+            seq: seqs[0] as u64,
+            item: streaming_item("asst_a", "duplicate"),
+        },
+    ];
+    let error = f
+        .mutate_result(SessionMutation::UpdateStreamItems {
+            session_id: f.sid.clone(),
+            expected_revision: revision_before,
+            operation_id: MutationId::new(),
+            rows: duplicate,
+        })
+        .expect_err("duplicate seq must be rejected");
+    assert!(
+        error.to_string().contains("strictly ordered"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(f.rev(), revision_before);
+    assert_eq!(f.in_progress_bodies(), bodies_before);
+
+    let unsorted = vec![
+        StreamItemUpdate {
+            seq: seqs[1] as u64,
+            item: streaming_item("asst_b", "late-b"),
+        },
+        StreamItemUpdate {
+            seq: seqs[0] as u64,
+            item: streaming_item("asst_a", "late-a"),
+        },
+    ];
+    let error = f
+        .mutate_result(SessionMutation::UpdateStreamItems {
+            session_id: f.sid.clone(),
+            expected_revision: revision_before,
+            operation_id: MutationId::new(),
+            rows: unsorted,
+        })
+        .expect_err("unsorted seq must be rejected");
+    assert!(
+        error.to_string().contains("strictly ordered"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(f.rev(), revision_before);
+    assert_eq!(f.in_progress_bodies(), bodies_before);
+}
+
+#[test]
+fn batch_stream_updates_reject_empty_and_over_cap() {
+    let f = open();
+    let revision_before = f.rev();
+    let error = f
+        .mutate_result(SessionMutation::UpdateStreamItems {
+            session_id: f.sid.clone(),
+            expected_revision: revision_before,
+            operation_id: MutationId::new(),
+            rows: Vec::new(),
+        })
+        .expect_err("an empty batch must be rejected");
+    assert!(
+        error.to_string().contains("empty batch"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(f.rev(), revision_before);
+
+    let ids: Vec<String> = (0..=MAX_STREAM_BATCH_ROWS)
+        .map(|index| format!("asst_{index}"))
+        .collect();
+    for id in &ids {
+        f.mutate(f.with_rev(f.streaming(id, "start")));
+    }
+    let seqs = f.in_progress_seqs();
+    assert_eq!(seqs.len(), ids.len());
+    let revision_before = f.rev();
+    let rows = seqs
+        .iter()
+        .zip(ids.iter())
+        .map(|(seq, id)| StreamItemUpdate {
+            seq: *seq as u64,
+            item: streaming_item(id, "over-cap"),
+        })
+        .collect();
+    let error = f
+        .mutate_result(SessionMutation::UpdateStreamItems {
+            session_id: f.sid.clone(),
+            expected_revision: revision_before,
+            operation_id: MutationId::new(),
+            rows,
+        })
+        .expect_err("an over-cap batch must be rejected");
+    assert!(
+        error.to_string().contains("row limit"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(f.rev(), revision_before);
+}
+
+#[test]
+fn batch_stream_updates_reject_revision_conflict() {
+    let f = open();
+    for id in ["asst_a", "asst_b"] {
+        f.mutate(f.with_rev(f.streaming(id, "start")));
+    }
+    let seqs = f.in_progress_seqs();
+    assert_eq!(seqs.len(), 2);
+    let bodies_before = f.in_progress_bodies();
+    let revision_before = f.rev();
+    let rows = seqs
+        .iter()
+        .zip(["asst_a", "asst_b"])
+        .map(|(seq, id)| StreamItemUpdate {
+            seq: *seq as u64,
+            item: streaming_item(id, "conflict"),
+        })
+        .collect();
+    let error = f
+        .mutate_result(SessionMutation::UpdateStreamItems {
+            session_id: f.sid.clone(),
+            expected_revision: revision_before + 1,
+            operation_id: MutationId::new(),
+            rows,
+        })
+        .expect_err("stale revision must be rejected");
+    match error {
+        crate::types::LitecodeError::SessionConflict { expected, actual } => {
+            assert_eq!(expected, revision_before + 1);
+            assert_eq!(actual, revision_before);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(f.rev(), revision_before);
+    assert_eq!(f.in_progress_bodies(), bodies_before);
+}
+
+#[test]
+fn batch_stream_updates_update_blob_refs_per_row() {
+    let f = open();
+    for id in ["asst_a", "asst_b"] {
+        f.mutate(f.with_rev(f.streaming(id, "start")));
+    }
+    let seqs = f.in_progress_seqs();
+    assert_eq!(seqs.len(), 2);
+    let large = "x".repeat(40_000);
+    let rows = seqs
+        .iter()
+        .zip(["asst_a", "asst_b"])
+        .map(|(seq, id)| StreamItemUpdate {
+            seq: *seq as u64,
+            item: streaming_item(id, &large),
+        })
+        .collect();
+    f.mutate(SessionMutation::UpdateStreamItems {
+        session_id: f.sid.clone(),
+        expected_revision: f.rev(),
+        operation_id: MutationId::new(),
+        rows,
+    });
+
+    let refs = f.in_progress_body_refs();
+    assert_eq!(refs.len(), 2);
+    assert!(
+        refs.iter().all(|body_ref| {
+            body_ref
+                .as_deref()
+                .is_some_and(|body_ref| body_ref.starts_with("[blob:"))
+        }),
+        "both large bodies must be spilled: {refs:?}"
+    );
+    let count: i64 = f
+        .db()
+        .query_row(
+            "SELECT COUNT(*) FROM session_blob_refs WHERE session_id = ?1",
+            rusqlite::params![&f.sid],
+            |row| row.get(0),
+        )
+        .expect("blob ref count");
+    assert_eq!(count, 2, "each row keeps its own blob reference");
 }
 
 #[test]

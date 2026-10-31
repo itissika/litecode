@@ -7,9 +7,9 @@ use litecode::config::schema::AgentProfile;
 use litecode::config::workspace::enable_code_search_engine;
 use litecode::config::{ConfigManager, WorkspaceState, init_workspace};
 use litecode::engines::code_search::{
-    HashEmbedder, IndexMeta, IndexStatus, PIPELINE_VERSION,
-    index_dir, index_workspace_blocking, init_workspace_index, needs_rebuild, read_code_queue, read_meta,
-    resolve_index_view, warmup_index, write_meta,
+    HashEmbedder, IndexMeta, IndexStatus, PIPELINE_VERSION, index_dir, index_workspace_blocking,
+    init_workspace_index, needs_rebuild, read_code_queue, read_meta, resolve_index_view,
+    warmup_index, write_meta,
 };
 use litecode::engines::{EngineState, WorkspaceEngines};
 use litecode::tool::capability::capability_catalog;

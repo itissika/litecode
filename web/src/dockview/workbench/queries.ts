@@ -179,6 +179,85 @@ export function activePanelId(): string | undefined {
   return dockview()?.activePanel?.id;
 }
 
+/** Dock components that render a session transcript. */
+const SESSION_PANEL_COMPONENTS = new Set(["agent", "subagent"]);
+
+/**
+ * Sessions shown by the active panel of every live center group.
+ *
+ * This deliberately reads each group's `activePanel` instead of the panel
+ * API's `isActive`: that flag also requires the group to own keyboard focus,
+ * so clicking the sidebar (the moment a marker matters most) would clear it.
+ * A split center can show several sessions at once — each is reported.
+ */
+export function activeCenterSessionIds(api?: DockviewApi | null): string[] {
+  const live = apiOr(api);
+  if (!live) return [];
+  const ids = new Set<string>();
+  const groups = (live.groups ?? []) as unknown as GroupLike[];
+  for (const group of groups) {
+    const facts = readGroup(group);
+    const role = groupRole(facts);
+    if (role !== "main-center" && role !== "popout-center") continue;
+    const panel = facts.activePanel;
+    if (!panel?.component || !SESSION_PANEL_COMPONENTS.has(panel.component)) {
+      continue;
+    }
+    const sessionId = panel.params.sessionId;
+    if (typeof sessionId === "string" && sessionId) ids.add(sessionId);
+  }
+  return [...ids];
+}
+
+/** Subscribe to {@link activeCenterSessionIds}; fires only when it changes. */
+export function watchActiveCenterSessionIds(
+  onChange: (ids: readonly string[]) => void,
+): () => void {
+  let stopLayout: (() => void) | undefined;
+  let stopResync: (() => void) | undefined;
+  let last: readonly string[] = [];
+
+  const sync = () => {
+    const next = activeCenterSessionIds();
+    if (
+      next.length === last.length &&
+      next.every((id, index) => id === last[index])
+    ) {
+      return;
+    }
+    last = next;
+    onChange(next);
+  };
+
+  const arm = () => {
+    stopLayout?.();
+    stopLayout = undefined;
+    stopResync?.();
+    stopResync = undefined;
+    const api = dockview();
+    if (!api) {
+      sync();
+      return;
+    }
+    const layout = api.onDidLayoutChange?.(sync);
+    if (layout) stopLayout = () => disposeSub(layout);
+    // The sidebar can mount while a saved layout is still being restored, and
+    // that restore's layout change is not replayed to a listener that attached
+    // mid-restore. Re-read after the current frame so a cold start does not
+    // leave the marker empty until the next user-driven activation.
+    const frame = requestAnimationFrame(sync);
+    stopResync = () => cancelAnimationFrame(frame);
+    sync();
+  };
+
+  const off = onDockviewAttached(arm);
+  return () => {
+    off();
+    stopLayout?.();
+    stopResync?.();
+  };
+}
+
 /** True when the main center already hosts any panel (size ignored).
  *
  * Right after fromJSON, groups can read 0x0 until paint. Requiring a usable

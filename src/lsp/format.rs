@@ -28,7 +28,11 @@ pub(crate) fn display_path(path: &Path, roots: &[&Path]) -> String {
         }
         if let Some(rel) = crate::workspace::filter::cheap_rel_under(root, path) {
             let rel = rel.trim_start_matches('/');
-            return if rel.is_empty() { ".".to_string() } else { rel.to_string() };
+            return if rel.is_empty() {
+                ".".to_string()
+            } else {
+                rel.to_string()
+            };
         }
     }
     path.to_string_lossy().into_owned()
@@ -162,7 +166,8 @@ pub(crate) fn extract_diagnostic_items(result: &Value, file_path: &str) -> Vec<D
     let Some(diags) = result.as_array() else {
         return Vec::new();
     };
-    diags.iter()
+    diags
+        .iter()
         .filter_map(|diag| {
             let severity = match diag["severity"].as_u64().unwrap_or(0) {
                 1 => "Error",
@@ -173,7 +178,10 @@ pub(crate) fn extract_diagnostic_items(result: &Value, file_path: &str) -> Vec<D
             };
             let message = diag["message"].as_str()?.to_string();
             let start = diag.get("range").and_then(|r| r.get("start"));
-            let line = start.and_then(|s| s["line"].as_u64()).map(|l| l + 1).unwrap_or(1);
+            let line = start
+                .and_then(|s| s["line"].as_u64())
+                .map(|l| l + 1)
+                .unwrap_or(1);
             let character = start
                 .and_then(|s| s["character"].as_u64())
                 .map(|c| c + 1)
@@ -219,7 +227,10 @@ pub(crate) fn extract_symbol_items(
             .or_else(|| val.get("selectionRange").or_else(|| val.get("range")));
         let start = range.and_then(|r| r.get("start"));
         let end = range.and_then(|r| r.get("end"));
-        let line = start.and_then(|s| s["line"].as_u64()).map(|l| l + 1).unwrap_or(1);
+        let line = start
+            .and_then(|s| s["line"].as_u64())
+            .map(|l| l + 1)
+            .unwrap_or(1);
         let character = start
             .and_then(|s| s["character"].as_u64())
             .map(|c| c + 1)
@@ -486,7 +497,11 @@ mod tests {
         let items = extract_location_items(&loc(&file), &[ws.path()]);
         assert_eq!(items.len(), 1);
         let got = PathBuf::from(&items[0].path);
-        assert!(got.is_absolute(), "outside path must stay absolute: {}", items[0].path);
+        assert!(
+            got.is_absolute(),
+            "outside path must stay absolute: {}",
+            items[0].path
+        );
         assert!(items[0].path.ends_with("dep.rs"));
     }
 
@@ -494,14 +509,20 @@ mod tests {
     fn display_path_does_not_resolve_symlinks() {
         // Pure prefix strip: a symlinked root is matched textually, never canonicalized.
         let root = Path::new("/ws/link");
-        assert_eq!(display_path(Path::new("/ws/link/a/b.rs"), &[root]), "a/b.rs");
+        assert_eq!(
+            display_path(Path::new("/ws/link/a/b.rs"), &[root]),
+            "a/b.rs"
+        );
         // Same file reached via the symlink target is outside by string → absolute.
         assert_eq!(
             display_path(Path::new("/ws/real/a/b.rs"), &[root]),
             "/ws/real/a/b.rs"
         );
         // No roots → absolute (internal callers).
-        assert_eq!(display_path(Path::new("/ws/link/a.rs"), &[]), "/ws/link/a.rs");
+        assert_eq!(
+            display_path(Path::new("/ws/link/a.rs"), &[]),
+            "/ws/link/a.rs"
+        );
     }
 
     #[test]
@@ -531,5 +552,4 @@ mod tests {
         let b = syms[1].path.as_deref().unwrap();
         assert!(Path::new(b).is_absolute() && b.ends_with("o.rs"), "got {b}");
     }
-
 }

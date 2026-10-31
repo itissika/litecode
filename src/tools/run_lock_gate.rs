@@ -45,7 +45,10 @@ fn guarded_scope(deadline: Option<tokio::time::Instant>) -> (RunScope, Arc<Atomi
 async fn run_in(scope_: RunScope, tool: &RunTool, root: &Path, command: &str) -> ToolCallResult {
     scope(
         scope_,
-        tool.execute(json!({ "command": command }), test_execution(root, "s-lock")),
+        tool.execute(
+            json!({ "command": command }),
+            test_execution(root, "s-lock"),
+        ),
     )
     .await
 }
@@ -65,7 +68,9 @@ async fn window_is_capped_by_run_code_deadline() {
     let dir = tempfile::tempdir().unwrap();
     let jobs = Arc::new(AgentJobRegistry::new());
     let tool = RunTool::new(Arc::clone(&jobs));
-    let (s, _) = guarded_scope(Some(tokio::time::Instant::now() + Duration::from_millis(1500)));
+    let (s, _) = guarded_scope(Some(
+        tokio::time::Instant::now() + Duration::from_millis(1500),
+    ));
     let started = Instant::now();
     let result = run_in(s, &tool, dir.path(), "sleep 30").await;
     let elapsed = started.elapsed();
@@ -89,7 +94,10 @@ async fn locks_release_after_spawn_while_command_still_runs() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(flag.load(Ordering::SeqCst), "locks must drop once spawned");
-    assert!(!task.is_finished(), "run must still be waiting in the foreground");
+    assert!(
+        !task.is_finished(),
+        "run must still be waiting in the foreground"
+    );
     let result = task.await.unwrap();
     assert_eq!(result.data.as_ref().unwrap()["exit_code"], 0);
 }
@@ -136,13 +144,11 @@ async fn dropped_in_flight_future_releases_and_panic_unwind_releases() {
 
     // Panic inside the scoped future: unwinding drops the guards.
     let (s, flag) = guarded_scope(None);
-    let outcome = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(scope(
-        s,
-        async {
+    let outcome =
+        futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(scope(s, async {
             panic!("boom");
-        },
-    )))
-    .await;
+        })))
+        .await;
     assert!(outcome.is_err());
     assert!(flag.load(Ordering::SeqCst));
 }
@@ -171,7 +177,8 @@ async fn four_parallel_write_runs_finish_in_about_one_second() {
         Arc::new(WorkspaceWriteLock::new()),
         None,
     ));
-    let bundle: Vec<Arc<dyn Tool>> = vec![Arc::new(RunTool::new(Arc::new(AgentJobRegistry::new())))];
+    let bundle: Vec<Arc<dyn Tool>> =
+        vec![Arc::new(RunTool::new(Arc::new(AgentJobRegistry::new())))];
     let tool = CodeTool::new(bundle, host);
     let code = "const rs = await Promise.all([1,2,3,4].map(i => tools.process.run({command:`sleep 1 && touch f${i}`}))); return rs.map(r => r.exit_code);";
     let started = Instant::now();
@@ -192,9 +199,17 @@ async fn four_parallel_write_runs_finish_in_about_one_second() {
     let elapsed = started.elapsed();
     assert!(result.error.is_none(), "{}", result.content);
     for i in 1..=4 {
-        assert!(root.join(format!("f{i}")).exists(), "f{i}: {}", result.content);
+        assert!(
+            root.join(format!("f{i}")).exists(),
+            "f{i}: {}",
+            result.content
+        );
     }
-    assert!(result.content.contains("[0,0,0,0]") || result.content.contains("[\n  0,"), "{}", result.content);
+    assert!(
+        result.content.contains("[0,0,0,0]") || result.content.contains("[\n  0,"),
+        "{}",
+        result.content
+    );
     assert!(
         elapsed >= Duration::from_millis(950) && elapsed < Duration::from_millis(3500),
         "4x1s parallel runs took {elapsed:?} (serial would be ~4s)"

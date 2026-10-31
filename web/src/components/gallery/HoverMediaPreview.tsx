@@ -108,6 +108,7 @@ export function HoverMediaPreview({
     <div
       className="gallery-hover"
       data-testid="gallery-hover"
+      data-litecode-overlay="tooltip"
       style={{ left, top, width: CARD_WIDTH }}
       onMouseEnter={onPointerEnter}
       onMouseLeave={onPointerLeave}

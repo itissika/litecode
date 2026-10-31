@@ -313,11 +313,7 @@ impl ResolvedConfig {
         }
         let suites = self.custom_suites();
         for tool in map.values_mut() {
-            if let Some(suite) = tool
-                .suite
-                .as_deref()
-                .and_then(|name| suites.get(name))
-            {
+            if let Some(suite) = tool.suite.as_deref().and_then(|name| suites.get(name)) {
                 tool.surface = Some(suite.surface);
                 tool.rules = suite.rules.clone();
             }
@@ -447,10 +443,8 @@ pub fn resolve(
         defs.push(definition.clone());
     }
     for (agent_id, profile) in &mut global.agents {
-        let notes = super::suite_bindings::collapse_custom_suite_bindings(
-            &mut profile.tools,
-            &defs,
-        );
+        let notes =
+            super::suite_bindings::collapse_custom_suite_bindings(&mut profile.tools, &defs);
         for note in notes {
             tracing::warn!(agent = %agent_id, "{note}");
         }
@@ -459,10 +453,4 @@ pub fn resolve(
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-
-}
+mod tests {}

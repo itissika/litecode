@@ -1,8 +1,10 @@
 //! One class for the knowledge base, attached when a person sends a message.
 //!
 //! Only enabled nodes count. A library with no enabled node is not a class,
-//! and the caller writes nothing. The class is computed by the resident index
-//! when it publishes a snapshot; a turn only reads it (see [`super::index::turn_note`]).
+//! and the caller writes nothing. Errors are the only thing that raises the
+//! class; warnings stay in `knowledge check` and the panel. The class is
+//! computed by the resident index when it publishes a snapshot; a turn only
+//! reads it (see [`super::index::turn_note`]).
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -14,7 +16,6 @@ use super::validate::{Issue, Severity};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
     Error,
-    Warning,
     Ok,
 }
 
@@ -22,7 +23,6 @@ impl Class {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Error => "error",
-            Self::Warning => "warning",
             Self::Ok => "ok",
         }
     }
@@ -42,8 +42,9 @@ pub fn note(workspace: &Path) -> Option<Note> {
 
 /// Turn-reminder class of a resolved corpus.
 ///
-/// Pending and disabled nodes are ignored, including their issues. No enabled
-/// node means no note.
+/// Pending and disabled nodes are ignored, including their issues. Warnings
+/// (file name, inactive target) never raise the class. No enabled node means
+/// no note.
 pub fn note_from(corpus: &Corpus, issues: &[Issue]) -> Option<Note> {
     if corpus.root.is_none() {
         return None;
@@ -64,15 +65,6 @@ pub fn note_from(corpus: &Corpus, issues: &[Issue]) -> Option<Note> {
         return Some(Note {
             class: Class::Error,
             text: error_text(errors.len()),
-        });
-    }
-    let warnings = nodes_with(issues, Severity::Warning, |issue| {
-        issue.code != "inactive_target" && enabled.contains(issue.node_path.as_str())
-    });
-    if !warnings.is_empty() {
-        return Some(Note {
-            class: Class::Warning,
-            text: warning_text(warnings.len()),
         });
     }
     Some(Note {
@@ -100,13 +92,6 @@ fn error_text(count: usize) -> String {
     )
 }
 
-fn warning_text(count: usize) -> String {
-    let nodes = if count == 1 { "node has" } else { "nodes have" };
-    format!(
-        "Knowledge base: {count} {nodes} warnings. You can run `knowledge check`, tell the user, and suggest a fix."
-    )
-}
-
 fn ok_text(count: usize) -> String {
     let nodes = if count == 1 { "node" } else { "nodes" };
     format!("Knowledge base: {count} enabled {nodes}.")
@@ -118,7 +103,7 @@ mod tests {
     use std::fs;
 
     fn write_node(dir: &Path, rel: &str, body: &str) {
-        let path = dir.join(".litecode").join("knowledge").join(rel);
+        let path = dir.join("knowledge").join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, body).unwrap();
     }
@@ -132,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn classes_cover_errors_warnings_and_enabled() {
+    fn classes_cover_errors_and_enabled() {
         let errors = tempfile::tempdir().unwrap();
         write_node(
             errors.path(),
@@ -154,14 +139,12 @@ mod tests {
             "Knowledge base: 2 nodes have errors. You can run `knowledge check` and tell the user."
         );
 
-        let warning = tempfile::tempdir().unwrap();
-        write_node(warning.path(), "other.md", &enabled("seq", ""));
-        let warned = note(warning.path()).unwrap();
-        assert_eq!(warned.class, Class::Warning);
-        assert_eq!(
-            warned.text,
-            "Knowledge base: 1 node has warnings. You can run `knowledge check`, tell the user, and suggest a fix."
-        );
+        // A warning alone (file name differs from the key) stays quiet.
+        let warned = tempfile::tempdir().unwrap();
+        write_node(warned.path(), "other.md", &enabled("seq", ""));
+        let held = note(warned.path()).unwrap();
+        assert_eq!(held.class, Class::Ok);
+        assert_eq!(held.text, "Knowledge base: 1 enabled node.");
 
         let mixed = tempfile::tempdir().unwrap();
         write_node(mixed.path(), "draft.md", &pending("draft", ""));
@@ -182,5 +165,4 @@ mod tests {
         assert_eq!(ok.class, Class::Ok);
         assert_eq!(ok.text, "Knowledge base: 2 enabled nodes.");
     }
-
 }

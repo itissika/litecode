@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LitecodeDesktopBridge } from "../api/auth";
+import type { GroupLike } from "../dockview/workbench/readGroup";
 import {
   bindWindowRegistry,
   resetWindowsForTests,
@@ -14,6 +15,12 @@ import {
 
 const PANEL_ID = "browser-11111111-1111-4111-8111-111111111111";
 const OTHER_ID = "browser-22222222-2222-4222-8222-222222222222";
+type PopoutLike = {
+  id: string;
+  window: Window;
+  group: GroupLike;
+};
+
 const quietApi = {
   onDidAddPopoutGroup: () => ({ dispose() {} }),
   onDidRemovePopoutGroup: () => ({ dispose() {} }),
@@ -34,20 +41,23 @@ function setRect(element: HTMLElement, left: number, top: number, width: number,
   (element as HTMLElement & { checkVisibility: () => boolean }).checkVisibility = () => true;
 }
 
-function addHost(id: string): HTMLElement {
-  const host = document.createElement("div");
+function addHost(id: string, doc: Document = document): HTMLElement {
+  const host = doc.createElement("div");
   host.dataset.nativeViewHost = "";
   host.dataset.nativeViewKind = "browser";
   host.dataset.nativeViewId = id;
-  document.body.appendChild(host);
+  doc.body.appendChild(host);
   setRect(host, 0, 0, 100, 100);
   return host;
 }
 
-function addOverlay(): HTMLElement {
-  const overlay = document.createElement("div");
-  overlay.dataset.litecodeOverlay = "dialog";
-  document.body.appendChild(overlay);
+function addOverlay(
+  kind = "dialog",
+  doc: Document = document,
+): HTMLElement {
+  const overlay = doc.createElement("div");
+  overlay.dataset.litecodeOverlay = kind;
+  doc.body.appendChild(overlay);
   setRect(overlay, 50, 50, 100, 100);
   return overlay;
 }
@@ -169,5 +179,193 @@ describe("installNativeViewOcclusion", () => {
     });
     stop();
     expect(calls.at(-1)).toBe(`show:browser:${PANEL_ID}`);
+  });
+
+  it("hides an instant overlay before its snapshot resolves", async () => {
+    const calls: string[] = [];
+    let resolveSnapshot: ((value: string) => void) | null = null;
+    window.litecode = stubDesktopBridge({
+      nativeViewGetSnapshot: ({ kind, id }) => {
+        calls.push(`get:${kind}:${id}`);
+        return new Promise((resolve) => {
+          resolveSnapshot = resolve;
+        });
+      },
+      nativeViewSetOccluded: ({ kind, id, occluded }) => {
+        calls.push(`${occluded ? "hide" : "show"}:${kind}:${id}`);
+      },
+    });
+    addHost(PANEL_ID);
+    addOverlay("context-menu");
+    installNativeViewOcclusion();
+
+    await vi.waitFor(() => {
+      expect(calls).toEqual([
+        `hide:browser:${PANEL_ID}`,
+        `get:browser:${PANEL_ID}`,
+      ]);
+    });
+    expect(
+      useNativeViewOcclusionStore.getState().placeholders[`browser:${PANEL_ID}`]
+        ?.dataUrl,
+    ).toBe("");
+
+    const resolve = resolveSnapshot as ((value: string) => void) | null;
+    resolve?.("data:image/jpeg;base64,c25hcHNob3Q=");
+    await vi.waitFor(() => {
+      expect(
+        useNativeViewOcclusionStore.getState().placeholders[`browser:${PANEL_ID}`]
+          ?.dataUrl,
+      ).toContain("data:image/jpeg");
+    });
+  });
+
+  it("hides every overlapping view before any instant snapshot resolves", async () => {
+    const calls: string[] = [];
+    window.litecode = stubDesktopBridge({
+      nativeViewGetSnapshot: ({ kind, id }) => {
+        calls.push(`get:${kind}:${id}`);
+        return new Promise(() => undefined);
+      },
+      nativeViewSetOccluded: ({ kind, id, occluded }) => {
+        calls.push(`${occluded ? "hide" : "show"}:${kind}:${id}`);
+      },
+    });
+    addHost(PANEL_ID);
+    addHost(OTHER_ID);
+    addOverlay("context-menu");
+    installNativeViewOcclusion();
+
+    await vi.waitFor(() => {
+      expect(calls.filter((call) => call.startsWith("hide:"))).toEqual([
+        `hide:browser:${PANEL_ID}`,
+        `hide:browser:${OTHER_ID}`,
+      ]);
+    });
+  });
+
+  it.each(["dv-context-menu", "monaco-menu"])(
+    "recognizes %s as an instant blocker",
+    async (className) => {
+      const calls: string[] = [];
+      window.litecode = bridgeWith(calls);
+      addHost(PANEL_ID);
+      const menu = document.createElement("div");
+      menu.className = className;
+      document.body.appendChild(menu);
+      setRect(menu, 50, 50, 100, 100);
+      installNativeViewOcclusion();
+
+      await vi.waitFor(() => {
+        expect(calls).toEqual([
+          `hide:browser:${PANEL_ID}`,
+          `get:browser:${PANEL_ID}`,
+        ]);
+      });
+    },
+  );
+
+  it("does not hide for a contextmenu without an overlay", async () => {
+    const calls: string[] = [];
+    window.litecode = bridgeWith(calls);
+    addHost(PANEL_ID);
+    installNativeViewOcclusion();
+
+    document.body.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual([]);
+  });
+
+  it("turns an actual tab drag into an instant tab-drag overlay", async () => {
+    const calls: string[] = [];
+    window.litecode = bridgeWith(calls);
+    addHost(PANEL_ID);
+    const tab = document.createElement("div");
+    tab.className = "dv-tab";
+    document.body.appendChild(tab);
+    installNativeViewOcclusion();
+
+    tab.dispatchEvent(
+      new MouseEvent("pointerdown", { bubbles: true, clientX: 1, clientY: 1 }),
+    );
+    tab.dispatchEvent(
+      new MouseEvent("pointermove", { bubbles: true, clientX: 9, clientY: 1 }),
+    );
+
+    await vi.waitFor(() => {
+      expect(
+        document.querySelector('[data-litecode-overlay="tab-drag"]'),
+      ).not.toBeNull();
+    });
+    const overlay = document.querySelector<HTMLElement>(
+      '[data-litecode-overlay="tab-drag"]',
+    );
+    if (!overlay) throw new Error("tab-drag overlay missing");
+    setRect(overlay, 0, 0, 100, 100);
+    window.dispatchEvent(new Event("resize"));
+
+    await vi.waitFor(() => {
+      expect(calls).toContain(`hide:browser:${PANEL_ID}`);
+    });
+
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    await vi.waitFor(() => {
+      expect(
+        document.querySelector('[data-litecode-overlay="tab-drag"]'),
+      ).toBeNull();
+    });
+    await vi.waitFor(() => {
+      expect(calls.at(-1)).toBe(`show:browser:${PANEL_ID}`);
+    });
+  });
+
+  it("drives popout hosts through the main renderer bridge", async () => {
+    const calls: string[] = [];
+    window.litecode = bridgeWith(calls);
+    const frame = document.createElement("iframe");
+    document.body.appendChild(frame);
+    const popout = frame.contentWindow;
+    if (!popout) throw new Error("iframe window unavailable");
+
+    addHost(PANEL_ID, popout.document);
+    const overlay = addOverlay("context-menu", popout.document);
+
+    const popouts: { add: ((popout: PopoutLike) => void) | null } = {
+      add: null,
+    };
+    bindWindowRegistry({
+      onDidAddPopoutGroup: (cb) => {
+        popouts.add = cb;
+        return { dispose() {} };
+      },
+      onDidRemovePopoutGroup: () => ({ dispose() {} }),
+    });
+    installNativeViewOcclusion();
+    popouts.add?.({
+      id: "dock-1",
+      window: popout,
+      group: {
+        id: "dock-1",
+        api: {
+          id: "dock-1",
+          location: {
+            type: "popout",
+            popoutUrl:
+              "/popout.html?dock=11111111-1111-4111-8111-111111111111",
+          },
+        },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(calls).toContain(`hide:browser:${PANEL_ID}`);
+    });
+    overlay.remove();
+    popout.dispatchEvent(new Event("resize"));
+    await vi.waitFor(() => {
+      expect(calls.at(-1)).toBe(`show:browser:${PANEL_ID}`);
+    });
   });
 });

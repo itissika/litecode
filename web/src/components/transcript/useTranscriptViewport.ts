@@ -228,6 +228,10 @@ export function useTranscriptViewport({
 
   const virtualItems = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
+  // The visible range, not `virtualItems`: virtualItems includes overscan, so
+  // a page that prepends only a few bubbles would immediately request the next
+  // page while index 0 is still off-screen.
+  const firstVisibleIndex = virtualizer.range?.startIndex;
 
   const pinToEnd = useCallback(() => {
     setStick(true);
@@ -414,10 +418,8 @@ export function useTranscriptViewport({
 
   useEffect(() => {
     if (!canLoadMore || loadingHistory) return;
-    if (count === 0 || virtualItems.some((item) => item.index === 0)) {
-      onLoadMore();
-    }
-  }, [canLoadMore, count, loadingHistory, onLoadMore, virtualItems]);
+    if (count === 0 || firstVisibleIndex === 0) onLoadMore();
+  }, [canLoadMore, count, firstVisibleIndex, loadingHistory, onLoadMore]);
 
   // The scroller is the same node after a popout. Rebind the virtualizer onto
   // that window, and while a mini chat is open measure its row from there so

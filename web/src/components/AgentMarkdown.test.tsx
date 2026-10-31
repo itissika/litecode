@@ -324,10 +324,10 @@ describe("AgentMarkdown citations", () => {
                 symbol: "impl Store › fn save",
                 lines: null,
                 raw: '[@ file="src/a.rs" symbol="impl Store › fn save"]',
-                status: "symbol_drift" as const,
+                status: "filename_mismatch" as const,
                 severity: "warning" as const,
                 targetPath: "src/a.rs",
-                args: { path: "src/a.rs", symbol: "impl Store › fn save" },
+                args: { key: "impl Store › fn save", filename: "a.rs" },
                 message: "",
               },
             ],
@@ -355,7 +355,7 @@ describe("AgentMarkdown citations", () => {
     expect(driftChip?.classList.contains("is-drift")).toBe(true);
     fireEvent.mouseEnter(driftChip!);
     expect(screen.getByRole("tooltip").textContent).toBe(
-      'src/a.rs : impl Store › fn save\nSymbol "impl Store › fn save" in "src/a.rs" differs from HEAD.',
+      'src/a.rs : impl Store › fn save\nFilename "a.rs" does not match declaration "impl Store › fn save".',
     );
   });
 

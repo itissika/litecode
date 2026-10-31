@@ -145,7 +145,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 
 | kind | 脊骨 | HumanView | AgentView | body |
 |---|---|---|---|---|
-| `compacted` | 本行替换 `[from, to)`。被换行仍在 SessionEvent | 切痕，不展示摘要 | **不是** durable assistant Item；只有 projector 把 role-free body 投影成 user checkpoint | `CompactedBody { summary, from, to, at? }`（无 role） |
+| `compacted` | 本行替换 `[from, to)`。被换行仍在 SessionEvent | 切痕，不展示摘要 | **不是** durable assistant Item；只有 projector 把 role-free body 投影成 user checkpoint | `CompactedBody { summary, from, to, at?, provider_id? }`（无 role；provider_id 是支付摘要请求的 provider，旧行缺省归 unknown） |
 
 `compacted` 的持久 body 永远保留原始 `summary` 文本和 `from/to`，不写 `role`。`at` 是切点冻结那一刻的尾部 seq，只给 HumanView 定位这一行用（后台压缩时摘要跑在主 loop 之外，行的自称 seq 是提交时刻，会让切痕落到主 loop 之后新增内容的下面）；`at` 不参与 shadow 区间，旧行缺省，读不到就按自身 seq 画。
 
@@ -178,7 +178,7 @@ AgentView/projector 在读取边界把它展开成唯一形状：
 | `reminder/subagent_settled` | Event | 切痕「子会话结束」 | 后台子会话回合结束 |
 | `reminder/custom_tool_settled` | Event | 切痕「后台自定义工具结束」 | 后台自定义工具任务结束。结果经 mailbox 在请求缝隙写入，不发明 FunctionCallOutput |
 | `reminder/mentions` | 附着（非 seam Restore） | 隐藏 | 人键入 user 消息后立即写：展开消息里引用的知识节点/符号快照；压缩后不自动恢复；同快照仍在活面上则不重复写 |
-| `reminder/knowledge_status` | Diff（按 class） | 隐藏 | 人键入 user 消息后附着知识库 class 提示；没有 enabled 节点不写（pending / disabled 视同空库，它们的问题也不计入）；只统计 enabled 节点上的错误与警告，否则报 enabled 数量；活面上同 class 不重复写 |
+| `reminder/knowledge_status` | Diff（按 class） | 隐藏 | 人键入 user 消息后附着知识库 class 提示；没有 enabled 节点不写（pending / disabled 视同空库，它们的问题也不计入）；只统计 enabled 节点上的错误，没有错误则报 enabled 数量；活面上同 class 不重复写 |
 
 隐藏行仍然下发，带 `hidden: true`，seq 游标保持连续。可见性只在 Rust 的 `ReminderKind::visibility` 声明；前端只认 `hidden`。
 

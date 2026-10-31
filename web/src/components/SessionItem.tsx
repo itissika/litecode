@@ -3,6 +3,7 @@ import { Trash } from "@phosphor-icons/react";
 import type { SessionInfo } from "../api/types";
 import { isWaitingForUserPhase } from "../api/types";
 import { useTurnStore } from "../stores/turnStore";
+import { sessionTitle } from "../lib/sessionDisplay";
 import { LivePreview } from "./LivePreview";
 import {
   SessionStatusDot,
@@ -53,6 +54,10 @@ interface SessionItemProps {
    * the default.
    */
   indentPx?: number;
+  /** This session is what the agent area currently shows. */
+  focused?: boolean;
+  /** Settled to idle while its transcript was hidden; cleared on focus. */
+  unread?: boolean;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
   onContextMenu?: (event: React.MouseEvent) => void;
@@ -67,7 +72,7 @@ interface SessionItemProps {
 
 /**
  * Pure presentational row for a single session. Single-line layout:
- *   [status dot] [conversation summary] [live summary] [time ⇄ delete]
+ *   [status dot] [conversation summary] [live summary] [unread · time ⇄ delete]
  * Owns no store subscriptions — `session` + `now` are supplied by the parent.
  * The `pending` status (WP-184 / WP-186): WireTurnPhase `waiting_for_user`
  * (legacy object key `awaiting_permission`), else trust BE
@@ -78,6 +83,8 @@ export const SessionItem = memo(function SessionItem({
   session,
   now,
   indentPx = 12,
+  focused = false,
+  unread = false,
   onOpen,
   onDelete,
   onContextMenu,
@@ -98,7 +105,7 @@ export const SessionItem = memo(function SessionItem({
   const deleteBlocked = session.running || subagentBusy;
   const deleteLabel = deleteBlocked
     ? i18n.t("session.cannotDeleteBusy")
-    : "Delete session";
+    : i18n.t("session.deleteSession");
   const status: SessionStatus = pending
     ? "pending"
     : deleteBlocked
@@ -139,15 +146,21 @@ export const SessionItem = memo(function SessionItem({
     onRename?.(title || null);
   };
 
-  const preview = session.preview?.trim();
-  const title = session.title?.trim();
-  const label = title || preview;
+  const label = sessionTitle(session);
   const relative = formatRelative(session.updated_at, now);
 
   return (
-    <div className="group relative h-9">
+    <div
+      className="group relative h-9"
+      data-session-active={focused ? "true" : undefined}
+      data-session-unread={unread ? "true" : undefined}
+    >
       <div
-        className="flex h-9 cursor-pointer items-center gap-2 pr-12 text-(--_dk-ix-fg) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) active:bg-(--_dk-ix-bg-pressed) focus-visible:shadow-[0_0_0_2px_var(--_dk-ix-ring)]"
+        className={`flex h-9 cursor-pointer items-center gap-2 pr-12 text-(--_dk-ix-fg) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) active:bg-(--_dk-ix-bg-pressed) focus-visible:shadow-[0_0_0_2px_var(--_dk-ix-ring)] ${
+          focused
+            ? "bg-(--_dk-ix-bg-selected) shadow-[inset_1px_0_0_var(--_dk-accent-ring)]"
+            : ""
+        }`}
         style={{ paddingLeft: indentPx }}
         draggable={!renaming}
         onDragStart={(event) => {
@@ -195,8 +208,12 @@ export const SessionItem = memo(function SessionItem({
             />
           ) : (
             <span
-              className="max-w-32 min-w-0 text-(--_dk-text-secondary)"
-              title={preview || title || undefined}
+              className={`max-w-32 min-w-0 ${
+                focused
+                  ? "text-(--_dk-text-primary)"
+                  : "text-(--_dk-text-secondary)"
+              }`}
+              title={label || undefined}
               onDoubleClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -205,7 +222,9 @@ export const SessionItem = memo(function SessionItem({
             >
               <span className="block truncate text-[11px]">
                 {label || (
-                  <span className="text-(--_dk-text-disabled)">No preview</span>
+                  <span className="text-(--_dk-text-disabled)">
+                    {i18n.t("session.noPreview")}
+                  </span>
                 )}
               </span>
             </span>
@@ -219,8 +238,15 @@ export const SessionItem = memo(function SessionItem({
           />
         </SessionStatusDot>
       </div>
-      {/* Time while idle; the delete square takes its place on hover. */}
-      <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-[10px] text-(--_dk-text-muted) transition-opacity group-hover:opacity-0">
+      {/* Time while idle; the unread dot sits beside it and the delete square
+          takes the slot on hover. */}
+      <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1.5 pr-3 text-[10px] text-(--_dk-text-muted) transition-opacity group-hover:opacity-0">
+        {unread && (
+          <span
+            aria-hidden
+            className="h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-emerald-500)"
+          />
+        )}
         {relative}
       </span>
       {/* Row-height square delete target, flush to the row's right edge. It is a

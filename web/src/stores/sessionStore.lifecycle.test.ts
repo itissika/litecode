@@ -198,6 +198,12 @@ describe("sessionStore session list ordering", () => {
       "s-old",
       "s-brand",
     ]);
+    // Live-only row: list-projection fields stay unset until a list refresh.
+    const fresh = useSessionStore
+      .getState()
+      .sessions.find((s) => s.id === "s-brand");
+    expect(fresh?.title).toBeNull();
+    expect(fresh?.folder_id).toBeNull();
   });
 
   it("sorts the list handed to onSessionList", () => {

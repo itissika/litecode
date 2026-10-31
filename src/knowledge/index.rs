@@ -3,16 +3,15 @@
 //! One [`Engine`] per workspace keeps every expensive fact cached:
 //! knowledge markdown by (len, mtime), cited files by exact-name stamp
 //! (content, line index, tree-sitter scopes parsed at most once per stamp),
-//! HEAD blobs read through git2 and keyed by blob oid, and symbol verdicts
-//! keyed by (file generation, HEAD blob). A refresh re-stats only what a hint
-//! names (or everything on a full sweep), reparses only what changed, then
+//! and symbol verdicts keyed by file generation. A refresh re-stats only what a
+//! hint names (or everything on a full sweep), reparses only what changed, then
 //! re-runs the pure resolver over cached facts.
 //!
 //! [`KnowledgeIndex`] owns an engine plus a background worker fed by the
 //! workspace change bus, a periodic full sweep, and publishes immutable
 //! versioned [`Snapshot`]s. The per-turn knowledge note, the HTTP API and the
 //! `knowledge` tool all read those snapshots; nothing on the turn path parses,
-//! spawns git, or touches the disk (see `docs/knowledge-references.md` §9-10).
+//! spawns git, or touches the disk (see `docs/knowledge-references.md` §8-9).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -46,7 +45,6 @@ pub const TURN_WAIT: Duration = Duration::from_millis(50);
 #[derive(Debug, Clone, Default)]
 pub struct Hint {
     pub full: bool,
-    pub head: bool,
     pub paths: HashSet<String>,
 }
 
@@ -54,19 +52,17 @@ impl Hint {
     pub fn full() -> Self {
         Self {
             full: true,
-            head: true,
             paths: HashSet::new(),
         }
     }
 
     fn merge(&mut self, other: Hint) {
         self.full |= other.full;
-        self.head |= other.head;
         self.paths.extend(other.paths);
     }
 
     fn is_empty(&self) -> bool {
-        !self.full && !self.head && self.paths.is_empty()
+        !self.full && self.paths.is_empty()
     }
 }
 
@@ -77,15 +73,11 @@ pub struct Counters {
     pub file_reads: u64,
     pub stats: u64,
     pub ts_parses: u64,
-    pub head_blob_reads: u64,
-    pub head_probes: u64,
     pub refreshes: u64,
 }
 
 struct TextEntry {
     content: String,
-    /// Byte offset of each line start (`str::lines` lines).
-    line_starts: Vec<usize>,
     line_count: u32,
     /// `None` = unsupported language. Parsed at most once per entry.
     scopes: OnceLock<Option<Arc<Vec<ScopeEntry>>>>,
@@ -93,16 +85,9 @@ struct TextEntry {
 
 impl TextEntry {
     fn new(content: String) -> Self {
-        let mut line_starts = Vec::new();
-        let mut at = 0usize;
-        for line in content.split_inclusive('\n') {
-            line_starts.push(at);
-            at += line.len();
-        }
         let line_count = fsref::line_count(&content);
         Self {
             content,
-            line_starts,
             line_count,
             scopes: OnceLock::new(),
         }
@@ -119,28 +104,6 @@ impl TextEntry {
             })
             .clone()
     }
-
-    /// KR-DRIFT-2 body: lines `start..=end`, each trailing-whitespace trimmed.
-    fn body(&self, start: u32, end: u32) -> String {
-        let mut out = String::new();
-        for n in start..=end {
-            let Some(&from) = self.line_starts.get(n as usize - 1) else {
-                break;
-            };
-            let to = self
-                .line_starts
-                .get(n as usize)
-                .copied()
-                .unwrap_or(self.content.len());
-            let line = self.content[from..to].trim_end_matches('\n');
-            let line = line.strip_suffix('\r').unwrap_or(line);
-            if n > start {
-                out.push('\n');
-            }
-            out.push_str(line.trim_end());
-        }
-        out
-    }
 }
 
 enum Loaded {
@@ -155,32 +118,11 @@ struct FileEntry {
     loaded: Option<Loaded>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum HeadKey {
-    Off,
-    Absent,
-    Blob(git2::Oid),
-}
-
 #[derive(Clone, Copy)]
 struct SymbolDetail {
     fact: SymbolFact,
     start_line: Option<u32>,
     end_line: Option<u32>,
-    /// `None` when drift is unknown (no repo / no HEAD).
-    drifted: Option<bool>,
-}
-
-#[derive(Default)]
-struct Head {
-    probed: bool,
-    repo: Option<git2::Repository>,
-    /// Workspace path inside the repo work tree, `""` or ending in `/`.
-    prefix: String,
-    commit: Option<git2::Oid>,
-    tree: Option<git2::Oid>,
-    paths: HashMap<String, HeadKey>,
-    blobs: HashMap<git2::Oid, Arc<TextEntry>>,
 }
 
 struct MdEntry {
@@ -200,8 +142,7 @@ pub struct Engine {
     cites: Vec<Arc<Vec<Cite>>>,
     files: HashMap<String, FileEntry>,
     next_generation: u64,
-    head: Head,
-    symbols: HashMap<(String, String), (u64, HeadKey, SymbolDetail)>,
+    symbols: HashMap<(String, String), (u64, SymbolDetail)>,
     pub counters: Counters,
     corpus_loaded: bool,
 }
@@ -217,7 +158,6 @@ impl Engine {
             cites: Vec::new(),
             files: HashMap::new(),
             next_generation: 1,
-            head: Head::default(),
             symbols: HashMap::new(),
             counters: Counters::default(),
             corpus_loaded: false,
@@ -252,10 +192,6 @@ impl Engine {
         stages.mark("corpus");
         self.sweep_files(hint);
         stages.mark("stat");
-        if hint.full || hint.head || !self.head.probed {
-            self.refresh_head(hint.full);
-        }
-        stages.mark("head");
         let corpus = std::mem::replace(&mut self.corpus, Corpus::empty());
         let cites = std::mem::take(&mut self.cites);
         let resolution = {
@@ -278,10 +214,6 @@ impl Engine {
             stages.note("stats", c.stats - before.stats);
             stages.note("file_reads", c.file_reads - before.file_reads);
             stages.note("ts_parses", c.ts_parses - before.ts_parses);
-            stages.note(
-                "head_blob_reads",
-                c.head_blob_reads - before.head_blob_reads,
-            );
         }
         content
     }
@@ -488,109 +420,6 @@ impl Engine {
         let cited = self.cited_paths();
         self.files.retain(|path, _| cited.contains(path));
         self.symbols.retain(|(path, _), _| cited.contains(path));
-        let live: HashSet<git2::Oid> = self
-            .head
-            .paths
-            .iter()
-            .filter(|(path, _)| cited.contains(*path))
-            .filter_map(|(_, key)| match key {
-                HeadKey::Blob(oid) => Some(*oid),
-                _ => None,
-            })
-            .collect();
-        self.head.blobs.retain(|oid, _| live.contains(oid));
-    }
-
-    // ---------------------------------------------------------- HEAD (git2)
-
-    fn refresh_head(&mut self, reprobe: bool) {
-        if !self.head.probed || (reprobe && self.head.repo.is_none()) {
-            self.probe_repo();
-        }
-        let Some(repo) = &self.head.repo else {
-            self.head.commit = None;
-            self.head.tree = None;
-            self.head.paths.clear();
-            return;
-        };
-        let commit = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
-        let (commit, tree) = match commit {
-            Some(commit) => (Some(commit.id()), Some(commit.tree_id())),
-            None => (None, None),
-        };
-        if tree != self.head.tree {
-            self.head.paths.clear();
-        }
-        self.head.commit = commit;
-        self.head.tree = tree;
-    }
-
-    fn probe_repo(&mut self) {
-        self.head.probed = true;
-        self.counters.head_probes += 1;
-        self.head.repo = None;
-        self.head.paths.clear();
-        let Ok(repo) = git2::Repository::discover(&self.workspace) else {
-            return;
-        };
-        if repo.is_bare() || crate::workspace::git_dir_is_snapshot(&self.workspace, repo.path()) {
-            return;
-        }
-        let Some(workdir) = repo.workdir() else {
-            return;
-        };
-        let (Ok(workdir), Ok(ws)) = (
-            std::fs::canonicalize(workdir),
-            std::fs::canonicalize(&self.workspace),
-        ) else {
-            return;
-        };
-        let Ok(inner) = ws.strip_prefix(&workdir) else {
-            return;
-        };
-        let mut prefix = inner.to_string_lossy().replace('\\', "/");
-        if !prefix.is_empty() && !prefix.ends_with('/') {
-            prefix.push('/');
-        }
-        self.head.prefix = prefix;
-        self.head.repo = Some(repo);
-    }
-
-    fn head_key(&mut self, path: &str) -> HeadKey {
-        if let Some(key) = self.head.paths.get(path) {
-            return *key;
-        }
-        let key = match (&self.head.repo, self.head.tree) {
-            (Some(repo), Some(tree)) => match repo.find_tree(tree) {
-                Ok(tree) => {
-                    let full = format!("{}{}", self.head.prefix, path);
-                    match tree.get_path(Path::new(&full)) {
-                        Ok(entry) if entry.kind() == Some(git2::ObjectType::Blob) => {
-                            HeadKey::Blob(entry.id())
-                        }
-                        _ => HeadKey::Absent,
-                    }
-                }
-                Err(_) => HeadKey::Off,
-            },
-            _ => HeadKey::Off,
-        };
-        self.head.paths.insert(path.to_string(), key);
-        key
-    }
-
-    fn head_text(&mut self, oid: git2::Oid) -> Option<Arc<TextEntry>> {
-        if let Some(text) = self.head.blobs.get(&oid) {
-            return Some(text.clone());
-        }
-        let repo = self.head.repo.as_ref()?;
-        let blob = repo.find_blob(oid).ok()?;
-        self.counters.head_blob_reads += 1;
-        let text = Arc::new(TextEntry::new(
-            String::from_utf8_lossy(blob.content()).into_owned(),
-        ));
-        self.head.blobs.insert(oid, text.clone());
-        Some(text)
     }
 
     // ---------------------------------------------------------- symbols
@@ -600,17 +429,14 @@ impl Engine {
             fact,
             start_line: None,
             end_line: None,
-            drifted: None,
         };
         let Some(text) = self.text_entry(path) else {
             return none(SymbolFact::Missing);
         };
         let generation = self.files.get(path).map(|e| e.generation).unwrap_or(0);
-        let head = self.head_key(path);
         let cache_key = (path.to_string(), chain.to_string());
-        if let Some((gen_at, head_at, detail)) = self.symbols.get(&cache_key)
+        if let Some((gen_at, detail)) = self.symbols.get(&cache_key)
             && *gen_at == generation
-            && *head_at == head
         {
             return *detail;
         }
@@ -620,39 +446,15 @@ impl Engine {
             Some(scopes) => match match_scopes(&scopes, chain) {
                 ScopeMatch::Missing => none(SymbolFact::Missing),
                 ScopeMatch::Ambiguous(_) => none(SymbolFact::Ambiguous),
-                ScopeMatch::Unique(entry) => {
-                    let now = text.body(entry.start_line, entry.end_line);
-                    let drifted = match head {
-                        HeadKey::Off => None,
-                        HeadKey::Absent => Some(true),
-                        HeadKey::Blob(oid) => Some(match self.head_text(oid) {
-                            None => true,
-                            Some(then) => match then.scopes(path, &mut parses) {
-                                Some(head_scopes) => match match_scopes(&head_scopes, chain) {
-                                    ScopeMatch::Unique(old) => {
-                                        then.body(old.start_line, old.end_line) != now
-                                    }
-                                    _ => true,
-                                },
-                                None => true,
-                            },
-                        }),
-                    };
-                    SymbolDetail {
-                        fact: if drifted == Some(true) {
-                            SymbolFact::Drifted
-                        } else {
-                            SymbolFact::Present
-                        },
-                        start_line: Some(entry.start_line),
-                        end_line: Some(entry.end_line),
-                        drifted,
-                    }
-                }
+                ScopeMatch::Unique(entry) => SymbolDetail {
+                    fact: SymbolFact::Present,
+                    start_line: Some(entry.start_line),
+                    end_line: Some(entry.end_line),
+                },
             },
         };
         self.counters.ts_parses += parses;
-        self.symbols.insert(cache_key, (generation, head, detail));
+        self.symbols.insert(cache_key, (generation, detail));
         detail
     }
 
@@ -660,7 +462,6 @@ impl Engine {
     pub fn query_symbols(&mut self, queries: &[(String, Option<String>)]) -> Vec<SymbolQuery> {
         let mut listings = Listings::default();
         let mut restatted = HashSet::new();
-        self.refresh_head(false);
         queries
             .iter()
             .map(|(file, symbol)| {
@@ -677,7 +478,6 @@ impl Engine {
                     ambiguous: false,
                     start_line: None,
                     end_line: None,
-                    drifted: None,
                 };
                 if !is_workspace_file_ref(&path) {
                     return out;
@@ -709,14 +509,12 @@ impl Engine {
                         out.ambiguous = true;
                         "ambiguous_symbol"
                     }
-                    SymbolFact::Drifted => "symbol_drift",
                     SymbolFact::Present | SymbolFact::Checking => "ok",
                 };
-                if matches!(detail.fact, SymbolFact::Present | SymbolFact::Drifted) {
+                if detail.fact == SymbolFact::Present {
                     out.symbol_exists = true;
                     out.start_line = detail.start_line;
                     out.end_line = detail.end_line;
-                    out.drifted = detail.drifted;
                 }
                 out
             })
@@ -810,11 +608,6 @@ impl Engine {
             ready,
             root,
             visibility,
-            head: if ready {
-                self.head.commit.map(|oid| oid.to_string())
-            } else {
-                None
-            },
             folders,
             unknown,
             nodes,
@@ -930,7 +723,6 @@ pub struct SymbolQuery {
     pub ambiguous: bool,
     pub start_line: Option<u32>,
     pub end_line: Option<u32>,
-    pub drifted: Option<bool>,
 }
 
 // ------------------------------------------------------------------ snapshot
@@ -977,7 +769,6 @@ pub struct Content {
     pub ready: bool,
     pub root: Option<String>,
     pub visibility: &'static str,
-    pub head: Option<String>,
     pub folders: Vec<FolderView>,
     pub unknown: Vec<UnknownView>,
     pub nodes: Vec<NodeView>,
@@ -993,7 +784,6 @@ impl Content {
             ready: false,
             root: None,
             visibility: "private",
-            head: None,
             folders: Vec::new(),
             unknown: Vec::new(),
             nodes: Vec::new(),
@@ -1110,10 +900,6 @@ impl KnowledgeIndex {
         let mut hint = Hint::default();
         for path in paths {
             let path = path.replace('\\', "/");
-            if moves_head(&path) {
-                hint.head = true;
-                continue;
-            }
             let lower = path.to_lowercase();
             if touches_knowledge_root(&path)
                 || cited.contains(&lower)
@@ -1252,13 +1038,6 @@ impl KnowledgeIndex {
         queue.stop = true;
         self.wake.notify_all();
     }
-}
-
-fn moves_head(path: &str) -> bool {
-    path == ".git/HEAD"
-        || path == ".git/logs/HEAD"
-        || path == ".git/packed-refs"
-        || path.starts_with(".git/refs/heads/")
 }
 
 fn changed_node_paths(old: &Content, new: &Content) -> Vec<String> {

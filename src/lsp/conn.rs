@@ -109,14 +109,19 @@ pub(crate) fn is_server_request(msg: &Value) -> bool {
     msg.get("method").is_some() && msg.get("id").is_some()
 }
 
+pub(crate) fn is_index_status(msg: &Value) -> bool {
+    matches!(
+        msg.get("method").and_then(|m| m.as_str()),
+        Some("experimental/serverStatus" | "$/rust-analyzer/status")
+    )
+}
+
 pub(crate) fn is_quiescent_status(msg: &Value) -> bool {
-    let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
-    if method != "experimental/serverStatus" && method != "$/rust-analyzer/status" {
-        return false;
-    }
-    msg.pointer("/params/quiescent")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+    is_index_status(msg)
+        && msg
+            .pointer("/params/quiescent")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
 }
 
 pub(crate) fn publish_diagnostics_payload(msg: &Value) -> Option<(String, Option<i32>, Value)> {
@@ -223,6 +228,9 @@ pub(crate) struct LspIo {
     synced_version: Mutex<HashMap<String, i32>>,
     diag_waiters: Mutex<Vec<(String, oneshot::Sender<()>)>>,
     pub(crate) index_settled: AtomicBool,
+    /// The server actually reported index status at least once. Without this,
+    /// silence is not evidence that indexing finished.
+    pub(crate) index_status_seen: AtomicBool,
     pub(crate) io_failed: AtomicBool,
     pub(crate) watchdog_kill: AtomicBool,
     pub(crate) lifecycle: Mutex<LspLifecycle>,
@@ -248,6 +256,7 @@ impl LspIo {
             synced_version: Mutex::new(HashMap::new()),
             diag_waiters: Mutex::new(Vec::new()),
             index_settled: AtomicBool::new(false),
+            index_status_seen: AtomicBool::new(false),
             io_failed: AtomicBool::new(false),
             watchdog_kill: AtomicBool::new(false),
             lifecycle: Mutex::new(LspLifecycle::Starting),
@@ -336,6 +345,9 @@ impl LspIo {
             if self.diagnostics_current(&uri) {
                 self.wake_diag_waiters(&uri);
             }
+        }
+        if is_index_status(msg) {
+            self.index_status_seen.store(true, Ordering::SeqCst);
         }
         if is_quiescent_status(msg) {
             self.index_settled.store(true, Ordering::SeqCst);
@@ -555,6 +567,9 @@ impl LspIo {
 /// Apply one inbound JSON-RPC message. Returns an optional stdin ack.
 pub(crate) fn dispatch_message(io: &LspIo, msg: &Value) -> Option<Value> {
     if is_server_request(msg) {
+        if is_index_status(msg) {
+            io.index_status_seen.store(true, Ordering::SeqCst);
+        }
         if is_quiescent_status(msg) {
             io.index_settled.store(true, Ordering::SeqCst);
         }
@@ -680,6 +695,7 @@ mod tests {
             synced_version: Mutex::new(HashMap::new()),
             diag_waiters: Mutex::new(Vec::new()),
             index_settled: AtomicBool::new(false),
+            index_status_seen: AtomicBool::new(false),
             io_failed: AtomicBool::new(false),
             watchdog_kill: AtomicBool::new(false),
             lifecycle: Mutex::new(LspLifecycle::Running),
@@ -700,6 +716,7 @@ mod tests {
             synced_version: Mutex::new(HashMap::new()),
             diag_waiters: Mutex::new(Vec::new()),
             index_settled: AtomicBool::new(false),
+            index_status_seen: AtomicBool::new(false),
             io_failed: AtomicBool::new(false),
             watchdog_kill: AtomicBool::new(false),
             lifecycle: Mutex::new(LspLifecycle::Running),
@@ -710,6 +727,57 @@ mod tests {
             diag_tx: None,
         });
         (io, rx)
+    }
+
+    #[test]
+    fn index_status_seen_is_not_index_settled() {
+        let io = test_io();
+        assert!(!io.index_status_seen.load(Ordering::SeqCst));
+        assert!(!io.index_settled.load(Ordering::SeqCst));
+
+        io.ingest_notification(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "experimental/serverStatus",
+            "params": {"quiescent": false, "health": "ok"}
+        }));
+        assert!(io.index_status_seen.load(Ordering::SeqCst));
+        assert!(!io.index_settled.load(Ordering::SeqCst));
+
+        io.ingest_notification(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "experimental/serverStatus",
+            "params": {"quiescent": true, "health": "ok"}
+        }));
+        assert!(io.index_settled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn index_status_server_request_is_seen_and_acked() {
+        let io = test_io();
+        let ack = dispatch_message(
+            &io,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "experimental/serverStatus",
+                "params": {"quiescent": false, "health": "ok"}
+            }),
+        );
+        assert!(ack.is_some(), "server request must be acked");
+        assert!(io.index_status_seen.load(Ordering::SeqCst));
+        assert!(!io.index_settled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn unrelated_notification_is_not_index_status() {
+        let io = test_io();
+        io.ingest_notification(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "window/logMessage",
+            "params": {"type": 3, "message": "hello"}
+        }));
+        assert!(!io.index_status_seen.load(Ordering::SeqCst));
+        assert!(!io.index_settled.load(Ordering::SeqCst));
     }
 
     /// Mock LSP server: answers the first `fail_first` requests with -32801,
@@ -1009,5 +1077,4 @@ mod tests {
             "v1 cache must not cover v2 sync"
         );
     }
-
 }

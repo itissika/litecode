@@ -22,6 +22,7 @@ import { closePanel } from "../dockview/workbench/commands";
 import { useBashStore } from "./bashStore";
 import { useToastStore } from "./toastStore";
 import { useTurnStore } from "./turnStore";
+import { noteSessionFinished } from "./unreadStore";
 import { useMessageStore } from "./messageStore";
 import { openSessionPanel } from "../lib/sessionPanelNav";
 import { deleteRejectedMessage, rpcErrorCode } from "../lib/sessionErrors";
@@ -437,6 +438,15 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       // Wire key on the event is `cancelled_by`; stored as last_turn_cancelled_by.
       const hasCancelledBy = "cancelled_by" in params;
       const cancelledBy = params.cancelled_by ?? null;
+      // A root settling from running to idle while its transcript is hidden
+      // earns the sidebar's unread dot. Requiring the transition (rather than
+      // the event alone) keeps a replayed idle update from re-marking a dot the
+      // user already consumed.
+      const maySettle =
+        event === "turn_finished" || event === "status_changed";
+      const wasRunning =
+        maySettle &&
+        (get().sessions.find((s) => s.id === session_id)?.running ?? false);
       set((state) => {
         const exists = state.sessions.some((s) => s.id === session_id);
         if (event === "deleted") {
@@ -472,6 +482,8 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         // turn_started / turn_updated / turn_finished may arrive for a session
         // that is not yet in the local list (e.g. a push arrived before the
         // initial pull completed). Upsert it so the live status is not dropped.
+        // This row carries live state only: title / folder / preview are list
+        // projection facts, and visibility stays the backend's call.
         if (!exists) {
           if (event === "turn_finished") {
             useTurnStore
@@ -484,6 +496,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             updated_at: updated_at ?? Date.now(),
             preview: preview ?? "",
             assistant_preview: assistant_preview ?? undefined,
+            title: null,
+            folder_id: null,
+            label: "",
             running: status ? status !== "idle" : event !== "turn_finished",
             ...(status ? { status } : {}),
             turn: turn ?? null,
@@ -598,6 +613,12 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             return {};
         }
       });
+      if (wasRunning) {
+        const settled = get().sessions.find((s) => s.id === session_id);
+        if (settled && !settled.running && !settled.parent_session_id) {
+          noteSessionFinished(session_id);
+        }
+      }
     },
 
     onSessionAttached: (params) => {

@@ -249,7 +249,8 @@ pub fn all_code_tools() -> Vec<Arc<dyn Tool>> {
 
 impl BrowserTool {
     async fn call_bridge(&self, input: &Value) -> Result<Value, BrowserCallError> {
-        match self.op {
+        let mut note: Option<String> = None;
+        let data = match self.op {
             BrowserOp::Open => {
                 let url = require_nonempty_string_trimmed(input, "url").map_err(invalid_input)?;
                 self.client
@@ -266,7 +267,8 @@ impl BrowserTool {
             BrowserOp::List => self.client.get("/list").await,
             BrowserOp::Read => {
                 let page_id = page_id(input, "page_id")?;
-                let max_chars = read_chars(input)?;
+                let (max_chars, read_note) = read_chars(input)?;
+                note = read_note;
                 let mut body = json!({ "max_chars": max_chars });
                 if let Some(page_id) = page_id {
                     body["page_id"] = Value::String(page_id);
@@ -292,7 +294,14 @@ impl BrowserTool {
                 }
                 self.client.post("/type", body).await
             }
+        };
+        let mut data = data?;
+        if let Some(note) = note {
+            if let Value::Object(map) = &mut data {
+                map.insert("message".to_string(), Value::String(note));
+            }
         }
+        Ok(data)
     }
 
     async fn run(
@@ -359,7 +368,7 @@ impl Tool for BrowserTool {
             BrowserOp::List => {}
             BrowserOp::Read => {
                 page_id(input, "page_id")?;
-                read_chars(input)?;
+                let _ = read_chars(input)?;
             }
             BrowserOp::Click => {
                 page_id(input, "page_id")?;
@@ -442,19 +451,18 @@ fn element_ref(input: &Value) -> std::result::Result<String, String> {
     Ok(ref_id.to_string())
 }
 
-fn read_chars(input: &Value) -> std::result::Result<u64, String> {
-    let Some(value) = input.get("max_chars") else {
-        return Ok(DEFAULT_READ_CHARS);
-    };
-    let Some(number) = value.as_u64() else {
-        return Err("max_chars must be an integer".to_string());
-    };
-    if !(MIN_READ_CHARS..=MAX_READ_CHARS).contains(&number) {
-        return Err(format!(
-            "max_chars must be between {MIN_READ_CHARS} and {MAX_READ_CHARS}"
-        ));
-    }
-    Ok(number)
+fn read_chars(input: &Value) -> std::result::Result<(u64, Option<String>), String> {
+    let clamped = crate::tool::clamp::clamp_int(
+        input,
+        "max_chars",
+        MIN_READ_CHARS,
+        MAX_READ_CHARS,
+        "characters",
+    )?;
+    Ok(match clamped {
+        None => (DEFAULT_READ_CHARS, None),
+        Some(clamped) => (clamped.value, clamped.note),
+    })
 }
 
 #[cfg(test)]
@@ -513,12 +521,26 @@ mod tests {
     }
 
     #[test]
-    fn read_chars_respects_the_bridge_bounds() {
+    fn read_chars_clamps_instead_of_rejecting() {
         let read = tool(BrowserOp::Read);
         assert!(read.validate_input(&json!({})).is_ok());
         assert!(read.validate_input(&json!({"max_chars": 1000})).is_ok());
-        assert!(read.validate_input(&json!({"max_chars": 999})).is_err());
-        assert!(read.validate_input(&json!({"max_chars": 30_001})).is_err());
+        assert!(read.validate_input(&json!({"max_chars": 999})).is_ok());
+        assert!(read.validate_input(&json!({"max_chars": 30_001})).is_ok());
+
+        let (chars, note) = read_chars(&json!({"max_chars": 999})).unwrap();
+        assert_eq!(chars, MIN_READ_CHARS);
+        assert_eq!(
+            note.as_deref(),
+            Some("`max_chars` was raised from 999 to 1000 characters.")
+        );
+        let (chars, note) = read_chars(&json!({"max_chars": 30_001})).unwrap();
+        assert_eq!(chars, MAX_READ_CHARS);
+        assert!(note.unwrap().contains("reduced from 30001"));
+        assert_eq!(
+            read_chars(&json!({"max_chars": 12_000})).unwrap(),
+            (DEFAULT_READ_CHARS, None)
+        );
     }
 
     #[test]

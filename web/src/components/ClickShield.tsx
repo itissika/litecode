@@ -16,6 +16,7 @@ export function ClickShield() {
   if (!locked) return null;
   return (
     <div
+      data-litecode-overlay="click-shield"
       className="fixed inset-0 z-[10001] cursor-default"
       aria-hidden
     />

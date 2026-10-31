@@ -266,16 +266,14 @@ impl Projection {
             }
         };
 
-        let Ok((meter, breakdown)) =
-            crate::context_pipeline::measure_working_rows_with_breakdown(
-                &sessions,
-                &session_id,
-                &envelope,
-                &model,
-                &data_root,
-                &rows,
-            )
-        else {
+        let Ok((meter, breakdown)) = crate::context_pipeline::measure_working_rows_with_breakdown(
+            &sessions,
+            &session_id,
+            &envelope,
+            &model,
+            &data_root,
+            &rows,
+        ) else {
             return;
         };
         self.context_tokens_estimate = meter.used_tokens;

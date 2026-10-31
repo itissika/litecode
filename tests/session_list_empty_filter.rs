@@ -1,8 +1,9 @@
-//! Cold-start session list: `list_sessions` skips rows `is_session_empty` says are empty.
+//! Cold-start session list: `SessionListRow::is_listed` decides visibility.
 //!
 //! Reinstall / reopen is a writer shutdown + new `SessionData` (WAL recover, blob GC
 //! on open). Each case leaves durable SQLite rows, then lists through a fresh manager.
-//! Assertions are the user contract: a session with conversation rows must stay listed.
+//! Assertions are the user contract: a session with conversation rows must stay listed,
+//! and a control-only row (`model/changed`) must not fabricate one.
 //! A red test is a reproduced hide.
 
 mod common;
@@ -64,13 +65,16 @@ async fn listed(data: Arc<SessionData>) -> Vec<String> {
     let rows = mgr.data().list_sessions_blocking().expect("sql list");
     let mut ids = Vec::new();
     for row in rows {
-        // Mirrors build_session_list: an empty root is hidden only when it has
-        // no title and no folder. Empty children stay listed.
-        let hidden = row.parent_session_id.is_none()
-            && row.title.is_none()
-            && row.folder_id.is_none()
-            && mgr.is_session_empty(&row.id).await;
-        if !hidden {
+        // Same rule as `build_session_list`: a cold list has no live turn, and
+        // the transcript check runs only for rows with no preview text.
+        let has_conversation = if row.is_listed_by_projection(false, false) {
+            false
+        } else {
+            mgr.data()
+                .has_conversation_rows_blocking(&row.id)
+                .expect("conversation rows")
+        };
+        if row.is_listed(false, false, has_conversation) {
             ids.push(row.id);
         }
     }
@@ -121,6 +125,34 @@ async fn empty_new_session_stays_hidden() {
         sid
     };
     assert_hidden_after_reopen(&env, &sid, "empty create").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn control_row_only_session_stays_hidden() {
+    let env = Env::new();
+    let sid = {
+        let data = env.open();
+        let sid = data
+            .create_session("/proj", "default", None)
+            .expect("create");
+        let mgr = SessionManager::from_data(Arc::new(TurnGuard::new()), Arc::clone(&data));
+        mgr.set_session_model_with_change(
+            &sid,
+            Some("p/next".into()),
+            &serde_json::json!({"schema": 1, "from": null, "to": "p/next", "at_seq": 0}),
+        )
+        .expect("model change row");
+        data.shutdown();
+        sid
+    };
+    assert_hidden_after_reopen(&env, &sid, "control-only root").await;
+
+    // User claims the row: a title must outrank the missing preview.
+    let data = env.open();
+    data.set_session_title_blocking(&sid, Some("Named control-only root"))
+        .expect("set title");
+    data.shutdown();
+    assert_listed_after_reopen(&env, &sid, "named control-only root").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -276,4 +308,3 @@ async fn busy_empty_session_is_listed_until_cold_start() {
 }
 
 // ── SQL parent filter (children are listed with parent ids) ───────────────
-

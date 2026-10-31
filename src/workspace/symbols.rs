@@ -1,8 +1,6 @@
 //! Named scopes in one workspace file.
 //!
 //! Tree-sitter walks the file. Nothing here talks to a language server.
-//! A symbol query also reports whether that symbol's body on disk differs
-//! from HEAD. An unknown check stays `drift: None`.
 
 use serde::{Deserialize, Serialize};
 
@@ -72,11 +70,6 @@ pub struct SymbolRefQuery {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct SymbolDrift {
-    pub drifted: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct SymbolRefHit {
     pub file: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,8 +83,6 @@ pub struct SymbolRefHit {
     pub start_line: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_line: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub drift: Option<SymbolDrift>,
 }
 
 pub fn list_file_symbols(path: &str, content: &str) -> Vec<ListedSymbol> {
@@ -119,7 +110,7 @@ pub fn locate_symbol(path: &str, content: &str, start: u32, end: u32) -> SymbolA
 
 /// Resolve `/symbol-refs` queries through the knowledge index engine, so the
 /// editor sees exactly what the knowledge snapshot says (one read policy,
-/// exact names, cached parses, git2 HEAD; `docs/knowledge-references.md`).
+/// exact names, cached parses; `docs/knowledge-references.md`).
 pub fn resolve_symbol_refs(
     workspace: &WorkspaceService,
     refs: &[SymbolRefQuery],
@@ -146,7 +137,6 @@ pub fn resolve_symbol_refs(
             ambiguous: result.ambiguous,
             start_line: result.start_line,
             end_line: result.end_line,
-            drift: result.drifted.map(|drifted| SymbolDrift { drifted }),
         })
         .collect()
 }
@@ -179,7 +169,4 @@ fn leaf_label(chain: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

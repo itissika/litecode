@@ -1,5 +1,5 @@
-//! KnowledgeIndex tests: incremental == from scratch, HEAD via git2, the
-//! per-turn read path, and the change-bus wiring.
+//! KnowledgeIndex tests: incremental == from scratch, the per-turn read path,
+//! and the change-bus wiring.
 
 use std::fs;
 use std::path::Path;
@@ -30,27 +30,6 @@ fn node(key: &str, body: &str) -> String {
     format!("```node\nnode : {key}\nstatus : enabled\nsummary : {key}\n```\n{body}\n")
 }
 
-fn commit_all(dir: &Path) {
-    let repo = git2::Repository::open(dir).unwrap_or_else(|_| {
-        let repo = git2::Repository::init(dir).unwrap();
-        let mut config = repo.config().unwrap();
-        config.set_bool("core.autocrlf", false).unwrap();
-        repo
-    });
-    let mut index = repo.index().unwrap();
-    index
-        .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
-        .unwrap();
-    index.update_all(["*"].iter(), None).unwrap();
-    index.write().unwrap();
-    let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
-    let sig = git2::Signature::now("Litecode Test", "test@litecode.local").unwrap();
-    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
-    let parents: Vec<&git2::Commit<'_>> = parent.iter().collect();
-    repo.commit(Some("HEAD"), &sig, &sig, "c", &tree, &parents)
-        .unwrap();
-}
-
 fn statuses(content: &Content) -> Vec<(String, String, String)> {
     let mut out: Vec<_> = content
         .nodes
@@ -74,16 +53,14 @@ fn every_file_is_parsed_once_per_stamp() {
         "src/a.rs",
         "fn alpha() {}\nfn beta() {}\nmod m { fn gamma() {} }\n",
     );
-    commit_all(ws);
     let body = "[@ file=\"src/a.rs\" symbol=\"fn alpha\"] [@ file=\"src/a.rs\" symbol=\"fn beta\"] \
                 [@ file=\"src/a.rs\" symbol=\"mod m › fn gamma\"] [@ file=\"src/a.rs\" lines=\"1-2\"]";
     write(ws, "knowledge/a.md", &node("a", body));
     write(ws, "knowledge/b.md", &node("b", body));
     let mut engine = Engine::new(ws);
     engine.refresh(&Hint::full());
-    // One worktree parse and one HEAD parse for one file, however many refs.
-    assert_eq!(engine.counters.ts_parses, 2);
-    assert_eq!(engine.counters.head_blob_reads, 1);
+    // One worktree parse for one file, however many refs.
+    assert_eq!(engine.counters.ts_parses, 1);
     let before = engine.counters;
     engine.refresh(&Hint::full());
     assert_eq!(
@@ -94,7 +71,6 @@ fn every_file_is_parsed_once_per_stamp() {
         engine.counters.file_reads, before.file_reads,
         "unchanged: no read"
     );
-    assert_eq!(engine.counters.head_blob_reads, before.head_blob_reads);
 }
 
 /// Deterministic xorshift, so a failure replays.
@@ -165,7 +141,6 @@ fn incremental_equals_from_scratch_over_random_edits() {
         for file in SOURCES {
             write(ws, file, &source_text(&mut rng));
         }
-        commit_all(ws);
         for key in ["a", "b", "c"] {
             write(
                 ws,
@@ -183,7 +158,7 @@ fn incremental_equals_from_scratch_over_random_edits() {
         for step in 0..40 {
             tick += 1;
             let mut hint = Hint::default();
-            match rng.pick(7) {
+            match rng.pick(6) {
                 0 | 1 => {
                     let file = SOURCES[rng.pick(SOURCES.len())];
                     let text = source_text(&mut rng);
@@ -202,10 +177,6 @@ fn incremental_equals_from_scratch_over_random_edits() {
                     hint.paths.insert(rel);
                 }
                 4 => {
-                    commit_all(ws);
-                    hint.head = true;
-                }
-                5 => {
                     // Case-only rename: the bus reports both names.
                     let (from, to) = if ws.join("src/b.rs").exists() {
                         ("src/b.rs", "src/B.rs")
@@ -284,4 +255,3 @@ fn the_turn_reads_the_snapshot_only() {
     assert!(index.wait_fresh(Duration::ZERO));
     unregister(ws);
 }
-

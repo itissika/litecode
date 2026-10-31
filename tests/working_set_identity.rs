@@ -106,6 +106,7 @@ fn keep_recent_compact_reader_matches_fold_checkpoint_then_kept() {
             at: None,
             expected_prefix: None,
             usage: None,
+            provider_id: None,
         })
         .unwrap();
     let visible = fold_visible(&sessions, &sid);
@@ -265,6 +266,7 @@ fn compact(sessions: &SessionManager, sid: &str, summary: &str, kept_from: Optio
             at: None,
             expected_prefix: None,
             usage: None,
+            provider_id: None,
         })
         .unwrap();
 }
@@ -285,7 +287,10 @@ fn assert_reader_starts_at_checkpoint(sessions: &SessionManager, sid: &str) {
         .map(|event| event.seq)
         .max()
         .expect("session compacted, so a checkpoint row exists");
-    assert_eq!(first, checkpoint, "reader must begin at the newest checkpoint");
+    assert_eq!(
+        first, checkpoint,
+        "reader must begin at the newest checkpoint"
+    );
 }
 
 #[test]
@@ -303,11 +308,15 @@ fn compact_then_append_reader_matches_fold() {
 fn two_compacts_reader_matches_fold() {
     let (sessions, sid) = open_with_users(&["a", "b", "c"]);
     compact(&sessions, &sid, "first", Some(1));
-    sessions.insert_detail_rows(&sid, &[user_text("d")]).unwrap();
+    sessions
+        .insert_detail_rows(&sid, &[user_text("d")])
+        .unwrap();
     // The second keep boundary sits inside the first compaction's kept tail, so
     // the older checkpoint row is inside the read range and must be dropped.
     compact(&sessions, &sid, "second", Some(2));
-    sessions.insert_detail_rows(&sid, &[user_text("e")]).unwrap();
+    sessions
+        .insert_detail_rows(&sid, &[user_text("e")])
+        .unwrap();
     assert_reader_matches_fold(&sessions, &sid);
     assert_reader_starts_at_checkpoint(&sessions, &sid);
     let visible = fold_visible(&sessions, &sid);
@@ -322,11 +331,17 @@ fn two_compacts_reader_matches_fold() {
 fn empty_keep_compact_reader_matches_fold() {
     let (sessions, sid) = open_with_users(&["a", "b"]);
     compact(&sessions, &sid, "sum", None);
-    sessions.insert_detail_rows(&sid, &[user_text("c")]).unwrap();
+    sessions
+        .insert_detail_rows(&sid, &[user_text("c")])
+        .unwrap();
     assert_reader_matches_fold(&sessions, &sid);
     assert_reader_starts_at_checkpoint(&sessions, &sid);
     let visible = fold_visible(&sessions, &sid);
-    assert_eq!(visible.len(), 2, "summary only, then the row appended after it");
+    assert_eq!(
+        visible.len(),
+        2,
+        "summary only, then the row appended after it"
+    );
     let checkpoint = visible[0].1.checkpoint().expect("checkpoint payload");
     // An empty keep ends at the checkpoint's own seq, so the fold starts exactly
     // at that row.
@@ -337,7 +352,9 @@ fn empty_keep_compact_reader_matches_fold() {
 fn revert_then_compact_reader_matches_fold() {
     let (sessions, sid) = open_with_users(&["a", "b", "c"]);
     sessions.entry_revert_to_user_anchor(&sid, 1).unwrap();
-    sessions.insert_detail_rows(&sid, &[user_text("after")]).unwrap();
+    sessions
+        .insert_detail_rows(&sid, &[user_text("after")])
+        .unwrap();
     compact(&sessions, &sid, "sum", Some(3));
     assert_reader_matches_fold(&sessions, &sid);
     assert_reader_starts_at_checkpoint(&sessions, &sid);

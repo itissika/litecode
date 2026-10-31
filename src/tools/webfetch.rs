@@ -10,7 +10,7 @@ use crate::tools::file_path::coded_error;
 use crate::types::ToolCallResult;
 use crate::types::utf8::prefix_utf8;
 
-const MAX_OUTPUT_BYTES: usize = 50_000;
+const MAX_OUTPUT_BYTES: usize = 100_000;
 
 fn truncate_body(formatted: String) -> String {
     if formatted.len() <= MAX_OUTPUT_BYTES {
@@ -432,8 +432,9 @@ impl Tool for WebFetchTool {
         MAX_OUTPUT_BYTES
     }
 
+    /// Fetch budget; matches the provider MCP fetch timeout.
     fn timeout(&self) -> Option<std::time::Duration> {
-        Some(std::time::Duration::from_secs(35))
+        Some(std::time::Duration::from_secs(60))
     }
 }
 

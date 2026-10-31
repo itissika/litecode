@@ -4,6 +4,8 @@
 //! `truncated: true` when a limit or the 8K-token data guard removed context
 //! or hits. Hits are `{ path, line, text }` with 1-based line numbers; when
 //! requested, `before` and `after` add exact `{ line, text }` context arrays.
+//! Over-budget `limit` (100) and `before`/`after` (10) are clamped with a
+//! plain reminder in `message`, never rejected.
 //! Empty-result and truncation guidance live in `message` only — no cursor,
 //! page, next, or offset fields.
 
@@ -27,7 +29,7 @@ use crate::workspace::filter::{
 const DEFAULT_GREP_LIMIT: usize = 40;
 const MAX_GREP_LIMIT: usize = 100;
 const DEFAULT_CONTEXT_LINES: usize = 0;
-const MAX_CONTEXT_LINES: usize = 5;
+const MAX_CONTEXT_LINES: usize = 10;
 const MAX_MATCH_LINE_CHARS: usize = 500;
 /// The serialized grep `data` object is capped at 8K cl100k tokens. Context is
 /// dropped first; only then are hits removed.
@@ -65,6 +67,8 @@ struct GrepOptions {
     limit: usize,
     before: usize,
     after: usize,
+    /// Plain reminder when `limit`/`before`/`after` were clamped to their budget.
+    input_note: String,
 }
 
 struct Candidate {
@@ -178,6 +182,10 @@ fn parse_grep_options(input: &Value) -> Result<GrepOptions> {
         }
         None => (None, None),
     };
+    let mut notes = Vec::new();
+    let limit = parse_limit(input, &mut notes)?;
+    let before = parse_context(input, "before", &mut notes)?;
+    let after = parse_context(input, "after", &mut notes)?;
     Ok(GrepOptions {
         pattern,
         glob,
@@ -185,9 +193,10 @@ fn parse_grep_options(input: &Value) -> Result<GrepOptions> {
         exclude,
         ignore_case,
         literal,
-        limit: parse_limit(input)?,
-        before: parse_context(input, "before")?,
-        after: parse_context(input, "after")?,
+        limit,
+        before,
+        after,
+        input_note: notes.join(" "),
     })
 }
 
@@ -198,34 +207,31 @@ fn compile_glob_list(raw: Option<String>) -> Result<Option<Vec<PathGlobMatcher>>
     Ok(Some(compile_include_patterns(&raw)?))
 }
 
-fn parse_limit(input: &Value) -> Result<usize> {
-    let Some(value) = input.get("limit").filter(|value| !value.is_null()) else {
-        return Ok(DEFAULT_GREP_LIMIT);
-    };
-    let limit = value.as_u64().ok_or_else(|| {
-        LitecodeError::ToolExecution("parameter 'limit' expected an integer".into())
-    })? as usize;
-    if !(1..=MAX_GREP_LIMIT).contains(&limit) {
-        return Err(LitecodeError::ToolExecution(format!(
-            "parameter 'limit' must be between 1 and {MAX_GREP_LIMIT}"
-        )));
-    }
-    Ok(limit)
+/// Same rule as context: over-budget is clamped with a reminder, not an error.
+fn parse_limit(input: &Value, notes: &mut Vec<String>) -> Result<usize> {
+    let clamped = crate::tool::clamp::clamp_int(input, "limit", 1, MAX_GREP_LIMIT as u64, "hits")
+        .map_err(LitecodeError::ToolExecution)?;
+    Ok(match clamped {
+        None => DEFAULT_GREP_LIMIT,
+        Some(clamped) => {
+            notes.extend(clamped.note);
+            clamped.value as usize
+        }
+    })
 }
 
-fn parse_context(input: &Value, name: &str) -> Result<usize> {
-    let Some(value) = input.get(name).filter(|value| !value.is_null()) else {
-        return Ok(DEFAULT_CONTEXT_LINES);
-    };
-    let lines = value.as_u64().ok_or_else(|| {
-        LitecodeError::ToolExecution(format!("parameter '{name}' expected an integer"))
-    })?;
-    if lines > MAX_CONTEXT_LINES as u64 {
-        return Err(LitecodeError::ToolExecution(format!(
-            "parameter '{name}' must be between 0 and {MAX_CONTEXT_LINES}"
-        )));
-    }
-    Ok(lines as usize)
+/// Clamp to the context budget instead of failing: an over-budget value is a
+/// caller mistake worth a reminder, not an error that loses the whole search.
+fn parse_context(input: &Value, name: &str, notes: &mut Vec<String>) -> Result<usize> {
+    let clamped = crate::tool::clamp::clamp_int(input, name, 0, MAX_CONTEXT_LINES as u64, "lines")
+        .map_err(LitecodeError::ToolExecution)?;
+    Ok(match clamped {
+        None => DEFAULT_CONTEXT_LINES,
+        Some(clamped) => {
+            notes.extend(clamped.note);
+            clamped.value as usize
+        }
+    })
 }
 
 fn optional_string(input: &Value, name: &str) -> Result<Option<String>> {
@@ -343,6 +349,7 @@ fn search(
     }
     if file_scoped && looks_binary(&resolved) {
         return Ok(finish_hits(
+            options,
             Vec::new(),
             "Binary file skipped; grep only searches text files.",
             false,
@@ -353,6 +360,7 @@ fn search(
         && ignored_discovery_message(workspace, &resolved).is_some()
     {
         return Ok(finish_hits(
+            options,
             Vec::new(),
             "Path is hidden by default search filters (.gitignore / workspace excludes).",
             false,
@@ -373,6 +381,7 @@ fn search(
 
     if options.glob.is_some() && candidates.is_empty() {
         return Ok(finish_hits(
+            options,
             Vec::new(),
             "No files matched the glob filter.",
             false,
@@ -391,15 +400,21 @@ fn search(
     if scan.hits.is_empty() && !scan.truncated {
         if file_scoped && !scan.opened {
             return Ok(finish_hits(
+                options,
                 Vec::new(),
                 "File could not be searched.",
                 false,
             ));
         }
         if scan.opened || !candidates.is_empty() {
-            return Ok(finish_hits(Vec::new(), "No matches found.", false));
+            return Ok(finish_hits(options, Vec::new(), "No matches found.", false));
         }
-        return Ok(finish_hits(Vec::new(), "No files to search.", false));
+        return Ok(finish_hits(
+            options,
+            Vec::new(),
+            "No files to search.",
+            false,
+        ));
     }
 
     let message = if scan.truncated {
@@ -409,7 +424,7 @@ fn search(
     } else {
         String::new()
     };
-    Ok(finish_hits(scan.hits, message, scan.truncated))
+    Ok(finish_hits(options, scan.hits, message, scan.truncated))
 }
 
 struct Scan {
@@ -827,11 +842,18 @@ fn data_fits(data: &Value) -> bool {
 }
 
 fn finish_hits(
+    options: &GrepOptions,
     mut hits: Vec<GrepHit>,
     message: impl Into<String>,
     truncated: bool,
 ) -> ToolCallResult {
-    let base_message = message.into();
+    let body = message.into();
+    // The clamp reminder rides in `message` so `hits`/`truncated` keep their shape.
+    let base_message = if body.trim().is_empty() {
+        options.input_note.clone()
+    } else {
+        join_message(&options.input_note, &body)
+    };
     let initial = hits_data(&hits, &base_message, truncated, true);
     if data_fits(&initial) {
         // Code surface: facts in data; content empty (same as write/edit present).
@@ -953,7 +975,8 @@ fn grep_virtual_dir(
         {
             let mut result = result;
             if let Some(data) = result.data.as_mut() {
-                data["message"] = serde_json::json!(empty_message);
+                data["message"] =
+                    serde_json::json!(join_message(&options.input_note, empty_message));
             }
             result
         } else {
@@ -979,7 +1002,7 @@ fn finish_virtual(
         } else {
             "No files to search."
         };
-        return Ok(finish_hits(Vec::new(), message, false));
+        return Ok(finish_hits(options, Vec::new(), message, false));
     }
     let truncated = hits.len() > options.limit
         || (examine_cap < options.limit + 1 && hits.len() >= examine_cap);
@@ -993,7 +1016,7 @@ fn finish_virtual(
     } else {
         String::new()
     };
-    Ok(finish_hits(hits, message, truncated))
+    Ok(finish_hits(options, hits, message, truncated))
 }
 
 fn grep_transcript(
@@ -1205,14 +1228,23 @@ mod tests {
             hit["text"],
             "2- line two\n3- line three\n4: needle\n5+ line five\n6+ line six"
         );
-        let keys: Vec<&str> = hit.as_object().unwrap().keys().map(String::as_str).collect();
+        let keys: Vec<&str> = hit
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(keys, ["path", "line", "text"]);
     }
 
     #[test]
     fn context_block_omits_missing_edges() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "a.rs", "line one\nline two\nneedle\nline four\n");
+        write(
+            dir.path(),
+            "a.rs",
+            "line one\nline two\nneedle\nline four\n",
+        );
         // Match on the first line: no `-` rows.
         let result = call_result(
             dir.path(),
@@ -1260,11 +1292,13 @@ mod tests {
             crate::tool::code_contract::build_surface(&[tool]).expect("grep JS contract surface");
         let schema = &surface.tools["grep"].input_schema;
         assert_eq!(schema["properties"]["limit"]["default"], 40);
-        assert_eq!(schema["properties"]["limit"]["maximum"], 100);
+        // Over-budget limit is clamped too, so no hard maximum in the schema.
+        assert!(schema["properties"]["limit"].get("maximum").is_none());
         assert_eq!(schema["properties"]["before"]["default"], 0);
-        assert_eq!(schema["properties"]["before"]["maximum"], 5);
         assert_eq!(schema["properties"]["after"]["default"], 0);
-        assert_eq!(schema["properties"]["after"]["maximum"], 5);
+        // Over-budget context is clamped, so the schema must not hard-fail it.
+        assert!(schema["properties"]["before"].get("maximum").is_none());
+        assert!(schema["properties"]["after"].get("maximum").is_none());
         assert!(schema["properties"].get("context").is_none());
         let data_schema = &surface.tools["grep"].output_schema;
         let hit_props = &data_schema["properties"]["hits"]["items"]["properties"];
@@ -1276,15 +1310,83 @@ mod tests {
         }))
         .unwrap();
         assert_eq!((options.before, options.after), (5, 5));
+        assert!(options.input_note.is_empty(), "{options:?}");
         for name in ["before", "after"] {
-            let error = parse_grep_options(&serde_json::json!({
-                "pattern": "x", (name): 6
+            let options = parse_grep_options(&serde_json::json!({
+                "pattern": "x", (name): 25
             }))
-            .unwrap_err()
-            .to_string();
-            assert!(error.contains(name), "{error}");
-            assert!(error.contains("between 0 and 5"), "{error}");
+            .unwrap();
+            let got = if name == "before" {
+                options.before
+            } else {
+                options.after
+            };
+            assert_eq!(got, MAX_CONTEXT_LINES);
+            assert!(options.input_note.contains(name), "{options:?}");
+            assert!(options.input_note.contains("25"), "{options:?}");
+            assert!(options.input_note.contains("reduced"), "{options:?}");
         }
+    }
+
+    #[test]
+    fn over_budget_limit_is_clamped_with_a_note_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.rs", "needle one\nneedle two\nneedle three\n");
+        let result = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": "needle", "limit": 500}),
+        );
+        assert!(result.error_code.is_none(), "{result:?}");
+        let data = grep_data(&result);
+        assert_eq!(data["hits"].as_array().unwrap().len(), 3);
+        let message = data["message"].as_str().unwrap();
+        assert!(
+            message.contains("`limit` was reduced from 500 to 100 hits"),
+            "{message}"
+        );
+        assert!(message.contains("500"), "{message}");
+    }
+
+    #[test]
+    fn zero_limit_is_raised_with_a_note_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.rs", "needle one\nneedle two\n");
+        let result = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": "needle", "limit": 0}),
+        );
+        assert!(result.error_code.is_none(), "{result:?}");
+        let data = grep_data(&result);
+        assert_eq!(data["hits"].as_array().unwrap().len(), 1);
+        let message = data["message"].as_str().unwrap();
+        assert!(
+            message.contains("`limit` was raised from 0 to 1 hits"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn over_budget_context_is_clamped_with_a_note_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.rs", "one\ntwo\nneedle\nfour\nfive\n");
+        let result = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": "needle", "before": 25, "after": 25}),
+        );
+        assert!(result.error_code.is_none(), "{result:?}");
+        let data = grep_data(&result);
+        // Structure stays `{ hits, message }`: the reminder is not a new field.
+        let object = data.as_object().unwrap();
+        assert_eq!(object.len(), 2, "{data}");
+        assert!(object.contains_key("hits"), "{data}");
+        let message = data["message"].as_str().unwrap();
+        assert!(message.contains("reduced from 25 to 10 lines"), "{message}");
+        assert!(message.contains("25"), "{message}");
+        let hit = &data["hits"].as_array().unwrap()[0];
+        assert!(
+            hit["text"].as_str().unwrap().contains("1- one"),
+            "clamped context still spans the file: {hit}"
+        );
     }
 
     #[test]

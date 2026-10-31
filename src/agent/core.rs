@@ -246,7 +246,9 @@ fn interrupted_outputs(
 #[cfg(test)]
 mod pending_continue_tests {
     use super::{AgentDeps, TurnOutcome};
-    use crate::types::{FunctionToolCall, Item, Result, ToolResultData, Transcript, assistant_text};
+    use crate::types::{
+        FunctionToolCall, Item, Result, ToolResultData, Transcript, assistant_text,
+    };
     use std::cell::Cell;
 
     /// Minimal deps: every step returns a final text answer (no tool calls), so
@@ -324,5 +326,4 @@ mod pending_continue_tests {
         );
         assert_eq!(deps.steps.get(), 2);
     }
-
 }

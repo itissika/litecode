@@ -461,6 +461,7 @@
   },
   "session": {
     "noPreview": "No preview",
+    "deleteSession": "Delete session",
     "workspaceUsage": "Workspace usage",
     "planExecute": "Execute plan",
     "planExecutePrompt": "Start executing according to the current plan.",
@@ -572,6 +573,9 @@
     },
     "requestsSessions": "{{requests}} requests · {{sessions}} sessions",
     "chartAria": "Workspace token usage, X axis is {{axis}}, bar height is total prompt tokens, hover for details",
+    "providerChartAria": "{{provider}} token usage, X axis is {{axis}}, bar height is total prompt tokens, hover for details",
+    "byProvider": "By provider",
+    "providerUnknown": "Unknown (legacy compaction)",
     "noRecordsPeriod": "No records for this period",
     "unavailable": "Usage temporarily unavailable",
     "noRecords": "No usage records yet",

@@ -7,7 +7,6 @@ import { EditToolView } from "./EditToolView";
 import { FileParamView } from "./FileParamView";
 import { CodeSearchToolView } from "./CodeSearchToolView";
 import { RunCodeToolView } from "./RunCodeToolView";
-import { SessionSearchToolView } from "./SessionSearchToolView";
 import { SubagentLaunchToolView } from "./SubagentLaunchToolView";
 import { SubagentListToolView } from "./SubagentListToolView";
 import { SubagentSendToolView } from "./SubagentSendToolView";
@@ -47,7 +46,6 @@ const TOOL_VIEWS: Record<
   subagent_send: SubagentSendToolView,
   subagent_list: SubagentListToolView,
   code_search: CodeSearchToolView,
-  session_search: SessionSearchToolView,
   litecode_workspace: WorkspaceToolView,
   knowledge: WorkspaceToolView,
 };
@@ -75,7 +73,6 @@ const OUTPUT_OWNED_BY_VIEW: ReadonlySet<string> = new Set([
   "edit",
   "write",
   "code_search",
-  "session_search",
   "litecode_workspace",
   "knowledge",
 ]);

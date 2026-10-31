@@ -265,8 +265,7 @@ pub fn plan_surface_anchored(
             // a surface no writer ever produced.
             return Err(LitecodeError::InvalidSessionEvent(format!(
                 "compact {} replaces from {}, which is not the spine head {}",
-                event.seq,
-                body.from, surface.nodes[0]
+                event.seq, body.from, surface.nodes[0]
             )));
         }
         return Ok(Some(SurfacePlan::Replace {

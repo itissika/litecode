@@ -23,9 +23,8 @@ use uuid::Uuid;
 
 pub use agent_jobs::{
     AgentJobRecord, AgentJobRegistry, BashJobWire, BashJobsSnapshot, BashTailView, BashWaitWire,
-    ExitNotice, PipeDecision, PipeDetach, PipeRequest, RUN_FOREGROUND_WINDOW, RunningJob, WaitOutcome,
-    command_preview,
-    supervise_pipe,
+    ExitNotice, PipeDecision, PipeDetach, PipeRequest, RUN_FOREGROUND_WINDOW, RunningJob,
+    WaitOutcome, command_preview, supervise_pipe,
 };
 pub use error::{TerminalError, TerminalResult};
 pub use shell::{ShellSpec, default_shell, shell_command};
@@ -617,10 +616,7 @@ mod tests {
             hub.kill(&id),
             Err(TerminalError::SessionNotFound(_))
         ));
-        assert!(
-            hub.session_info(&id).is_ok(),
-            "human pty must stay open"
-        );
+        assert!(hub.session_info(&id).is_ok(), "human pty must stay open");
         hub.close(&caller, &id).expect("close human pty");
     }
 

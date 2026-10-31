@@ -4,9 +4,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import type {
   WorkspaceUsageDay,
   WorkspaceUsageHour,
+  WorkspaceUsageProvider,
   WorkspaceUsageReport,
 } from "../api/types";
-import { bucketDays, bucketHours, WorkspaceUsageView } from "./WorkspaceUsage";
+import {
+  bucketDays,
+  bucketHours,
+  providerBuckets,
+  WorkspaceUsageView,
+} from "./WorkspaceUsage";
 
 function day(
   date: string,
@@ -61,14 +67,42 @@ function report(
     today: TODAY,
     totals,
     requests: days.reduce((sum, row) => sum + row.requests, 0),
+    providers: [],
     session_count: 1,
     ...overrides,
   };
 }
 
+function provider(
+  providerId: string | null,
+  days: WorkspaceUsageDay[],
+  hours: WorkspaceUsageHour[] = [],
+): WorkspaceUsageProvider {
+  return { provider_id: providerId, days, hours };
+}
+
 const TODAY = "2026-10-22"; // Thursday; its week starts Monday 2026-10-19.
 
 afterEach(cleanup);
+
+function providerCards(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(".usage-provider-card")];
+}
+
+function providerHeader(card: HTMLElement): HTMLElement {
+  const header = card.querySelector<HTMLElement>('[role="button"]');
+  if (!header) throw new Error("provider card has no FoldCard header");
+  return header;
+}
+
+function expandProviderCards() {
+  for (const card of providerCards()) {
+    const header = providerHeader(card);
+    if (header.getAttribute("aria-expanded") === "false") {
+      fireEvent.click(header);
+    }
+  }
+}
 
 describe("bucketHours", () => {
   it("keeps the whole day so the axis cannot lie about which hour a bar is", () => {
@@ -182,6 +216,35 @@ describe("WorkspaceUsageView", () => {
     session_count: 15,
   });
 
+  const withProviders = report(
+    [
+      day("2026-09-01", 10, 5, 1, 1),
+      day("2026-10-20", 500, 250, 200, 2),
+      day("2026-10-21", 50, 25, 10, 1),
+      day("2026-10-22", 300, 150, 120, 2),
+    ],
+    {
+      hours: [hour(9, 100, 50, 40, 1), hour(15, 200, 100, 80, 1)],
+      providers: [
+        provider(
+          "openai",
+          [
+            day("2026-10-20", 500, 250, 200, 2),
+            day("2026-10-22", 100, 50, 40, 1),
+          ],
+          [hour(9, 100, 50, 40, 1)],
+        ),
+        provider(
+          "anthropic",
+          [day("2026-10-22", 200, 100, 80, 1)],
+          [hour(15, 200, 100, 80, 1)],
+        ),
+        provider(null, [day("2026-10-21", 50, 25, 10, 1)]),
+        provider("old", [day("2026-09-01", 10, 5, 1, 1)]),
+      ],
+    },
+  );
+
   it("opens on today's 24 hours, aggregating only today's bills", () => {
     render(<WorkspaceUsageView report={afternoon} />);
     expect(screen.getByText("Workspace usage")).toBeTruthy();
@@ -245,5 +308,126 @@ describe("WorkspaceUsageView", () => {
     render(<WorkspaceUsageView report={afternoon} />);
     expect(screen.queryByText(/会话 · 按 prompt/)).toBeNull();
     expect(screen.queryByText(/压缩/)).toBeNull();
+  });
+
+  it("draws one chart per provider with data in the selected window", () => {
+    render(<WorkspaceUsageView report={withProviders} />);
+    expect(screen.getByText("By provider")).toBeTruthy();
+    expect(screen.getByTestId("provider-usage-openai")).toBeTruthy();
+    expect(screen.getByTestId("provider-usage-anthropic")).toBeTruthy();
+    expect(screen.queryByTestId("provider-usage-unknown")).toBeNull();
+    expect(screen.queryByTestId("provider-usage-old")).toBeNull();
+    expandProviderCards();
+    expect(
+      screen.getByRole("img", { name: /openai token usage/i }),
+    ).toBeTruthy();
+  });
+
+  it("collapses each provider chart into a FoldCard summary with its billed total", () => {
+    render(<WorkspaceUsageView report={withProviders} />);
+    const card = screen.getByTestId("provider-usage-anthropic");
+    expect(card.querySelector(".foldcard")).toBeTruthy();
+    expect(card.querySelector("details")).toBeNull();
+    const header = providerHeader(card);
+    expect(header.getAttribute("aria-expanded")).toBe("false");
+    expect(header.textContent).toContain("anthropic");
+    expect(header.textContent).toContain("280");
+    expect(card.querySelector('[role="img"]')).toBeNull();
+
+    fireEvent.click(header);
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    expect(card.querySelector('[role="img"]')).toBeTruthy();
+  });
+
+  it("sorts provider cards by the current window's billed usage", () => {
+    render(<WorkspaceUsageView report={withProviders} />);
+    const order = () => providerCards().map((card) => card.getAttribute("data-testid"));
+    // Day: anthropic 280, openai 140.
+    expect(order()).toEqual(["provider-usage-anthropic", "provider-usage-openai"]);
+
+    fireEvent.click(screen.getByText("Week"));
+    // Week: openai 840, anthropic 280, unknown 60.
+    expect(order()).toEqual([
+      "provider-usage-openai",
+      "provider-usage-anthropic",
+      "provider-usage-unknown",
+    ]);
+  });
+
+  it("keeps every chart's accessible name unique", () => {
+    render(<WorkspaceUsageView report={withProviders} />);
+    expandProviderCards();
+    const labels = screen
+      .getAllByRole("img")
+      .map((chart) => chart.getAttribute("aria-label") ?? "");
+    expect(labels.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels.some((label) => /Workspace token usage/.test(label))).toBe(true);
+    expect(labels.some((label) => /openai token usage/i.test(label))).toBe(true);
+  });
+
+  it("re-scopes every provider chart with the shared period switch", () => {
+    render(<WorkspaceUsageView report={withProviders} />);
+    expandProviderCards();
+    expect(
+      screen.getByTestId("provider-usage-openai").querySelectorAll("[data-slot]"),
+    ).toHaveLength(24);
+
+    fireEvent.click(screen.getByText("Week"));
+    expandProviderCards();
+    expect(
+      screen.getByTestId("provider-usage-openai").querySelectorAll("[data-slot]"),
+    ).toHaveLength(7);
+    expect(
+      screen.getByTestId("provider-usage-anthropic").querySelectorAll("[data-slot]"),
+    ).toHaveLength(7);
+    expect(screen.queryByTestId("provider-usage-old")).toBeNull();
+
+    fireEvent.click(screen.getByText("Month"));
+    expandProviderCards();
+    expect(
+      screen.getByTestId("provider-usage-openai").querySelectorAll("[data-slot]"),
+    ).toHaveLength(31);
+    expect(
+      screen.getByTestId("provider-usage-unknown").querySelectorAll("[data-slot]"),
+    ).toHaveLength(31);
+
+    fireEvent.click(screen.getByText("All"));
+    expect(screen.getByTestId("provider-usage-old")).toBeTruthy();
+  });
+
+  it("shows each provider's current-window billed total and request count", () => {
+    render(<WorkspaceUsageView report={withProviders} />);
+    fireEvent.click(screen.getByText("Week"));
+    const openai = screen.getByTestId("provider-usage-openai");
+    expect(openai.textContent).toContain("840");
+    expect(openai.textContent).toContain("3 requests");
+  });
+
+  it("labels the unknown bucket explicitly", () => {
+    render(<WorkspaceUsageView report={withProviders} />);
+    fireEvent.click(screen.getByText("Week"));
+    expect(screen.getByText("Unknown (legacy compaction)")).toBeTruthy();
+    expect(screen.getByTestId("provider-usage-unknown")).toBeTruthy();
+  });
+
+  it("hides the provider section when no provider paid in the window", () => {
+    const pastOnly = report([day("2026-09-01", 100, 50)], {
+      providers: [provider("old", [day("2026-09-01", 100, 50)])],
+    });
+    render(<WorkspaceUsageView report={pastOnly} />);
+    expect(screen.queryByTestId("provider-usage-section")).toBeNull();
+  });
+
+  it("gives every provider the same period frame", () => {
+    const rows = provider(
+      "openai",
+      [day("2026-10-20", 500, 250, 200, 2), day("2026-10-22", 100, 50, 40, 1)],
+      [hour(9, 100, 50, 40, 1)],
+    );
+    expect(providerBuckets(rows, "day", TODAY)).toHaveLength(24);
+    expect(providerBuckets(rows, "week", TODAY)).toHaveLength(7);
+    expect(providerBuckets(rows, "month", TODAY)).toHaveLength(31);
+    expect(providerBuckets(rows, "all", TODAY)).toHaveLength(3);
   });
 });

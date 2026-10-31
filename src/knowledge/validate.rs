@@ -1,6 +1,6 @@
 //! Corpus resolution: declaration checks plus one result per cited reference.
 //!
-//! Pure: every disk / git / parse fact comes through [`Facts`], so the index,
+//! Pure: every disk / parse fact comes through [`Facts`], so the index,
 //! the tests and every caller share one set of rules
 //! (`docs/knowledge-references.md`). Codes are the wire codes of the
 //! knowledge API.
@@ -68,7 +68,6 @@ pub const STATUS_CODES: &[&str] = &[
     "unsupported_language",
     "missing_symbol",
     "ambiguous_symbol",
-    "symbol_drift",
     "line_out_of_range",
     "invalid_status",
     "empty_key",
@@ -108,7 +107,6 @@ pub enum SymbolFact {
     Missing,
     Ambiguous,
     Present,
-    Drifted,
 }
 
 pub trait Facts {
@@ -450,7 +448,7 @@ fn resolve_cite(
     }
 }
 
-/// KR order: path → lines format → readability → language → symbol → bounds → drift.
+/// KR order: path → lines format → readability → language → symbol → bounds.
 fn resolve_path_cite(cite: &Cite, path: &str, facts: &mut dyn Facts) -> Verdict {
     let file = if is_workspace_file_ref(path) {
         facts.file(path)
@@ -525,12 +523,6 @@ fn resolve_path_cite(cite: &Cite, path: &str, facts: &mut dyn Facts) -> Verdict 
                 "ambiguous_symbol",
                 format!("Symbol \"{chain}\" in \"{path}\" is not unique."),
             ),
-            SymbolFact::Drifted => Verdict {
-                status: "symbol_drift",
-                severity: Some(Severity::Warning),
-                message: format!("Symbol \"{chain}\" in \"{path}\" differs from HEAD."),
-                extra: Args::new(),
-            },
             SymbolFact::Present => ok(),
         };
     }

@@ -287,7 +287,10 @@ impl<'de> Deserialize<'de> for CustomToolDefinition {
                 "`suite_label` was removed; declare the label once in the suite (`suites.<name>.label`)",
             ));
         }
-        let has_suite = wire.suite.as_deref().is_some_and(|suite| !suite.trim().is_empty());
+        let has_suite = wire
+            .suite
+            .as_deref()
+            .is_some_and(|suite| !suite.trim().is_empty());
         match (wire.surface.is_some(), has_suite) {
             (false, false) => {
                 return Err(serde::de::Error::custom(
@@ -334,7 +337,9 @@ impl CustomToolDefinition {
     }
 
     pub fn is_suite_member(&self) -> bool {
-        self.suite.as_deref().is_some_and(|suite| !suite.trim().is_empty())
+        self.suite
+            .as_deref()
+            .is_some_and(|suite| !suite.trim().is_empty())
     }
 
     pub fn to_json_schema(&self) -> Value {
@@ -428,14 +433,15 @@ mod custom_tool_definition_tests {
     #[test]
     fn custom_tool_surface_is_explicit_and_accepts_code() {
         let missing: Result<CustomToolDefinition, _> = serde_json::from_value(body(None));
-        assert!(missing.is_err(), "surface must be explicit on a standalone tool");
+        assert!(
+            missing.is_err(),
+            "surface must be explicit on a standalone tool"
+        );
 
-        let direct: CustomToolDefinition =
-            serde_json::from_value(body(Some("direct"))).unwrap();
+        let direct: CustomToolDefinition = serde_json::from_value(body(Some("direct"))).unwrap();
         assert_eq!(direct.surface, Some(CallSurface::Direct));
 
-        let code: CustomToolDefinition =
-            serde_json::from_value(body(Some("code"))).unwrap();
+        let code: CustomToolDefinition = serde_json::from_value(body(Some("code"))).unwrap();
         assert_eq!(code.surface, Some(CallSurface::Code));
     }
 }

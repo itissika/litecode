@@ -922,22 +922,29 @@ pub(crate) async fn build_session_list(
     let mut result = Vec::with_capacity(db_sessions.len());
     for row in db_sessions {
         // WP-091 R8 / P8: empty child sessions stay listed (a just-bound
-        // child must be visible after reconnect). An empty root is also kept
-        // when the user named it or filed it: otherwise naming a fresh session
-        // would make it vanish from the sidebar.
-        if row.parent_session_id.is_none()
-            && row.title.is_none()
-            && row.folder_id.is_none()
-            && sessions_mgr.is_session_empty(&row.id).await
-        {
-            continue;
-        }
+        // child must be visible after reconnect). A root is listed only when
+        // the sidebar can show something: a user title / folder, preview
+        // text, a live turn, or a real conversation row. Control rows such as
+        // `model/changed` are not content — see `SessionListRow::is_listed`.
         let running = sessions_mgr.is_turn_running(&row.id).await;
         let status = sessions_mgr
             .session_status(&row.id)
             .unwrap_or(crate::session::manager::SessionStatus::Idle)
             .as_str()
             .to_string();
+        let busy = status != "idle";
+        // The transcript check runs only for rows the projection cannot
+        // vouch for, so a normal conversation never pays for the extra query.
+        let has_conversation = if row.is_listed_by_projection(running, busy) {
+            false
+        } else {
+            sessions_mgr
+                .data()
+                .has_conversation_rows_blocking(&row.id)?
+        };
+        if !row.is_listed(running, busy, has_conversation) {
+            continue;
+        }
         let turn = if running {
             sessions_mgr
                 .get_cached_progress(&row.id)

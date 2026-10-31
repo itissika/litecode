@@ -197,29 +197,6 @@ describe("BrowserHost", () => {
     assert.equal(view.color, "#0a0a0a");
   });
 
-  it("does not place a rectangle while obscured", () => {
-    const view = new FakeView();
-    const host = hostWith(view);
-    host.setObscured(true);
-    host.create(PANEL_ID, "#0a0a0a");
-    view.visible = [];
-    view.bounds = [];
-    host.setBounds(PANEL_ID, RECT);
-    host.setVisible(PANEL_ID, true);
-    assert.deepEqual(view.bounds, []);
-    assert.deepEqual(view.visible, []);
-
-    host.setObscured(false);
-    assert.deepEqual(view.bounds, [RECT]);
-    assert.deepEqual(view.visible, [true]);
-
-    view.bounds = [];
-    host.setObscured(true);
-    host.setBounds(PANEL_ID, { x: 1, y: 2, width: 30, height: 40 });
-    assert.deepEqual(view.bounds, []);
-    assert.equal(view.visible.at(-1), false);
-  });
-
   it("hides only the occluded page and restores its neighbour", async () => {
     const first = new FakeView();
     const second = new FakeView();
@@ -251,23 +228,6 @@ describe("BrowserHost", () => {
     host.setViewOccluded(PANEL_ID, false);
     assert.equal(first.visible.at(-1), true);
     assert.equal(host.isShown(PANEL_ID), true);
-  });
-
-  it("keeps the global obscured lease above per-view occlusion", () => {
-    const view = new FakeView();
-    const host = hostWith(view);
-    host.create(PANEL_ID, "#0a0a0a");
-    host.setBounds(PANEL_ID, RECT);
-    host.setVisible(PANEL_ID, true);
-    host.setViewOccluded(PANEL_ID, true);
-    host.setObscured(true);
-    host.setViewOccluded(PANEL_ID, false);
-    assert.equal(host.isShown(PANEL_ID), false);
-    assert.equal(view.visible.at(-1), false);
-
-    host.setObscured(false);
-    assert.equal(host.isShown(PANEL_ID), true);
-    assert.equal(view.visible.at(-1), true);
   });
 
   it("hides a zero-area rectangle and destroys once", () => {

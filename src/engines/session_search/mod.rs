@@ -192,13 +192,11 @@ struct HydratedHit {
     seq: i64,
     /// The rendered line the match itself lands on.
     line: u32,
-    /// First and last rendered body line of the hit's item: a view shape is
-    /// clamped to this range so context never leaks into a neighbouring item.
-    first_line: u32,
-    last_line: u32,
-    /// Reader-facing type label of the item (`assistant reasoning`, `tool result`).
-    label: String,
     summary: String,
+    /// Role used by the agent table; ranking already weighted by it.
+    role: ContentRole,
+    /// Evidence layers that found this row, in rank order.
+    layers: Vec<LayerId>,
 }
 
 /// Case-insensitive fuzzy search over all detail rows.
@@ -427,8 +425,8 @@ fn cmp_hits(a: &SessionTextHit, b: &SessionTextHit) -> std::cmp::Ordering {
 }
 
 /// Agent-facing final ordering: the explicit rank key first, then caller
-/// family, then the most recently updated session, then the later line in
-/// that session.
+/// family, then the most recently updated session, then the earlier line in
+/// that session (a table reads top-down).
 ///
 /// Exact hits of one speaker are equal on the rank key — repetition is not a
 /// better match — so this is where they are ordered. A newer session is the
@@ -453,7 +451,7 @@ pub fn sort_hits_for_agent(
                 ub.cmp(&ua)
             })
             .then_with(|| a.session_id.cmp(&b.session_id))
-            .then_with(|| b.seq.cmp(&a.seq))
+            .then_with(|| a.seq.cmp(&b.seq))
     });
 }
 
@@ -484,7 +482,7 @@ pub fn build_search_page(
     offset: usize,
 ) -> Result<SessionSearchPage> {
     let rows = dedup_chunks_to_rows(ranked);
-    let (hydrated, _) = hydrate_hits(reader, &rows)?;
+    let hydrated = hydrate_hits(reader, &rows)?;
     let match_counts = count_by_session(&hydrated);
     let session_ids: Vec<String> = unique_session_order(&hydrated);
     let meta = load_session_meta(reader, &session_ids).unwrap_or_default();
@@ -514,10 +512,7 @@ fn dedup_chunks_to_rows(hits: &[SessionTextHit]) -> Vec<SessionTextHit> {
     out
 }
 
-fn hydrate_hits(
-    reader: &SessionDataReader,
-    hits: &[SessionTextHit],
-) -> Result<(Vec<HydratedHit>, HashMap<String, TranscriptFile>)> {
+fn hydrate_hits(reader: &SessionDataReader, hits: &[SessionTextHit]) -> Result<Vec<HydratedHit>> {
     let mut cache: HashMap<String, TranscriptFile> = HashMap::new();
     let mut out = Vec::with_capacity(hits.len());
     for hit in hits {
@@ -537,9 +532,6 @@ fn hydrate_hits(
         let Some(line) = file.line_for_hit(hit.seq, hit.char_start, hit.char_end) else {
             continue;
         };
-        let Some((first_line, last_line, label)) = body_span(file, hit.seq) else {
-            continue;
-        };
         let summary = match hit.lane {
             SessionHitLane::Text => file
                 .line_text(line)
@@ -555,39 +547,12 @@ fn hydrate_hits(
             session_id: hit.session_id.clone(),
             seq: hit.seq,
             line,
-            first_line,
-            last_line,
-            label,
             summary,
+            role: hit.role,
+            layers: hit.layers(),
         });
     }
-    Ok((out, cache))
-}
-
-/// First and last rendered body line of one item, plus its reader-facing label.
-///
-/// The label is the item's type, plus the tool name for the rows that are a
-/// tool call or a tool result — "which tool" is the question a bare `tool call`
-/// leaves open.
-fn body_span(file: &TranscriptFile, seq: i64) -> Option<(u32, u32, String)> {
-    let mut first: Option<u32> = None;
-    let mut last: Option<u32> = None;
-    let mut label = String::new();
-    for span in file
-        .line_index
-        .iter()
-        .filter(|s| s.seq == seq && !s.is_header)
-    {
-        first.get_or_insert(span.line);
-        last = Some(span.line);
-        if label.is_empty() {
-            label = transcript_file::type_label(&span.kind, &span.item_type);
-            if let Some(tool) = file.tool_name(seq) {
-                label = format!("{label} · {tool}");
-            }
-        }
-    }
-    Some((first?, last?, label))
+    Ok(out)
 }
 
 fn collapse_summary(text: &str) -> String {
@@ -704,234 +669,92 @@ fn packed_page_text(groups: &[SessionSearchGroup]) -> String {
     parts.join("\n")
 }
 
-/// Token budget for one agent-facing view. The same value `grep` uses, so the
-/// model meets one contract everywhere: one response is one window, and whatever
-/// does not fit is named in a file instead of being paged with an offset.
-pub const SEARCH_VIEW_TOKEN_BUDGET: usize = 2_000;
-
-/// Lines of context shown around a hit when the whole item does not fit.
-const HIT_CONTEXT_LINES: u32 = 2;
-
-/// Shortest session handle inside a view; extended until it is unique.
-const HANDLE_MIN_LEN: usize = SESSION_REF_SHORT_LEN;
-
-/// The shape a whole view is rendered in. Every shape is judged against the
-/// budget as a *whole* view, so a rich shape is never shown for the first few
-/// hits only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ViewShape {
-    /// Every hit's entire item.
-    WholeItem,
-    /// `HIT_CONTEXT_LINES` lines around every hit, clamped to its item.
-    Context,
-    /// The hit line alone.
-    Line,
+/// One row of the agent-facing session table. Flat on purpose: the model reads
+/// columns, not a nested session tree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionTableHit {
+    pub session: String,
+    pub age: String,
+    pub line: u32,
+    pub role: String,
+    pub via: String,
+    pub summary: String,
 }
 
-/// Build the agent-facing answer: sessions grouped, one token-bounded shape.
+/// The whole table plus the pre-limit hit count, so the tool can say whether
+/// it truncated without guessing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionTable {
+    pub hits: Vec<SessionTableHit>,
+    pub total: usize,
+}
+
+/// Build the flat table consumed by `session_search`.
 ///
-/// An empty string means nothing could be resolved — the caller reports "no
-/// match" rather than a partial answer that reads like a whole one.
-pub fn build_agent_view(
+/// Order is the existing rank order; hits are not grouped by session. `limit`
+/// is applied after hydration so `total` stays the true match count.
+pub fn build_agent_table(
     reader: &SessionDataReader,
     ranked: &[SessionTextHit],
-    workspace_root: &std::path::Path,
-) -> Result<String> {
-    build_agent_view_with_budget(reader, ranked, workspace_root, SEARCH_VIEW_TOKEN_BUDGET)
-}
-
-fn build_agent_view_with_budget(
-    reader: &SessionDataReader,
-    ranked: &[SessionTextHit],
-    workspace_root: &std::path::Path,
-    budget: usize,
-) -> Result<String> {
+    limit: usize,
+) -> Result<SessionTable> {
     let rows = dedup_chunks_to_rows(ranked);
-    let (hits, files) = hydrate_hits(reader, &rows)?;
+    let hits = hydrate_hits(reader, &rows)?;
     if hits.is_empty() {
-        return Ok(String::new());
+        return Ok(SessionTable::default());
     }
+    let total = hits.len();
     let session_ids = unique_session_order(&hits);
     let meta = load_session_meta(reader, &session_ids).unwrap_or_default();
     let handles = unique_handles(&session_ids);
     let now = chrono::Utc::now().timestamp_millis();
-    let headers = view_headers(&hits, &session_ids, &meta, &handles, now);
-
-    // View order: rank order, except that a session's hits stay together with the
-    // header that names them.
-    let ordered: Vec<&HydratedHit> = session_ids
+    let hits = hits
         .iter()
-        .flat_map(|sid| hits.iter().filter(move |h| &h.session_id == sid))
-        .collect();
-
-    for shape in [ViewShape::WholeItem, ViewShape::Context, ViewShape::Line] {
-        let view = render_view(&ordered, &files, &headers, shape, ordered.len());
-        if count_text_tokens(&view) <= budget {
-            return Ok(view);
-        }
-    }
-
-    // Nothing fits whole: carry as many hit lines as the budget allows and name
-    // the rest in a file `read`/`grep` can page through.
-    let slot = spill_slot(workspace_root);
-    let location = slot
-        .as_ref()
-        .map(|s| s.location.clone())
-        .unwrap_or_default();
-    // Reserve the footer's longest form: it shrinks as hits are carried.
-    let footer_bound = spill_footer(&ordered, &handles, &location, 0);
-    let shown = fit_prefix(&ordered, &files, &headers, &footer_bound, budget);
-    let body = render_view(&ordered, &files, &headers, ViewShape::Line, shown);
-    if shown == ordered.len() {
-        return Ok(body);
-    }
-    let written = slot
-        .as_ref()
-        .and_then(|s| {
-            s.write(&ordered[shown..], &files, &handles)
-                .map(|()| s.location.clone())
+        .take(limit)
+        .map(|hit| {
+            let session = handles
+                .get(&hit.session_id)
+                .cloned()
+                .unwrap_or_else(|| hit.session_id.clone());
+            let age = meta
+                .get(&hit.session_id)
+                .map(|t| format_age(now, t.updated_at))
+                .unwrap_or_else(|| "unknown".to_string());
+            SessionTableHit {
+                session,
+                age,
+                line: hit.line,
+                role: hit.role.as_str().to_string(),
+                via: layers_label(&hit.layers),
+                summary: hit.summary.clone(),
+            }
         })
-        .unwrap_or(location);
-    let footer = spill_footer(&ordered, &handles, &written, shown);
-    Ok(format!("{body}{footer}"))
+        .collect();
+    Ok(SessionTable { hits, total })
 }
 
-/// One header line per session — best handle, relative age, hit count — keyed by
-/// session, so each hit can carry the header of the session it came from. The
-/// count is that session's total, not what this view carries: it says whether
-/// narrowing the query is worth it.
-fn view_headers(
-    hits: &[HydratedHit],
-    order: &[String],
-    meta: &HashMap<String, SessionTimestamps>,
-    handles: &HashMap<String, String>,
-    now: i64,
-) -> HashMap<String, String> {
-    let mut out = HashMap::with_capacity(order.len());
-    for sid in order {
-        let count = hits.iter().filter(|h| &h.session_id == sid).count();
-        let handle = handles.get(sid).map(String::as_str).unwrap_or(sid.as_str());
-        let updated = meta.get(sid).map(|t| t.updated_at).unwrap_or(0);
-        out.insert(
-            sid.clone(),
-            format!(
-                "### {handle} · {} · {count} Matches\n",
-                format_age(now, updated)
-            ),
-        );
+fn layers_label(layers: &[LayerId]) -> String {
+    if layers.is_empty() {
+        return "unknown".to_string();
     }
-    out
-}
-
-/// Render one shape for the first `take` hits of the view order. A session's
-/// header is emitted together with its first hit, so no hit is ever left
-/// unattributed.
-fn render_view(
-    ordered: &[&HydratedHit],
-    files: &HashMap<String, TranscriptFile>,
-    headers: &HashMap<String, String>,
-    shape: ViewShape,
-    take: usize,
-) -> String {
-    let mut out = String::new();
-    let mut current: Option<&str> = None;
-    for hit in ordered.iter().take(take) {
-        if current != Some(hit.session_id.as_str()) {
-            if let Some(header) = headers.get(&hit.session_id) {
-                out.push_str(header);
-            }
-            current = Some(hit.session_id.as_str());
-        }
-        let (from, to) = match shape {
-            ViewShape::WholeItem => (hit.first_line, hit.last_line),
-            ViewShape::Context => (
-                hit.line
-                    .saturating_sub(HIT_CONTEXT_LINES)
-                    .max(hit.first_line),
-                (hit.line + HIT_CONTEXT_LINES).min(hit.last_line),
-            ),
-            ViewShape::Line => (hit.line, hit.line),
+    let mut out: Vec<&str> = Vec::new();
+    for layer in layers {
+        let name = match layer {
+            LayerId::Exact => "exact",
+            LayerId::Proximity => "prox",
+            LayerId::Lexical | LayerId::SparseFull | LayerId::SessionFull => "lex",
+            LayerId::Semantic => "sem",
+            LayerId::Fuzzy => "fuzzy",
         };
-        let label = if from == to {
-            format!("L{from}")
-        } else {
-            format!("L{from}-{to}")
-        };
-        out.push_str(&format!("{label}: {}\n", hit.label));
-        if let Some(file) = files.get(&hit.session_id) {
-            for line in from..=to {
-                if let Some(text) = file.line_text(line) {
-                    out.push_str("  ");
-                    out.push_str(text);
-                    out.push('\n');
-                }
-            }
+        if !out.contains(&name) {
+            out.push(name);
         }
     }
-    out
+    out.join("+")
 }
 
-/// Largest prefix of the single-line shape whose whole view still fits.
-fn fit_prefix(
-    ordered: &[&HydratedHit],
-    files: &HashMap<String, TranscriptFile>,
-    headers: &HashMap<String, String>,
-    footer: &str,
-    budget: usize,
-) -> usize {
-    let mut best = 0;
-    for n in 1..=ordered.len() {
-        let body = render_view(ordered, files, headers, ViewShape::Line, n);
-        if count_text_tokens(&format!("{body}{footer}")) > budget {
-            break;
-        }
-        best = n;
-    }
-    best
-}
-
-/// Test helper: the spill path a view names in `are in <path>.`.
-#[cfg(test)]
-pub(crate) fn named_spill_location(view: &str) -> Option<&str> {
-    let rest = view.split(" are in ").nth(1)?;
-    let token = rest.split_whitespace().next()?;
-    Some(token.strip_suffix('.').unwrap_or(token))
-}
-
-/// Footer of a view that could not carry every hit: what was shown, where the
-/// rest is, and how many per session are missing.
-fn spill_footer(
-    ordered: &[&HydratedHit],
-    handles: &HashMap<String, String>,
-    location: &str,
-    shown: usize,
-) -> String {
-    let total = ordered.len();
-    let remaining = total.saturating_sub(shown);
-    let mut counts: Vec<(String, usize)> = Vec::new();
-    for hit in ordered.iter().skip(shown) {
-        let handle = handles
-            .get(&hit.session_id)
-            .cloned()
-            .unwrap_or_else(|| hit.session_id.clone());
-        match counts.iter_mut().find(|(h, _)| h == &handle) {
-            Some((_, n)) => *n += 1,
-            None => counts.push((handle, 1)),
-        }
-    }
-    let per_session = counts
-        .iter()
-        .map(|(handle, n)| format!("{handle} {n}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut out =
-        format!("\nShowing {shown} of {total} hits; the remaining {remaining} are in {location}.");
-    if !per_session.is_empty() {
-        out.push_str(&format!("\nMore in: {per_session}."));
-    }
-    out.push('\n');
-    out
-}
+/// Shortest session handle inside a view; extended until it is unique.
+const HANDLE_MIN_LEN: usize = SESSION_REF_SHORT_LEN;
 
 /// Relative age, front-end style: `just now`, `5m ago`, `2h ago`, `3d ago`,
 /// `2w ago`, `4mo ago`, `1y+ ago`. An absolute timestamp would only mean
@@ -992,62 +815,6 @@ fn tail_chars(text: &str, n: usize) -> String {
         return text.to_string();
     }
     text.chars().skip(count - n).collect()
-}
-
-/// A file under `.litecode/bash/` for the hits one view cannot carry. Reserved
-/// before the view is fitted so the footer can name it; only written when
-/// something is actually left over.
-struct SpillSlot {
-    path: std::path::PathBuf,
-    /// Workspace-relative path with `/` separators, ready for `read`.
-    location: String,
-}
-
-impl SpillSlot {
-    /// Write exactly the hits the view could not carry — never a second copy of
-    /// what the reader already has.
-    fn write(
-        &self,
-        ordered: &[&HydratedHit],
-        files: &HashMap<String, TranscriptFile>,
-        handles: &HashMap<String, String>,
-    ) -> Option<()> {
-        if ordered.is_empty() {
-            return None;
-        }
-        let mut body = format!(
-            "Remaining {} session-search hits not shown inline.\n\n",
-            ordered.len()
-        );
-        for hit in ordered {
-            let handle = handles
-                .get(&hit.session_id)
-                .map(String::as_str)
-                .unwrap_or(&hit.session_id);
-            // Exactly the line the single-line shape would have shown, so the
-            // spilled form and `read` agree about what `L<n>` holds.
-            let text = files
-                .get(&hit.session_id)
-                .and_then(|f| f.line_text(hit.line))
-                .unwrap_or(hit.summary.as_str());
-            body.push_str(&format!("{handle} L{}: {} {}\n", hit.line, hit.label, text));
-        }
-        std::fs::write(&self.path, body).ok()?;
-        Some(())
-    }
-}
-
-fn spill_slot(workspace_root: &std::path::Path) -> Option<SpillSlot> {
-    let dir = workspace_root.join(".litecode").join("bash");
-    std::fs::create_dir_all(&dir).ok()?;
-    let path = dir.join(format!(
-        "session_search_{}.txt",
-        crate::terminal::bash_nonce()
-    ));
-    let location = crate::workspace::filter::cheap_rel_under(workspace_root, &path)
-        .map(|rel| rel.replace('\\', "/"))
-        .unwrap_or_else(|| path.display().to_string());
-    Some(SpillSlot { path, location })
 }
 
 /// Match-ready view of one text: normalized chars + a map from normalized
@@ -1241,6 +1008,23 @@ mod tests {
             (id_a, id_b)
         };
         (SessionDataReader::open(&db), id_a, id_b)
+    }
+
+    #[test]
+    fn table_via_labels_are_compact_and_deduped() {
+        assert_eq!(layers_label(&[]), "unknown");
+        assert_eq!(
+            layers_label(&[
+                LayerId::Exact,
+                LayerId::Lexical,
+                LayerId::SparseFull,
+                LayerId::SessionFull,
+                LayerId::Fuzzy,
+                LayerId::Semantic,
+                LayerId::Proximity,
+            ]),
+            "exact+lex+fuzzy+sem+prox"
+        );
     }
 
     #[test]
@@ -1476,67 +1260,5 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].seq, 0);
         assert!(hits[0].summary.contains("ARCHIVE_NEEDLE_ONLY"));
-    }
-
-    #[test]
-    fn agent_view_spills_the_remainder_into_a_named_file() {
-        let dir = TempDir::new().unwrap();
-        let db = dir.path().join("sessions.db");
-        let sid = {
-            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
-            let data = SessionData::open(&lease, &db).unwrap();
-            let id = data.create_session("/proj", "default", None).unwrap();
-            let items: Vec<_> = (0..12)
-                .map(|i| {
-                    user_text(format!(
-                        "DEGRADE_NEEDLE {i} filled with words to spend budget"
-                    ))
-                })
-                .collect();
-            data.insert_items(&id, &items).unwrap();
-            id
-        };
-        let reader = SessionDataReader::open(&db);
-        let hits = search(
-            &reader,
-            &SessionTextQuery {
-                query: "DEGRADE_NEEDLE".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        // A budget too small for the whole set at any shape: a prefix of the
-        // single-line shape is carried and the rest is named.
-        let view = build_agent_view_with_budget(&reader, &hits, dir.path(), 90).unwrap();
-        assert!(view.contains("Showing "), "{view}");
-        assert!(
-            view.contains("are in .litecode/bash/session_search_"),
-            "{view}"
-        );
-        assert!(view.contains("More in: "), "{view}");
-        let location = crate::engines::session_search::named_spill_location(&view).expect(&view);
-        let spilled = std::fs::read_to_string(dir.path().join(location)).unwrap();
-        assert!(spilled.contains("Remaining "), "{spilled}");
-        let entries: Vec<&str> = spilled
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .skip(1)
-            .collect();
-        assert!(!entries.is_empty(), "{spilled}");
-        for entry in entries {
-            assert!(
-                entry.starts_with(&format!("{} L", short_session_ref(&sid))),
-                "every spilled hit names its session: {entry}"
-            );
-            assert!(
-                entry.contains("filled with words to spend budget"),
-                "the spilled line is the rendered line: {entry}"
-            );
-        }
-
-        // The real budget carries the same corpus whole: no file, no footer.
-        let whole = build_agent_view(&reader, &hits, dir.path()).unwrap();
-        assert!(!whole.contains("Showing"), "{whole}");
     }
 }

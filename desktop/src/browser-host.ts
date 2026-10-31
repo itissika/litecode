@@ -154,7 +154,6 @@ export class BrowserHost {
   private readonly idPattern: RegExp;
   private readonly agentOwned = new Set<string>();
   private activePanelId: string | null = null;
-  private obscured = false;
   private snapshotInFlight = false;
   private snapshotTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -343,11 +342,6 @@ export class BrowserHost {
     this.apply(entry);
   }
 
-  setObscured(obscured: boolean): void {
-    this.obscured = obscured;
-    for (const entry of this.pages.values()) this.apply(entry);
-  }
-
   /** Hide one page while a workbench surface overlaps its rectangle. */
   setViewOccluded(id: unknown, occluded: boolean): void {
     const panelId = this.readId(id);
@@ -505,10 +499,10 @@ export class BrowserHost {
     return moved;
   }
 
-  /** Show only a visible, unobscured page that has a real rectangle. */
+  /** Show only a visible, unoccluded page that has a real rectangle. */
   private apply(entry: Entry): void {
     const show =
-      entry.wantsVisible && !this.obscured && !entry.occluded && entry.bounds !== null;
+      entry.wantsVisible && !entry.occluded && entry.bounds !== null;
     if (show && entry.bounds) {
       entry.view.setBounds(entry.bounds);
       if (!entry.shown) {

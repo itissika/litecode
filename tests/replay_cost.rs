@@ -19,7 +19,9 @@ fn payload() -> String {
 fn build(fx: &SessionDataFixture, rows: usize) -> String {
     let sid = fx.create("/measure", "agent", None);
     let text = payload();
-    let items: Vec<_> = (0..rows).map(|i| user_text(format!("{i:05} {text}"))).collect();
+    let items: Vec<_> = (0..rows)
+        .map(|i| user_text(format!("{i:05} {text}")))
+        .collect();
     fx.insert_items(&sid, &items);
     sid
 }
@@ -50,7 +52,13 @@ fn replay_cost_scales_with_log_length() {
         let tokens = std::hint::black_box(count_text_tokens(&total_text));
         let tokenize_us = t.elapsed().as_micros();
 
-        rows_out.push((rows, median / 1000, median % 1000, tokenize_us / 1000, tokens));
+        rows_out.push((
+            rows,
+            median / 1000,
+            median % 1000,
+            tokenize_us / 1000,
+            tokens,
+        ));
     }
 
     println!("rows | replay ms | tokenize ms | tokens");

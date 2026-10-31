@@ -141,7 +141,6 @@ let browserBridge: BrowserBridge | null = null;
  * Minimize, maximize, and close follow the IPC sender, not this map.
  */
 const popoutWindows = new Map<string, BrowserWindow>();
-let browserObscured = false;
 let sidecar: SidecarHandle | null = null;
 let authToken = "";
 let sessionMode: SessionMode = "local";
@@ -224,7 +223,6 @@ function ensureBrowserHost(): BrowserHost | null {
   if (!win || win.isDestroyed()) return null;
   if (!browserHost) {
     browserHost = createBrowserHost(win, (id) => popoutWindows.get(id) ?? null);
-    browserHost.setObscured(browserObscured);
   }
   return browserHost;
 }
@@ -250,7 +248,6 @@ function ensureAppViewHost(): BrowserHost | null {
         if (isAllowedExternalUrl(url)) void shell.openExternal(url);
       },
     });
-    appViewHost.setObscured(browserObscured);
   }
   return appViewHost;
 }
@@ -1706,13 +1703,6 @@ function registerBrowserIpc(): void {
 
   onTrusted("litecode:browser-destroy", "workbench", (_event, id: unknown) => {
     browserHost?.destroy(id);
-  });
-
-  onTrusted("litecode:browser-set-obscured", "workbench", (event, obscured: unknown) => {
-    browserObscured = obscured === true;
-    browserHost?.setObscured(browserObscured);
-    appViewHost?.setObscured(browserObscured);
-    event.returnValue = undefined;
   });
 }
 

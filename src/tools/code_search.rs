@@ -44,6 +44,12 @@ struct CodeSearchHit {
     end_line: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     symbol: Option<String>,
+    /// Which retrieval leg(s) admitted this chunk: `lex`, `dense`, or `both`.
+    via: String,
+    /// Raw dense cosine similarity; 0.0 means the hit is lexical-only.
+    dense_similarity: f64,
+    /// The anchor line itself, cheap enough for a table cell.
+    text: String,
     snippet: String,
 }
 
@@ -129,18 +135,23 @@ impl CodeSearchTool {
         let glob = input["include_pattern"]
             .as_str()
             .filter(|glob| !glob.is_empty());
-        let top_k = input["top_k"]
-            .as_u64()
-            .map(|top_k| top_k as usize)
-            .unwrap_or(DEFAULT_TOP_K)
-            .clamp(1, MAX_TOP_K);
-        let min_score = match parse_min_score(&input) {
-            Ok(min_score) => min_score,
+        let mut notes: Vec<String> = Vec::new();
+        let (top_k, top_k_note) = match parse_top_k(&input) {
+            Ok(parsed) => parsed,
             Err(error) => {
                 return ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, error, false)
                     .with_error_code("invalid_input");
             }
         };
+        notes.extend(top_k_note);
+        let (min_score, min_score_note) = match parse_min_score(&input) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                return ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, error, false)
+                    .with_error_code("invalid_input");
+            }
+        };
+        notes.extend(min_score_note);
 
         if let Some(result) = self.not_ready_result() {
             return result;
@@ -177,12 +188,19 @@ impl CodeSearchTool {
                     .iter()
                     .filter_map(|hit| code_hit(root.as_deref(), query, hit))
                     .collect();
-                let message = hits.is_empty().then(|| {
+                let mut message = hits.is_empty().then(|| {
                     let scope = glob
                         .map(|pattern| format!(" for include_pattern '{pattern}'"))
                         .unwrap_or_default();
                     format!("No matching code chunks found{scope}.")
                 });
+                if !notes.is_empty() {
+                    let note = notes.join(" ");
+                    message = Some(match message {
+                        Some(message) => format!("{message} {note}"),
+                        None => note,
+                    });
+                }
                 let data = CodeSearchData::success(hits, message);
                 Self::present(data, Self::success_progress_content(sync.as_ref()))
             }
@@ -261,17 +279,20 @@ impl Tool for CodeSearchTool {
     }
 }
 
-fn parse_min_score(input: &Value) -> Result<Option<f64>, String> {
-    let Some(value) = input.get("min_score").filter(|value| !value.is_null()) else {
-        return Ok(Some(DEFAULT_MIN_SCORE));
-    };
-    let Some(score) = value.as_f64() else {
-        return Err("min_score must be a number between 0 and 1".into());
-    };
-    if !(0.0..=1.0).contains(&score) {
-        return Err("min_score must be between 0 and 1".into());
-    }
-    Ok((score > 0.0).then_some(score))
+fn parse_top_k(input: &Value) -> Result<(usize, Option<String>), String> {
+    let clamped = crate::tool::clamp::clamp_int(input, "top_k", 1, MAX_TOP_K as u64, "hits")?;
+    Ok(match clamped {
+        None => (DEFAULT_TOP_K, None),
+        Some(clamped) => (clamped.value as usize, clamped.note),
+    })
+}
+
+fn parse_min_score(input: &Value) -> Result<(Option<f64>, Option<String>), String> {
+    let clamped = crate::tool::clamp::clamp_float(input, "min_score", 0.0, 1.0, "")?;
+    Ok(match clamped {
+        None => (Some(DEFAULT_MIN_SCORE), None),
+        Some(clamped) => ((clamped.value > 0.0).then_some(clamped.value), clamped.note),
+    })
 }
 
 fn unfinished_sync_line(sync: Option<&crate::engines::progress::CorpusProgress>) -> Option<String> {
@@ -288,6 +309,8 @@ fn code_hit(root: Option<&Path>, query: &str, hit: &RetrievalHit) -> Option<Code
         start_line,
         end_line,
         summary,
+        dense_similarity,
+        lexical_match,
         ..
     } = hit
     else {
@@ -301,6 +324,8 @@ fn code_hit(root: Option<&Path>, query: &str, hit: &RetrievalHit) -> Option<Code
         *start_line,
         *end_line,
         summary,
+        *dense_similarity,
+        *lexical_match,
     ))
 }
 
@@ -311,7 +336,10 @@ fn result_for_source(
     chunk_start: u32,
     chunk_end: u32,
     summary: &str,
+    dense_similarity: f64,
+    lexical_match: bool,
 ) -> CodeSearchHit {
+    let via = hit_via(dense_similarity, lexical_match);
     let Some(source) = source else {
         return CodeSearchHit {
             path: path.to_string(),
@@ -319,6 +347,9 @@ fn result_for_source(
             start_line: chunk_start.max(1),
             end_line: chunk_end.max(chunk_start).max(1),
             symbol: None,
+            via,
+            dense_similarity,
+            text: summary.to_string(),
             snippet: summary.to_string(),
         };
     };
@@ -330,6 +361,9 @@ fn result_for_source(
             start_line: chunk_start.max(1),
             end_line: chunk_end.max(chunk_start).max(1),
             symbol: None,
+            via,
+            dense_similarity,
+            text: summary.to_string(),
             snippet: summary.to_string(),
         };
     }
@@ -374,13 +408,34 @@ fn result_for_source(
     } else {
         snippet
     };
+    let anchor_line = anchor_line.clamp(1, line_count);
+    let text = bounded_snippet(source, anchor_line, anchor_line)
+        .trim()
+        .to_string();
+    let text = if text.is_empty() {
+        summary.to_string()
+    } else {
+        text
+    };
     CodeSearchHit {
         path: path.to_string(),
-        anchor_line: anchor_line.clamp(1, line_count),
+        anchor_line,
         start_line,
         end_line,
         symbol,
+        via,
+        dense_similarity,
+        text,
         snippet,
+    }
+}
+
+fn hit_via(dense_similarity: f64, lexical_match: bool) -> String {
+    match (lexical_match, dense_similarity > 0.0) {
+        (true, true) => "both".to_string(),
+        (true, false) => "lex".to_string(),
+        (false, true) => "dense".to_string(),
+        (false, false) => "dense".to_string(),
     }
 }
 
@@ -678,8 +733,12 @@ mod tests {
             1,
             44,
             "pub fn outer() {",
+            0.0,
+            true,
         );
         assert_eq!(hit.anchor_line, 42);
+        assert_eq!(hit.text, "let auth_token = compute_auth_token();");
+        assert_eq!(hit.via, "lex");
         assert!(hit.snippet.contains("compute_auth_token"), "{hit:?}");
         assert!((hit.end_line - hit.start_line + 1) <= SNIPPET_MAX_LINES);
         assert!(hit.start_line <= hit.anchor_line && hit.anchor_line <= hit.end_line);
@@ -706,6 +765,8 @@ mod tests {
             1,
             83,
             "pub fn wide() {",
+            0.0,
+            true,
         );
         assert_eq!(hit.anchor_line, 82);
         assert!((hit.end_line - hit.start_line + 1) <= SNIPPET_MAX_LINES);
@@ -729,6 +790,8 @@ mod tests {
             1,
             25,
             "fn short_scope() {",
+            0.0,
+            true,
         );
         assert_eq!(hit.anchor_line, 22);
         assert_eq!((hit.start_line, hit.end_line), (21, 24));
@@ -739,16 +802,34 @@ mod tests {
     #[test]
     fn overlong_source_lines_are_capped_without_losing_the_anchor() {
         let source = format!("needle {}\n", "x".repeat(2_000));
-        let hit = result_for_source("src/long.rs", Some(&source), "needle", 1, 1, "");
+        let hit = result_for_source("src/long.rs", Some(&source), "needle", 1, 1, "", 0.0, true);
         assert!(hit.snippet.starts_with("needle "));
         assert!(hit.snippet.ends_with("..."));
         assert!(hit.snippet.chars().count() <= SNIPPET_MAX_LINE_CHARS + 3);
     }
 
     #[test]
+    fn via_distinguishes_lexical_dense_and_both() {
+        assert_eq!(hit_via(0.0, true), "lex");
+        assert_eq!(hit_via(0.0, false), "dense");
+        assert_eq!(hit_via(0.42, true), "both");
+        assert_eq!(hit_via(0.42, false), "dense");
+    }
+
+    #[test]
     fn missing_source_falls_back_to_summary_and_never_uses_first_line_as_snippet() {
-        let hit = result_for_source("gone.rs", None, "target", 10, 20, "summary fallback");
+        let hit = result_for_source(
+            "gone.rs",
+            None,
+            "target",
+            10,
+            20,
+            "summary fallback",
+            0.0,
+            true,
+        );
         assert_eq!(hit.snippet, "summary fallback");
+        assert_eq!(hit.text, "summary fallback");
         assert_eq!(hit.anchor_line, 10);
         assert_eq!((hit.start_line, hit.end_line), (10, 20));
     }
@@ -756,7 +837,16 @@ mod tests {
     #[test]
     fn no_term_and_no_ast_picks_first_informative_non_symbol_line() {
         let source = "\n{\n// path notes\nfn declared_but_not_ast() {}\nplain informational line\n";
-        let hit = result_for_source("README.txt", Some(source), "unrelated words", 1, 5, "");
+        let hit = result_for_source(
+            "README.txt",
+            Some(source),
+            "unrelated words",
+            1,
+            5,
+            "",
+            0.0,
+            false,
+        );
         assert_eq!(hit.anchor_line, 5);
         assert!(hit.snippet.contains("plain informational line"));
         assert!(hit.symbol.is_none());
@@ -781,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_is_single_query_with_bounded_scores_and_no_paging() {
+    fn schema_is_single_query_without_hard_numeric_bounds_and_no_paging() {
         assert_eq!((DEFAULT_TOP_K, MAX_TOP_K), (8, 20));
         let surface = code_search_surface();
         let schema = &surface.tools["code_search"].input_schema;
@@ -790,15 +880,29 @@ mod tests {
         assert!(!properties.contains_key("offset"));
         assert!(!properties.contains_key("cursor"));
         assert!(!properties.contains_key("page"));
-        assert_eq!(properties["top_k"]["maximum"], MAX_TOP_K);
-        assert_eq!(properties["min_score"]["minimum"], 0.0);
-        assert_eq!(properties["min_score"]["maximum"], 1.0);
-        assert_eq!(parse_min_score(&serde_json::json!({})), Ok(Some(0.8)));
+        assert!(properties["top_k"].get("maximum").is_none());
+        assert!(properties["min_score"].get("minimum").is_none());
+        assert!(properties["min_score"].get("maximum").is_none());
+        assert_eq!(
+            parse_min_score(&serde_json::json!({})),
+            Ok((Some(0.8), None))
+        );
         assert_eq!(
             parse_min_score(&serde_json::json!({"min_score": 0})),
-            Ok(None)
+            Ok((None, None))
         );
-        assert!(parse_min_score(&serde_json::json!({"min_score": 1.1})).is_err());
+        let (score, note) = parse_min_score(&serde_json::json!({"min_score": 1.1})).unwrap();
+        assert_eq!(score, Some(1.0));
+        assert_eq!(
+            note.as_deref(),
+            Some("`min_score` was reduced from 1.1 to 1.")
+        );
+        let (top_k, note) = parse_top_k(&serde_json::json!({"top_k": 30})).unwrap();
+        assert_eq!(top_k, MAX_TOP_K);
+        assert_eq!(
+            note.as_deref(),
+            Some("`top_k` was reduced from 30 to 20 hits.")
+        );
     }
 
     #[test]
@@ -825,7 +929,16 @@ mod tests {
         let hit = schema["properties"]["hits"]["items"].as_object().unwrap();
         assert_eq!(
             hit["required"],
-            serde_json::json!(["path", "anchor_line", "start_line", "end_line", "snippet"])
+            serde_json::json!([
+                "path",
+                "anchor_line",
+                "start_line",
+                "end_line",
+                "via",
+                "dense_similarity",
+                "text",
+                "snippet"
+            ])
         );
 
         let success = CodeSearchData::success(
@@ -836,6 +949,8 @@ mod tests {
                 1,
                 2,
                 "fn a() {}",
+                0.0,
+                true,
             )],
             None,
         );

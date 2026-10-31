@@ -552,7 +552,6 @@ pub struct SessionUsageSeries {
     pub requests: u64,
 }
 
-
 /// Whole-workspace authoritative spend (`workspace/usage`).
 ///
 /// Every number is folded from rows that carry a readable provider bill. No
@@ -569,6 +568,9 @@ pub struct WorkspaceUsageReport {
     pub today: String,
     pub totals: crate::session::store::ProviderUsage,
     pub requests: u64,
+    /// Per-provider slices of the same bills. Unknown bills are one entry with
+    /// `provider_id: None`; provider totals still reconcile with `totals`.
+    pub providers: Vec<crate::session::store::WorkspaceUsageProvider>,
     /// Sessions that paid at least one bill.
     pub session_count: u64,
 }

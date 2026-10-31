@@ -578,6 +578,27 @@
   padding: 0.875rem 0.375rem 0.875rem var(--_dk-indent-card-body);
 }
 
+/* Workspace usage: each provider is a FoldCard whose body is a full-width
+   chart. The popover owns scrolling, so the card must not add its own scroll
+   frame, gutter, or nesting rail. */
+.usage-foldcard .foldcard-scroll {
+  max-height: none;
+  overflow: visible;
+  overscroll-behavior: auto;
+  padding: 0.25rem 0;
+}
+
+.usage-foldcard .foldcard-scroll-frame::before {
+  display: none;
+}
+
+/* The chart tooltip floats above the SVG, so an open card must not clip it to
+   the body box. Collapsed cards keep the default clip. */
+.usage-foldcard .foldcard-body.is-open .foldcard-body-inner,
+.usage-foldcard .foldcard-body.is-open .foldcard-scroll-frame {
+  overflow: visible;
+}
+
 /* Nested FoldCards: an inner .foldcard-scroll is always a DOM descendant of the
    outer one, so let its scroll bubble up (overscroll-behavior: auto) to the
    parent FoldCard once the inner hits its boundary. Without this, every level

@@ -3264,6 +3264,45 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Run one physical stream checkpoint under the session revision CAS.
+    ///
+    /// A compaction branch can commit a checkpoint while the main turn is
+    /// still streaming. The resulting revision move is a legitimate race, not
+    /// a reason to fail the turn or lose a flushed batch. Re-read the durable
+    /// token and retry. The writer's per-row `in_progress` check remains the
+    /// correctness guard: if a different writer settled or removed the row,
+    /// that error is returned rather than retried.
+    fn mutate_stream_checkpoint(
+        &self,
+        session_id: &str,
+        mut make: impl FnMut(u64) -> SessionMutation,
+    ) -> Result<crate::session::data::command::CommitReceipt> {
+        const MAX_ATTEMPTS: usize = 3;
+        let mut last_conflict = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            let expected = self.expected_revision(session_id);
+            match self.mutate_blocking(make(expected)) {
+                Ok(receipt) => return Ok(receipt),
+                Err(error @ LitecodeError::SessionConflict { .. })
+                    if attempt + 1 < MAX_ATTEMPTS =>
+                {
+                    tracing::debug!(
+                        session_id,
+                        attempt = attempt + 1,
+                        "stream checkpoint lost the revision CAS; retrying on the fresh revision"
+                    );
+                    last_conflict = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_conflict.unwrap_or_else(|| {
+            LitecodeError::SessionStorage(
+                "stream checkpoint retry exhausted without a recorded conflict".into(),
+            )
+        }))
+    }
+
     /// Open the log row for a streaming provider item; returns its `seq`.
     ///
     /// The returned seq is the item's identity for the rest of its life: every
@@ -3274,13 +3313,14 @@ impl SessionManager {
         item: &crate::types::Item,
         turn_id: &str,
     ) -> crate::types::Result<crate::session::event::Seq> {
-        let expected = self.expected_revision(session_id);
-        let receipt = self.mutate_blocking(SessionMutation::BeginStreamItem {
-            session_id: session_id.to_string(),
-            expected_revision: expected,
-            operation_id: MutationId::new(),
-            item: item.clone(),
-            turn_id: turn_id.to_string(),
+        let receipt = self.mutate_stream_checkpoint(session_id, |expected| {
+            SessionMutation::BeginStreamItem {
+                session_id: session_id.to_string(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+                item: item.clone(),
+                turn_id: turn_id.to_string(),
+            }
         })?;
         match receipt.outcome {
             crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
@@ -3290,20 +3330,44 @@ impl SessionManager {
         }
     }
 
-    /// Replace the payload of a row that is still in flight.
+    /// Replace several in-flight stream rows in one CAS revision.
+    ///
+    /// The stream keeps one provider callback's coalesced batch together, so
+    /// one flush can never pay a revision per row. The writer still validates
+    /// the batch and applies it atomically.
+    pub fn update_stream_items(
+        &self,
+        session_id: &str,
+        rows: Vec<crate::session::data::StreamItemUpdate>,
+    ) -> crate::types::Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        self.mutate_stream_checkpoint(session_id, |expected| {
+            SessionMutation::UpdateStreamItems {
+                session_id: session_id.to_string(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+                rows: rows.clone(),
+            }
+        })?;
+        Ok(())
+    }
+
     pub fn update_stream_item(
         &self,
         session_id: &str,
         seq: crate::session::event::Seq,
         item: &crate::types::Item,
     ) -> crate::types::Result<()> {
-        let expected = self.expected_revision(session_id);
-        self.mutate_blocking(SessionMutation::UpdateStreamItem {
-            session_id: session_id.to_string(),
-            expected_revision: expected,
-            operation_id: MutationId::new(),
-            seq,
-            item: item.clone(),
+        self.mutate_stream_checkpoint(session_id, |expected| {
+            SessionMutation::UpdateStreamItem {
+                session_id: session_id.to_string(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+                seq,
+                item: item.clone(),
+            }
         })?;
         Ok(())
     }
@@ -3315,13 +3379,14 @@ impl SessionManager {
         seq: crate::session::event::Seq,
         item: &crate::types::Item,
     ) -> crate::types::Result<()> {
-        let expected = self.expected_revision(session_id);
-        self.mutate_blocking(SessionMutation::SealStreamItem {
-            session_id: session_id.to_string(),
-            expected_revision: expected,
-            operation_id: MutationId::new(),
-            seq,
-            item: item.clone(),
+        self.mutate_stream_checkpoint(session_id, |expected| {
+            SessionMutation::SealStreamItem {
+                session_id: session_id.to_string(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+                seq,
+                item: item.clone(),
+            }
         })?;
         Ok(())
     }
@@ -4768,7 +4833,12 @@ mod usage_series_tests {
             let header = manager
                 .append_request_origin(
                     &session_id,
-                    &serde_json::json!({ "schema": 1, "step": step, "model": "test/model" }),
+                    &serde_json::json!({
+                        "schema": 1,
+                        "step": step,
+                        "provider_id": "test-provider",
+                        "model": "test/model",
+                    }),
                 )
                 .expect("header row");
             manager
@@ -4817,36 +4887,96 @@ mod usage_series_tests {
         let small = manager.open_session_sync("", "default", None).unwrap();
         let large = manager.open_session_sync("", "default", None).unwrap();
         assert_ne!(small, large);
-        for (session_id, prompt) in [(&small, 1_000u64), (&large, 3_000)] {
+        for (session_id, prompt, provider_id) in [
+            (&small, 1_000u64, "alpha"),
+            (&large, 3_000, "beta"),
+        ] {
             let header = manager
                 .append_request_origin(
                     session_id,
-                    &serde_json::json!({ "schema": 1, "model": "test/model" }),
+                    &serde_json::json!({
+                        "schema": 1,
+                        "provider_id": provider_id,
+                        "model": "test/model",
+                    }),
                 )
                 .expect("header row");
             manager
                 .record_provider_usage(session_id, header, &usage(prompt, 900, 10))
                 .expect("bill");
         }
+        manager
+            .data()
+            .insert_items(&small, &[crate::types::user_text("seed")])
+            .unwrap();
+        let expected = manager.data().revision_blocking(&small).unwrap();
+        manager
+            .mutate_blocking(SessionMutation::Compact {
+                session_id: small.clone(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+                summary: "legacy summary".into(),
+                token_estimate: 1,
+                kept_from: None,
+                at: None,
+                expected_prefix: None,
+                usage: Some(usage(500, 400, 20)),
+                provider_id: None,
+            })
+            .expect("unknown compact bill");
 
         let workspace = manager.workspace_usage().expect("workspace usage");
-        assert_eq!(workspace.requests, 2);
-        assert_eq!(workspace.totals.prompt_tokens, 4_000);
-        assert_eq!(workspace.totals.completion_tokens, 20);
-        assert_eq!(workspace.days.len(), 1, "both bills share today's bucket");
-        assert_eq!(workspace.days[0].prompt, 4_000);
-        assert_eq!(workspace.days[0].requests, 2);
+        assert_eq!(workspace.requests, 3, "two requests plus one summary call");
+        assert_eq!(workspace.totals.prompt_tokens, 4_500);
+        assert_eq!(workspace.totals.completion_tokens, 40);
+        assert_eq!(workspace.days.len(), 1, "all bills share today's bucket");
+        assert_eq!(workspace.days[0].prompt, 4_500);
+        assert_eq!(workspace.days[0].requests, 3);
         assert_eq!(workspace.session_count, 2, "both sessions paid a bill");
         // Same rows, second resolution: today's hours add up to the same money.
         assert_eq!(
             workspace.hours.iter().map(|hour| hour.prompt).sum::<u64>(),
-            4_000
+            4_500
         );
         assert_eq!(
             workspace.hours.iter().map(|hour| hour.requests).sum::<u64>(),
-            2
+            3
         );
         assert_eq!(workspace.today.len(), 10, "a YYYY-MM-DD anchor");
+        assert_eq!(workspace.providers.len(), 3);
+        assert_eq!(
+            workspace
+                .providers
+                .iter()
+                .map(|provider| provider.provider_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("beta"), Some("alpha"), None],
+            "historical billed descending, with unknown last"
+        );
+        assert_eq!(
+            workspace
+                .providers
+                .iter()
+                .map(|provider| {
+                    provider
+                        .days
+                        .iter()
+                        .map(|day| day.prompt)
+                        .sum::<u64>()
+                })
+                .sum::<u64>(),
+            workspace.totals.prompt_tokens,
+            "provider buckets must reconcile with the workspace total"
+        );
+        assert_eq!(
+            workspace
+                .providers
+                .iter()
+                .flat_map(|provider| provider.days.iter())
+                .map(|day| day.requests)
+                .sum::<u64>(),
+            workspace.requests
+        );
     }
 
     /// The header body carries the model; a missing model must not fail the row.
@@ -5223,5 +5353,116 @@ mod background_compaction_tests {
         assert!(manager.begin_background_compaction(&session_id, "bg-del", cancel.clone()));
         manager.remove_session(&session_id).unwrap();
         assert!(cancel.is_cancelled());
+    }
+}
+
+
+#[cfg(test)]
+mod stream_checkpoint_retry_tests {
+    use super::*;
+    use crate::authority::responses::{
+        AssistantRole, MessageItem, OutputMessage, OutputMessageContent, OutputStatus,
+        OutputTextContent,
+    };
+    use crate::config::TurnGuard;
+    use crate::session::data::StreamItemUpdate;
+    use crate::types::Item;
+
+    fn streaming_item(text: &str) -> Item {
+        Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_retry".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: text.into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::InProgress,
+            phase: None,
+        }))
+    }
+
+    /// A compaction checkpoint may commit while the main turn's stream batch
+    /// is already queued against the previous revision. That is a legitimate
+    /// physical-write race, not a reason to fail the turn: the batch must
+    /// re-read the revision and retry, while the writer still rejects rows that
+    /// have actually settled.
+    #[test]
+    fn stream_batch_retries_a_concurrent_revision_commit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("sessions.db");
+        let db_path = db_path.to_string_lossy().into_owned();
+        let manager = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db_path.clone(),
+        ));
+        let session_id = manager
+            .open_session_sync("/p", "default", None)
+            .expect("open session");
+        let seq = manager
+            .begin_stream_item(&session_id, &streaming_item("start"), "turn-retry")
+            .expect("begin stream row");
+        let revision_before = manager
+            .data()
+            .revision_blocking(&session_id)
+            .expect("revision");
+
+        let hooks = manager.data().hooks();
+        hooks.pause();
+        let worker_manager = Arc::clone(&manager);
+        let worker_session_id = session_id.clone();
+        let update = std::thread::spawn(move || {
+            worker_manager.update_stream_items(
+                &worker_session_id,
+                vec![StreamItemUpdate {
+                    seq,
+                    item: streaming_item("after"),
+                }],
+            )
+        });
+
+        // The writer has dequeued the request, so the manager has already read
+        // `revision_before`. Advance the durable revision exactly like a
+        // compaction commit would, then let the writer execute.
+        hooks.wait_until_parked();
+        {
+            let conn = rusqlite::Connection::open(&db_path).expect("second connection");
+            conn.busy_timeout(std::time::Duration::from_secs(5))
+                .expect("busy timeout");
+            let updated = conn
+                .execute(
+                    "UPDATE sessions SET revision = revision + 1 WHERE id = ?1",
+                    rusqlite::params![session_id],
+                )
+                .expect("advance revision");
+            assert_eq!(updated, 1, "the competing commit must advance one session");
+        }
+        hooks.resume();
+
+        let result = update.join().expect("stream update thread");
+        assert!(
+            result.is_ok(),
+            "a concurrent compaction revision must be retried, not surfaced: {result:?}"
+        );
+        assert_eq!(
+            manager
+                .data()
+                .revision_blocking(&session_id)
+                .expect("revision after retry"),
+            revision_before + 2,
+            "one competing commit plus one successful batch must both be durable"
+        );
+        let body: String = rusqlite::Connection::open(&db_path)
+            .expect("read connection")
+            .query_row(
+                "SELECT body FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
+                rusqlite::params![session_id, seq as i64],
+                |row| row.get(0),
+            )
+            .expect("stream body");
+        assert!(
+            body.contains("after"),
+            "the retried batch must persist the newest streamed content: {body}"
+        );
     }
 }

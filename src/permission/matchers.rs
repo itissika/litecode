@@ -48,16 +48,14 @@ pub fn matches(matcher: &ArgMatcher, args: &Value, ctx: &MatchContext<'_>) -> bo
 /// Write/edit rules were stored against `file_path` while the tool argument is
 /// `path`. Either name satisfies the same outside-workspace check.
 fn file_arg<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
-    args.get(name)
-        .and_then(Value::as_str)
-        .or_else(|| {
-            let other = match name {
-                "path" => "file_path",
-                "file_path" => "path",
-                _ => return None,
-            };
-            args.get(other).and_then(Value::as_str)
-        })
+    args.get(name).and_then(Value::as_str).or_else(|| {
+        let other = match name {
+            "path" => "file_path",
+            "file_path" => "path",
+            _ => return None,
+        };
+        args.get(other).and_then(Value::as_str)
+    })
 }
 
 fn glob_match(pattern: &str, value: &str) -> bool {
@@ -77,7 +75,4 @@ fn glob_match(pattern: &str, value: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

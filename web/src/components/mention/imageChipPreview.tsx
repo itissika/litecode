@@ -186,6 +186,7 @@ export function ImageChipPreview({
         ? createPortal(
             <div
               ref={panelRef}
+              data-litecode-overlay="tooltip"
               className={[
                 "image-chip-preview",
                 path && caption ? "has-caption" : caption ? "is-text" : "",

@@ -970,6 +970,47 @@ describe("SessionStatusLine — vertical expand", () => {
     expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
   });
 
+  it("nudges on every expand, including a reopen", () => {
+    vi.useFakeTimers();
+    render(<SessionStatusLine sessionId="s1" />);
+
+    const expand = () => {
+      fireEvent.click(screen.getByTestId("capsule-todo"));
+      const panel = screen.getByTestId("status-capsule-panel");
+      stubRenderedHeight(panel, 120);
+
+      const start = new Event("animationstart", { bubbles: true });
+      Object.defineProperty(start, "animationName", {
+        value: "status-panel-enter",
+      });
+      act(() => {
+        panel.dispatchEvent(start);
+      });
+      // +1px while the scale animation runs; restoring after it ends forces the
+      // text to repaint without the scaled layer's raster.
+      expect(panel.style.height).toBe("121px");
+
+      const end = new Event("animationend", { bubbles: true });
+      Object.defineProperty(end, "animationName", {
+        value: "status-panel-enter",
+      });
+      act(() => {
+        panel.dispatchEvent(end);
+      });
+      // Back to content size (no dragged height on this open).
+      expect(panel.style.height).toBe("");
+      return panel;
+    };
+
+    expand();
+    fireEvent.click(screen.getByTestId("capsule-todo"));
+    act(() => {
+      vi.advanceTimersByTime(PANEL_EXIT_MS + 100);
+    });
+    expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
+    expand();
+  });
+
   it("switching capsules mounts the new panel directly (no exit overlap)", () => {
     render(<SessionStatusLine sessionId="s1" />);
     fireEvent.click(screen.getByTestId("capsule-terminal"));

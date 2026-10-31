@@ -21,7 +21,7 @@ function str(args: KnowledgeIssueArgs, name: string): string | null {
 /**
  * Display text per code, built from structured `args`. A template returns
  * null when an argument it needs is missing; the backend `message` is the fallback.
- * Codes are the spec's status table (`docs/knowledge-references.md` §6).
+ * Codes are the spec's status table (`docs/knowledge-references.md` §5).
  */
 const TEMPLATES: Record<KnowledgeIssueCode, Template> = {
   duplicate_key: (a) => {
@@ -99,13 +99,6 @@ const TEMPLATES: Record<KnowledgeIssueCode, Template> = {
     return path == null || symbol == null
       ? null
       : `Symbol "${symbol}" in "${path}" is not unique.`;
-  },
-  symbol_drift: (a) => {
-    const path = str(a, "path");
-    const symbol = str(a, "symbol");
-    return path == null || symbol == null
-      ? null
-      : `Symbol "${symbol}" in "${path}" differs from HEAD.`;
   },
   line_out_of_range: (a) => {
     const path = str(a, "path");

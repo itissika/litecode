@@ -1560,7 +1560,7 @@ pub fn command_preview(command: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn rec(
@@ -1939,12 +1939,7 @@ mod tests {
 
         let cancel = CancellationToken::new();
         match reg
-            .wait_async(
-                "s1",
-                "bg_drain1",
-                Some(Duration::from_millis(200)),
-                &cancel,
-            )
+            .wait_async("s1", "bg_drain1", Some(Duration::from_millis(200)), &cancel)
             .await
         {
             WaitOutcome::Exited(notice) => assert_eq!(notice.exit_code, Some(0)),

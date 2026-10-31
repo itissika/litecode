@@ -15,12 +15,10 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::{Value, json};
 
 use super::index::{self, Content};
-use crate::config::git_install::find_git_exe;
 
 type Found = BTreeSet<(String, String, String)>;
 
@@ -61,16 +59,6 @@ fn case_id(case: &Value) -> &str {
 
 // ---------------------------------------------------------------- resolve
 
-fn git(dir: &Path, args: &[&str]) {
-    let exe = find_git_exe().expect("git");
-    let status = Command::new(exe)
-        .args(args)
-        .current_dir(dir)
-        .status()
-        .expect("git");
-    assert!(status.success(), "git {args:?}");
-}
-
 fn write_tree(root: &Path, files: Option<&Value>) {
     let Some(files) = files.and_then(Value::as_object) else {
         return;
@@ -91,25 +79,10 @@ fn node_markdown(node: &Value) -> String {
     format!("```node\nnode : {key}\nstatus : {status}\nsummary : {key}\n```\n{body}\n")
 }
 
-/// Builds the case workspace. `None` when it needs git and there is none.
-fn workspace(case: &Value) -> Option<tempfile::TempDir> {
+/// Builds the case workspace.
+fn workspace(case: &Value) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
-    if let Some(head) = case.get("head") {
-        find_git_exe()?;
-        git(ws, &["-c", "init.defaultBranch=main", "init", "-q"]);
-        for (key, val) in [
-            ("user.email", "test@litecode.local"),
-            ("user.name", "Litecode Test"),
-            ("commit.gpgsign", "false"),
-            ("core.autocrlf", "false"),
-        ] {
-            git(ws, &["config", key, val]);
-        }
-        write_tree(ws, Some(head));
-        git(ws, &["add", "-A"]);
-        git(ws, &["commit", "-q", "-m", "head"]);
-    }
     write_tree(ws, case.get("files"));
     for rel in case["delete"].as_array().into_iter().flatten() {
         fs::remove_file(ws.join(rel.as_str().unwrap())).unwrap();
@@ -126,7 +99,7 @@ fn workspace(case: &Value) -> Option<tempfile::TempDir> {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, node_markdown(node)).unwrap();
     }
-    Some(dir)
+    dir
 }
 
 /// Issues in the snapshot: (node path, status, ref_key) for citation issues,
@@ -168,11 +141,9 @@ fn resolve_expected(case: &Value) -> Found {
         .collect()
 }
 
-/// `Ok(true)` follows the spec, `Ok(false)` skipped (no git), `Err` differs.
-fn run_resolve(case: &Value) -> Result<bool, String> {
-    let Some(dir) = workspace(case) else {
-        return Ok(false);
-    };
+/// `Ok` follows the spec, `Err` differs.
+fn run_resolve(case: &Value) -> Result<(), String> {
+    let dir = workspace(case);
     let content = index::compute_once(dir.path());
     let actual = found(&content);
     let wanted = resolve_expected(case);
@@ -203,7 +174,7 @@ fn run_resolve(case: &Value) -> Result<bool, String> {
             return Err(format!("resolve {}: refs not deduped", case_id(case)));
         }
     }
-    Ok(true)
+    Ok(())
 }
 
 // ---------------------------------------------------------------- layout
@@ -369,4 +340,3 @@ fn lines_on_a_symbol_are_invalid_lines_in_the_snapshot() {
     assert_eq!(status, "invalid_lines");
     assert_eq!(args["reason"], super::validate::INVALID_LINES_FORMAT);
 }
-

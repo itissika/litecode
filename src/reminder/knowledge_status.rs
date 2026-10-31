@@ -14,14 +14,3 @@ pub fn build(workspace: &Path) -> Option<Reminder> {
         text: note.text,
     }))
 }
-
-#[cfg(test)]
-mod tests {
-    
-    
-
-    
-    
-    
-
-}

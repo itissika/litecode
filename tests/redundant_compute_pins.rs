@@ -132,7 +132,11 @@ fn envelope_call_sites_compute_the_same_value() {
     fewer.pop();
     assert_ne!(
         at_origin,
-        ContextEnvelope::from_request_parts(&request.instructions, &fewer, request.max_output_tokens),
+        ContextEnvelope::from_request_parts(
+            &request.instructions,
+            &fewer,
+            request.max_output_tokens
+        ),
         "dropping a tool schema must move the envelope"
     );
 }
@@ -265,7 +269,9 @@ fn legacy_change_log_rows_do_not_reach_dirty_sessions() {
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .expect("busy timeout");
     let legacy_after_writes: i64 = conn
-        .query_row("SELECT COUNT(*) FROM session_change_log", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM session_change_log", [], |row| {
+            row.get(0)
+        })
         .expect("count legacy rows");
     assert_eq!(
         legacy_after_writes, 0,

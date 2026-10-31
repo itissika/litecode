@@ -25,10 +25,7 @@ pub fn origin_host(origin: &str) -> String {
 }
 
 #[cfg(test)]
-mod origin_host_tests {
-    
-
-}
+mod origin_host_tests {}
 
 pub async fn middleware(
     State(state): State<ServeState>,

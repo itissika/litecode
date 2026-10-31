@@ -27,8 +27,8 @@ pub mod tools;
 pub use builtin_prompts::{
     CHECKPOINT_PREAMBLE, CITATION_PROMPT, COMPACTION_INSTRUCTION, DEFAULT_DESCRIPTION,
     DEFAULT_PROMPT, EXPLORE_DESCRIPTION, EXPLORE_PROMPT, GENERAL_DESCRIPTION, GENERAL_PROMPT,
-    HARNESS_SYSTEM, HARNESS_TOOLS, ORCHESTRATOR_DESCRIPTION, ORCHESTRATOR_PROMPT,
-    builtin_prompt_for, is_builtin_prompt_marker,
+    HARNESS_SYSTEM, ORCHESTRATOR_DESCRIPTION, ORCHESTRATOR_PROMPT, builtin_prompt_for,
+    is_builtin_prompt_marker,
 };
 
 pub fn default_db_path() -> PathBuf {
@@ -568,46 +568,49 @@ pub mod store {
                 None => Vec::new(),
             };
             let version: i64 = row.get(10)?;
-            Ok((CustomToolDefinition {
-                name: row.get(0)?,
-                schema: serde_json::from_str(&schema_json).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?,
-                command: row.get(2)?,
-                args: serde_json::from_str(&args_json).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?,
-                timeout: row.get::<_, u64>(4)?,
-                description: row.get(5)?,
-                rules,
-                suite: row.get::<_, Option<String>>(8)?,
-                surface: if row.get::<_, Option<String>>(8)?.is_some() {
-                    None
-                } else {
-                    Some(match row.get::<_, Option<String>>(7)?.as_deref() {
-                        Some("code") => crate::config::schema::CallSurface::Code,
-                        _ => crate::config::schema::CallSurface::Direct,
-                    })
-                },
-                output_schema: match row.get::<_, Option<String>>(9)? {
-                    Some(json) => Some(serde_json::from_str(&json).map_err(|e| {
+            Ok((
+                CustomToolDefinition {
+                    name: row.get(0)?,
+                    schema: serde_json::from_str(&schema_json).map_err(|e| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            9,
+                            0,
                             rusqlite::types::Type::Text,
                             Box::new(e),
                         )
-                    })?),
-                    None => None,
+                    })?,
+                    command: row.get(2)?,
+                    args: serde_json::from_str(&args_json).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?,
+                    timeout: row.get::<_, u64>(4)?,
+                    description: row.get(5)?,
+                    rules,
+                    suite: row.get::<_, Option<String>>(8)?,
+                    surface: if row.get::<_, Option<String>>(8)?.is_some() {
+                        None
+                    } else {
+                        Some(match row.get::<_, Option<String>>(7)?.as_deref() {
+                            Some("code") => crate::config::schema::CallSurface::Code,
+                            _ => crate::config::schema::CallSurface::Direct,
+                        })
+                    },
+                    output_schema: match row.get::<_, Option<String>>(9)? {
+                        Some(json) => Some(serde_json::from_str(&json).map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                9,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?),
+                        None => None,
+                    },
                 },
-            }, version))
+                version,
+            ))
         })?;
         let mut tools = Vec::new();
         for row in rows {
@@ -649,7 +652,10 @@ pub mod store {
             .map(serde_json::to_string)
             .transpose()?;
         // The column is NOT NULL on old DBs; suite members ignore it on load.
-        let surface = match custom.surface.unwrap_or(crate::config::schema::CallSurface::Direct) {
+        let surface = match custom
+            .surface
+            .unwrap_or(crate::config::schema::CallSurface::Direct)
+        {
             crate::config::schema::CallSurface::Code => "code",
             crate::config::schema::CallSurface::Direct => "direct",
         };

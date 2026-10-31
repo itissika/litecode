@@ -25,7 +25,10 @@ export function bindWorkbenchKeys(): () => void {
         void useEditorStore.getState().save();
       }
     };
-    entry.window.addEventListener("keydown", onKey);
-    return () => entry.window.removeEventListener("keydown", onKey);
+    // Capture before the focused widget. Monaco's keybinding service sits on
+    // the editor container and consumes the keys it maps; a workbench command
+    // such as save must not depend on the editor letting the event bubble.
+    entry.window.addEventListener("keydown", onKey, true);
+    return () => entry.window.removeEventListener("keydown", onKey, true);
   });
 }

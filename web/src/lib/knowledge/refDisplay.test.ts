@@ -82,7 +82,7 @@ describe("refDisplay", () => {
     expect(missing.tone).toBe("error");
   });
 
-  it("resolves a workspace file, a drifted symbol, and an external path only when a preview exists", () => {
+  it("resolves a workspace file, a marked symbol, and an external path only when a preview exists", () => {
     const source = node("session");
     const present = resolveCitation(
       { kind: "file", path: "src/a.rs", symbol: "fn save", line: 4 },
@@ -92,20 +92,20 @@ describe("refDisplay", () => {
     expect(present.symbol).toBe(true);
     expect(present.label).toBe("a.rs : fn save");
 
-    const drifted = resolveCitation(
+    const marked = resolveCitation(
       { kind: "file", path: "src/a.rs", symbol: "fn save" },
       {
         source,
         target: null,
-        ref: refState("sym:src/a.rs\0fn save", "symbol_drift", "warning", {
-          path: "src/a.rs",
-          symbol: "fn save",
+        ref: refState("sym:src/a.rs\0fn save", "filename_mismatch", "warning", {
+          key: "fn save",
+          filename: "a.rs",
         }),
         externalOpen: false,
       },
     );
-    expect(drifted.resolvable).toBe(true);
-    expect(drifted.tone).toBe("drift");
+    expect(marked.resolvable).toBe(true);
+    expect(marked.tone).toBe("drift");
 
     const outside = resolveCitation(
       { kind: "file", path: "C:/outside/a.ts" },

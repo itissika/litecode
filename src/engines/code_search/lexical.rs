@@ -63,6 +63,7 @@ impl LexicalMatch {
             summary: self.line_text.trim_end().to_string(),
             score,
             dense_similarity: 0.0,
+            lexical_match: true,
         }
     }
 }
@@ -510,8 +511,4 @@ pub fn type_to_include_globs(t: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

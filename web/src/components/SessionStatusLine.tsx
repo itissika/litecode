@@ -241,6 +241,7 @@ export function SessionStatusLine({
   openRef.current = openId;
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const panelAnimationCleanupRef = useRef<(() => void) | null>(null);
   /** Dragged height in px; null → the panel is content-sized. A drag overrides
    *  the current open only — the next open starts content-sized again. */
   const heightRef = useRef<number | null>(null);
@@ -284,6 +285,37 @@ export function SessionStatusLine({
       view.removeEventListener("keydown", onKey);
     };
   }, [openId]);
+
+  // The enter animation scales the whole panel, and Chromium can keep the
+  // text's scaled raster after it settles. Tie the repaint to the expansion
+  // animation itself: grow by 1px as it starts, then drop back to the content
+  // height when it ends. That final size change is the same paint nudge as
+  // dragging the handle, but it happens after the scale is gone. Native
+  // listeners also survive a close→reopen where the panel element is reused.
+  const attachPanel = useCallback((el: HTMLDivElement | null) => {
+    panelAnimationCleanupRef.current?.();
+    panelAnimationCleanupRef.current = null;
+    panelRef.current = el;
+    if (!el) return;
+
+    const onStart = (event: AnimationEvent) => {
+      if (event.target !== el) return;
+      if (!event.animationName.includes("status-panel-enter")) return;
+      el.style.height = `${el.offsetHeight + 1}px`;
+    };
+    const onEnd = (event: AnimationEvent) => {
+      if (event.target !== el) return;
+      if (!event.animationName.includes("status-panel-enter")) return;
+      if (draggingRef.current) return;
+      el.style.height = heightRef.current != null ? `${heightRef.current}px` : "";
+    };
+    el.addEventListener("animationstart", onStart);
+    el.addEventListener("animationend", onEnd);
+    panelAnimationCleanupRef.current = () => {
+      el.removeEventListener("animationstart", onStart);
+      el.removeEventListener("animationend", onEnd);
+    };
+  }, []);
 
   // A close keeps the panel mounted for its exit animation. `openId` drops to
   // null immediately (outside/Escape handlers are keyed on it), while the
@@ -533,7 +565,7 @@ export function SessionStatusLine({
       {panelId && (
         <div
           key={panelId}
-          ref={panelRef}
+          ref={attachPanel}
           data-testid="status-capsule-panel"
           data-capsule={panelId}
           style={{
