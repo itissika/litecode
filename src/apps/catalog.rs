@@ -29,6 +29,13 @@ fn extract(file: &str, format: ArchiveFormat, strip: usize) -> InstallStep {
     }
 }
 
+fn write(file: &str, contents: &str) -> InstallStep {
+    InstallStep::Write {
+        file: file.into(),
+        contents: contents.into(),
+    }
+}
+
 fn run(command: &str, args: &[&str]) -> InstallStep {
     InstallStep::Run {
         command: command.into(),
@@ -141,6 +148,10 @@ const AUDIOMASS_DOCS: BuiltinDocs = BuiltinDocs {
     en: include_str!("docs/audiomass.md"),
     zh: include_str!("docs/audiomass.zh-CN.md"),
 };
+const XPRITE_DOCS: BuiltinDocs = BuiltinDocs {
+    en: include_str!("docs/xprite.md"),
+    zh: include_str!("docs/xprite.zh-CN.md"),
+};
 const MARIMO_DOCS: BuiltinDocs = BuiltinDocs {
     en: include_str!("docs/marimo.md"),
     zh: include_str!("docs/marimo.zh-CN.md"),
@@ -198,6 +209,7 @@ pub fn builtins() -> Vec<BuiltinApp> {
     #[cfg(windows)]
     out.push(sqlpage());
     out.push(audiomass());
+    out.push(xprite());
     out.push(marimo());
     out.push(gallery());
     localize(&mut out);
@@ -510,6 +522,43 @@ fn audiomass() -> BuiltinApp {
     )
 }
 
+/// Xprite's release ships the hashed web assets only, so the entry page comes
+/// from the pinned production page; the two are released together.
+const XPRITE_INDEX: &str = include_str!("assets/xprite/index.html");
+
+fn xprite() -> BuiltinApp {
+    app(
+        "xprite",
+        "Xprite",
+        "Pixel art and sprite animation in the browser. Opens .ase/.aseprite.",
+        AppCategory::Image,
+        "🎨",
+        Some("https://github.com/rhinoc/xprite"),
+        Some("https://xprite.cc/help/"),
+        XPRITE_DOCS,
+        steps(
+            vec![
+                download(
+                    "https://github.com/rhinoc/xprite/releases/download/v0.1.22/xprite-hashed-assets-v0.1.22.tar.gz",
+                    "569e5d3d2e5e6cd0d282c8da1e85574ec22bfa8cbfa014e780a03c4ba3f90b5d",
+                    "xprite.tar.gz",
+                ),
+                extract("xprite.tar.gz", ArchiveFormat::TarGz, 1),
+                write("index.html", XPRITE_INDEX),
+            ],
+            "index.html",
+        ),
+        static_launch(),
+        BuiltinDataScope::Workspace,
+        false,
+        vec![
+            Permission::ClipboardRead,
+            Permission::ClipboardWrite,
+            Permission::Fullscreen,
+        ],
+    )
+}
+
 fn marimo_python() -> &'static str {
     if cfg!(windows) {
         ".venv/Scripts/python.exe"
@@ -608,6 +657,7 @@ pub fn localize(builtins: &mut [BuiltinApp]) {
         ("vikunja", "自托管的任务与项目管理。"),
         ("sqlpage", "用 SQL 文件在本地搭建数据应用。"),
         ("audiomass", "功能完整的波形与多轨音频编辑器。"),
+        ("xprite", "浏览器里的像素画与精灵动画编辑器。"),
         ("marimo", "在浏览器里运行响应式 Python 笔记本。"),
         ("gallery", "浏览工作区里的图片、视频和音频。"),
     ] {

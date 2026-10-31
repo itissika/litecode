@@ -59,6 +59,12 @@ pub enum InstallStep {
         #[serde(default = "default_step_timeout")]
         timeout_ms: u64,
     },
+    /// Ship a small text file the bundled definition carries inline, such as
+    /// the entry page for a static site whose release ships assets only.
+    Write {
+        file: String,
+        contents: String,
+    },
 }
 
 fn default_download_file() -> String {
@@ -172,6 +178,14 @@ pub fn validate_install(install: &InstallSpec) -> Result<(), String> {
                 }
                 if !safe_relative(into) {
                     return Err("extract into must stay inside the app directory".into());
+                }
+            }
+            InstallStep::Write { file, contents } => {
+                if !safe_relative(file) {
+                    return Err("write file must stay inside the app directory".into());
+                }
+                if contents.is_empty() {
+                    return Err("write contents are empty".into());
                 }
             }
             InstallStep::Run {

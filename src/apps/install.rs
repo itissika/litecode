@@ -325,6 +325,22 @@ fn install_inner(
                         .map_err(|e| format!("create extract target: {e}"))?;
                     extract_archive(&source, *format, *strip, &target)?;
                 }
+                InstallStep::Write { file, contents } => {
+                    marker(
+                        install_dir,
+                        "writing",
+                        Some(percent),
+                        Some(format!("write {file}")),
+                        Some(log.to_path_buf()),
+                    );
+                    let target = safe_join(&stage_app, file)?;
+                    if let Some(parent) = target.parent() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| format!("create write target: {e}"))?;
+                    }
+                    std::fs::write(&target, contents)
+                        .map_err(|e| format!("write {file}: {e}"))?;
+                }
                 InstallStep::Run {
                     command,
                     args,
