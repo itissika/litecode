@@ -149,9 +149,4 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-
-}
+mod tests {}

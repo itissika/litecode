@@ -586,7 +586,4 @@ fn simplify_type_text(t: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

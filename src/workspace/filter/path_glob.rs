@@ -270,7 +270,4 @@ fn expand_braces(pattern: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

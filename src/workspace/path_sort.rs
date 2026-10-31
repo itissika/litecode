@@ -18,7 +18,4 @@ pub fn sort_glob_hits(hits: &mut [String]) {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

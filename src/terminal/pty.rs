@@ -417,5 +417,4 @@ mod tests {
         assert_eq!(drain_utf8(&mut pending), "你ab");
         assert!(pending.is_empty());
     }
-
 }

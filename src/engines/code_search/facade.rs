@@ -101,8 +101,4 @@ pub fn human_search(
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

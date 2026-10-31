@@ -55,7 +55,4 @@ fn bash_command(input: &Value) -> &str {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

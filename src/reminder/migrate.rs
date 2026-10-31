@@ -224,8 +224,4 @@ fn parse_plan(inner: &str) -> PlanChangedBody {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

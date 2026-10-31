@@ -181,7 +181,4 @@ impl CustomToolHub {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

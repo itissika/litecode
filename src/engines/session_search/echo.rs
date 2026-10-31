@@ -136,8 +136,4 @@ fn row_json(row: &SearchableRow, data_root: &Path) -> Option<Value> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

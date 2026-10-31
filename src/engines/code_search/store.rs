@@ -749,10 +749,4 @@ pub(crate) fn restore_usearch(ann: &Index, path: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-
-}
+mod tests {}

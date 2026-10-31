@@ -97,7 +97,4 @@ pub fn attach_offset_footer(body: &str, offset: usize, shown: usize, total: usiz
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

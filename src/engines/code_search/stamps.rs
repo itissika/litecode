@@ -187,8 +187,4 @@ pub fn append(workspace_root: &Path, changes: &[(String, StampChange)]) -> bool 
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

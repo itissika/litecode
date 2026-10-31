@@ -142,5 +142,4 @@ mod tests {
             .expect_err("loopback-only must still reject 0.0.0.0");
         assert!(err.to_string().contains("loopback"));
     }
-
 }

@@ -102,5 +102,3 @@ fn an_appended_dense_index_equals_a_clean_rebuild() {
     assert_eq!(chunks.len(), 3);
     assert_eq!(f.rebuild(), (chunks, settled));
 }
-
-

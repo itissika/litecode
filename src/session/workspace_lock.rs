@@ -171,7 +171,4 @@ impl WorkspaceWriteLease {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

@@ -36,7 +36,4 @@ pub fn cli_turn_guard() -> Arc<TurnGuard> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

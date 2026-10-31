@@ -81,7 +81,4 @@ fn default_model_ref() -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

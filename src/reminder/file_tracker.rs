@@ -124,7 +124,4 @@ fn snap_of(path: &Path) -> Snap {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

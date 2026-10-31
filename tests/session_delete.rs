@@ -79,4 +79,3 @@ async fn delete_listed_idle_session_after_cold_start_without_subscribe() {
     );
     assert!(sessions.data().meta_blocking(&sid).is_err());
 }
-

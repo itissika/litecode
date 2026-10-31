@@ -80,11 +80,4 @@ pub fn scannable_files(workspace_root: &Path) -> Result<Vec<String>> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-    
-
-}
+mod tests {}

@@ -129,4 +129,3 @@ fn conflict_on_stale_revision() {
         other => panic!("expected conflict, got {other}"),
     }
 }
-

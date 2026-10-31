@@ -91,4 +91,3 @@ async fn queue_capacity_keeps_overflow_pending_until_cancelled() {
         let _ = rx.await;
     }
 }
-

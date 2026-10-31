@@ -256,4 +256,3 @@ fn production_lines(contents: &str) -> String {
     }
     out
 }
-

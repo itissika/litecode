@@ -94,9 +94,4 @@ pub fn init_workspace_index(workspace_root: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-
-}
+mod tests {}

@@ -201,7 +201,4 @@ fn append_skipped(out: &mut String, skipped: &[(String, String)]) {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

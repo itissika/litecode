@@ -174,7 +174,4 @@ pub fn item_text_preview(item: &Item) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

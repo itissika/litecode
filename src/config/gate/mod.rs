@@ -113,7 +113,4 @@ impl CommitAck {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

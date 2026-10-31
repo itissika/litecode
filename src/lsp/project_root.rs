@@ -293,5 +293,4 @@ mod tests {
             crate::config::path::canon_abs_lossy(&nested)
         );
     }
-
 }

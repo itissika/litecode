@@ -78,7 +78,4 @@ impl MessagesUsage {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

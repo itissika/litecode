@@ -2379,7 +2379,4 @@ fn near_query(needle: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

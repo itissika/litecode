@@ -116,8 +116,4 @@ fn lib_dir_has_musl() -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

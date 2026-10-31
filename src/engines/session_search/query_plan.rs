@@ -447,7 +447,4 @@ pub fn contains_word(text: &str, word: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

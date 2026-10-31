@@ -282,8 +282,4 @@ pub fn resolve_single_blob(body: &str, blob_dir: &Path) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

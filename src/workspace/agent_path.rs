@@ -169,5 +169,4 @@ mod tests {
         let mapped = msys_drive_path("/d").unwrap();
         assert_eq!(mapped, PathBuf::from(r"D:\"));
     }
-
 }

@@ -192,5 +192,4 @@ mod tests {
         assert_eq!(tomb.get("call_x"), Some(&child));
         assert!(m.child_bindings_for_parent(&root).is_empty());
     }
-
 }

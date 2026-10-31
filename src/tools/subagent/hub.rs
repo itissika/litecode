@@ -226,7 +226,7 @@ fn spawn_completion_router(mut router: Router) {
 mod tests {
     use super::*;
     use crate::config::TurnGuard;
-    
+
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn fixture() -> (tempfile::TempDir, Arc<SessionManager>, String, String) {

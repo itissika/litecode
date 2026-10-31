@@ -83,8 +83,4 @@ impl Visit for MessageVisitor {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

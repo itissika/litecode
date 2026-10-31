@@ -249,7 +249,4 @@ pub fn summarize_tool_call(text: &str, max_chars: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

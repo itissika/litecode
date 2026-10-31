@@ -439,7 +439,4 @@ pub async fn handle_jsonrpc(
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

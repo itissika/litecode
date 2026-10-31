@@ -288,8 +288,4 @@ fn retrieval_usable_label(
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

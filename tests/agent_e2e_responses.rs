@@ -157,4 +157,3 @@ async fn agent_e2e_incomplete_seals_text_to_disk() {
         "disk must contain sealed incomplete text: {items:?}"
     );
 }
-

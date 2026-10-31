@@ -122,9 +122,4 @@ pub const FRAGMENTS: &[(&str, &str)] = &[
 ];
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-
-}
+mod tests {}

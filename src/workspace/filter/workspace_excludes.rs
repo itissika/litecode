@@ -298,11 +298,7 @@ pub fn ensure_workspace_excludes(workspace_root: &Path) -> Result<WorkspaceExclu
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-
-}
+mod tests {}
 
 #[cfg(test)]
 pub(crate) fn lock_excludes_cache_for_test() -> std::sync::MutexGuard<'static, ()> {

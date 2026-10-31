@@ -521,7 +521,4 @@ pub enum StopReason {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

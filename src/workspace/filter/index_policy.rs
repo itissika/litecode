@@ -99,7 +99,7 @@ pub fn should_queue_index_update(workspace_root: &Path, rel: &str, deleted: bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use tempfile::TempDir;
 
     #[test]
@@ -119,5 +119,4 @@ mod tests {
             assert!(!should_queue_index_update(root, "data.json", false));
         });
     }
-
 }

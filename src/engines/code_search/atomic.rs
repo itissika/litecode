@@ -259,5 +259,4 @@ mod tests {
         sweep_atomic_tmp(dir.path());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     }
-
 }

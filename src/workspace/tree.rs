@@ -265,8 +265,4 @@ fn has_glob_metachar(q: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

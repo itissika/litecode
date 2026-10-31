@@ -321,7 +321,4 @@ impl ToolCallResult {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

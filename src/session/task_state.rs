@@ -144,7 +144,4 @@ pub fn prune_stale_active_plan(state: &mut TaskReminders, plan_dir: &Path) -> bo
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

@@ -218,7 +218,4 @@ impl std::fmt::Display for Acc {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

@@ -28,7 +28,4 @@ pub fn is_sensitive_system_path(path: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

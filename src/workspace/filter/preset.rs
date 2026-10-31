@@ -141,8 +141,4 @@ pub fn exclude_globs(preset: FilterPreset) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

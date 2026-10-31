@@ -107,7 +107,4 @@ pub fn reload_filter(level: &str) {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

@@ -332,7 +332,4 @@ fn use_hash_embedder() -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

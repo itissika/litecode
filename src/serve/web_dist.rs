@@ -44,10 +44,4 @@ pub fn resolve_web_dist() -> anyhow::Result<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-
-
-}
+mod tests {}

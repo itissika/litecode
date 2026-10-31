@@ -214,7 +214,4 @@ pub fn uncovered_chars(chunks: &[Chunk], source_chars: usize) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

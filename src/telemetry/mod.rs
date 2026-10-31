@@ -293,7 +293,4 @@ fn windows_private_kb(pid: u32) -> Option<u64> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

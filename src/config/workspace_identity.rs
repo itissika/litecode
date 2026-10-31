@@ -301,7 +301,4 @@ fn path_exists_as_dir(path: &Path) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

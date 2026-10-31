@@ -1185,7 +1185,7 @@ pub type SharedRuntime = Arc<RwLock<Option<CodeSearchRuntime>>>;
 #[cfg(test)]
 mod cool_tests {
     use super::*;
-    
+
     use crate::engines::code_search::embed::HashEmbedder;
     use crate::engines::code_search::index_workspace_blocking;
     use tempfile::TempDir;
@@ -1221,7 +1221,6 @@ mod cool_tests {
         runtime.drop_index_for_cool();
         assert!(runtime.index_is_loaded(), "pending must block IndexCold");
     }
-
 }
 
 #[cfg(test)]
@@ -1396,5 +1395,4 @@ mod wp143_tests {
             assert_store_consistent(root);
         }
     }
-
 }

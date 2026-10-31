@@ -74,7 +74,4 @@ pub fn is_discovery_or_product_dir_name(name: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

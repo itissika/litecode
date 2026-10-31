@@ -95,8 +95,4 @@ pub async fn maybe_append_local_lsp_errors(
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

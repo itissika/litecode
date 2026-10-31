@@ -1078,7 +1078,4 @@ fn append(path: &Path, line: &str) {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

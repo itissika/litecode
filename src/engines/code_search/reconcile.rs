@@ -268,5 +268,4 @@ mod tests {
         queue_reconcile_dirty(&rt);
         assert!(pending(&rt).is_empty());
     }
-
 }

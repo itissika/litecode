@@ -252,7 +252,4 @@ impl RetrievalProgress {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

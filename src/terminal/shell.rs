@@ -89,7 +89,4 @@ pub fn resolve_cwd(workdir: Option<&Path>) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

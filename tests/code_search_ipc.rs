@@ -186,4 +186,3 @@ fn refresh_stays_incremental_when_all_files_dirty() {
     }
     shutdown(client);
 }
-

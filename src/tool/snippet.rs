@@ -75,7 +75,4 @@ pub(crate) fn truncate_snippet_lines(snippet: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

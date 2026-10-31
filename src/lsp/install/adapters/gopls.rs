@@ -34,7 +34,4 @@ pub fn adapter() -> Box<dyn LspAdapter> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

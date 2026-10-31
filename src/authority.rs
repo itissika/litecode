@@ -12,7 +12,4 @@ pub mod responses {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

@@ -841,5 +841,4 @@ mod tests {
             "rust-analyzer ok"
         );
     }
-
 }

@@ -2071,8 +2071,6 @@ mod tests {
 
     // ---- WP-144: resumable build ------------------------------------------
 
-
-
     /// Acceptance 3 (session): bytes written for one batch do not depend on
     /// how much the index already holds.
     #[test]
@@ -2104,5 +2102,4 @@ mod tests {
             "about the batch's own size: {large} vs {payload}"
         );
     }
-
 }

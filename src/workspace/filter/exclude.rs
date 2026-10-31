@@ -155,8 +155,4 @@ pub fn path_excluded(rel: &str, preset: FilterPreset) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

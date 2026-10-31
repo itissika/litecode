@@ -158,7 +158,4 @@ pub fn bind_cursor(
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

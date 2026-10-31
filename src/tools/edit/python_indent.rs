@@ -18,7 +18,6 @@ def process(items):
     return result
 ";
 
-
 fn plan_of(content: &str, old: &str, new: &str) -> Result<String, PlanFail> {
     plan_one(
         content,
@@ -55,4 +54,3 @@ def process(items):
         "{reason:?}"
     );
 }
-

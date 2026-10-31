@@ -137,7 +137,4 @@ pub struct NotifyFsChangesParams {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

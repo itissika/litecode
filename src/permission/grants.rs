@@ -372,5 +372,4 @@ mod tests {
         assert_eq!(check_runtime_grant(agent, "write", "r"), None);
         clear_runtime_grants_for(agent);
     }
-
 }

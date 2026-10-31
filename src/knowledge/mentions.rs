@@ -712,7 +712,4 @@ fn fence_closed(line: &str, fence_char: char, fence_len: usize) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

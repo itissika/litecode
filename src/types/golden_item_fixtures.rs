@@ -2,10 +2,4 @@
 //! FE vitest (`r9-death-list.test.ts`) must accept the same files.
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-    
-
-}
+mod tests {}

@@ -128,4 +128,3 @@ fn sweep_gate_has_no_timeout() {
         );
     }
 }
-

@@ -28,7 +28,4 @@ pub fn suffix_utf8(text: &str, max: usize) -> &str {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

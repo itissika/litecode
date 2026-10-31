@@ -177,4 +177,3 @@ async fn concurrent_sends_only_one_wins() {
     // Clean up the winner's hanging turn.
     harness.stop("call_stop_winner", &child).await;
 }
-

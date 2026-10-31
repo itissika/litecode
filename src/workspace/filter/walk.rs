@@ -227,9 +227,4 @@ pub fn configure_walk_under(
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-
-}
+mod tests {}

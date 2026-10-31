@@ -286,7 +286,4 @@ fn collect_run(run: &str, segmented: bool, tokens: &mut Vec<String>, seen: &mut 
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

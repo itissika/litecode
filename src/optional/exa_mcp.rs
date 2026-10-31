@@ -117,7 +117,4 @@ fn percent_encode(s: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

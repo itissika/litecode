@@ -23,8 +23,4 @@ pub fn encode_client_item(mut item: Item, data_root: &Path) -> Result<Item> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

@@ -27,13 +27,8 @@ pub use uri::file_to_uri;
 mod tests {
     use std::path::{Path, PathBuf};
 
-    
-
     use super::*;
-    
-    
-    
-    
+
     use crate::lsp::uri::{
         normalize_windows_file_uri, publish_diagnostics_uri_matches, uri_to_path,
     };
@@ -296,5 +291,4 @@ mod tests {
         task.abort();
         hub.stop().await;
     }
-
 }

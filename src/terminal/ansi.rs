@@ -20,7 +20,4 @@ pub fn strip_ansi(s: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

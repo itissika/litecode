@@ -367,7 +367,4 @@ fn inferred_eol(s: &str, at: usize) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

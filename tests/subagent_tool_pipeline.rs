@@ -140,7 +140,6 @@ fn function_call(call_id: &str, prompt: &str) -> FunctionToolCall {
     }
 }
 
-
 #[derive(Clone)]
 struct PanicProvider;
 

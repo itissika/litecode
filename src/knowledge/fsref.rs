@@ -182,8 +182,4 @@ pub fn line_count(text: &str) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

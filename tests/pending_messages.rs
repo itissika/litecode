@@ -106,8 +106,6 @@ fn user_rows(sessions: &SessionManager, session_id: &str) -> Vec<String> {
         .collect()
 }
 
-
-
 /// The tool loop takes another step after the tool result: the queued message
 /// must be injected at that seam, persisted as one ordinary user row, and be
 /// visible to the very next request.
@@ -238,4 +236,3 @@ async fn queued_message_during_final_response_extends_the_turn() {
     );
     assert!(!sessions.has_pending_messages(&session_id));
 }
-

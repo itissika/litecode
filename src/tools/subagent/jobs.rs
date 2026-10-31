@@ -205,7 +205,4 @@ impl NoticeInbox {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

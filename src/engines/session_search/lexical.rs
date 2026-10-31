@@ -338,10 +338,4 @@ fn report(data_root: &Path, result: Result<()>) {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-
-}
+mod tests {}

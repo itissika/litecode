@@ -142,8 +142,6 @@ pub fn sync(ctx: &SeamCtx, view: &SpineReminderView, facts: &Facts) -> Vec<Remin
 mod tests {
     use super::*;
     use crate::reminder::kinds::{PlanPointer, TodoSnap};
-    
-    
 
     fn ctx() -> SeamCtx {
         SeamCtx {
@@ -187,5 +185,4 @@ mod tests {
                 .any(|reminder| reminder.kind() == ReminderKind::Tasks)
         );
     }
-
 }

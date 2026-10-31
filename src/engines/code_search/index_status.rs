@@ -554,9 +554,6 @@ pub fn code_corpus_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
-    
 
     #[test]
     fn decide_index_work_dirty_always_updates() {
@@ -614,5 +611,4 @@ mod tests {
             );
         }
     }
-
 }

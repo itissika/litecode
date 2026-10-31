@@ -42,13 +42,4 @@ pub fn trim_span(text: &str, start: usize, end: usize, role: ContentRole) -> (us
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-    
-    
-    
-
-    
-
-}
+mod tests {}

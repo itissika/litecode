@@ -403,5 +403,4 @@ mod tests {
             Item::Reasoning(reasoning) if reasoning.encrypted_content.as_deref() == Some("gpt-cipher")
         ));
     }
-
 }

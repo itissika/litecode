@@ -150,8 +150,4 @@ pub fn media_artifact_tokens(
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-
-}
+mod tests {}

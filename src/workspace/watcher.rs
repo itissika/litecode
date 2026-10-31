@@ -466,5 +466,4 @@ mod tests {
         let changes = coalesce_pending(&mut pending, &mut pending_deleted, |_| true);
         assert_eq!(changes, vec![changed(&["a.txt"])]);
     }
-
 }

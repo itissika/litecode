@@ -48,10 +48,4 @@ pub fn path_gitignored(workspace_root: &Path, rel: &str, preset: FilterPreset) -
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-
-}
+mod tests {}
