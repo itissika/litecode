@@ -23,7 +23,7 @@ import {
   type BashCallMeta,
 } from "../lib/bashLive";
 import { paintDragCursor, viewOf } from "../lib/domView";
-import { bashKill } from "../lib/litecodeBash";
+import { killBashJob } from "../lib/litecodeBash";
 import { useBashStore } from "../stores/bashStore";
 import { useEditorStore } from "../stores/editorStore";
 import { useMessageStore } from "../stores/messageStore";
@@ -944,7 +944,7 @@ function TerminalJob({
         {allowKill && (
           <button
             type="button"
-            onClick={() => void bashKill(job.id)}
+            onClick={() => void killBashJob(sessionId, job.id)}
             className="btn-danger btn-xs shrink-0"
           >
             Kill

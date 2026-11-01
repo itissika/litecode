@@ -912,6 +912,38 @@ impl AgentJobRegistry {
         })
     }
 
+    /// Seal a record the supervisor never observed: when the tracked process is
+    /// already gone but `alive` is still true (a stuck or vanished supervisor
+    /// task), the exit happened and only the observation is missing.
+    ///
+    /// The OS verdict is the only evidence used, so the record still cannot flip
+    /// before the process is really gone. The `user_killed` latch from
+    /// [`Self::kill_registered`] survives, which keeps the mailbox notice honest.
+    ///
+    /// Returns the state after the check: `(alive, exit_code)`.
+    pub fn seal_if_reaped(&self, id: &str) -> (bool, Option<u32>) {
+        let (alive, exit_code, pid) = {
+            let g = self.inner.lock().expect("jobs lock");
+            match g.jobs.get(id) {
+                Some(rec) => (rec.alive, rec.exit_code, rec.pid),
+                None => return (false, None),
+            }
+        };
+        if !alive {
+            return (false, exit_code);
+        }
+        let Some(pid) = pid.filter(|pid| *pid != 0) else {
+            return (true, exit_code);
+        };
+        if crate::serve::shutdown::is_process_alive(pid) {
+            return (true, exit_code);
+        }
+        self.finish(id, None);
+        self.get(id)
+            .map(|(alive, exit_code, ..)| (alive, exit_code))
+            .unwrap_or((false, exit_code))
+    }
+
     /// A pipe job the tool has already returned, still running. Born detached.
     /// Live commands use [`supervise_pipe`] instead of this helper.
     pub fn insert_live_pipe_job(

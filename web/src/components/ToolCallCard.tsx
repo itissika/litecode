@@ -8,7 +8,7 @@ import {
 } from "../api/adapter";
 import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
 import { formatElapsed, matchJob } from "../lib/bashLive";
-import { bashKill } from "../lib/litecodeBash";
+import { killBashJob } from "../lib/litecodeBash";
 import { formatRunCodeData, runCodeChips } from "../lib/runCodeSummary";
 import { useBashStore } from "../stores/bashStore";
 import { useTurnStore } from "../stores/turnStore";
@@ -270,7 +270,7 @@ export function ToolCallCard({
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  void bashKill(bashJob.id);
+                  void killBashJob(sessionId, bashJob.id);
                 }}
                 className="btn-danger btn-xs"
               >

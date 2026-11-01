@@ -3,6 +3,8 @@
 
 use std::collections::BTreeMap;
 
+use base64::Engine as _;
+
 use super::builtin::{
     ArchiveFormat, BuiltinApp, BuiltinDataScope, BuiltinDocs, CheckSpec, InstallSpec, InstallStep,
 };
@@ -222,7 +224,7 @@ fn nocodb() -> BuiltinApp {
         "NocoDB",
         "Airtable-style database UI for local data.",
         AppCategory::Data,
-        "🗂️",
+        &icon("image/png", include_bytes!("assets/nocodb/icon.png")),
         Some("https://github.com/nocodb/nocodb"),
         Some("https://docs.nocodb.com/"),
         NOCODB_DOCS,
@@ -254,7 +256,7 @@ fn openrefine() -> BuiltinApp {
         "OpenRefine",
         "Clean and transform tabular data locally.",
         AppCategory::Data,
-        "🧹",
+        &icon("image/png", include_bytes!("assets/openrefine/icon.png")),
         Some("https://github.com/OpenRefine/OpenRefine"),
         Some("https://openrefine.org/docs"),
         OPENREFINE_DOCS,
@@ -289,7 +291,7 @@ fn openrefine() -> BuiltinApp {
         "OpenRefine",
         "Clean and transform tabular data locally.",
         AppCategory::Data,
-        "🧹",
+        &icon("image/png", include_bytes!("assets/openrefine/icon.png")),
         Some("https://github.com/OpenRefine/OpenRefine"),
         Some("https://openrefine.org/docs"),
         OPENREFINE_DOCS,
@@ -324,7 +326,7 @@ fn memos() -> BuiltinApp {
         "Memos",
         "A private, lightweight notes and microblog app.",
         AppCategory::General,
-        "📝",
+        &icon("image/png", include_bytes!("assets/memos/icon.png")),
         Some("https://github.com/usememos/memos"),
         Some("https://www.usememos.com/docs"),
         MEMOS_DOCS,
@@ -359,7 +361,7 @@ fn memos() -> BuiltinApp {
         "Memos",
         "A private, lightweight notes and microblog app.",
         AppCategory::General,
-        "📝",
+        &icon("image/png", include_bytes!("assets/memos/icon.png")),
         Some("https://github.com/usememos/memos"),
         Some("https://www.usememos.com/docs"),
         MEMOS_DOCS,
@@ -410,7 +412,7 @@ fn vikunja() -> BuiltinApp {
         "Vikunja",
         "Self-hosted task and project management.",
         AppCategory::Task,
-        "✅",
+        &icon("image/svg+xml", include_bytes!("assets/vikunja/icon.svg")),
         Some("https://github.com/go-vikunja/vikunja"),
         Some("https://vikunja.io/docs/"),
         VIKUNJA_DOCS,
@@ -445,7 +447,7 @@ fn sqlpage() -> BuiltinApp {
         "SQLPage",
         "Build data apps from SQL files locally.",
         AppCategory::Data,
-        "📊",
+        &icon("image/svg+xml", include_bytes!("assets/sqlpage/icon.svg")),
         Some("https://github.com/sqlpage/SQLPage"),
         Some("https://sql-page.com/"),
         SQLPAGE_DOCS,
@@ -500,7 +502,7 @@ fn audiomass() -> BuiltinApp {
         "AudioMass",
         "Full-featured waveform and multitrack audio editor.",
         AppCategory::Audio,
-        "🎚️",
+        &icon("image/png", include_bytes!("assets/audiomass/icon.png")),
         Some("https://github.com/pkalogiros/audiomass"),
         None,
         AUDIOMASS_DOCS,
@@ -526,13 +528,23 @@ fn audiomass() -> BuiltinApp {
 /// from the pinned production page; the two are released together.
 const XPRITE_INDEX: &str = include_str!("assets/xprite/index.html");
 
+/// Built-in icons travel inside the binary and reach the app list as data
+/// URLs: the panel already renders `data:image/` icons, so nothing has to be
+/// readable on disk before install.
+fn icon(mime: &str, bytes: &[u8]) -> String {
+    format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
 fn xprite() -> BuiltinApp {
     app(
         "xprite",
         "Xprite",
         "Pixel art and sprite animation in the browser. Opens .ase/.aseprite.",
         AppCategory::Image,
-        "🎨",
+        &icon("image/png", include_bytes!("assets/xprite/icon.png")),
         Some("https://github.com/rhinoc/xprite"),
         Some("https://xprite.cc/help/"),
         XPRITE_DOCS,
@@ -582,7 +594,7 @@ fn marimo() -> BuiltinApp {
         "marimo",
         "Reactive Python notebooks in the browser.",
         AppCategory::Analysis,
-        "🐍",
+        &icon("image/png", include_bytes!("assets/marimo/icon.png")),
         Some("https://github.com/marimo-team/marimo"),
         Some("https://docs.marimo.io/"),
         MARIMO_DOCS,
@@ -633,7 +645,7 @@ fn gallery() -> BuiltinApp {
         "Gallery",
         "Browse this workspace's images, video, and audio.",
         AppCategory::Image,
-        "🖼️",
+        "phosphor:images",
         None,
         None,
         GALLERY_DOCS,

@@ -3,8 +3,10 @@
 //! Default agent view: head, optional logs, optional partial results (failed
 //! runs only), optional result. Result: uniformly shaped object arrays render
 //! as `[N]{a,b}:` tables (columns in first-seen key order, a key a row omits
-//! renders as an empty cell), everything else as compact JSON (strings
-//! verbatim). Partial calls and the final result share
+//! renders as an empty cell); non-string values render as compact JSON. A
+//! result string or log line that is itself one JSON value is lexically
+//! compacted; other strings stay verbatim. Partial calls and the final result
+//! share
 //! [`RESULT_TOKEN_BUDGET`] cl100k tokens; structured values degrade
 //! structurally, while over-budget strings keep both a head and a tail
 //! (WP-210 C). Logs keep their head within [`SUCCESS_LOGS_TOKEN_BUDGET`] on
@@ -166,6 +168,11 @@ fn count_tokens(text: &str) -> usize {
     crate::session::estimate::count_text_tokens(text)
 }
 
+fn log_line(level: &str, message: &str) -> String {
+    let message = compact_json_text(message).unwrap_or_else(|| message.to_string());
+    format!("[{level}] {message}")
+}
+
 /// Successful run: keep whole leading log lines within `budget` tokens, then
 /// one `... N lines omitted (token budget)` line for the rest.
 fn render_success_logs(logs: &[(String, String)], budget: usize) -> Option<String> {
@@ -174,7 +181,7 @@ fn render_success_logs(logs: &[(String, String)], budget: usize) -> Option<Strin
     }
     let lines: Vec<String> = logs
         .iter()
-        .map(|(level, message)| format!("[{level}] {message}"))
+        .map(|(level, message)| log_line(level, message))
         .collect();
     let build = |count: usize, token_limited: bool| {
         let mut body = String::from("logs:");
@@ -615,7 +622,7 @@ fn render_failure_logs(
     }
     let mut lines: Vec<String> = logs
         .iter()
-        .map(|(level, message)| format!("[{level}] {message}"))
+        .map(|(level, message)| log_line(level, message))
         .collect();
     if output_limited {
         if let Some(last) = lines.last_mut() {
@@ -666,7 +673,7 @@ fn render_failure_logs(
 
 fn render_result_body(value: &Value) -> String {
     match value {
-        Value::String(text) => text.clone(),
+        Value::String(text) => compact_json_text(text).unwrap_or_else(|| text.clone()),
         Value::Array(items) => match table_columns(items) {
             Some(columns) => render_table("", items, &columns),
             None => compact_json(value),
@@ -704,6 +711,66 @@ fn render_result_body(value: &Value) -> String {
 
 fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+}
+
+/// A string longer than this is not parsed just to compact JSON text.
+const MAX_COMPACT_JSON_TEXT_BYTES: usize = super::MAX_CODE_OUTPUT_BYTES;
+
+/// Lexically compact a string that is one JSON value.
+///
+/// Validation uses `serde_json` only to prove the text is a single JSON value;
+/// the output comes from a scan that removes the four JSON whitespace bytes
+/// outside strings. Number spelling, escapes, duplicate keys, and key order are
+/// preserved byte for byte. `None` means "not one JSON value", "already
+/// compact", or "not safely confirmable", so callers keep the original string.
+pub(super) fn compact_json_text(text: &str) -> Option<String> {
+    if text.len() > MAX_COMPACT_JSON_TEXT_BYTES {
+        return None;
+    }
+    // Cheap gate: only bytes that can start a JSON value get parsed. The full
+    // check below still decides; `1 2` must not become `12`.
+    let first = text.bytes().find(|byte| !is_json_whitespace(*byte))?;
+    if !matches!(
+        first,
+        b'{' | b'[' | b'"' | b'-' | b't' | b'f' | b'n' | b'0'..=b'9'
+    ) {
+        return None;
+    }
+    let compact = strip_json_whitespace(text);
+    if compact.len() == text.len() {
+        return None;
+    }
+    // Validate the original, not the stripped text.
+    serde_json::from_str::<Value>(text).ok()?;
+    Some(compact)
+}
+
+fn is_json_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
+}
+
+fn strip_json_whitespace(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    for ch in text.chars() {
+        if in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+        } else if ch == '"' {
+            in_string = true;
+            out.push(ch);
+        } else if !matches!(ch, ' ' | '\t' | '\n' | '\r') {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 const TABLE_MIN_ROWS: usize = 3;
@@ -1712,6 +1779,109 @@ mod tests {
         assert!(!result_of(&text).contains('\n'));
         let text = ok_with(Value::String("plain\n  text".into()));
         assert_eq!(result_of(&text), "plain\n  text");
+    }
+
+    #[test]
+    fn json_text_is_compacted_without_rewriting_tokens() {
+        let pretty = r#"{
+  "a": 1.00,
+  "a": 2,
+  "e": 1e2,
+  "u": "\u0041",
+  "s": " x  y ",
+  "q": "a\"b",
+  "b": "c\\d",
+  "中文": "值"
+}"#;
+        assert_eq!(
+            compact_json_text(pretty).as_deref(),
+            Some(r#"{"a":1.00,"a":2,"e":1e2,"u":"\u0041","s":" x  y ","q":"a\"b","b":"c\\d","中文":"值"}"#)
+        );
+        assert_eq!(
+            compact_json_text("  {\"a\": 1}  ").as_deref(),
+            Some(r#"{"a":1}"#)
+        );
+        assert_eq!(
+            compact_json_text("{\r\n  \"a\": 1\r\n}").as_deref(),
+            Some(r#"{"a":1}"#)
+        );
+        assert_eq!(
+            compact_json_text("{\"s\": \"c\\\\\"}").as_deref(),
+            Some(r#"{"s":"c\\"}"#)
+        );
+        assert_eq!(
+            compact_json_text("{\"s\": \"c\\\"\"}").as_deref(),
+            Some(r#"{"s":"c\""}"#)
+        );
+    }
+
+    #[test]
+    fn json_text_compaction_handles_top_level_scalars() {
+        assert_eq!(compact_json_text("  42  ").as_deref(), Some("42"));
+        assert_eq!(compact_json_text("  \"hi\"  ").as_deref(), Some("\"hi\""));
+        assert_eq!(compact_json_text("  true  ").as_deref(), Some("true"));
+        assert_eq!(compact_json_text("  null  ").as_deref(), Some("null"));
+        assert_eq!(
+            compact_json_text("  \"a b\"  ").as_deref(),
+            Some("\"a b\"")
+        );
+        assert_eq!(
+            compact_json_text("  \"a\\\"b\"  ").as_deref(),
+            Some("\"a\\\"b\"")
+        );
+        assert_eq!(compact_json_text("  \"a\nb\"  "), None);
+        assert_eq!(compact_json_text("42"), None);
+    }
+
+    #[test]
+    fn json_text_compaction_preserves_the_parsed_value() {
+        let values = [
+            serde_json::json!({"a": [1, 2, {"b": "x y"}], "c": true, "d": null}),
+            serde_json::json!(["x", {"y": [1.5, 2e10]}]),
+            serde_json::json!({"s": "quote \" and \\ slash", "t": "line\nbreak"}),
+        ];
+        for value in values {
+            let pretty = serde_json::to_string_pretty(&value).unwrap();
+            let compact = compact_json_text(&pretty).expect("pretty JSON compacts");
+            assert_eq!(serde_json::from_str::<Value>(&compact).unwrap(), value);
+            assert_eq!(compact, serde_json::to_string(&value).unwrap());
+        }
+    }
+
+    #[test]
+    fn json_text_compaction_rejects_non_single_json() {
+        for text in [
+            "hello",
+            "{\"a\":1,}",
+            "{\"a\":1} // x",
+            "{\"a\":1}\n{\"b\":2}",
+            "1 2",
+            "{\n  \"a\": 1\n} trailing",
+        ] {
+            assert_eq!(compact_json_text(text), None, "{text}");
+        }
+        assert_eq!(compact_json_text(r#"{"a":1}"#), None);
+    }
+
+    #[test]
+    fn pretty_json_string_result_is_compacted() {
+        let text = ok_with(Value::String(
+            "{\n  \"a\": 1,\n  \"b\": [true, null]\n}".into(),
+        ));
+        assert_eq!(result_of(&text), r#"{"a":1,"b":[true,null]}"#);
+    }
+
+    #[test]
+    fn pretty_json_log_lines_are_compacted() {
+        let mut report = report();
+        report.logs = vec![
+            ("log".into(), "{\n  \"a\": 1\n}".into()),
+            ("log".into(), "plain text".into()),
+        ];
+        let text = render_model_view(&report);
+        assert!(text.contains("[log] {\"a\":1}"), "{text}");
+        assert!(text.contains("[log] plain text"), "{text}");
+        assert!(!text.contains("[log] {\n"), "{text}");
     }
 
     #[test]

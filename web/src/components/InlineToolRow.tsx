@@ -8,7 +8,7 @@ import {
   isBashJobLive,
   matchJob,
 } from "../lib/bashLive";
-import { bashKill } from "../lib/litecodeBash";
+import { killBashJob } from "../lib/litecodeBash";
 import { useBashStore } from "../stores/bashStore";
 import { useTurnStore } from "../stores/turnStore";
 import { SubagentLaunchToolView } from "./toolviews/SubagentLaunchToolView";
@@ -206,7 +206,7 @@ function InlineBashLine({
         <button
           type="button"
           data-testid="inline-bash-kill"
-          onClick={() => void bashKill(job.id)}
+          onClick={() => void killBashJob(sessionId, job.id)}
           className="btn-danger btn-xs shrink-0"
         >
           Kill

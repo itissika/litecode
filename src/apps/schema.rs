@@ -293,6 +293,18 @@ fn validate_https_link(field: &str, value: &str) -> Result<(), String> {
 }
 
 fn validate_icon(icon: &str, source: AppSource, workspace_root: &Path) -> Result<(), String> {
+    if let Some(rest) = icon.strip_prefix("data:image/") {
+        let (kind, payload) = rest
+            .split_once(";base64,")
+            .ok_or_else(|| "icon data URL must be base64".to_string())?;
+        if !matches!(kind, "png" | "webp" | "jpeg" | "gif" | "svg+xml") {
+            return Err("icon data URL must be PNG, WebP, JPEG, GIF, or SVG".into());
+        }
+        if payload.len() > 88 * 1024 {
+            return Err("icon data URL is larger than 64 KiB of image data".into());
+        }
+        return Ok(());
+    }
     if let Some(rel) = icon.strip_prefix("file:") {
         if source != AppSource::Workspace {
             return Err("file: icons are only allowed in the workspace registry".into());
@@ -316,6 +328,9 @@ fn validate_icon(icon: &str, source: AppSource, workspace_root: &Path) -> Result
             }
         }
         return Ok(());
+    }
+    if icon.starts_with("data:") {
+        return Err("icon data URL must be an image".into());
     }
     if icon.trim().is_empty() {
         return Err("icon is empty".into());
@@ -661,6 +676,18 @@ impl LegacyAppDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icon_data_urls_are_checked_but_emoji_keep_the_length_limit() {
+        assert!(validate_icon("data:image/png;base64,iVBORw0KGgo=", AppSource::Builtin, Path::new(".")).is_ok());
+        assert!(validate_icon("data:image/svg+xml;base64,PHN2Zz4=", AppSource::Builtin, Path::new(".")).is_ok());
+        assert!(validate_icon("phosphor:images", AppSource::Builtin, Path::new(".")).is_ok());
+        assert!(validate_icon("data:image/png,raw", AppSource::Builtin, Path::new(".")).is_err());
+        assert!(validate_icon("data:text/html;base64,PGI+", AppSource::Builtin, Path::new(".")).is_err());
+        let huge = format!("data:image/png;base64,{}", "A".repeat(90 * 1024));
+        assert!(validate_icon(&huge, AppSource::Builtin, Path::new(".")).is_err());
+        assert!(validate_icon("🖼️", AppSource::Builtin, Path::new(".")).is_ok());
+    }
 
     fn workspace_def(extra: &str) -> Result<AppDefinition, String> {
         let json = format!(

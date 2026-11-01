@@ -10,6 +10,8 @@ interface SessionBash {
 interface BashStore {
   bySession: Map<string, SessionBash>;
   applySnapshot: (sessionId: string, snap: BashJobsSnapshot) => void;
+  /** Drop one job row on its own (a card the backend reports as already gone). */
+  forgetJob: (sessionId: string, jobId: string) => void;
   reset: (sessionId?: string) => void;
 }
 
@@ -22,6 +24,17 @@ export const useBashStore = create<BashStore>((set) => ({
     bySession.set(sessionId, {
       jobs: snap.jobs ?? [],
       waits: snap.waits ?? [],
+    });
+    set({ bySession });
+  },
+
+  forgetJob: (sessionId, jobId) => {
+    const current = useBashStore.getState().bySession.get(sessionId);
+    if (!current || !current.jobs.some((job) => job.id === jobId)) return;
+    const bySession = new Map(useBashStore.getState().bySession);
+    bySession.set(sessionId, {
+      jobs: current.jobs.filter((job) => job.id !== jobId),
+      waits: current.waits,
     });
     set({ bySession });
   },

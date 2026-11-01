@@ -377,7 +377,8 @@ impl CallLedger {
 const BRIEF_CAP: usize = 160;
 
 /// Short digest of one settled call: the error message, else the compact
-/// result data, else the first content line. UTF-8 safe, at most [`BRIEF_CAP`].
+/// result data, else compact JSON content, else the first content line. UTF-8
+/// safe, at most [`BRIEF_CAP`].
 fn call_brief(result: &ToolCallResult) -> String {
     let text = if let Some(error) = result.error.as_ref().filter(|e| !e.message.is_empty()) {
         error.message.clone()
@@ -393,7 +394,8 @@ fn call_brief(result: &ToolCallResult) -> String {
             String::from_utf8_lossy(&bytes[..bytes.len().min(BRIEF_CAP * 4)]).into_owned()
         }
     } else {
-        result.content.lines().next().unwrap_or("").to_string()
+        render::compact_json_text(&result.content)
+            .unwrap_or_else(|| result.content.lines().next().unwrap_or("").to_string())
     };
     let one_line = text.replace(['\n', '\r'], " ");
     let cut = prefix_utf8(&one_line, BRIEF_CAP);
@@ -1233,8 +1235,8 @@ mod outcome_tests {
     use crate::types::{ToolCallResult, ToolErrorKind};
 
     use super::{
-        CallLedger, DecodeFail, call_outcome_label, decode_invocation, merge_call_outcome,
-        render_run_output,
+        CallLedger, DecodeFail, call_brief, call_outcome_label, decode_invocation,
+        merge_call_outcome, render_run_output,
     };
 
     fn runtime(state: CallState) -> Outcome {
@@ -1336,6 +1338,12 @@ mod outcome_tests {
             let decoded = decode_invocation(&payload).expect("zero args");
             assert_eq!(decoded.arguments, "{}");
         }
+    }
+
+    #[test]
+    fn call_brief_compacts_pretty_json_content() {
+        let result = ToolCallResult::ok("{\n  \"a\": 1\n}");
+        assert_eq!(call_brief(&result), r#"{"a":1}"#);
     }
 
     #[test]

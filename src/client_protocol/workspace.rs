@@ -3,6 +3,8 @@
 //! These requests share `/ws` with agent sessions but deliberately do not
 //! depend on session subscriptions or client-side agent projections.
 
+use std::time::Duration;
+
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::client_protocol::connection::emit;
@@ -54,6 +56,35 @@ fn lsp_unavailable_message(runtime: &RuntimeHandle) -> String {
             "LSP is not enabled for the current workspace (root={root}). \
              Configure and start an LSP server in Settings → Engines → LSP."
         ),
+    }
+}
+
+/// How long `bash/kill` waits for the supervisor's exit before it settles the
+/// record itself. Same budget as the `kill` tool's reap wait.
+const KILL_REAP_WAIT: Duration = Duration::from_secs(2);
+/// Poll step while waiting for that exit record.
+const KILL_REAP_POLL: Duration = Duration::from_millis(20);
+
+/// Wait for the supervisor to record the exit of `id`. The registry keeps its
+/// own word (`alive`), so this only observes it. When the budget runs out the
+/// record is reconciled against the OS: a process that is already gone seals
+/// the record (the supervisor missed the exit), a live one stays running and is
+/// reported as such.
+async fn settle_killed_job(
+    jobs: &crate::terminal::AgentJobRegistry,
+    id: &str,
+) -> (bool, Option<u32>) {
+    let deadline = tokio::time::Instant::now() + KILL_REAP_WAIT;
+    loop {
+        match jobs.get(id) {
+            Some((false, exit_code, ..)) => return (false, exit_code),
+            None => return (false, None),
+            Some((true, ..)) => {}
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return jobs.seal_if_reaped(id);
+        }
+        tokio::time::sleep(KILL_REAP_POLL).await;
     }
 }
 
@@ -411,28 +442,73 @@ pub async fn handle_jsonrpc(
                     return;
                 }
             };
+            let bash_id = params.bash_id.clone();
             let hub = std::sync::Arc::clone(terminal_hub);
-            match tokio::task::spawn_blocking(move || {
-                let info = hub.kill_from_ui(&params.bash_id)?;
-                let _ = hub.close_agent(&params.bash_id);
-                Ok::<_, crate::terminal::TerminalError>(info)
+            let signalled = tokio::task::spawn_blocking(move || {
+                let killed = hub.kill_from_ui(&bash_id)?;
+                let _ = hub.close_agent(&bash_id);
+                Ok::<_, crate::terminal::TerminalError>(killed)
             })
-            .await
-            {
-                Ok(Ok(_)) => emit(
+            .await;
+            let killed = match signalled {
+                Ok(Ok(killed)) => killed,
+                Ok(Err(error)) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, error.to_string()))
+                            .unwrap(),
+                    );
+                    return;
+                }
+                Err(error) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, error.to_string()))
+                            .unwrap(),
+                    );
+                    return;
+                }
+            };
+            // Stale card: the job is already gone, so the kill is complete.
+            if killed.is_none() {
+                emit(
                     sink,
-                    serde_json::to_value(ok_response(id, serde_json::json!({ "ok": true })))
-                        .unwrap(),
-                ),
-                Ok(Err(error)) => emit(
-                    sink,
-                    serde_json::to_value(err_response(id, -32000, error.to_string())).unwrap(),
-                ),
-                Err(error) => emit(
-                    sink,
-                    serde_json::to_value(err_response(id, -32000, error.to_string())).unwrap(),
-                ),
+                    serde_json::to_value(ok_response(
+                        id,
+                        serde_json::json!({
+                            "ok": true,
+                            "alive": false,
+                            "exit_code": null,
+                            "gone": true,
+                        }),
+                    ))
+                    .unwrap(),
+                );
+                return;
             }
+            // A signal is not a death, and the card must never be told "killed"
+            // for a process that outlived it. The reap wait runs off the read
+            // loop: this socket also carries terminal keystrokes, so a kill must
+            // not hold the connection for its confirmation.
+            let sink = sink.clone();
+            let jobs = std::sync::Arc::clone(&terminal_hub.jobs);
+            let bash_id = params.bash_id;
+            tokio::spawn(async move {
+                let (alive, exit_code) = settle_killed_job(&jobs, &bash_id).await;
+                emit(
+                    &sink,
+                    serde_json::to_value(ok_response(
+                        id,
+                        serde_json::json!({
+                            "ok": true,
+                            "alive": alive,
+                            "exit_code": exit_code,
+                            "gone": false,
+                        }),
+                    ))
+                    .unwrap(),
+                );
+            });
         }
         _ => unreachable!("workspace router only receives workspace methods"),
     }

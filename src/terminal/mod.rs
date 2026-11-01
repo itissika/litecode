@@ -471,29 +471,38 @@ impl TerminalHub {
     /// exit, so `alive` here only reports the state right after the signal.
     /// Human PTY ids are not in the job registry.
     pub fn kill(&self, id: &str) -> TerminalResult<SessionInfo> {
-        self.kill_registered_job(id, false)
+        self.kill_registered_job(id, false)?
+            .ok_or_else(|| TerminalError::SessionNotFound(id.to_string()))
     }
 
     /// Kill from the bash card. Same process-tree kill; a detached job's mailbox
     /// notice stays (`user_killed`) for `reminder/bash_exit`.
-    pub fn kill_from_ui(&self, id: &str) -> TerminalResult<SessionInfo> {
+    ///
+    /// `Ok(None)` means the id is no longer a pipe job: a stale card (the record
+    /// was already dropped) or a kill that raced an exit. The human's intent is
+    /// satisfied, so the caller dismisses the row instead of reporting an error.
+    /// Human PTY ids are still rejected: they are not this API's to stop.
+    pub fn kill_from_ui(&self, id: &str) -> TerminalResult<Option<SessionInfo>> {
         self.kill_registered_job(id, true)
     }
 
-    fn kill_registered_job(&self, id: &str, user_killed: bool) -> TerminalResult<SessionInfo> {
+    fn kill_registered_job(
+        &self,
+        id: &str,
+        user_killed: bool,
+    ) -> TerminalResult<Option<SessionInfo>> {
         if self.is_human_pty(id) {
             return Err(TerminalError::SessionNotFound(id.to_string()));
         }
-        let killed = self
+        Ok(self
             .jobs
             .kill_registered(id, user_killed)
-            .ok_or_else(|| TerminalError::SessionNotFound(id.to_string()))?;
-        Ok(SessionInfo {
-            id: killed.id,
-            alive: killed.alive,
-            exit_code: killed.exit_code,
-            output_path: killed.output_path,
-        })
+            .map(|killed| SessionInfo {
+                id: killed.id,
+                alive: killed.alive,
+                exit_code: killed.exit_code,
+                output_path: killed.output_path,
+            }))
     }
 
     fn is_human_pty(&self, id: &str) -> bool {
