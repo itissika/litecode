@@ -1155,6 +1155,45 @@ pub async fn handle_jsonrpc(
             }
         }
 
+        methods::SESSION_FOLDER_REORDER => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                ids: Vec<String>,
+            }
+            let params: Params = match serde_json::from_value(rpc.params.clone()) {
+                Ok(params) => params,
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {e}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            match session.reorder_session_folders(params.ids).await {
+                Ok(()) => {
+                    for msg in session.take_all_outgoing() {
+                        emit(sink, msg);
+                    }
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(id, serde_json::json!({}))).unwrap(),
+                    );
+                }
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, e.to_string())).unwrap(),
+                    );
+                }
+            }
+        }
+
         methods::SESSION_SNAPSHOT => {
             #[derive(serde::Deserialize)]
             struct Params {
@@ -3342,6 +3381,46 @@ mod ask_loop_tests {
             row.get("folder_id").is_none(),
             "deleting the folder must ungroup the session: {row}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_folder_reorder_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, _s, _parent, _child) = wp091_parent_child(dir.path()).await;
+
+        let mut ids = Vec::new();
+        for name in ["First", "Second", "Third"] {
+            let created = wp091_rpc(
+                &mut c,
+                "session/folder/create",
+                serde_json::json!({"name": name}),
+            )
+            .await;
+            assert!(created.get("error").is_none(), "{created}");
+            ids.push(
+                created["result"]["folder_id"]
+                    .as_str()
+                    .expect("folder id")
+                    .to_string(),
+            );
+        }
+
+        let reordered = wp091_rpc(
+            &mut c,
+            "session/folder/reorder",
+            serde_json::json!({"ids": [ids[2], ids[0]]}),
+        )
+        .await;
+        assert!(reordered.get("error").is_none(), "{reordered}");
+
+        let list = wp091_rpc(&mut c, "session/list", serde_json::json!({})).await;
+        let names: Vec<&str> = list["result"]["folders"]
+            .as_array()
+            .expect("folders")
+            .iter()
+            .map(|folder| folder["name"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(names, vec!["Third", "First", "Second"]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

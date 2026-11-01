@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import { ReactFlowProvider } from "@xyflow/react";
 
@@ -10,10 +10,44 @@ import {
 import { KnowledgeGraph } from "../../components/knowledge/KnowledgeGraph";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
 
-export function KnowledgeGraphPanel({ api }: IDockviewPanelProps) {
+/** The node id a restored layout stored on this panel, if any. */
+function storedNodeId(params: Record<string, unknown>): string | null {
+  const value = params.nodeId;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+export function KnowledgeGraphPanel({ api, params }: IDockviewPanelProps) {
   const [visible, setVisible] = useState(() => api.isVisible);
   const [mode, setMode] = useState<KnowledgeSurface>("document");
   const focusedId = useKnowledgeStore((s) => s.focusedId);
+  const nodesLoaded = useKnowledgeStore((s) => s.nodes.length > 0);
+
+  /*
+   * Dockview persists panel params with the layout, so the document read
+   * before a restart is the one this panel opens on. One-shot: an id already
+   * focused in this session wins, and a stale id keeps the first-node fallback.
+   */
+  const restoredId = useRef<string | null>(
+    useKnowledgeStore.getState().focusedId == null ? storedNodeId(params) : null,
+  );
+  const lastPersistedId = useRef<string | null>(storedNodeId(params));
+
+  useEffect(() => {
+    const id = restoredId.current;
+    if (id == null || !nodesLoaded) return;
+    restoredId.current = null;
+    const state = useKnowledgeStore.getState();
+    if (state.byId.has(id)) state.focusCanvas(id);
+  }, [nodesLoaded]);
+
+  // Keep the layout's copy in step, including clearing it when focus is lost.
+  useEffect(() => {
+    if (!nodesLoaded || restoredId.current != null) return;
+    const current = useKnowledgeStore.getState().focusedId;
+    if (lastPersistedId.current === current) return;
+    lastPersistedId.current = current;
+    api.updateParameters?.({ nodeId: current ?? undefined });
+  }, [api, focusedId, nodesLoaded]);
 
   useEffect(() => {
     const note = (visible: boolean) => {

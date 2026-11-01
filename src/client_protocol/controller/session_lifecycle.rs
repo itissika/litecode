@@ -580,6 +580,16 @@ impl SessionController {
         Ok(())
     }
 
+    /// Rewrite sidebar folder order. Unknown ids are ignored; unlisted folders
+    /// keep their relative order at the end.
+    pub async fn reorder_session_folders(&mut self, ids: Vec<String>) -> anyhow::Result<()> {
+        self.sessions
+            .data()
+            .reorder_session_folders_blocking(&ids)?;
+        self.push_session_list().await?;
+        Ok(())
+    }
+
     // ── per-session operations ──
 
     pub fn revert_to_user_anchor(&mut self, session_id: &str, seq: u64) -> anyhow::Result<()> {

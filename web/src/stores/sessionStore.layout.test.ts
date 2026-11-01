@@ -122,6 +122,44 @@ describe("session layout store", () => {
     ]);
   });
 
+  it("reorders folders optimistically and appends unlisted ids", () => {
+    useSessionStore.setState({
+      folders: [
+        folder("f1", "A", 0),
+        folder("f2", "B", 1),
+        folder("f3", "C", 2),
+      ],
+    } as never);
+
+    useSessionStore.getState().reorderFolders(["f3", "f1"]);
+
+    const folders = useSessionStore.getState().folders;
+    expect(folders.map((f) => f.id)).toEqual(["f3", "f1", "f2"]);
+    expect(folders.map((f) => f.sort_order)).toEqual([0, 1, 2]);
+    expect(sendRpc).toHaveBeenCalledWith("session/folder/reorder", {
+      ids: ["f3", "f1", "f2"],
+    });
+  });
+
+  it("rolls a failed reorder back", async () => {
+    sendRpc.mockRejectedValueOnce(new Error("nope"));
+    useSessionStore.setState({
+      folders: [folder("f1", "A", 0), folder("f2", "B", 1)],
+    } as never);
+
+    useSessionStore.getState().reorderFolders(["f2", "f1"]);
+    expect(useSessionStore.getState().folders.map((f) => f.id)).toEqual([
+      "f2",
+      "f1",
+    ]);
+
+    await flush();
+    expect(useSessionStore.getState().folders.map((f) => f.id)).toEqual([
+      "f1",
+      "f2",
+    ]);
+  });
+
   it("createFolder adds the reply id only when the list push missed it", async () => {
     sendRpc.mockResolvedValueOnce({ folder_id: "f9" });
     useSessionStore.getState().createFolder("New");

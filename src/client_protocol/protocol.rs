@@ -31,6 +31,7 @@ pub mod methods {
     pub const SESSION_FOLDER_CREATE: &str = "session/folder/create";
     pub const SESSION_FOLDER_RENAME: &str = "session/folder/rename";
     pub const SESSION_FOLDER_DELETE: &str = "session/folder/delete";
+    pub const SESSION_FOLDER_REORDER: &str = "session/folder/reorder";
     pub const SESSION_COMPACT: &str = "session/compact";
     /// Per-request provider bills for the usage chart (read-only).
     pub const SESSION_USAGE: &str = "session/usage";

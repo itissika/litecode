@@ -24,6 +24,7 @@ import { GitCommitGraph } from "./GitCommitGraph";
 import type { GitCommitInfo, GitFile } from "../api/workspace";
 import { FoldCard } from "./FoldCard";
 import { FOLDCARD_HEADER_TONE } from "./FoldCard";
+import { ListRow } from "./ui/ListRow";
 import { Popover } from "./ui/Popover";
 import { useEditorStore } from "../stores/editorStore";
 import {
@@ -201,16 +202,18 @@ function DirRow({
 
   return (
     <div>
-      <div
-        className="group flex cursor-pointer items-center gap-1 py-0.5 pr-2 text-dk-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-selected)/50"
-        style={{ paddingLeft: 8 + depth * 12 }}
+      <ListRow
+        size="tree-compact"
+        inset={8 + depth * 12}
+        transition={false}
+        className="group cursor-pointer text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-selected)/50"
         onClick={() => toggleCollapsed(node.path)}
       >
         <Caret size={10} className="shrink-0 text-(--_dk-text-muted)" />
         <FolderIcon size={14} className="shrink-0" />
         <span className="min-w-0 flex-1 truncate">{node.name}</span>
         <FileActions section={section} paths={paths} mutating={mutating} />
-      </div>
+      </ListRow>
       {open && (
         <TreeNodes
           nodes={node.children}
@@ -257,12 +260,14 @@ function FileRow({
   };
 
   return (
-    <div
+    <ListRow
       role="option"
       aria-selected={selected}
+      size="tree-compact"
+      inset={8 + depth * 12}
+      transition={false}
       onClick={onClick}
-      style={{ paddingLeft: 8 + depth * 12 }}
-      className={`group flex cursor-pointer items-center gap-1 py-0.5 pr-2 text-dk-xs ${
+      className={`group cursor-pointer ${
         selected
           ? "bg-(--_dk-ix-bg-selected) text-(--_dk-text-secondary)"
           : "text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-selected)/50"
@@ -277,7 +282,7 @@ function FileRow({
         {fileNameFromPath(file.path)}
       </span>
       <FileActions section={section} paths={targets} mutating={mutating} />
-    </div>
+    </ListRow>
   );
 }
 

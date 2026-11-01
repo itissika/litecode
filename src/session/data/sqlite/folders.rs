@@ -103,6 +103,41 @@ pub fn rename_folder(conn: &Connection, id: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Rewrite the sidebar order. Ids that no longer exist are ignored, and
+/// folders omitted from `ids` keep their relative order at the end. The
+/// writer wraps this mutation in one transaction, so the sequence stays
+/// contiguous.
+pub fn reorder_folders(conn: &Connection, ids: &[String]) -> Result<()> {
+    let existing: Vec<String> = {
+        let mut stmt =
+            conn.prepare("SELECT id FROM session_folders ORDER BY sort_order ASC, created_at ASC")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()?
+    };
+
+    let mut ordered: Vec<String> = Vec::with_capacity(existing.len());
+    for id in ids {
+        if existing.iter().any(|known| known == id) && !ordered.iter().any(|seen| seen == id) {
+            ordered.push(id.clone());
+        }
+    }
+    for id in existing {
+        if !ordered.iter().any(|seen| seen == &id) {
+            ordered.push(id);
+        }
+    }
+
+    // The session writer already owns the transaction for this mutation.
+    let now = now_ms();
+    for (index, id) in ordered.iter().enumerate() {
+        conn.execute(
+            "UPDATE session_folders SET sort_order = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![index as i64, now, id],
+        )?;
+    }
+    Ok(())
+}
+
 /// Delete the folder row only. The FK sets every member's folder_id to NULL in
 /// this same transaction.
 pub fn delete_folder(conn: &Connection, id: &str) -> Result<()> {

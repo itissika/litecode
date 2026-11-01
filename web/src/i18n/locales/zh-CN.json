@@ -10,6 +10,7 @@
     "emptyInstalled": "还没有安装应用",
     "registryErrors": "注册表问题（{{count}}）",
     "registryWarning": "警告",
+    "offline": "无法连接本地服务，正在重试…",
     "installedSection": "已安装",
     "availableSection": "未安装",
     "running": "运行中",
@@ -512,6 +513,7 @@
     "createFolderFailed": "新建文件夹失败",
     "renameFolderFailed": "重命名文件夹失败",
     "deleteFolderFailed": "删除文件夹失败",
+    "reorderFolderFailed": "调整文件夹顺序失败",
     "duplicateFolderName": "已存在同名文件夹",
     "loadingSessions": "加载会话…",
     "noSavedSessions": "尚无已保存的会话。"

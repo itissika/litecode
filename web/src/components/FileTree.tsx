@@ -36,12 +36,13 @@ import {
 } from "../lib/fileTreeOps";
 import { validateFileName } from "../lib/fileTreeNames";
 import { FileTreeSkeleton } from "./ui/Skeleton";
+import { InlineRename } from "./ui/InlineRename";
+import { ListRow } from "./ui/ListRow";
 import {
   FileTreeContextMenu,
   type FileTreeMenuItem,
 } from "./FileTreeContextMenu";
 import { FileTreeGlobHits, FileTreeGlobInput } from "./FileTreeGlob";
-import { TreeIndentGuides, treeRowPaddingLeft } from "./TreeIndentGuides";
 import { fileNameFromPath } from "../utils/language";
 import { getFileIcon, FolderIcon } from "../utils/fileIcon";
 import { isSelfOrDescendant, parentPath } from "../utils/path";
@@ -140,61 +141,6 @@ function openIntegratedTerminal(path: string, isDir: boolean): void {
   useTerminalTabs.getState().open(cwd || undefined);
 }
 
-function InlineNameInput({
-  initial,
-  onSubmit,
-  onCancel,
-}: {
-  initial: string;
-  onSubmit: (name: string) => void | Promise<void>;
-  onCancel: () => void;
-}) {
-  const ref = useRef<HTMLInputElement>(null);
-  const done = useRef(false);
-  useEffect(() => {
-    ref.current?.focus();
-    ref.current?.select();
-  }, []);
-
-  const finish = (submit: boolean) => {
-    if (done.current) return;
-    const value = (ref.current?.value ?? "").trim();
-    if (submit) {
-      const err = validateFileName(value);
-      if (err) {
-        useToastStore.getState().showToast(i18n.t(err), "error");
-        ref.current?.focus();
-        return;
-      }
-      done.current = true;
-      void onSubmit(value);
-      return;
-    }
-    done.current = true;
-    onCancel();
-  };
-
-  return (
-    <input
-      ref={ref}
-      defaultValue={initial}
-      className="min-w-0 flex-1 rounded border border-(--_dk-accent-hover) bg-(--_dk-root) px-1 py-0 text-sm text-(--_dk-text-primary) outline-none"
-      onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        e.stopPropagation();
-        if (e.key === "Enter") {
-          e.preventDefault();
-          finish(true);
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          finish(false);
-        }
-      }}
-      onBlur={() => finish(true)}
-    />
-  );
-}
-
 function GhostRow({
   parent,
   depth,
@@ -206,11 +152,7 @@ function GhostRow({
 }) {
   const setInline = useExplorerStore((s) => s.setInline);
   return (
-    <div
-      className="relative flex w-full items-center gap-1 px-2 py-0.5 text-sm"
-      style={{ paddingLeft: `${treeRowPaddingLeft(depth)}px` }}
-    >
-      <TreeIndentGuides depth={depth} />
+    <ListRow size="tree" depth={depth} guides transition={false}>
       <span className="w-4 shrink-0" />
       {kind === "newFolder" ? (
         <FolderIcon
@@ -230,16 +172,25 @@ function GhostRow({
           );
         })()
       )}
-      <InlineNameInput
-        initial={kind === "newFolder" ? "New Folder" : "untitled"}
+      <InlineRename
+        initialValue={kind === "newFolder" ? "New Folder" : "untitled"}
+        ariaLabel={i18n.t(
+          kind === "newFolder" ? "explorer.newFolder" : "explorer.newFile",
+        )}
+        allowEmpty
+        validate={(value) => validateFileName(value)}
+        onInvalid={(error) =>
+          useToastStore.getState().showToast(i18n.t(error), "error")
+        }
         onCancel={() => setInline(null)}
-        onSubmit={async (name) => {
+        onCommit={async (name) => {
           setInline(null);
           if (kind === "newFolder") await createNewFolder(parent, name);
           else await createNewFile(parent, name);
         }}
+        className="min-w-0 flex-1 rounded border border-(--_dk-accent-hover) bg-(--_dk-root) px-1 py-0 text-sm text-(--_dk-text-primary) outline-none"
       />
-    </div>
+    </ListRow>
   );
 }
 
@@ -322,10 +273,15 @@ function TreeNode({
       : "text-(--_dk-text-secondary)";
 
   return (
-    <div
+    <ListRow
       role="treeitem"
       aria-selected={selected}
       draggable={!renaming}
+      size="tree"
+      depth={depth}
+      guides
+      drop={isDrop && isDir ? "inside" : null}
+      dropTone="outline"
       onClick={handleClick}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -352,18 +308,16 @@ function TreeNode({
           /* keep until next over */
         }
       }}
-      className={`relative flex w-full cursor-default items-center gap-1 truncate px-2 py-0.5 text-left text-sm transition-colors hover:bg-(--_dk-ix-bg-hover) ${highlight} ${
+      className={`cursor-default truncate text-left hover:bg-(--_dk-ix-bg-hover) ${highlight} ${
         isCut || busy ? "opacity-50" : ""
-      } ${isDrop && isDir ? "outline outline-1 outline-(--_dk-accent-hover)" : ""} ${
+      } ${
         focusPath === entry.path
           ? "ring-1 ring-inset ring-(--_dk-line-visible)"
           : ""
       }`}
-      style={{ paddingLeft: `${treeRowPaddingLeft(depth)}px` }}
       data-path={entry.path}
       title={entry.path}
     >
-      <TreeIndentGuides depth={depth} />
       <span className="w-4 shrink-0 text-center text-[10px] text-(--_dk-text-disabled)">
         {isDir ? (expanded ? "▼" : "▶") : ""}
       </span>
@@ -390,13 +344,20 @@ function TreeNode({
         })()
       )}
       {renaming ? (
-        <InlineNameInput
-          initial={entry.name}
+        <InlineRename
+          initialValue={entry.name}
+          ariaLabel={i18n.t("explorer.rename")}
+          allowEmpty
+          validate={(value) => validateFileName(value)}
+          onInvalid={(error) =>
+            useToastStore.getState().showToast(i18n.t(error), "error")
+          }
           onCancel={() => setInline(null)}
-          onSubmit={async (name) => {
+          onCommit={async (name) => {
             setInline(null);
             await renameEntry(entry.path, name);
           }}
+          className="min-w-0 flex-1 rounded border border-(--_dk-accent-hover) bg-(--_dk-root) px-1 py-0 text-sm text-(--_dk-text-primary) outline-none"
         />
       ) : (
         <span className={`truncate ${dirChanged ? CHANGED_DIR_CLASS : ""}`}>
@@ -415,7 +376,7 @@ function TreeNode({
           </span>
         )}
       </span>
-    </div>
+    </ListRow>
   );
 }
 

@@ -1,64 +1,89 @@
-import { useEffect, useRef, useState, type DragEvent, type MouseEvent } from "react";
+import type { MouseEvent } from "react";
 import { CaretDown, CaretRight, FolderSimple } from "@phosphor-icons/react";
 
 import type { SessionFolder } from "../api/types";
 import i18n from "../i18n";
+import { useDragSource } from "./dnd/useDragSource";
+import { useDropTarget } from "./dnd/useDropTarget";
+import {
+  parseSessionDrag,
+  parseSessionFolderDrag,
+  SESSION_DRAG_MIME,
+  SESSION_FOLDER_DRAG_MIME,
+  type SessionDragPayload,
+  type SessionFolderDragPayload,
+} from "./dnd/sessionDnd";
+import { InlineRename } from "./ui/InlineRename";
+import { ListRow } from "./ui/ListRow";
+
+type FolderDropPayload = SessionDragPayload | SessionFolderDragPayload;
 
 interface SessionFolderHeaderProps {
   folder: SessionFolder;
   count: number;
   collapsed: boolean;
   renaming: boolean;
-  dragOver: boolean;
   onToggle: () => void;
   onContextMenu: (event: MouseEvent) => void;
   onRename: (name: string) => void;
   onRenameCancel: () => void;
-  onDragOver: (event: DragEvent) => void;
-  onDragLeave: (event: DragEvent) => void;
-  onDrop: (event: DragEvent) => void;
+  onDropSession: (sessionId: string) => void;
+  onReorderFolder: (
+    sourceId: string,
+    targetId: string,
+    position: "before" | "after",
+  ) => void;
+  onMoveFolder: (id: string, delta: -1 | 1) => void;
 }
 
-/** Folder row: collapse toggle, inline rename, and a drop target for sessions. */
+/** Folder row: collapse, inline rename, session drop, and folder reorder. */
 export function SessionFolderHeader({
   folder,
   count,
   collapsed,
   renaming,
-  dragOver,
   onToggle,
   onContextMenu,
   onRename,
   onRenameCancel,
-  onDragOver,
-  onDragLeave,
-  onDrop,
+  onDropSession,
+  onReorderFolder,
+  onMoveFolder,
 }: SessionFolderHeaderProps) {
-  const [draft, setDraft] = useState(folder.name);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const doneRef = useRef(false);
+  const drag = useDragSource<SessionFolderDragPayload>({
+    mime: SESSION_FOLDER_DRAG_MIME,
+    payload: () => ({ kind: "session-folder", id: folder.id }),
+    canDrag: !renaming,
+    effect: "move",
+    text: (payload) => payload.id,
+  });
 
-  useEffect(() => {
-    if (!renaming) return;
-    doneRef.current = false;
-    setDraft(folder.name);
-    const raf = requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [renaming, folder.name]);
-
-  const finish = (value: string) => {
-    if (doneRef.current) return;
-    doneRef.current = true;
-    const name = value.trim();
-    if (name && name !== folder.name) onRename(name);
-    else onRenameCancel();
-  };
+  const drop = useDropTarget<FolderDropPayload>([
+    {
+      mime: SESSION_DRAG_MIME,
+      parse: parseSessionDrag,
+      onDrop: (payload) => {
+        if (payload.kind === "session") onDropSession(payload.id);
+      },
+    },
+    {
+      mime: SESSION_FOLDER_DRAG_MIME,
+      parse: parseSessionFolderDrag,
+      resolve: (event, rect) =>
+        event.clientY < rect.top + rect.height / 2 ? "before" : "after",
+      canDrop: (payload) => payload.id !== folder.id,
+      onDrop: (payload, position) => {
+        if (payload.kind === "session-folder" && position !== "inside") {
+          onReorderFolder(payload.id, folder.id, position);
+        }
+      },
+    },
+  ]);
 
   return (
-    <div
+    <ListRow
+      as="div"
+      size="section"
       role="button"
       tabIndex={0}
       aria-expanded={!collapsed}
@@ -67,21 +92,28 @@ export function SessionFolderHeader({
           ? i18n.t("session.expandFolder")
           : i18n.t("session.collapseFolder")
       }: ${folder.name}`}
+      {...drag}
+      {...drop.handlers}
       onClick={onToggle}
       onKeyDown={(event) => {
+        if (
+          event.altKey &&
+          (event.key === "ArrowUp" || event.key === "ArrowDown")
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          onMoveFolder(folder.id, event.key === "ArrowUp" ? -1 : 1);
+          return;
+        }
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onToggle();
         }
       }}
       onContextMenu={onContextMenu}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
-      className={`group flex h-8 cursor-pointer items-center gap-1.5 rounded px-2 text-[11px] text-(--_dk-text-secondary) transition-colors ${
-        dragOver
-          ? "bg-(--_dk-ix-bg-selected) shadow-[0_0_0_1px_var(--_dk-ix-ring)]"
-          : "hover:bg-(--_dk-ix-bg-hover)"
+      drop={drop.position}
+      className={`cursor-pointer text-(--_dk-text-secondary) ${
+        drop.isOver ? "" : "hover:bg-(--_dk-ix-bg-hover)"
       }`}
     >
       {collapsed ? (
@@ -91,28 +123,15 @@ export function SessionFolderHeader({
       )}
       <FolderSimple size={13} className="shrink-0 text-(--_dk-text-muted)" />
       {renaming ? (
-        <input
-          ref={inputRef}
-          value={draft}
-          onClick={(event) => event.stopPropagation()}
-          onMouseDown={(event) => event.stopPropagation()}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            // The header treats Enter/Space as collapse; typing in the rename
-            // input must not also toggle the folder.
-            event.stopPropagation();
-            if (event.key === "Enter") {
-              event.preventDefault();
-              finish(draft);
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              doneRef.current = true;
-              onRenameCancel();
-            }
-          }}
-          onBlur={() => finish(draft)}
-          aria-label={i18n.t("session.folderName")}
+        <InlineRename
+          initialValue={folder.name}
+          ariaLabel={i18n.t("session.folderName")}
           maxLength={120}
+          onCommit={(name) => {
+            if (name === folder.name) onRenameCancel();
+            else onRename(name);
+          }}
+          onCancel={onRenameCancel}
           className="min-w-0 flex-1 rounded border border-(--_dk-ix-ring) bg-(--_dk-editor) px-1 py-0.5 text-[11px] text-(--_dk-text-secondary) outline-none"
         />
       ) : (
@@ -121,6 +140,6 @@ export function SessionFolderHeader({
       <span className="ml-auto shrink-0 text-[10px] text-(--_dk-text-disabled)">
         {count}
       </span>
-    </div>
+    </ListRow>
   );
 }

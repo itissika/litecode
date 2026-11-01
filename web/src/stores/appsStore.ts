@@ -10,6 +10,7 @@ import {
   type AppsSnapshot,
   type AppView,
 } from "../api/apps";
+import i18n from "../i18n";
 
 export type AppAction = "install" | "start" | "stop" | "uninstall" | "trust";
 
@@ -98,8 +99,16 @@ export const useAppsStore = create<AppsStore>((set, get) => {
         if (initial) set({ loading: true });
         try {
           applySnapshot(await fetchApps());
+          // A poll that succeeds proves the engine is back: drop the banner a
+          // momentary blip left behind instead of showing it until an action.
+          if (get().error) set({ error: null });
         } catch (error) {
-          set({ error: messageOf(error) });
+          set({
+            error:
+              error instanceof TypeError
+                ? i18n.t("apps.offline")
+                : messageOf(error),
+          });
         }
       } while (reloadRequested);
       set({ loading: false });

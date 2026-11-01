@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { FileText } from "@phosphor-icons/react";
 
 import { FileTreeContextMenu, type FileTreeMenuItem } from "../FileTreeContextMenu";
-import { TreeIndentGuides, treeRowPaddingLeft } from "../TreeIndentGuides";
+import { ListRow } from "../ui/ListRow";
 import { normalizeKey } from "../../lib/knowledge/markers";
 import { revealKnowledgeNode } from "../../lib/knowledge/panel";
 import {
@@ -89,15 +89,17 @@ function KnowledgeCard({
   const key = normalizeKey(node.key);
 
   return (
-    <div
+    <ListRow
       data-knowledge-id={node.id}
+      size="tree"
+      depth={depth}
+      guides
       className={[
-        "knowledge-card relative flex w-full cursor-default items-center gap-1 truncate px-2 py-0.5 text-left text-sm text-(--_dk-text-secondary)",
+        "knowledge-card cursor-default text-(--_dk-text-secondary) truncate",
         focused ? "is-focused" : "",
       ]
         .filter(Boolean)
         .join(" ")}
-      style={{ paddingLeft: `${treeRowPaddingLeft(depth)}px` }}
       title={key}
       onClick={() => revealKnowledgeNode(node.id)}
       draggable
@@ -120,7 +122,6 @@ function KnowledgeCard({
       {flashing ? (
         <span key={sideFlashPulse} className="knowledge-flash" aria-hidden />
       ) : null}
-      <TreeIndentGuides depth={depth} />
       <span className="w-4 shrink-0" aria-hidden />
       <FileText
         size={16}
@@ -150,7 +151,7 @@ function KnowledgeCard({
           <KnowledgeAttentionIcon warnings={warnings} />
         </span>
       </span>
-    </div>
+    </ListRow>
   );
 }
 
@@ -163,12 +164,13 @@ function KnowledgeUnknownRow({
 }) {
   const Glyph = getFileIcon(file.name);
   return (
-    <div
-      className="relative flex w-full items-center gap-1 truncate px-2 py-0.5 text-sm text-(--_dk-text-muted)"
-      style={{ paddingLeft: `${treeRowPaddingLeft(depth)}px` }}
+    <ListRow
+      size="tree"
+      depth={depth}
+      guides
+      className="text-(--_dk-text-muted)"
       title="Unrecognized"
     >
-      <TreeIndentGuides depth={depth} />
       <span className="w-4 shrink-0" aria-hidden />
       <Glyph
         size={16}
@@ -177,7 +179,7 @@ function KnowledgeUnknownRow({
         className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
       />
       <span className="truncate">?{file.name}</span>
-    </div>
+    </ListRow>
   );
 }
 
@@ -230,11 +232,12 @@ function KnowledgeCreateRow({
   const Glyph = draft.kind === "folder" ? FolderIcon : getFileIcon("untitled");
 
   return (
-    <div
-      className="knowledge-create-row relative flex w-full items-center gap-1 px-2 py-0.5 text-sm text-(--_dk-text-muted)"
-      style={{ paddingLeft: `${treeRowPaddingLeft(depth)}px` }}
+    <ListRow
+      size="tree"
+      depth={depth}
+      guides
+      className="knowledge-create-row text-(--_dk-text-muted)"
     >
-      <TreeIndentGuides depth={depth} />
       <span className="w-4 shrink-0" aria-hidden />
       <Glyph
         size={16}
@@ -268,7 +271,7 @@ function KnowledgeCreateRow({
           void submit(name);
         }}
       />
-    </div>
+    </ListRow>
   );
 }
 
@@ -329,59 +332,51 @@ function KnowledgeFolderBranch({
         const open = expandedFolders.has(folder.id);
         return (
           <div key={folder.id} className="knowledge-folder">
-            <div
-              className={[
-                "knowledge-folder-line",
-                dropId === folder.id
-                  ? "outline outline-1 outline-(--_dk-accent-hover)"
-                  : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
+            <ListRow
+              as="button"
+              size="tree"
+              depth={depth}
+              guides
+              drop={dropId === folder.id ? "inside" : null}
+              dropTone="outline"
+              aria-expanded={open}
+              draggable
+              onClick={() => toggleFolder(folder.id)}
+              onDragStart={(event) => {
+                event.stopPropagation();
+                writeDrag(event, { kind: "folder", id: folder.id });
+              }}
+              onDragOver={(event) => {
+                if (!carriesDrag(event)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                event.dataTransfer.dropEffect = "move";
+                onDragHover(folder.id);
+              }}
+              onDrop={(event) => onDrop(event, folder.id)}
+              onContextMenu={(event) =>
+                onMenu(event, {
+                  kind: "folder",
+                  id: folder.id,
+                  name: folder.name,
+                })
+              }
+              className="knowledge-folder-row flex-1 cursor-default text-left text-(--_dk-text-secondary) truncate"
             >
-              <button
-                type="button"
-                className="knowledge-folder-row relative flex w-full min-w-0 flex-1 cursor-default items-center gap-1 truncate px-2 py-0.5 text-left text-sm text-(--_dk-text-secondary) transition-colors"
-                style={{ paddingLeft: `${treeRowPaddingLeft(depth)}px` }}
-                aria-expanded={open}
-                draggable
-                onClick={() => toggleFolder(folder.id)}
-                onDragStart={(event) => {
-                  event.stopPropagation();
-                  writeDrag(event, { kind: "folder", id: folder.id });
-                }}
-                onDragOver={(event) => {
-                  if (!carriesDrag(event)) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  event.dataTransfer.dropEffect = "move";
-                  onDragHover(folder.id);
-                }}
-                onDrop={(event) => onDrop(event, folder.id)}
-                onContextMenu={(event) =>
-                  onMenu(event, {
-                    kind: "folder",
-                    id: folder.id,
-                    name: folder.name,
-                  })
-                }
+              <span
+                className="w-4 shrink-0 text-center text-[10px] text-(--_dk-text-disabled)"
+                aria-hidden
               >
-                <TreeIndentGuides depth={depth} />
-                <span
-                  className="w-4 shrink-0 text-center text-[10px] text-(--_dk-text-disabled)"
-                  aria-hidden
-                >
-                  {open ? "▼" : "▶"}
-                </span>
-                <FolderIcon
-                  size={16}
-                  weight="regular"
-                  aria-hidden
-                  className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
-                />
-                <span className="truncate">{folder.name}</span>
-              </button>
-            </div>
+                {open ? "▼" : "▶"}
+              </span>
+              <FolderIcon
+                size={16}
+                weight="regular"
+                aria-hidden
+                className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
+              />
+              <span className="truncate">{folder.name}</span>
+            </ListRow>
             {open ? (
               <KnowledgeFolderBranch
                 parentId={folder.id}

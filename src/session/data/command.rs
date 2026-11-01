@@ -390,6 +390,12 @@ pub enum SessionMutation {
         id: String,
         operation_id: MutationId,
     },
+    /// Rewrite sidebar folder order. Unknown ids are ignored; folders not
+    /// listed keep their relative order at the end.
+    ReorderFolders {
+        ids: Vec<String>,
+        operation_id: MutationId,
+    },
 }
 
 impl SessionMutation {
@@ -423,7 +429,8 @@ impl SessionMutation {
             | Self::SetFolder { operation_id, .. }
             | Self::CreateFolder { operation_id, .. }
             | Self::RenameFolder { operation_id, .. }
-            | Self::DeleteFolder { operation_id, .. } => &operation_id.0,
+            | Self::DeleteFolder { operation_id, .. }
+            | Self::ReorderFolders { operation_id, .. } => &operation_id.0,
         }
     }
 
@@ -432,7 +439,8 @@ impl SessionMutation {
             Self::Create { .. }
             | Self::CreateFolder { .. }
             | Self::RenameFolder { .. }
-            | Self::DeleteFolder { .. } => None,
+            | Self::DeleteFolder { .. }
+            | Self::ReorderFolders { .. } => None,
             Self::Apply { session_id, .. }
             | Self::InsertDetails { session_id, .. }
             | Self::PersistItem { session_id, .. }
@@ -469,7 +477,8 @@ impl SessionMutation {
             | Self::SetFolder { .. }
             | Self::CreateFolder { .. }
             | Self::RenameFolder { .. }
-            | Self::DeleteFolder { .. } => None,
+            | Self::DeleteFolder { .. }
+            | Self::ReorderFolders { .. } => None,
             Self::Apply {
                 expected_revision, ..
             }

@@ -1,16 +1,23 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { Trash } from "@phosphor-icons/react";
 import type { SessionInfo } from "../api/types";
 import { isWaitingForUserPhase } from "../api/types";
 import { useTurnStore } from "../stores/turnStore";
 import { sessionTitle } from "../lib/sessionDisplay";
 import { LivePreview } from "./LivePreview";
+import { InlineRename } from "./ui/InlineRename";
+import { ListRow } from "./ui/ListRow";
 import {
   SessionStatusDot,
   isAwaitingPermission,
   type SessionStatus,
 } from "./SessionStatusDot";
 import i18n from "../i18n";
+import { useDragSource } from "./dnd/useDragSource";
+import {
+  SESSION_DRAG_MIME,
+  type SessionDragPayload,
+} from "./dnd/sessionDnd";
 
 /**
  * DEBUG: when true, every status bar ignores its real status and alternates
@@ -40,9 +47,6 @@ function formatRelative(updatedAt: number, now: number): string {
   const yr = Math.floor(day / 365);
   return `${yr}y`;
 }
-
-/** MIME used for dragging a session row onto a folder header. */
-export const SESSION_DRAG_MIME = "application/x-litecode-session-id";
 
 interface SessionItemProps {
   session: SessionInfo;
@@ -126,28 +130,15 @@ export const SessionItem = memo(function SessionItem({
       : "pending"
     : status;
 
-  const [draft, setDraft] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const renameDoneRef = useRef(false);
-  useEffect(() => {
-    if (!renaming) return;
-    renameDoneRef.current = false;
-    setDraft(session.title ?? "");
-    const raf = requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [renaming, session.title]);
-  const finishRename = (value: string) => {
-    if (renameDoneRef.current) return;
-    renameDoneRef.current = true;
-    const title = value.trim();
-    onRename?.(title || null);
-  };
-
   const label = sessionTitle(session);
   const relative = formatRelative(session.updated_at, now);
+  const drag = useDragSource<SessionDragPayload>({
+    mime: SESSION_DRAG_MIME,
+    payload: () => ({ kind: "session", id: session.id }),
+    canDrag: !renaming,
+    effect: "move",
+    text: (payload) => payload.id,
+  });
 
   return (
     <div
@@ -155,19 +146,15 @@ export const SessionItem = memo(function SessionItem({
       data-session-active={focused ? "true" : undefined}
       data-session-unread={unread ? "true" : undefined}
     >
-      <div
-        className={`flex h-9 cursor-pointer items-center gap-2 pr-12 text-(--_dk-ix-fg) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) active:bg-(--_dk-ix-bg-pressed) focus-visible:shadow-[0_0_0_2px_var(--_dk-ix-ring)] ${
+      <ListRow
+        size="session"
+        inset={indentPx}
+        className={`cursor-pointer text-(--_dk-ix-fg) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) active:bg-(--_dk-ix-bg-pressed) focus-visible:shadow-[0_0_0_2px_var(--_dk-ix-ring)] ${
           focused
             ? "bg-(--_dk-ix-bg-selected) shadow-[inset_1px_0_0_var(--_dk-accent-ring)]"
             : ""
         }`}
-        style={{ paddingLeft: indentPx }}
-        draggable={!renaming}
-        onDragStart={(event) => {
-          event.dataTransfer.effectAllowed = "move";
-          event.dataTransfer.setData(SESSION_DRAG_MIME, session.id);
-          event.dataTransfer.setData("text/plain", session.id);
-        }}
+        {...drag}
         onContextMenu={onContextMenu}
         onClick={(event) => {
           // A double-click starts renaming; do not re-open on its second click.
@@ -182,28 +169,14 @@ export const SessionItem = memo(function SessionItem({
           {/* Conversation summary — adapts to content width, capped + truncated.
               `min-w-0` lets it shrink below content as the row narrows. */}
           {renaming ? (
-            <input
-              ref={inputRef}
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onClick={(event) => event.stopPropagation()}
-              onMouseDown={(event) => event.stopPropagation()}
-              onKeyDown={(event) => {
-                // Keep Enter/Escape inside the editor; global shortcuts must
-                // not fire while the user is naming a session.
-                event.stopPropagation();
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  finishRename(draft);
-                } else if (event.key === "Escape") {
-                  event.preventDefault();
-                  renameDoneRef.current = true;
-                  onRenameCancel?.();
-                }
-              }}
-              onBlur={() => finishRename(draft)}
-              aria-label={i18n.t("session.sessionTitle")}
+            <InlineRename
+              key={session.title ?? ""}
+              initialValue={session.title ?? ""}
+              ariaLabel={i18n.t("session.sessionTitle")}
               maxLength={200}
+              allowEmpty
+              onCommit={(value) => onRename?.(value || null)}
+              onCancel={() => onRenameCancel?.()}
               className="w-28 min-w-0 rounded border border-(--_dk-ix-ring) bg-(--_dk-editor) px-1 py-0.5 text-[11px] text-(--_dk-text-secondary) outline-none"
             />
           ) : (
@@ -237,7 +210,7 @@ export const SessionItem = memo(function SessionItem({
             now={now}
           />
         </SessionStatusDot>
-      </div>
+      </ListRow>
       {/* Time while idle; the unread dot sits beside it and the delete square
           takes the slot on hover. */}
       <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1.5 pr-3 text-[10px] text-(--_dk-text-muted) transition-opacity group-hover:opacity-0">

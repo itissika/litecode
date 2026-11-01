@@ -10,6 +10,7 @@
     "emptyInstalled": "No apps installed yet.",
     "registryErrors": "Registry issues ({{count}})",
     "registryWarning": "warning",
+    "offline": "Can't reach the local engine. Retrying.",
     "installedSection": "Installed",
     "availableSection": "Not installed",
     "running": "Running",
@@ -512,6 +513,7 @@
     "createFolderFailed": "Failed to create folder",
     "renameFolderFailed": "Failed to rename folder",
     "deleteFolderFailed": "Failed to delete folder",
+    "reorderFolderFailed": "Failed to reorder folders",
     "duplicateFolderName": "A folder with this name already exists",
     "loadingSessions": "Loading sessions…",
     "noSavedSessions": "No saved sessions yet."

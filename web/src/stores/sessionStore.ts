@@ -178,6 +178,8 @@ interface SessionStore extends SessionState {
   createFolder: (name: string) => void;
   renameFolder: (id: string, name: string) => void;
   deleteFolder: (id: string) => void;
+  /** Rewrite folder order optimistically; unknown ids are ignored. */
+  reorderFolders: (ids: string[]) => void;
 
   // UI actions
   setShowSessionList: (open: boolean) => void;
@@ -958,6 +960,37 @@ export const useSessionStore = create<SessionStore>((set, get) => {
           useToastStore
             .getState()
             .showToast(i18n.t("session.deleteFolderFailed"), "error");
+        });
+    },
+
+    reorderFolders: (ids) => {
+      const previous = get().folders;
+      if (ids.length === 0) return;
+      const byId = new Map(previous.map((folder) => [folder.id, folder]));
+      const next: SessionFolder[] = [];
+      for (const id of ids) {
+        const folder = byId.get(id);
+        if (folder && !next.includes(folder)) next.push(folder);
+      }
+      for (const folder of previous) {
+        if (!next.includes(folder)) next.push(folder);
+      }
+      if (next.every((folder, index) => folder.id === previous[index]?.id)) {
+        return;
+      }
+      set({
+        folders: next.map((folder, index) => ({ ...folder, sort_order: index })),
+      });
+      useConnectionStore
+        .getState()
+        .sendRpc("session/folder/reorder", {
+          ids: next.map((folder) => folder.id),
+        })
+        .catch(() => {
+          set({ folders: previous });
+          useToastStore
+            .getState()
+            .showToast(i18n.t("session.reorderFolderFailed"), "error");
         });
     },
 

@@ -531,6 +531,16 @@ impl SessionData {
         Ok(())
     }
 
+    /// Rewrite folder order. Unknown ids are ignored; unlisted folders keep
+    /// their relative order at the end.
+    pub fn reorder_session_folders_blocking(&self, ids: &[String]) -> Result<()> {
+        self.mutate_blocking(SessionMutation::ReorderFolders {
+            ids: ids.to_vec(),
+            operation_id: MutationId::new(),
+        })?;
+        Ok(())
+    }
+
     pub fn insert_items(&self, session_id: &str, items: &[crate::types::Item]) -> Result<()> {
         let expected = self.revision_blocking(session_id)?;
         self.mutate_blocking(SessionMutation::InsertDetails {

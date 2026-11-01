@@ -164,6 +164,47 @@ describe("SessionList — folders and titles", () => {
     expect(renamed.getAttribute("aria-expanded")).toBe("true");
   });
 
+  it("creates a folder from the inline editor with a trimmed name", async () => {
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method === "session/list") return { sessions: [], folders: [] };
+      return {};
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+
+    render(<SessionList />);
+    fireEvent.click(await screen.findByRole("button", { name: "New folder" }));
+
+    const input = screen.getByRole("textbox", { name: "Folder name" });
+    fireEvent.change(input, { target: { value: "  Plan  " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(sendRpc).toHaveBeenCalledWith("session/folder/create", {
+      name: "Plan",
+    });
+    expect(screen.queryByRole("textbox", { name: "Folder name" })).toBeNull();
+  });
+
+  it("closes the new-folder editor without creating on an empty draft", async () => {
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method === "session/list") return { sessions: [], folders: [] };
+      return {};
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+
+    render(<SessionList />);
+    fireEvent.click(await screen.findByRole("button", { name: "New folder" }));
+
+    const input = screen.getByRole("textbox", { name: "Folder name" });
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(sendRpc).not.toHaveBeenCalledWith(
+      "session/folder/create",
+      expect.anything(),
+    );
+    expect(screen.queryByRole("textbox", { name: "Folder name" })).toBeNull();
+  });
+
   it("renames a session from the context menu", async () => {
     const target = session("s1", { preview: "auto preview" });
     const sendRpc = vi.fn(async (method: string) => {

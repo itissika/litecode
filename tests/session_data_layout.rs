@@ -134,6 +134,33 @@ fn empty_folders_are_listed_and_new_folders_append_in_sort_order() {
 }
 
 #[test]
+fn reorder_folders_rewrites_sort_order_and_appends_unlisted() {
+    let fixture = SessionDataFixture::new();
+    let data = fixture.data.clone();
+    let first = data.create_session_folder_blocking("First").unwrap();
+    let second = data.create_session_folder_blocking("Second").unwrap();
+    let third = data.create_session_folder_blocking("Third").unwrap();
+
+    data.reorder_session_folders_blocking(&[third.clone(), first.clone()])
+        .unwrap();
+    let folders = data.list_folders_blocking().unwrap();
+    assert_eq!(
+        folders.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(),
+        vec![third.as_str(), first.as_str(), second.as_str()],
+        "listed ids lead, unlisted folders keep their relative order"
+    );
+
+    // Unknown ids and duplicates are ignored instead of failing the whole move.
+    data.reorder_session_folders_blocking(&["missing".to_string(), third.clone(), third.clone()])
+        .unwrap();
+    let folders = data.list_folders_blocking().unwrap();
+    assert_eq!(
+        folders.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(),
+        vec![third.as_str(), first.as_str(), second.as_str()]
+    );
+}
+
+#[test]
 fn root_list_caps_each_folder_bucket_separately() {
     let fixture = SessionDataFixture::new();
     let data = fixture.data.clone();

@@ -7,6 +7,7 @@ import { formatBytes } from "../../lib/bytes";
 import { formatFileTime, formatFileTimeFull } from "../../lib/fileTime";
 import { fileKindFromPath } from "../../lib/fileKind";
 import { HoverMediaPreview } from "./HoverMediaPreview";
+import { InlineRename } from "../ui/InlineRename";
 import type { GalleryView } from "./galleryGroups";
 import { useMediaThumb } from "./useMediaThumb";
 
@@ -60,13 +61,9 @@ export const GalleryTile = memo(function GalleryTile({
   const now = Date.now();
 
   const tileRef = useRef<HTMLButtonElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
-  const [draft, setDraft] = useState<string | null>(null);
   const openTimer = useRef<number | null>(null);
   const closeTimer = useRef<number | null>(null);
-  // Enter, Escape and blur can all end one edit; only the first counts.
-  const settled = useRef(false);
 
   // Scrolling or resizing moves the tile, so the card closes instead of
   // trailing it across the panel. Only a scroll that actually moves the tile
@@ -97,19 +94,6 @@ export const GalleryTile = memo(function GalleryTile({
     };
   }, []);
 
-  // Opening the editor preselects the stem, so typing replaces the name and
-  // keeps the extension — the same reflex a file manager offers.
-  useEffect(() => {
-    if (!renaming) return;
-    settled.current = false;
-    setDraft(null);
-    const node = inputRef.current;
-    if (!node) return;
-    node.focus();
-    const dot = entry.name.lastIndexOf(".");
-    node.setSelectionRange(0, dot > 0 ? dot : entry.name.length);
-  }, [renaming, entry.name]);
-
   // Only containers the panel itself can decode get a card: an mkv or an aiff
   // would download and then fail, and its double-click goes to the OS anyway.
   const kind = fileKindFromPath(entry.path);
@@ -133,20 +117,6 @@ export const GalleryTile = memo(function GalleryTile({
 
   const holdOpen = () => {
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
-  };
-
-  const finishRename = (name: string | null) => {
-    if (settled.current) return;
-    settled.current = true;
-    if (name === null) onRenameCancel();
-    else onRename(entry, name);
-  };
-
-  // Empty or unchanged names simply close the editor; anything else is the
-  // panel's to validate and hand to the server.
-  const commitRename = () => {
-    const name = (draft ?? entry.name).trim();
-    finishRename(!name || name === entry.name ? null : name);
   };
 
   const frame = (
@@ -180,23 +150,18 @@ export const GalleryTile = memo(function GalleryTile({
   );
 
   const nameInput = (
-    <input
-      ref={inputRef}
-      className="gallery-tile-rename"
-      aria-label={i18n.t("explorer.rename")}
+    <InlineRename
+      key={entry.name}
+      initialValue={entry.name}
+      ariaLabel={i18n.t("explorer.rename")}
+      selection="stem"
       spellCheck={false}
-      value={draft ?? entry.name}
-      onChange={(event) => setDraft(event.target.value)}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          commitRename();
-        } else if (event.key === "Escape") {
-          event.preventDefault();
-          finishRename(null);
-        }
+      onCommit={(name) => {
+        if (name === entry.name) onRenameCancel();
+        else onRename(entry, name);
       }}
-      onBlur={commitRename}
+      onCancel={onRenameCancel}
+      className="gallery-tile-rename"
     />
   );
 

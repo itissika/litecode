@@ -1,9 +1,7 @@
 import {
   useEffect,
   useMemo,
-  useRef,
   useState,
-  type DragEvent,
   type MouseEvent,
 } from "react";
 import {
@@ -19,11 +17,19 @@ import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useToastStore } from "../stores/toastStore";
 import { useUnreadStore } from "../stores/unreadStore";
-import { SessionItem, SESSION_DRAG_MIME } from "./SessionItem";
+import { SessionItem } from "./SessionItem";
 import { SessionFolderHeader } from "./SessionFolderHeader";
+import { parseSessionDrag, SESSION_DRAG_MIME } from "./dnd/sessionDnd";
+import { useDropTarget } from "./dnd/useDropTarget";
 import { FileTreeContextMenu, type FileTreeMenuItem } from "./FileTreeContextMenu";
+import { InlineRename } from "./ui/InlineRename";
+import { ListRow } from "./ui/ListRow";
 import { Popover } from "./ui/Popover";
 import { WorkspaceUsage } from "./WorkspaceUsage";
+import {
+  moveFolderId,
+  reorderFolderIds,
+} from "../lib/sessionFolders";
 import { openSessionPanel } from "../lib/sessionPanelNav";
 import { watchActiveCenterSessionIds } from "../dockview/workbench/queries";
 import i18n from "../i18n";
@@ -60,22 +66,24 @@ function loadCollapsed(): Record<string, boolean> {
 function UngroupedHeader({
   count,
   collapsed,
-  dragOver,
   onToggle,
-  onDragOver,
-  onDragLeave,
-  onDrop,
+  onDropSession,
 }: {
   count: number;
   collapsed: boolean;
-  dragOver: boolean;
   onToggle: () => void;
-  onDragOver: (event: DragEvent) => void;
-  onDragLeave: (event: DragEvent) => void;
-  onDrop: (event: DragEvent) => void;
+  onDropSession: (sessionId: string) => void;
 }) {
+  const drop = useDropTarget({
+    mime: SESSION_DRAG_MIME,
+    parse: parseSessionDrag,
+    onDrop: (payload) => onDropSession(payload.id),
+  });
+
   return (
-    <div
+    <ListRow
+      as="div"
+      size="section"
       role="button"
       tabIndex={0}
       aria-expanded={!collapsed}
@@ -84,6 +92,7 @@ function UngroupedHeader({
           ? i18n.t("session.expandFolder")
           : i18n.t("session.collapseFolder")
       }: ${i18n.t("session.ungrouped")}`}
+      {...drop.handlers}
       onClick={onToggle}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -91,13 +100,9 @@ function UngroupedHeader({
           onToggle();
         }
       }}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
-      className={`group flex h-8 cursor-pointer items-center gap-1.5 rounded px-2 text-[11px] text-(--_dk-text-secondary) transition-colors ${
-        dragOver
-          ? "bg-(--_dk-ix-bg-selected) shadow-[0_0_0_1px_var(--_dk-ix-ring)]"
-          : "hover:bg-(--_dk-ix-bg-hover)"
+      drop={drop.position}
+      className={`cursor-pointer text-(--_dk-text-secondary) ${
+        drop.isOver ? "" : "hover:bg-(--_dk-ix-bg-hover)"
       }`}
     >
       {collapsed ? (
@@ -112,7 +117,7 @@ function UngroupedHeader({
       <span className="ml-auto shrink-0 text-[10px] text-(--_dk-text-disabled)">
         {count}
       </span>
-    </div>
+    </ListRow>
   );
 }
 
@@ -129,6 +134,7 @@ export function SessionList() {
   const createFolder = useSessionStore((s) => s.createFolder);
   const renameFolder = useSessionStore((s) => s.renameFolder);
   const deleteFolder = useSessionStore((s) => s.deleteFolder);
+  const reorderFolders = useSessionStore((s) => s.reorderFolders);
   const connState = useConnectionStore((s) => s.state);
 
   // The server also lists subagent CHILD sessions (the roster needs them to
@@ -166,11 +172,7 @@ export function SessionList() {
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
-  const [newFolderName, setNewFolderName] = useState("");
   const [menu, setMenu] = useState<MenuState | null>(null);
-  const [dragOverKey, setDragOverKey] = useState<string | null>(null);
-  const newFolderInputRef = useRef<HTMLInputElement>(null);
-  const newFolderDoneRef = useRef(false);
 
   useEffect(() => {
     try {
@@ -181,13 +183,6 @@ export function SessionList() {
   }, [collapsed]);
 
   useEffect(() => watchActiveCenterSessionIds(setActiveSessionIds), []);
-
-  useEffect(() => {
-    if (!creatingFolder) return;
-    newFolderDoneRef.current = false;
-    const raf = requestAnimationFrame(() => newFolderInputRef.current?.focus());
-    return () => cancelAnimationFrame(raf);
-  }, [creatingFolder]);
 
   // Shared wall-clock tick (1min) so each row's relative "time since update"
   // stays live at minute granularity without spawning a timer per SessionItem.
@@ -234,51 +229,27 @@ export function SessionList() {
     }
   };
 
-  const isSessionDrag = (event: DragEvent) =>
-    event.dataTransfer.types.includes(SESSION_DRAG_MIME);
-
-  const handleDragOver = (event: DragEvent, key: string) => {
-    if (!isSessionDrag(event)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = "move";
-    setDragOverKey(key);
+  const reorderFolder = (
+    sourceId: string,
+    targetId: string,
+    position: "before" | "after",
+  ) => {
+    const next = reorderFolderIds(
+      orderedFolders.map((folder) => folder.id),
+      sourceId,
+      targetId,
+      position,
+    );
+    if (next) reorderFolders(next);
   };
 
-  const handleDragLeave = (event: DragEvent, key: string) => {
-    const next = event.relatedTarget;
-    if (next instanceof Node && event.currentTarget.contains(next)) return;
-    setDragOverKey((current) => (current === key ? null : current));
-  };
-
-  const handleDrop = (event: DragEvent, folderId: string | null) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const id =
-      event.dataTransfer.getData(SESSION_DRAG_MIME) ||
-      event.dataTransfer.getData("text/plain");
-    setDragOverKey(null);
-    if (id && sessions.some((session) => session.id === id)) {
-      moveSession(id, folderId);
-    }
-  };
-
-  const commitNewFolder = () => {
-    if (newFolderDoneRef.current) return;
-    newFolderDoneRef.current = true;
-    const name = newFolderName.trim();
-    if (name) {
-      notifyDuplicateFolder(name);
-      createFolder(name);
-    }
-    setCreatingFolder(false);
-    setNewFolderName("");
-  };
-
-  const cancelNewFolder = () => {
-    newFolderDoneRef.current = true;
-    setCreatingFolder(false);
-    setNewFolderName("");
+  const moveFolder = (id: string, delta: -1 | 1) => {
+    const next = moveFolderId(
+      orderedFolders.map((folder) => folder.id),
+      id,
+      delta,
+    );
+    if (next) reorderFolders(next);
   };
 
   const renderSession = (session: SessionInfo, grouped = false) => (
@@ -431,24 +402,18 @@ export function SessionList() {
               size={13}
               className="shrink-0 text-(--_dk-text-muted)"
             />
-            <input
-              ref={newFolderInputRef}
-              value={newFolderName}
-              onChange={(event) => setNewFolderName(event.target.value)}
-              onClick={(event) => event.stopPropagation()}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  commitNewFolder();
-                } else if (event.key === "Escape") {
-                  event.preventDefault();
-                  cancelNewFolder();
-                }
-              }}
-              onBlur={commitNewFolder}
+            <InlineRename
+              initialValue=""
+              ariaLabel={i18n.t("session.folderName")}
               placeholder={i18n.t("session.folderName")}
-              aria-label={i18n.t("session.folderName")}
               maxLength={120}
+              onCommit={(name) => {
+                setCreatingFolder(false);
+                if (!name) return;
+                notifyDuplicateFolder(name);
+                createFolder(name);
+              }}
+              onCancel={() => setCreatingFolder(false)}
               className="min-w-0 flex-1 rounded border border-(--_dk-ix-ring) bg-(--_dk-editor) px-1 py-0.5 text-[11px] text-(--_dk-text-secondary) outline-none"
             />
           </div>
@@ -463,7 +428,6 @@ export function SessionList() {
                 count={folderSessions.length}
                 collapsed={isCollapsed}
                 renaming={renamingFolderId === folder.id}
-                dragOver={dragOverKey === folder.id}
                 onToggle={() => toggle(folder.id)}
                 onContextMenu={(event) => {
                   event.preventDefault();
@@ -481,9 +445,13 @@ export function SessionList() {
                   renameFolder(folder.id, name);
                 }}
                 onRenameCancel={() => setRenamingFolderId(null)}
-                onDragOver={(event) => handleDragOver(event, folder.id)}
-                onDragLeave={(event) => handleDragLeave(event, folder.id)}
-                onDrop={(event) => handleDrop(event, folder.id)}
+                onDropSession={(sessionId) => {
+                  if (sessions.some((session) => session.id === sessionId)) {
+                    moveSession(sessionId, folder.id);
+                  }
+                }}
+                onReorderFolder={reorderFolder}
+                onMoveFolder={moveFolder}
               />
               {!isCollapsed &&
                 (folderSessions.length > 0 ? (
@@ -504,11 +472,12 @@ export function SessionList() {
             <UngroupedHeader
               count={ungrouped.length}
               collapsed={Boolean(collapsed[UNGROUPED_KEY])}
-              dragOver={dragOverKey === UNGROUPED_KEY}
               onToggle={() => toggle(UNGROUPED_KEY)}
-              onDragOver={(event) => handleDragOver(event, UNGROUPED_KEY)}
-              onDragLeave={(event) => handleDragLeave(event, UNGROUPED_KEY)}
-              onDrop={(event) => handleDrop(event, null)}
+              onDropSession={(sessionId) => {
+                if (sessions.some((session) => session.id === sessionId)) {
+                  moveSession(sessionId, null);
+                }
+              }}
             />
             {!collapsed[UNGROUPED_KEY] &&
               ungrouped.map((session) => renderSession(session, true))}

@@ -1256,6 +1256,13 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             folders::delete_folder(state.db.conn(), &id)?;
             Ok(folder_receipt())
         }
+        SessionMutation::ReorderFolders {
+            ids,
+            operation_id: _,
+        } => {
+            folders::reorder_folders(state.db.conn(), &ids)?;
+            Ok(folder_receipt())
+        }
         SessionMutation::Delete {
             session_id,
             expected_revision,
