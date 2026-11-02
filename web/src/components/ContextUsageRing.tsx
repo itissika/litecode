@@ -250,7 +250,7 @@ export function ContextUsageRing({
   const toolRows = mix?.tools ?? [];
   const hasMix = segments.length > 0;
   const compactDisabled =
-    !connected || runState !== "idle" || compacting || !compactEligible;
+    !connected || compacting || !compactEligible;
 
   return (
     <Popover

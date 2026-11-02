@@ -15,11 +15,7 @@ domain : tools-permission
 - `partition_tool_calls` 只把并发安全且与上一批无资源冲突的调用并入上一批，否则新开一批 [@ file="src/tool/executor.rs" symbol="fn partition_tool_calls"]；批内 `tokio::spawn` 并发，批间顺序 await（非并发安全批内逐个 await）[@ file="src/tool/pipeline.rs" symbol="impl ToolPipeline › fn execute_batch_cancellable"]。
 - 跨会话加锁时才做键过滤：`cross_session_lock_keys` 按工具名保留 write/edit 的整套键，bash/read 的键不参与跨会话锁、只用于同轮分批冲突判定 [@ file="src/tool/executor.rs"]。
 - 锁是进程级单例（`process_write_lock`）：`try_acquire` 全有或全无、同会话可重入、冲突即返回持有者 session_id（调用 fail fast 报 resource busy，不排队）；`WriteLockGuard` 返回时 `release_all` [@ file="src/tool/write_lock.rs" symbol="impl WorkspaceWriteLock › fn try_acquire"]、[@ file="src/tool/write_lock.rs" symbol="fn process_write_lock"]、[@ file="src/tool/executor.rs" symbol="impl Drop for WriteLockGuard"]。
-- `ResourceKey::Workspace` 粗粒度键仍存在，但生产 bash 不再获取它 [@ file="src/tool/write_lock.rs" symbol="enum ResourceKey"]。
+- `ResourceKey::Workspace` 粗粒度键仍存在，但生产 bash 不获取它 [@ file="src/tool/write_lock.rs" symbol="enum ResourceKey"]。
 
 父节点：[@ key="tool-control-boundary"]。
 相关：[@ key="tool-control-boundary"]、[@ key="tool-execution-context"]、[@ key="tool-call-lifecycle"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- 分批 —— [@ file="src/tool/executor.rs" symbol="fn partition_tool_calls"]；批执行 [@ file="src/tool/pipeline.rs" symbol="impl ToolPipeline › fn execute_batch_cancellable"]。
-- 跨会话锁仅 write/edit —— [@ file="src/tool/executor.rs"]；进程锁 [@ file="src/tool/write_lock.rs" symbol="impl WorkspaceWriteLock › fn try_acquire"]。

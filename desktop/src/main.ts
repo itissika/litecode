@@ -15,6 +15,7 @@ import {
   shell,
 } from "electron";
 
+import { closeDecision } from "./close-guard";
 import { InstanceRegistry, normalizeWorkspace } from "./instance-registry";
 import { handshakeUrl } from "./handshake-url";
 import {
@@ -162,6 +163,12 @@ type ManagedRemote = {
 
 let managedRemote: ManagedRemote | null = null;
 let quitting = false;
+/** Renderer-pushed: a session is running or cancelling in this workspace. */
+let sessionsActive = false;
+/** The person accepted the running-session warning; the next close goes through. */
+let closeConfirmed = false;
+/** One prompt at a time — a second close click must not stack dialogs. */
+let closePromptOpen = false;
 let currentWorkspace: string | null = null;
 let trustContext: IpcTrustContext | null = null;
 
@@ -425,6 +432,32 @@ async function safeLoadURL(win: BrowserWindow, url: string): Promise<void> {
   await win.loadURL(url);
 }
 
+/**
+ * Warn before a close kills work in progress, then close for real. The prompt is
+ * native and modal on purpose: the renderer is what is about to go away, so it
+ * cannot own the question.
+ */
+async function confirmCloseWhileRunning(win: BrowserWindow): Promise<void> {
+  if (win.isDestroyed()) return;
+  const options: MessageBoxOptions = {
+    type: "warning",
+    buttons: [
+      t("desktop.dialog.runningSession.close"),
+      t("desktop.dialog.runningSession.cancel"),
+    ],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    title: t("desktop.dialog.runningSession.title"),
+    message: t("desktop.dialog.runningSession.message"),
+    detail: t("desktop.dialog.runningSession.detail"),
+  };
+  const { response } = await dialog.showMessageBox(win, options);
+  if (response !== 0 || win.isDestroyed()) return;
+  closeConfirmed = true;
+  win.close();
+}
+
 async function createWindow(content: BootContent): Promise<BrowserWindow> {
   const iconPath = path.join(__dirname, "..", "build", "icon.ico");
   const win = new BrowserWindow({
@@ -497,8 +530,25 @@ async function createWindow(content: BootContent): Promise<BrowserWindow> {
   };
   win.webContents.on("will-navigate", guardNavigation);
   win.webContents.on("will-redirect", guardNavigation);
-  win.on("close", () => {
-    disposeBrowserHost();
+  win.on("close", (event) => {
+    const decision = closeDecision({
+      sessionsActive,
+      confirmed: closeConfirmed,
+      promptOpen: closePromptOpen,
+      quitting,
+    });
+    if (decision === "close") {
+      disposeBrowserHost();
+      return;
+    }
+    event.preventDefault();
+    if (decision === "wait") return;
+    closePromptOpen = true;
+    void confirmCloseWhileRunning(win)
+      .catch(() => undefined)
+      .finally(() => {
+        closePromptOpen = false;
+      });
   });
 
   if (content.kind === "hub") {
@@ -2061,6 +2111,10 @@ function registerIpc(): void {
       authToken = createToken();
       currentWorkspace = null;
       registry?.setWorkspace(null);
+      // The sidecar (and every session in it) is gone: the hub window has no
+      // running work left to warn about.
+      sessionsActive = false;
+      closeConfirmed = false;
     });
     if (mainWindow && mainWindow.isDestroyed() === false) {
       await loadHub(mainWindow);
@@ -2088,6 +2142,10 @@ function registerIpc(): void {
 
   handleTrusted("litecode:window-close", "both", (event) => {
     targetWindow(event)?.close();
+  });
+
+  handleTrusted("litecode:sessions-active", "workbench", (_event, active: unknown) => {
+    sessionsActive = active === true;
   });
 
   const popoutChild = (dockId: unknown): BrowserWindow | null => {

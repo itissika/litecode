@@ -19,7 +19,3 @@ domain : tools-permission
 
 父节点：[@ key="tool-call-contract"]。
 相关：[@ key="tool-call-lifecycle"]、[@ key="tool-identity"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- 可用/可见/快照 —— [@ file="src/tool/capability.rs" symbol="fn capability_catalog"]、[@ file="src/tool/capability.rs" symbol="impl CapabilityCatalog › fn selected_for_agent"]、[@ file="src/tool/registry.rs" symbol="fn build_tool_list"]。
-- MCP 配置存在不等于进程已运行 —— 状态只影响执行反馈，不影响卡片可见性。

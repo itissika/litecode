@@ -18,6 +18,7 @@ import type {
   COMPONENT_PROGRESS_CHANNEL as ComponentProgressChannel,
   REMOTE_DISCONNECTED_CHANNEL as RemoteDisconnectedChannel,
   REMOTE_PROGRESS_CHANNEL as RemoteProgressChannel,
+  SESSIONS_ACTIVE_CHANNEL as SessionsActiveChannel,
   BrowserBounds,
   BrowserState,
   ComponentProgressEvent,
@@ -54,6 +55,7 @@ const BROWSER_AGENT_ACTIVITY_CHANNEL: typeof BrowserAgentActivityChannel =
   "litecode:browser-agent-activity";
 const TURN_NOTIFICATION_CLICK_CHANNEL: typeof TurnNotificationClickChannel =
   "litecode:turn-notification-click";
+const SESSIONS_ACTIVE_CHANNEL: typeof SessionsActiveChannel = "litecode:sessions-active";
 
 const bridge = {
   getAuthToken: (): string | undefined => {
@@ -219,6 +221,9 @@ const bridge = {
   },
   windowClose: async (): Promise<void> => {
     await ipcRenderer.invoke("litecode:window-close");
+  },
+  setSessionsActive: async (active: boolean): Promise<void> => {
+    await ipcRenderer.invoke(SESSIONS_ACTIVE_CHANNEL, active);
   },
   popoutSetAlwaysOnTop: async (dockId: string, onTop: boolean): Promise<boolean> => {
     return (await ipcRenderer.invoke("litecode:popout-set-always-on-top", dockId, onTop)) === true;

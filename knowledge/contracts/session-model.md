@@ -21,4 +21,3 @@ h : 430
 契约展开：[@ key="session-write-path"]、[@ key="session-log-envelope"]。
 上层：[@ key="session"]。相关：[@ key="turn-lifecycle"]、[@ key="client-projection"]。
 依据：[@ file="src/session/data/sqlite/session.rs"]、[@ file="src/session/data/writer.rs"]。
-基线：075308b

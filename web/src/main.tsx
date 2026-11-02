@@ -9,10 +9,19 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./i18n";
 import { whenIdle } from "./lib/idle";
+import { installCitationCopy } from "./lib/knowledge/citationCopy";
+import { startSessionActivityBridge } from "./lib/sessionActivity";
 import { applyTheme, getTheme } from "./lib/theme";
 
 // Apply persisted theme before first render to avoid flash
 applyTheme(getTheme());
+
+// Copying a reply must carry its citations: the chips are atomic references and
+// sit on `user-select: none`, so a plain selection would drop them.
+installCitationCopy();
+
+// A running turn dies with the window; the host asks before that happens.
+startSessionActivityBridge();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

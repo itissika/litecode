@@ -17,4 +17,3 @@ h : 373
 
 契约展开：[@ key="session-model"]、[@ key="turn-lifecycle"]。
 上层：[@ key="agent-design"]。
-基线：075308b

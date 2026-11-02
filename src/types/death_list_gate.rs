@@ -147,16 +147,35 @@ fn session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept() {
         fs::read_to_string(root.join("src/context_pipeline/compact.rs")).expect("compact.rs");
     let compact = production_lines(&compact_src);
 
-    // Item-level: compact_transcript persists via SessionMutation::Compact, then
-    // reloads the working set from fold (`working_set_blocking`) — not a hand-built
-    // summary+kept view.
-    let body = fn_item_body(&compact, "pub async fn compact_transcript");
-    let persist = body
-        .find("SessionMutation::Compact")
-        .expect("compact_transcript must persist via SessionMutation::Compact");
+    // Item-level: the summary commit persists via SessionMutation::Compact; the
+    // commit stage never reads back, and the separate rebuild stage reads DB
+    // (not a hand-built summary+kept view).
+    let commit = fn_item_body(&compact, "fn commit_summary_plan");
     assert!(
-        body[persist..].contains("working_set_blocking"),
-        "after Compact persist, compact_transcript must reload via working_set_blocking (fold)"
+        commit.contains("SessionMutation::Compact"),
+        "commit_summary_plan must persist via SessionMutation::Compact"
+    );
+    let commit_plan = fn_item_body(&compact, "fn commit_plan");
+    assert!(
+        commit_plan.contains("commit_summary_plan")
+            && commit_plan.contains("commit_mechanical_plan"),
+        "commit_plan must commit both branches"
+    );
+    assert!(
+        !commit_plan.contains("rebuild_summary_surface")
+            && !commit_plan.contains("rebuild_mechanical_surface"),
+        "commit_plan must not read the surface back; commit and rebuild are separate stages"
+    );
+    let rebuild = fn_item_body(&compact, "fn rebuild_committed_surface");
+    assert!(
+        rebuild.contains("rebuild_summary_surface")
+            && rebuild.contains("rebuild_mechanical_surface"),
+        "rebuild_committed_surface must read both branches back from the durable surface"
+    );
+    let read = fn_item_body(&compact, "fn read_compaction_state_result");
+    assert!(
+        read.contains("working_set_state_blocking"),
+        "the common rebuild must reload via working_set_state_blocking (fold)"
     );
 
     // Thin dialect ban across context_pipeline (same scan style as g4/g6).
@@ -255,4 +274,77 @@ fn production_lines(contents: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// The old compaction ownership paths must not come back. Each needle is a
+/// structural remnant of the three-owner model (turn prefetch, background
+/// registration, manual Compact lease) or of the revision-gated commit.
+#[test]
+fn compaction_single_episode_gate() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let banned: &[(&str, &str)] = &[
+        ("background_compaction", "session background registration"),
+        ("CompactionPrefetch", "turn-owned prefetch state"),
+        ("prefetch_attempted", "turn-owned prefetch state"),
+        ("prefetch_rejected", "turn-owned prefetch state"),
+        ("prefetch_failed", "turn-owned prefetch state"),
+        ("LITECODE_COMPACT_PREFETCH", "removed compact mode switch"),
+        ("CompactionPrefetchMode", "removed compact mode switch"),
+        ("SessionOperationKind::Compact", "manual compaction lease"),
+        ("expected_prefix", "view-length commit gate"),
+        ("expected_view_len", "view-length commit gate"),
+        ("CompactionStage::Abandoned", "fourth terminal state"),
+        ("compact_now", "removed manual entry"),
+        ("compact_step", "removed synchronous pipeline entry"),
+        ("prune_once", "removed turn-side prune entry"),
+        ("PreparedCompaction", "removed prepared-summary split"),
+        ("force_compact_overflow", "removed overflow re-entry"),
+        ("must_compact_before_send", "old two-line hard gate"),
+        ("enforce_prompt_limit", "old physical-only send gate"),
+        ("compact_prefetch_margin", "old prefetch margin name"),
+        ("COMPACT_PREFETCH_MARGIN", "old prefetch margin name"),
+        ("emit_compaction_abandoned", "fourth terminal emitter"),
+        ("publish_compaction_abandoned", "fourth terminal emitter"),
+    ];
+    let mut hits = Vec::new();
+    let mut files = Vec::new();
+    walk_rs_files(&root.join("src"), &mut files);
+    for path in files {
+        if path.file_name().and_then(|name| name.to_str()) == Some("death_list_gate.rs") {
+            continue;
+        }
+        let source = fs::read_to_string(&path).expect("read source");
+        let production = production_lines(&source);
+        for (line_no, line) in production.lines().enumerate() {
+            if is_comment_line(line) {
+                continue;
+            }
+            for (needle, why) in banned {
+                if line.contains(needle) {
+                    hits.push(format!(
+                        "{}:{}: {why}: {needle}\n    {line}",
+                        path.display(),
+                        line_no + 1
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "compaction ownership residuals under src/:\n{}",
+        hits.join("\n")
+    );
+
+    let manager_src = fs::read_to_string(root.join("src/session/manager.rs")).expect("manager");
+    let manager = production_lines(&manager_src);
+    assert!(
+        manager.contains("pub fn try_begin_compaction_episode"),
+        "the one admission entry must exist"
+    );
+    assert_eq!(
+        manager.matches("Some(CompactionEpisode {").count(),
+        1,
+        "only try_begin_compaction_episode may create an episode"
+    );
 }

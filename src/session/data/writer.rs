@@ -487,15 +487,27 @@ fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitR
     {
         return Ok(receipt);
     }
-    if let Some(sid) = mutation.session_id()
-        && let Some(expected) = mutation.expected_revision()
-    {
-        if let Some(receipt) = ops::load_operation(state.db.conn(), sid, mutation.operation_id())? {
+    if let Some(sid) = mutation.session_id() {
+        // Structural mutations carry no global revision, so their operation
+        // journal is the only replay check. Keep it ahead of the CAS block.
+        if matches!(
+            &mutation,
+            SessionMutation::Compact { .. } | SessionMutation::ReplaceSurface { .. }
+        ) && let Some(receipt) =
+            ops::load_operation(state.db.conn(), sid, mutation.operation_id())?
+        {
             return Ok(receipt);
         }
-        let actual = read::load_revision(state.db.conn(), sid).unwrap_or(0);
-        if actual != expected {
-            return Err(LitecodeError::SessionConflict { expected, actual });
+        if let Some(expected) = mutation.expected_revision() {
+            if let Some(receipt) =
+                ops::load_operation(state.db.conn(), sid, mutation.operation_id())?
+            {
+                return Ok(receipt);
+            }
+            let actual = read::load_revision(state.db.conn(), sid).unwrap_or(0);
+            if actual != expected {
+                return Err(LitecodeError::SessionConflict { expected, actual });
+            }
         }
     }
     let affected_session = mutation.session_id().map(str::to_owned);
@@ -574,6 +586,27 @@ fn bump_receipt(
         session_id,
         operation_id,
         previous,
+        outcome,
+        ops::JournalWrite::Full,
+    )
+}
+
+/// Revision-neutral CAS: the mutation does not carry a previous revision, so
+/// read the current one *inside* the writer transaction and advance from it.
+/// Used by structural guards (compact checkpoint / surface replacement) that
+/// allow concurrent tail appends.
+fn bump_receipt_current(
+    state: &WriterState,
+    session_id: &str,
+    operation_id: &str,
+    outcome: CommitKind,
+) -> Result<CommitReceipt> {
+    let current = read::load_revision(state.db.conn(), session_id)?;
+    bump_receipt_with_journal(
+        state,
+        session_id,
+        operation_id,
+        current,
         outcome,
         ops::JournalWrite::Full,
     )
@@ -981,13 +1014,13 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
         }
         SessionMutation::Compact {
             session_id,
-            expected_revision,
             operation_id,
             summary,
             token_estimate,
             kept_from,
             at,
-            expected_prefix,
+            expected_prior_checkpoint,
+            expected_from,
             usage,
             provider_id,
         } => {
@@ -997,23 +1030,22 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                     &summary,
                     kept_from.map(|s| s as i64),
                     token_estimate,
-                    expected_prefix,
+                    expected_prior_checkpoint,
+                    expected_from,
                     usage.as_ref(),
                     provider_id.as_deref(),
                     at,
                 )?
             };
-            bump_receipt(
+            bump_receipt_current(
                 state,
                 &session_id,
                 &operation_id.0,
-                expected_revision,
                 CommitKind::Compacted { seq: seq as u64 },
             )
         }
         SessionMutation::ReplaceSurface {
             session_id,
-            expected_revision,
             operation_id,
             replacements,
         } => {
@@ -1021,11 +1053,10 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 let session = ensure_live(state, &session_id)?;
                 session.replace_surface_items(&replacements)?
             };
-            bump_receipt(
+            bump_receipt_current(
                 state,
                 &session_id,
                 &operation_id.0,
-                expected_revision,
                 CommitKind::Replaced { seqs },
             )
         }

@@ -19,8 +19,3 @@ domain : tools-permission
 
 父节点：[@ key="tool-control-boundary"]。
 相关：[@ key="tool-control-boundary"]、[@ key="tool-execution-context"]、[@ key="tool-input-validation"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- 顺序 parse→check→authorize —— [@ file="src/tool/authorize.rs" symbol="fn authorize"]。
-- floor：write/edit 敏感路径 + bash 危险命令 —— [@ file="src/permission/floor.rs" symbol="fn check_floor"]。
-- core_none 直放；subagent Ask→Deny —— [@ file="src/permission/engine.rs" symbol="impl PermissionEngine › fn evaluate_tool"]；守护 `subagent_turns_safe_ask_into_deny`。

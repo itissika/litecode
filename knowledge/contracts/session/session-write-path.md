@@ -39,4 +39,3 @@ domain : harness-core
 
 父节点：[@ key="session-model"]。
 
-审计：本节点服务 A3 / A5 / A7；基线 eb0452a。

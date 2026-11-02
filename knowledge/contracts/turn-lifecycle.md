@@ -20,4 +20,3 @@ domain : harness-core
 契约展开：[@ key="turn-reservation"]、[@ key="agent-loop"]、[@ key="stream-projection"]、[@ key="turn-llm-binding"]。
 上层：[@ key="session"]。
 依据：[@ file="src/session/manager.rs"]、[@ file="src/agent/core.rs"]。
-基线：075308b

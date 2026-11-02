@@ -19,7 +19,5 @@ domain : tools-permission
 
 父节点：[@ key="tool-implementation-contract"]。
 相关：[@ key="tool-implementation-contract"]、[@ key="tool-adapters"]、[@ key="tool-request-entry"]、[@ key="tool-result-delivery"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- name vs call_id —— [@ file="src/tool/trait_.rs"]；MCP 前缀装配 [@ file="src/tools/mcp_tool.rs" symbol="impl McpTool › fn new"]、[@ file="src/tool/registry.rs" symbol="fn mcp_members"]。
-- 目录 id `mcp_<server>` —— [@ file="src/config/global_db/tools.rs" symbol="fn mcp_catalog_id"]。
+
+依据：[@ file="src/tool/trait_.rs"]。

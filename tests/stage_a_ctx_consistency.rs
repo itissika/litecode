@@ -16,6 +16,7 @@ use litecode::context_pipeline::{
     BudgetPolicy, CompactPolicy, ContextEnvelope, ContextMeter, ContextPipeline,
     ProviderPromptBaseline,
 };
+use litecode::runtime::observer::CompactionTrigger;
 use litecode::session::event::spine_working_payload;
 use litecode::session::manager::SessionManager;
 use litecode::session::surface::project_working_pairs;
@@ -98,17 +99,47 @@ async fn prepare(
         pipeline.context_window(),
         max_output_tokens,
     );
-    pipeline
-        .compact_step(
+    let mut rows = turn.clone();
+    let meter = CompactPolicy::measure_meter(
+        sessions,
+        sid,
+        &request,
+        &prompt_baseline,
+        &rows,
+        &sessions.data_root_path(),
+    );
+    if meter.should_compact() {
+        CompactPolicy::compact_transcript(
+            &pipeline.budget_policy(),
             sessions,
             sid,
             &request,
             1024,
             &prompt_baseline,
-            step,
+            &mut rows,
             &cancel,
+            CompactionTrigger::Auto,
+            Some("stage-a-prepare"),
+            &sessions.data_root_path(),
+            litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
         )
         .await?;
+    }
+    let meter_after = CompactPolicy::measure_meter(
+        sessions,
+        sid,
+        &request,
+        &prompt_baseline,
+        &rows,
+        &sessions.data_root_path(),
+    );
+    if meter_after.is_over_hard_line() {
+        return Err(LitecodeError::ContextStillOverLimit {
+            used: meter_after.used_tokens,
+            limit: meter_after.hard_limit(),
+        });
+    }
+    pipeline.stage_working(rows);
     pipeline.build_view(sessions, sid, &prompt_baseline, &model)?;
     *turn = pipeline.working_set();
     Ok(())
@@ -184,19 +215,25 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
     assert!(!meter.should_compact());
 
     let provider = common::DshSummaryProvider::new();
-    let compacted = CompactPolicy::compact_now(
+    let request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
+    let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+    let outcome = CompactPolicy::compact_transcript(
         &budget,
         &sessions,
         &sid,
-        &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
+        &request,
         1024,
+        &ProviderPromptBaseline::default(),
+        &mut rows,
         &CancellationToken::new(),
-        None,
+        CompactionTrigger::Manual,
+        Some("stage-a-manual"),
         &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
     )
     .await
     .unwrap();
-    assert!(compacted);
+    assert!(outcome.is_some());
     let surface = sessions.data().transcript_blocking(&sid).unwrap();
     assert!(surface.len() < seed.len());
 
@@ -215,7 +252,7 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
     );
 }
 
-/// ISSUE-013 / g2 behavior: CompactPolicy::compact_now (pipeline path) must leave
+/// ISSUE-013 / g2 behavior: CompactPolicy::compact_transcript (pipeline path) must leave
 /// the reader working set identical to the fold projection — reload from fold
 /// after SessionMutation::Compact, not an in-memory summary+kept rebuild.
 #[tokio::test(flavor = "current_thread")]
@@ -229,19 +266,25 @@ async fn pipeline_compact_reloads_working_set_from_fold() {
 
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
     let provider = common::DshSummaryProvider::new();
-    let compacted = CompactPolicy::compact_now(
+    let request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
+    let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+    let outcome = CompactPolicy::compact_transcript(
         &budget,
         &sessions,
         &sid,
-        &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
+        &request,
         1024,
+        &ProviderPromptBaseline::default(),
+        &mut rows,
         &CancellationToken::new(),
-        None,
+        CompactionTrigger::Manual,
+        Some("stage-a-fold"),
         &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
     )
     .await
-    .expect("compact_now");
-    assert!(compacted);
+    .expect("compact");
+    assert!(outcome.is_some());
 
     let reader: Vec<(u64, String)> = sessions
         .data()
@@ -404,8 +447,8 @@ async fn keep_recent_skip_still_enforces_hard_limit_when_over_budget() {
         .await
         .expect_err("over hard limit must fail even when keep-recent skips compact");
     assert!(
-        matches!(err, LitecodeError::TokenBudgetExceeded),
-        "expected TokenBudgetExceeded, got {err:?}"
+        matches!(err, LitecodeError::ContextStillOverLimit { .. }),
+        "expected ContextStillOverLimit, got {err:?}"
     );
 
     let after: Vec<String> = row_previews(&turn);
@@ -518,18 +561,26 @@ async fn compact_rebuild_does_not_repeat_kept_call_ids() {
         pipeline.context_window(),
         max_output_tokens,
     );
-    let compacted = pipeline
-        .compact_step(
-            &sessions,
-            &sid,
-            &request,
-            1024,
-            &prompt_baseline,
-            1,
-            &cancel,
-        )
-        .await
-        .expect("compact succeeds");
+    let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+    let before = rows.clone();
+    let outcome = CompactPolicy::compact_transcript(
+        &pipeline.budget_policy(),
+        &sessions,
+        &sid,
+        &request,
+        1024,
+        &prompt_baseline,
+        &mut rows,
+        &cancel,
+        CompactionTrigger::Auto,
+        Some("stage-a-kept-ids"),
+        &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+    )
+    .await
+    .expect("compact succeeds");
+    let compacted = outcome.is_some() || rows != before;
+    pipeline.stage_working(rows);
     assert!(compacted, "fixture must cross the keep-recent cut");
 
     // The real loop appends restored reminders after compact, before the request.
@@ -613,18 +664,26 @@ async fn compact_keeps_pending_tail_after_post_compact_reminder() {
         pipeline.context_window(),
         max_output_tokens,
     );
-    let compacted = pipeline
-        .compact_step(
-            &sessions,
-            &sid,
-            &request,
-            1024,
-            &prompt_baseline,
-            1,
-            &cancel,
-        )
-        .await
-        .expect("compact succeeds");
+    let mut rows = pipeline.working_set();
+    let before = rows.clone();
+    let outcome = CompactPolicy::compact_transcript(
+        &pipeline.budget_policy(),
+        &sessions,
+        &sid,
+        &request,
+        1024,
+        &prompt_baseline,
+        &mut rows,
+        &cancel,
+        CompactionTrigger::Auto,
+        Some("stage-a-compact"),
+        &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+    )
+    .await
+    .expect("compact succeeds");
+    let compacted = outcome.is_some() || rows != before;
+    pipeline.stage_working(rows);
     assert!(compacted, "fixture must compact");
 
     sessions
@@ -709,18 +768,24 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         pipeline.context_window(),
         max_output_tokens,
     );
-    pipeline
-        .compact_step(
-            &sessions,
-            &sid,
-            &request,
-            1024,
-            &prompt_baseline,
-            2,
-            &cancel,
-        )
-        .await
-        .expect("compact");
+    let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+    CompactPolicy::compact_transcript(
+        &pipeline.budget_policy(),
+        &sessions,
+        &sid,
+        &request,
+        1024,
+        &prompt_baseline,
+        &mut rows,
+        &cancel,
+        CompactionTrigger::Auto,
+        Some("stage-a-second"),
+        &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+    )
+    .await
+    .expect("compact");
+    pipeline.stage_working(rows);
     pipeline
         .build_view(&sessions, &sid, &prompt_baseline, &model)
         .expect("build_view");

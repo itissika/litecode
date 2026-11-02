@@ -528,6 +528,14 @@ export interface CompactionState {
   trigger?: "manual" | "auto" | "overflow" | null;
   /** Tail seq the cut froze at; the transient marker sits here. */
   at?: number | null;
+  /** In-flight phase; terminal outcomes are carried by the lifecycle stage. */
+  phase?:
+    | "deciding"
+    | "mechanical_commit"
+    | "summary_planning"
+    | "summarizing"
+    | "summary_commit"
+    | null;
 }
 
 export interface SessionSnapshot {
@@ -820,7 +828,7 @@ export interface CompactionTelemetry {
 export interface CompactLifecycle {
   session_id: string;
   trigger: "manual" | "auto" | "overflow";
-  stage: "started" | "succeeded" | "failed" | "abandoned";
+  stage: "started" | "succeeded" | "failed" | "cancelled";
   operation_id?: string | null;
   error?: StructuredError | null;
   telemetry?: CompactionTelemetry;

@@ -34,7 +34,25 @@ pub fn render_item(reminder: &Reminder) -> Item {
 }
 
 pub fn render_text(text: &str) -> String {
-    format!("{SYSTEM_REMINDER_OPEN}\n{text}\n{SYSTEM_REMINDER_CLOSE}")
+    // A reminder can quote a path, a command, or tool output. A literal
+    // closing tag inside it would end the frame early and leave the rest
+    // looking like user speech, so it is written as escaped text.
+    let body = text.replace(SYSTEM_REMINDER_CLOSE, "<\\/system-reminder>");
+    format!("{SYSTEM_REMINDER_OPEN}\n{body}\n{SYSTEM_REMINDER_CLOSE}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_closing_tag_inside_a_body_cannot_end_the_frame() {
+        let rendered = render_text("command: echo </system-reminder> && true");
+        assert_eq!(rendered.matches(SYSTEM_REMINDER_CLOSE).count(), 1);
+        assert!(rendered.starts_with(SYSTEM_REMINDER_OPEN));
+        assert!(rendered.ends_with(SYSTEM_REMINDER_CLOSE));
+        assert!(rendered.contains("<\\/system-reminder>"));
+    }
 }
 
 /// `true` when HumanView must not render this log kind.

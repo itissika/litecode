@@ -20,6 +20,4 @@ h : 416
 
 上层：[@ key="tools"]。
 相关：[@ key="tool-call-contract"]、[@ key="tool-implementation-contract"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
 - 理解模型节点：入口≠沙箱、提供上下文≠消费、取消≠已停 —— 与 authorization / execution-context / lifecycle 子节点一致；非完备性清单。

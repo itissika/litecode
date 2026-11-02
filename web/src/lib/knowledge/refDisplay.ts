@@ -7,7 +7,9 @@ import {
   humanSymbolLabel,
   isWorkspaceFileRef,
   knowledgeRefKey,
+  mentionSource,
   normalizeKey,
+  symbolMentionSource,
 } from "./markers";
 import type { KnowledgeNode, KnowledgeRefState, KnowledgeRefStatus } from "./types";
 
@@ -83,6 +85,20 @@ export function citationRefKey(citation: Citation): string {
     path: citation.path,
     symbol: citation.symbol,
     lines: citation.symbol?.trim() ? null : citation.lines,
+  });
+}
+
+/**
+ * The citation as the text a source writes: the shortcode form, which is what
+ * pastes back into a mention field as the same reference (KR-SYN). A chip carries
+ * this for copy, because the label alone (a file name, a leaf symbol) does not
+ * say where it points.
+ */
+export function citationSource(citation: Citation): string {
+  if (citation.kind === "node") return mentionSource(normalizeKey(citation.key));
+  return symbolMentionSource(citation.path, {
+    symbol: citation.symbol?.trim() ?? "",
+    lines: rangeAttribute(citation),
   });
 }
 

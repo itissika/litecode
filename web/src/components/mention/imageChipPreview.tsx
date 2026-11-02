@@ -47,11 +47,14 @@ function placePreview(
 export function ImageChipPreview({
   path,
   text,
+  source,
   className,
   children,
 }: {
   path?: string | null;
   text?: string | null;
+  /** Citation shortcode the anchor stands for; copy hands it over verbatim. */
+  source?: string | null;
   className?: string;
   children: ReactNode;
 }) {
@@ -178,6 +181,7 @@ export function ImageChipPreview({
     <span
       ref={anchorRef}
       className={["image-chip-anchor", className].filter(Boolean).join(" ")}
+      data-citation={source ?? undefined}
       onMouseEnter={active ? onEnter : undefined}
       onMouseLeave={active ? close : undefined}
     >

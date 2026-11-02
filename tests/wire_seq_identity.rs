@@ -43,17 +43,21 @@ fn setup_with_details(texts: &[&str]) -> (Projection, String, Arc<SessionManager
 }
 
 fn apply_compact(sessions: &SessionManager, sid: &str, summary: &str) {
-    let expected = sessions.data().revision_blocking(sid).unwrap_or(0);
+    let rows = sessions.data().working_set_blocking(sid).unwrap();
+    let prior = rows
+        .first()
+        .and_then(|row| row.checkpoint().and(row.log_seq));
+    let from = rows.first().and_then(|row| row.log_seq).unwrap_or(0);
     sessions
         .mutate_blocking(SessionMutation::Compact {
             session_id: sid.to_string(),
-            expected_revision: expected,
             operation_id: MutationId::new(),
             summary: summary.to_string(),
             token_estimate: 10,
             kept_from: None,
             at: None,
-            expected_prefix: None,
+            expected_prior_checkpoint: prior,
+            expected_from: from,
             usage: None,
             provider_id: None,
         })

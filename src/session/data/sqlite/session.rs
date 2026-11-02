@@ -3563,10 +3563,39 @@ impl Session {
         Ok(seqs)
     }
 
+    /// The structural prefix identity a commit must see: the leading
+    /// checkpoint (if any) and the first surface node.
+    fn current_compact_expectation(&self) -> Result<(Option<Seq>, Seq)> {
+        let projection = self.projection.borrow();
+        let prior = projection.surface.nodes.first().and_then(|seq| {
+            projection
+                .payloads_by_seq
+                .get(seq)
+                .and_then(|payload| payload.checkpoint().map(|_| *seq))
+        });
+        let from = projection
+            .surface
+            .nodes
+            .first()
+            .copied()
+            .unwrap_or(projection.next_seq);
+        Ok((prior, from))
+    }
+
     /// §5.1 compact success — summary checkpoint with empty keep (summary-only view).
     pub fn apply_compact_checkpoint(&self, summary: &str, token_estimate: i64) -> Result<i64> {
+        let (prior, from) = self.current_compact_expectation()?;
         // `kept_from_seq = N` (checkpoint) → no pre-existing detail in the view.
-        self.apply_compact_checkpoint_checked(summary, None, token_estimate, None, None, None, None)
+        self.apply_compact_checkpoint_checked(
+            summary,
+            None,
+            token_estimate,
+            prior,
+            from,
+            None,
+            None,
+            None,
+        )
     }
 
     /// Pi-style keep-recent compact:
@@ -3585,25 +3614,30 @@ impl Session {
         kept_from_seq: Option<i64>,
         token_estimate: i64,
     ) -> Result<i64> {
+        let (prior, from) = self.current_compact_expectation()?;
         self.apply_compact_checkpoint_checked(
             summary,
             kept_from_seq,
             token_estimate,
-            None,
+            prior,
+            from,
             None,
             None,
             None,
         )
     }
 
-    /// Like `apply_compact_checkpoint_from`, but abort if the turn view length
-    /// no longer matches `expected_view_len` (log truncated under this compact).
+    /// Write one checkpoint only when the prefix the plan summarised is still
+    /// the current prefix. Tail appends after `kept_from_seq` are allowed and
+    /// stay visible; a changed leading checkpoint, a missing `kept_from`, or a
+    /// different shadow start is a surface change, never a user cancel.
     pub fn apply_compact_checkpoint_checked(
         &self,
         summary: &str,
         kept_from_seq: Option<i64>,
         token_estimate: i64,
-        expected_view_len: Option<usize>,
+        expected_prior_checkpoint: Option<Seq>,
+        expected_from: Seq,
         usage: Option<&ProviderUsage>,
         provider_id: Option<&str>,
         at: Option<Seq>,
@@ -3611,18 +3645,35 @@ impl Session {
         let _gate = self.lock_write();
         let now = chrono::Utc::now().timestamp_millis();
         let mut projection = self.projection.borrow().clone();
-        if let Some(expected) = expected_view_len {
-            if self.load_working_set()?.len() != expected {
-                return Err(LitecodeError::Canceled);
-            }
+        let current_prior = projection.surface.nodes.first().and_then(|seq| {
+            projection
+                .payloads_by_seq
+                .get(seq)
+                .and_then(|payload| payload.checkpoint().map(|_| *seq))
+        });
+        if current_prior != expected_prior_checkpoint {
+            return Err(LitecodeError::CompactionSurfaceChanged(format!(
+                "leading checkpoint changed: expected {:?}, actual {:?}",
+                expected_prior_checkpoint, current_prior
+            )));
         }
 
-        let (op, source_seqs) = replace_op_for_keep(&projection.surface, kept_from_seq)?;
+        let (op, source_seqs) = replace_op_for_keep(&projection.surface, kept_from_seq)
+            .map_err(|error| {
+                LitecodeError::CompactionSurfaceChanged(format!(
+                    "kept_from={kept_from_seq:?} is no longer a valid cut: {error}"
+                ))
+            })?;
         let (from, to) = match (&op, kept_from_seq) {
             (SurfaceOp::Append, _) => (projection.next_seq, projection.next_seq),
             (SurfaceOp::Replace { start, .. }, Some(k)) => (*start, k as Seq),
             (SurfaceOp::Replace { start, .. }, None) => (*start, projection.next_seq),
         };
+        if from != expected_from {
+            return Err(LitecodeError::CompactionSurfaceChanged(format!(
+                "compact start changed: expected {expected_from}, actual {from}"
+            )));
+        }
         let compacted = crate::session::model::CompactedBody {
             summary: summary.to_string(),
             from,
@@ -4182,6 +4233,7 @@ mod tests {
                 Some(1),
                 42,
                 None,
+                0,
                 Some(&usage),
                 Some("opencode-go"),
                 None,
@@ -4487,5 +4539,57 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn compact_commit_allows_tail_append_but_rejects_changed_prefix() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("a"), user_text("b")])
+            .unwrap();
+        // The plan saw a,b (prior None, from 0, keep from seq 1). A row written
+        // while the summary is in flight must survive the checkpoint.
+        session.insert_detail_rows(&[user_text("c")]).unwrap();
+        let checkpoint = session
+            .apply_compact_checkpoint_checked(
+                "sum", Some(1), 10, None, 0, None, None, None,
+            )
+            .unwrap();
+        let rows = session.load_working_set().unwrap();
+        assert_eq!(rows[0].log_seq, Some(checkpoint as u64));
+        assert!(
+            rows.iter().any(|row| row.log_seq == Some(2)),
+            "tail append must stay visible after the checkpoint"
+        );
+
+        // The same plan is now stale: its leading checkpoint and shadow start
+        // both moved. This is a surface change, not a user cancel.
+        let error = session
+            .apply_compact_checkpoint_checked(
+                "stale", Some(1), 10, None, 0, None, None, None,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            LitecodeError::CompactionSurfaceChanged(_)
+        ));
+
+        // A cut that no longer exists is the same kind of failure.
+        let error = session
+            .apply_compact_checkpoint_checked(
+                "missing",
+                Some(99),
+                10,
+                Some(checkpoint as u64),
+                checkpoint as u64,
+                None,
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            LitecodeError::CompactionSurfaceChanged(_)
+        ));
     }
 }

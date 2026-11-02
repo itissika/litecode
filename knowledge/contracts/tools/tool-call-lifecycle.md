@@ -19,7 +19,5 @@ domain : tools-permission
 
 父节点：[@ key="tool-call-contract"]。
 相关：[@ key="tool-scheduling"]、[@ key="tool-result-delivery"]、[@ key="tool-execution-context"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- 不完整/取消整组不执行 —— [@ file="src/agent/core.rs" symbol="fn function_call_must_not_execute"]、[@ file="src/agent/core.rs" symbol="fn interrupted_outputs"]。
-- 入口取消与超时包装 —— [@ file="src/tool/executor.rs" symbol="fn run_tool"]；批内 join —— [@ file="src/tool/pipeline.rs" symbol="impl ToolPipeline › fn join_tool_handle"]。
+
+依据：[@ file="src/agent/core.rs" symbol="fn interrupted_outputs"]。

@@ -14,7 +14,3 @@ domain : release-desktop
 依据：[@ file="desktop/src/sidecar.ts"]、[@ file="desktop/src/main.ts"]、[@ file="desktop/src/bundle-paths.ts" symbol="fn litecodeBundlesDir"]。
 上层：[@ key="release-design"]。
 契约展开：[@ key="slim-packaging"]、[@ key="component-distribution"]、[@ key="bundle-resolve"]。
-基线：075308b
-
-**核实结论：一致，无漂移。**（基线 075308b）
-- 壳职责 —— [@ file="desktop/src/main.ts"]、[@ file="desktop/src/sidecar.ts"]；bundles 根 [@ file="desktop/src/bundle-paths.ts" symbol="fn litecodeBundlesDir"]。

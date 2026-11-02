@@ -22,6 +22,7 @@ use litecode::engines::WorkspaceEngines;
 use litecode::llm::{LlmProvider, ModelRequest};
 use litecode::optional::EngineManager;
 use litecode::runtime::RuntimeHandle;
+use litecode::runtime::observer::{CompactionStage, CompactionTrigger};
 use litecode::session::EventType;
 use litecode::session::manager::SessionManager;
 use litecode::types::{LitecodeError, StreamEvents, assistant_text, user_text};
@@ -64,6 +65,48 @@ fn controller(
     )
     .with_test_llm_override(provider);
     SessionController::with_turn_guard(runtime, None, sessions).expect("controller")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn manual_precheck_failure_publishes_one_failed_terminal() {
+    let fixture = SessionDataFixture::new();
+    let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
+    let sessions = Arc::new(fixture.manager());
+    sessions
+        .insert_detail_rows(&sid, &[user_text("too small to compact")])
+        .unwrap();
+    let provider = Arc::new(ScriptedProvider::with_texts(&[]));
+    let mut ctrl = controller(Arc::clone(&sessions), fixture.dir.path(), provider);
+    ctrl.subscribe_checked(&sid)
+        .await
+        .expect("subscribe controller");
+    let mut rx = sessions.subscribe(&sid).expect("subscribe lifecycle");
+
+    let error = ctrl
+        .start_manual_compact(&sid)
+        .await
+        .expect_err("a tiny transcript is below the manual eligibility floor");
+    assert!(
+        matches!(error, LitecodeError::NothingToCompact),
+        "unexpected precheck error: {error:?}"
+    );
+
+    let mut failed = 0;
+    while let Ok(envelope) = rx.try_recv() {
+        if let litecode::client_protocol::observer::InternalEvent::CompactionLifecycle {
+            trigger: CompactionTrigger::Manual,
+            stage: CompactionStage::Failed,
+            ..
+        } = envelope.event
+        {
+            failed += 1;
+        }
+    }
+    assert_eq!(
+        failed, 1,
+        "manual precheck failure must publish exactly one Failed terminal"
+    );
+    assert!(!sessions.is_compacting_blocking(&sid));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -119,15 +162,15 @@ async fn manual_compact_failure_e2e_releases_lease_and_retry_starts() {
     // Let the second (also failing) attempt settle, then verify no durable change.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        match sessions.try_begin_operation(
-            &sid,
-            litecode::session::manager::SessionOperationKind::Compact,
-        ) {
-            Ok(_lease) => break,
+        match sessions.try_begin_compaction_episode(&sid, CompactionTrigger::Manual) {
+            Ok(lease) => {
+                drop(lease);
+                break;
+            }
             Err(_) if std::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(20)).await
             }
-            Err(e) => panic!("lease leaked after second failure: {e:?}"),
+            Err(e) => panic!("episode leaked after second failure: {e:?}"),
         }
     }
     let after = sessions.data().working_set_blocking(&sid).unwrap().len();
@@ -195,12 +238,15 @@ async fn manual_compact_retry_after_failure_completes() {
             .unwrap()
             .iter()
             .any(|e| matches!(e.event_type, EventType::Compacted));
-        let lease_free = sessions
-            .try_begin_operation(
-                &sid,
-                litecode::session::manager::SessionOperationKind::Compact,
-            )
-            .is_ok();
+        let lease_free = match sessions
+            .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
+        {
+            Ok(lease) => {
+                drop(lease);
+                true
+            }
+            Err(_) => false,
+        };
         if compacted && lease_free {
             break;
         }

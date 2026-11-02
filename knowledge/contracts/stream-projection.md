@@ -12,9 +12,3 @@ domain : harness-core
 依据：[@ file="src/runtime/stream_projection.rs" symbol="struct StreamProjection"]、[@ file="src/runtime/stream_projection.rs" symbol="impl StreamProjection › fn settle"]、[@ file="src/types/death_list_gate.rs"]。
 上层：[@ key="turn-lifecycle"]。
 相关：[@ key="llm-stream-contract"]。
-基线：075308b
-
-**核实结论：一致，无漂移。**（基线 075308b）
-- 一流一投影、开行即得 seq —— [@ file="src/runtime/stream_projection.rs" symbol="struct StreamProjection"]。
-- seal 用调用返回副本、流不二次 append —— [@ file="src/runtime/stream_projection.rs" symbol="impl StreamProjection › fn settle"]；[@ file="src/types/death_list_gate.rs"]。
-- 写失败失败整个 call —— `settle` 传播 `state.failed`，不吞错。

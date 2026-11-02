@@ -711,6 +711,13 @@
       },
       "bootFailed": {
         "title": "Litecode 启动失败"
+      },
+      "runningSession": {
+        "title": "还有会话正在运行",
+        "message": "Litecode 还在这个工作区里干活。",
+        "detail": "关闭窗口会中断正在跑的回合，以及它启动的工作。想让它跑完就先别关。",
+        "close": "仍然关闭",
+        "cancel": "继续工作"
       }
     },
     "progress": {

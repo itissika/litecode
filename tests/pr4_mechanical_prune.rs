@@ -28,6 +28,7 @@ use litecode::engines::WorkspaceEngines;
 use litecode::llm::LlmProvider;
 use litecode::optional::EngineManager;
 use litecode::runtime::RuntimeHandle;
+use litecode::runtime::observer::CompactionTrigger;
 use litecode::session::{
     SessionManager, SurfaceOp, derive_messages, derive_transcript_items, fold_surface,
 };
@@ -171,18 +172,30 @@ async fn prune_relieves_pressure_skips_summary_and_replays_from_source_seq() {
     );
 
     let budget = BudgetPolicy::new(12_000).with_keep_recent_tokens(1);
-    let compacted = CompactPolicy::compact_now(
+    let mut rows = before_rows.clone();
+    // A huge unpersisted tail must not make the prune look non-relieving; the
+    // branch input is the sealed prefix only.
+    rows.push(litecode::session::WorkingRow::pending(user_text(
+        "pending-tail-must-not-affect-prune ".repeat(2_000),
+    )));
+    let before = rows.clone();
+    let outcome = CompactPolicy::compact_transcript(
         &budget,
         &sessions,
         &sid,
         &request,
         1_024,
+        &baseline,
+        &mut rows,
         &CancellationToken::new(),
+        CompactionTrigger::Manual,
         Some("pr4-prune-relief"),
         &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
     )
     .await
     .expect("manual compaction trigger");
+    let compacted = outcome.is_some() || rows != before;
     assert!(
         compacted,
         "a committed prune counts as a successful compaction step"
@@ -385,6 +398,11 @@ async fn low_savings_prune_writes_no_surface_and_summary_still_runs() {
     let captured = Arc::clone(&provider);
     let mut request = common::test_compaction_request(provider, "main instructions", vec![], &sid);
     common::set_compaction_request_capacity(&mut request, 7_000, 512);
+    // Keep the product window tight for pressure, but let the summarizer's
+    // own physical ceiling be larger so this fixture reaches the provider.
+    let mut target = (*request.target).clone();
+    target.context_window_max = 32_000;
+    request.target = Arc::new(target);
     let protected = protected_conversation_tokens_for_request(&request);
     let plan =
         MechanicalPrunePlan::build(&before_rows, MechanicalPruneConfig::default(), protected);
@@ -416,24 +434,23 @@ async fn low_savings_prune_writes_no_surface_and_summary_still_runs() {
 
     let budget = BudgetPolicy::new(7_000).with_keep_recent_tokens(1);
     let mut working_rows = before_rows.clone();
-    let did = CompactPolicy
-        .compact_if_needed(
-            &budget,
-            &sessions,
-            &sid,
-            &request,
-            512,
-            &baseline,
-            &mut working_rows,
-            1,
-            &CancellationToken::new(),
-            &sessions.data_root_path(),
-            None,
-            2,
-            false,
-        )
-        .await
-        .expect("auto compaction path");
+    let did = CompactPolicy::compact_transcript(
+        &budget,
+        &sessions,
+        &sid,
+        &request,
+        512,
+        &baseline,
+        &mut working_rows,
+        &CancellationToken::new(),
+        CompactionTrigger::Auto,
+        Some("pr4-below-floor"),
+        &sessions.data_root_path(),
+        2,
+    )
+    .await
+    .expect("auto compaction path")
+    .is_some();
     assert!(did, "summary must still run after a below-floor prune");
     assert_eq!(captured.captured().len(), 1, "one main-model summary call");
 
@@ -575,23 +592,29 @@ async fn stale_provider_bill_cannot_hide_prune_savings_after_cold_restart() {
             sessions.data_root_path(),
         );
         pipeline.begin_turn(&sessions, &sid).expect("begin turn");
-        let compacted = pipeline
-            .compact_step(
-                &sessions,
-                &sid,
-                &request,
-                1_024,
-                &baseline,
-                1,
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("auto compact step");
+        let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+        let before = rows.clone();
+        let outcome = CompactPolicy::compact_transcript(
+            &pipeline.budget_policy(),
+            &sessions,
+            &sid,
+            &request,
+            1_024,
+            &baseline,
+            &mut rows,
+            &CancellationToken::new(),
+            CompactionTrigger::Auto,
+            Some("pr4-auto-prune"),
+            &sessions.data_root_path(),
+            litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+        )
+        .await
+        .expect("auto compact step");
+        let compacted = outcome.is_some() || rows != before;
+        pipeline.stage_working(rows);
         assert!(compacted, "prune must count as the compaction-stage result");
-        assert!(
-            baseline.is_invalidated(),
-            "live baseline must be invalidated"
-        );
+        // Selection is sealed-prefix local; a stale provider bill is not read
+        // by the branch at all, so there is no baseline to invalidate here.
 
         let meta = sessions.data().meta_blocking(&sid).expect("session meta");
         assert!(
@@ -741,18 +764,26 @@ async fn historical_user_media_is_replaced_by_stable_text_in_the_surface() {
     );
     pipeline.begin_turn(&sessions, &sid).expect("begin turn");
     let baseline = ProviderPromptBaseline::default();
-    let compacted = pipeline
-        .compact_step(
-            &sessions,
-            &sid,
-            &request,
-            1_024,
-            &baseline,
-            1,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("auto prune trigger");
+    let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+    let before = rows.clone();
+    let outcome = CompactPolicy::compact_transcript(
+        &pipeline.budget_policy(),
+        &sessions,
+        &sid,
+        &request,
+        1_024,
+        &baseline,
+        &mut rows,
+        &CancellationToken::new(),
+        CompactionTrigger::Auto,
+        Some("pr4-media-prune"),
+        &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+    )
+    .await
+    .expect("auto prune trigger");
+    let compacted = outcome.is_some() || rows != before;
+    pipeline.stage_working(rows);
     assert!(compacted, "worthwhile media prune must run on the trigger");
 
     let events = sessions.data().events_blocking(&sid).expect("events");

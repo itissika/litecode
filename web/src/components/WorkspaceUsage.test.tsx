@@ -9,8 +9,10 @@ import type {
 } from "../api/types";
 import { useConnectionStore } from "../stores/connectionStore";
 import {
+  bucketAll,
   bucketDays,
   bucketHours,
+  buildAllFrame,
   providerBuckets,
   WorkspaceUsage,
   WorkspaceUsageView,
@@ -212,6 +214,84 @@ describe("bucketDays", () => {
   });
 });
 
+describe("All adaptive frame", () => {
+  it("uses daily bars while the history fits the width", () => {
+    const days = [day("2026-09-10", 100, 50), day("2026-10-22", 200, 100)];
+    const frame = buildAllFrame(days, TODAY);
+    expect(frame.unit).toBe("day");
+    expect(frame.slots).toHaveLength(43);
+    expect(frame.slots[0].key).toBe("2026-09-10");
+    expect(frame.slots[42].key).toBe(TODAY);
+  });
+
+  it("switches to weeks at the 72-column boundary", () => {
+    const days = [day("2026-08-11", 100, 50), day("2026-10-22", 200, 100)];
+    const frame = buildAllFrame(days, TODAY);
+    expect(frame.unit).toBe("week");
+    expect(frame.slots).toHaveLength(11);
+    expect(frame.slots[0].key).toBe("2026-08-10");
+    expect(frame.slots[0].title).toBe("2026-08-11 … 2026-08-16");
+  });
+
+  it("sums days into the shared weekly frame", () => {
+    const days = [
+      day("2026-08-01", 100, 50),
+      day("2026-08-03", 200, 100),
+      day("2026-10-22", 300, 150),
+    ];
+    const frame = buildAllFrame(days, TODAY);
+    const buckets = bucketAll(days, frame);
+    expect(frame.unit).toBe("week");
+    expect(buckets).toHaveLength(13);
+    expect(buckets[0].prompt).toBe(100);
+    expect(buckets[1].prompt).toBe(200);
+    expect(buckets[12].prompt).toBe(300);
+  });
+
+  it("uses months and then years for longer histories", () => {
+    const twoYears = buildAllFrame(
+      [day("2024-10-01", 100, 50), day(TODAY, 200, 100)],
+      TODAY,
+    );
+    expect(twoYears.unit).toBe("month");
+    expect(twoYears.slots).toHaveLength(25);
+    expect(twoYears.slots[0].key).toBe("2024-10");
+    expect(twoYears.slots[24].key).toBe("2026-10");
+
+    const sevenYears = buildAllFrame(
+      [day("2019-10-01", 100, 50), day(TODAY, 200, 100)],
+      TODAY,
+    );
+    expect(sevenYears.unit).toBe("year");
+    expect(sevenYears.slots.map((slot) => slot.key)).toEqual([
+      "2019",
+      "2020",
+      "2021",
+      "2022",
+      "2023",
+      "2024",
+      "2025",
+      "2026",
+    ]);
+  });
+
+  it("gives every provider the workspace frame", () => {
+    const frame = buildAllFrame(
+      [day("2026-08-01", 100, 50), day(TODAY, 200, 100)],
+      TODAY,
+    );
+    const a = provider("a", [day("2026-08-01", 100, 50), day(TODAY, 200, 100)]);
+    const b = provider("b", [day("2026-09-01", 50, 25)]);
+    const aBuckets = providerBuckets(a, "all", TODAY, frame);
+    const bBuckets = providerBuckets(b, "all", TODAY, frame);
+    expect(aBuckets.map((bucket) => bucket.key)).toEqual(
+      bBuckets.map((bucket) => bucket.key),
+    );
+    expect(bBuckets[0].prompt).toBe(0);
+    expect(bBuckets.some((bucket) => bucket.prompt === 50)).toBe(true);
+  });
+});
+
 describe("WorkspaceUsageView", () => {
   const afternoon = report([day("2026-10-20", 3_000_000, 2_000_000, 100_000, 4)], {
     hours: [hour(9, 1_000_000, 900_000, 250_000), hour(15, 1_000_000, 950_000, 250_000)],
@@ -312,10 +392,26 @@ describe("WorkspaceUsageView", () => {
     expect(screen.queryByText(/压缩/)).toBeNull();
   });
 
+  it("does not force a last All label into a collision", () => {
+    render(
+      <WorkspaceUsageView
+        report={report([day("2026-09-13", 100, 50), day(TODAY, 200, 100)])}
+      />,
+    );
+    fireEvent.click(screen.getByText("All"));
+    expect(screen.getByText("09-13")).toBeTruthy();
+    expect(screen.queryByText(TODAY.slice(5))).toBeNull();
+  });
+
   it("draws one chart per provider with data in the selected window", () => {
     render(<WorkspaceUsageView report={withProviders} />);
     expect(screen.getByText("By provider")).toBeTruthy();
     expect(screen.getByTestId("provider-usage-openai")).toBeTruthy();
+    expect(
+      screen
+        .getByTestId("provider-usage-openai")
+        .querySelector('[data-provider-logo="brand"]'),
+    ).toBeTruthy();
     expect(screen.getByTestId("provider-usage-anthropic")).toBeTruthy();
     expect(screen.queryByTestId("provider-usage-unknown")).toBeNull();
     expect(screen.queryByTestId("provider-usage-old")).toBeNull();
@@ -323,6 +419,28 @@ describe("WorkspaceUsageView", () => {
     expect(
       screen.getByRole("img", { name: /openai token usage/i }),
     ).toBeTruthy();
+  });
+
+  it("sizes the chart from the panel content instead of a fixed width", () => {
+    const width = vi
+      .spyOn(HTMLElement.prototype, "clientWidth", "get")
+      .mockReturnValue(300);
+    try {
+      render(<WorkspaceUsageView report={withProviders} />);
+      expect(
+        screen
+          .getByRole("img", { name: /workspace token usage/i })
+          .getAttribute("width"),
+      ).toBe("300");
+      expandProviderCards();
+      expect(
+        screen
+          .getByRole("img", { name: /openai token usage/i })
+          .getAttribute("width"),
+      ).toBe("300");
+    } finally {
+      width.mockRestore();
+    }
   });
 
   it("collapses each provider chart into a FoldCard summary with its billed total", () => {

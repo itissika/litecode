@@ -1285,12 +1285,10 @@ pub fn compaction_state_wire(
     super::protocol::CompactionStateWire {
         revision: state.revision,
         active: state.active.is_some(),
-        operation_id: state
-            .active
-            .as_ref()
-            .map(|active| active.operation_id.clone()),
+        operation_id: state.active.as_ref().map(|active| active.id.clone()),
         trigger: state.active.as_ref().map(|active| active.trigger),
         at: state.active.as_ref().and_then(|active| active.at),
+        phase: state.active.as_ref().map(|active| active.phase),
     }
 }
 

@@ -59,6 +59,12 @@ pub enum LitecodeError {
     #[error("compaction failed: empty summary")]
     CompactionFailed,
 
+    /// The commit existed but the pipeline could not deliver a verified
+    /// surface. This is not success; the session gets the next read and stops
+    /// the turn only if that read also fails.
+    #[error("compaction could not deliver a verified surface: {0}")]
+    CompactionUnverified(String),
+
     #[error("compaction failed ({kind:?}): {detail}")]
     CompactionFailure {
         kind: CompactionFailureKind,
@@ -67,6 +73,24 @@ pub enum LitecodeError {
 
     #[error("nothing to compact")]
     NothingToCompact,
+
+    /// The durable prefix changed under a frozen compaction plan (another
+    /// checkpoint landed, a cut was deleted, or the shadow start moved).
+    /// This is a surface race, not a user cancel.
+    #[error("compaction surface changed: {0}")]
+    CompactionSurfaceChanged(String),
+
+    /// Even after dropping the oldest history the summary request cannot fit
+    /// the model's physical prompt limit.
+    #[error("compaction input too large: {0}")]
+    CompactionInputTooLarge(String),
+
+    /// After compaction the request still sits above the product/physical hard
+    /// line. Sending it would exceed the selected window or prompt ceiling.
+    #[error(
+        "context is still above the hard limit after compaction (used {used}, limit {limit}); switch to a larger model, revert, or start a new session"
+    )]
+    ContextStillOverLimit { used: usize, limit: usize },
 
     #[error("llm error: {0}")]
     Llm(String),
@@ -120,7 +144,8 @@ impl LitecodeError {
     }
 
     pub fn is_compaction_failure(&self) -> bool {
-        self.compaction_failure_kind().is_some() || matches!(self, Self::CompactionFailed)
+        self.compaction_failure_kind().is_some()
+            || matches!(self, Self::CompactionFailed | Self::CompactionUnverified(_))
     }
 }
 

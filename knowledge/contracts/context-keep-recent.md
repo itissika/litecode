@@ -11,7 +11,3 @@ domain : harness-core
 
 依据：[@ file="src/context_pipeline/keep_recent.rs" symbol="fn find_keep_recent_cut"]、[@ file="src/context_pipeline/keep_recent.rs" symbol="mod tests › fn tool_pair_not_split"]。
 父节点：[@ key="context-view"]。
-基线：075308b
-
-**核实结论：一致，无漂移。**（基线 075308b）
-- 切割不拆 tool 对 / assistant 段；`cut==0` → None 跳过 compact —— [@ file="src/context_pipeline/keep_recent.rs" symbol="fn find_keep_recent_cut"]；测试见 [@ file="src/context_pipeline/keep_recent.rs" symbol="mod tests › fn tool_pair_not_split"]。

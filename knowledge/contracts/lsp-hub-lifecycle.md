@@ -11,9 +11,3 @@ domain : ide-substrate
 
 依据：[@ file="src/lsp/hub.rs" symbol="impl LspHub › fn activate"]、[@ file="src/lsp/hub.rs" symbol="impl LspHub › fn stop"]、[@ file="src/engines/lsp_engine.rs" symbol="impl LspEngine › fn stop"]、[@ file="src/engines/lsp_engine.rs" symbol="impl LspEngine › fn warmup"]。
 上层：[@ key="engine-lifecycle"]。
-基线：075308b
-
-**核实结论：一致，无漂移。**（基线 075308b）
-- `activate` 仅登记可运行命令（不 spawn）—— [@ file="src/lsp/hub.rs" symbol="impl LspHub › fn activate"]；warmup 注释 metadata-only 见 [@ file="src/engines/lsp_engine.rs" symbol="impl LspEngine › fn warmup"]。
-- `stop` 置 inactive、排空 servers 并 shutdown —— [@ file="src/lsp/hub.rs" symbol="impl LspHub › fn stop"]；引擎门面 [@ file="src/engines/lsp_engine.rs" symbol="impl LspEngine › fn stop"]。
-- ISSUE-004（suspect）旁听 —— findReferences 上下文块主责更可能在 tools 输出整形，不否定 hub 状态机。

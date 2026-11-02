@@ -1,4 +1,10 @@
-import { useMemo, useState, type ReactNode } from "react";
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import type {
   WorkspaceUsageDay,
@@ -11,11 +17,12 @@ import { useSettingsStore } from "../stores/settingsStore";
 import { formatToken } from "../lib/tokens";
 import { ChartTooltip, TooltipRow, tooltipLeft } from "./ChartTooltip";
 import { FoldCard } from "./FoldCard";
+import { ProviderLogo } from "./ProviderLogos";
 import { ringColorForHitRate } from "./ContextUsageRing";
 import i18n from "../i18n";
 
-/** Popover content width: 240px panel shell minus 2×12px padding. */
-const CHART_W = 216;
+/** Fallback content width before the panel has been measured. */
+const FALLBACK_CHART_W = 216;
 const BAR_H = 34;
 /** Completion strip, on its own scale (typically ~100× smaller than prompt). */
 const LINE_H = 5;
@@ -23,8 +30,9 @@ const GAP_H = 2;
 /** Axis strip: bucket labels are what make the period switch legible. */
 const AXIS_H = 11;
 const CHART_H = BAR_H + GAP_H + LINE_H + AXIS_H;
-/** Bars here are sums, so merging days is legitimate; 42 stays readable. */
-const MAX_BUCKETS = 42;
+/** Width-derived ceiling at the fallback width. */
+const MIN_BUCKET_PITCH = 3;
+const DEFAULT_MAX_BUCKETS = Math.floor(FALLBACK_CHART_W / MIN_BUCKET_PITCH);
 const HOURS = 24;
 const HIT_FILL = "var(--_dk-cat-blue)";
 const MISS_FILL = "var(--_dk-amber-500)";
@@ -32,7 +40,7 @@ const MISS_FILL = "var(--_dk-amber-500)";
 /**
  * The window the chart covers, and with it the axis resolution: 日 is a
  * within-day question (hours), 周 and 月 are within-month questions (days),
- * 全部 is history (days, merged when there are too many).
+ * 全部 is history and picks days, weeks, months, or years from the chart width.
  */
 export type Period = "day" | "week" | "month" | "all";
 
@@ -95,7 +103,159 @@ function mondayOf(day: string): Date {
   return monday;
 }
 
+function addDays(date: Date, count: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + count);
+  return next;
+}
+
+/** UTC day numbers keep date arithmetic stable across DST boundaries. */
+function dayNumber(date: Date): number {
+  return Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000);
+}
+
+function daysInclusive(start: Date, end: Date): number {
+  return dayNumber(end) - dayNumber(start) + 1;
+}
+
+function weeksInclusive(start: Date, end: Date): number {
+  return Math.floor(
+    (dayNumber(mondayOf(dayKey(end))) - dayNumber(mondayOf(dayKey(start)))) / 7,
+  ) + 1;
+}
+
+function monthsInclusive(start: Date, end: Date): number {
+  return (end.getFullYear() - start.getFullYear()) * 12 + end.getMonth() - start.getMonth() + 1;
+}
+
+function rangeTitle(start: string, end: string): string {
+  return start === end ? start : `${start} … ${end}`;
+}
+
+function allSlotKey(unit: AllBucketUnit, day: string): string {
+  if (unit === "week") return dayKey(mondayOf(day));
+  if (unit === "month") return day.slice(0, 7);
+  if (unit === "year") return day.slice(0, 4);
+  return day;
+}
+
+function buildAllSlots(unit: AllBucketUnit, start: Date, end: Date): Slot[] {
+  const slots: Slot[] = [];
+  if (unit === "day") {
+    for (let cursor = start; cursor <= end; cursor = addDays(cursor, 1)) {
+      const key = dayKey(cursor);
+      slots.push({ key, label: key.slice(5), title: key });
+    }
+    return slots;
+  }
+  if (unit === "week") {
+    for (let cursor = mondayOf(dayKey(start)); cursor <= end; cursor = addDays(cursor, 7)) {
+      const weekEnd = addDays(cursor, 6);
+      const observedStart = cursor < start ? start : cursor;
+      const observedEnd = weekEnd > end ? end : weekEnd;
+      const key = dayKey(cursor);
+      slots.push({
+        key,
+        label: key.slice(5),
+        title: rangeTitle(dayKey(observedStart), dayKey(observedEnd)),
+      });
+    }
+    return slots;
+  }
+  if (unit === "month") {
+    for (
+      let cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+      cursor <= end;
+      cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1)
+    ) {
+      const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`;
+      slots.push({ key, label: key, title: key });
+    }
+    return slots;
+  }
+  for (let year = start.getFullYear(); year <= end.getFullYear(); year += 1) {
+    slots.push({ key: String(year), label: String(year), title: String(year) });
+  }
+  return slots;
+}
+
+/**
+ * Build the calendar frame for `All` from the available width.
+ *
+ * The finest unit that fits the width wins: days, then weeks, then months,
+ * then years. Every provider uses this same frame, so a bar means the same
+ * date range in every chart and the totals stay comparable.
+ */
+export function buildAllFrame(
+  days: WorkspaceUsageDay[],
+  today: string,
+  maxBuckets: number = DEFAULT_MAX_BUCKETS,
+): AllFrame {
+  const end = parseDay(today);
+  const start = parseDay(days.length > 0 ? days[0].day : today);
+  if (start > end) {
+    const key = dayKey(end);
+    return {
+      unit: "day",
+      start: key,
+      end: key,
+      slots: [{ key, label: key.slice(5), title: key }],
+    };
+  }
+  let unit: AllBucketUnit = "day";
+  if (daysInclusive(start, end) > maxBuckets) {
+    if (weeksInclusive(start, end) <= maxBuckets) unit = "week";
+    else if (monthsInclusive(start, end) <= maxBuckets) unit = "month";
+    else unit = "year";
+  }
+  return {
+    unit,
+    start: dayKey(start),
+    end: dayKey(end),
+    slots: buildAllSlots(unit, start, end),
+  };
+}
+
+/** Sum authoritative days into a shared `All` frame. */
+export function bucketAll(days: WorkspaceUsageDay[], frame: AllFrame): UsageBucket[] {
+  const buckets: UsageBucket[] = frame.slots.map((slot) => ({
+    ...slot,
+    prompt: 0,
+    hit: 0,
+    miss: 0,
+    completion: 0,
+    requests: 0,
+    days: 0,
+  }));
+  const byKey = new Map(buckets.map((bucket) => [bucket.key, bucket]));
+  for (const row of days) {
+    if (row.day < frame.start || row.day > frame.end) continue;
+    const bucket = byKey.get(allSlotKey(frame.unit, row.day));
+    if (!bucket) continue;
+    bucket.prompt += row.prompt;
+    bucket.hit += row.hit;
+    bucket.miss += row.miss;
+    bucket.completion += row.completion;
+    bucket.requests += row.requests;
+    bucket.days += 1;
+  }
+  return buckets;
+}
+
 type Slot = { key: string; label: string; title: string };
+
+/** The calendar unit `All` uses for its bars. */
+export type AllBucketUnit = "day" | "week" | "month" | "year";
+
+/** A shared `All` frame so every provider is drawn on the same dates. */
+export type AllFrame = {
+  unit: AllBucketUnit;
+  /** First day represented by the frame, inclusive. */
+  start: string;
+  /** Last day represented by the frame, inclusive. */
+  end: string;
+  slots: Slot[];
+};
 
 /** Weekday labels are their own positions: 周一 is a place on the axis. */
 const WEEKDAY_KEYS = [
@@ -170,7 +330,7 @@ export function bucketDays(
   days: WorkspaceUsageDay[],
   period: Exclude<Period, "day">,
   today: string,
-  maxBuckets: number = MAX_BUCKETS,
+  maxBuckets: number = DEFAULT_MAX_BUCKETS,
 ): UsageBucket[] {
   const byDay = new Map(days.map((row) => [row.day, row]));
   const buckets: UsageBucket[] = frameSlots(period, today, days).map((slot) => {
@@ -324,10 +484,12 @@ function UsageChart({
   buckets,
   period,
   ariaLabel,
+  width,
 }: {
   buckets: UsageBucket[];
   period: Period;
   ariaLabel: string;
+  width: number;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const totals = windowTotals(buckets);
@@ -338,15 +500,15 @@ function UsageChart({
   // hairlines — the period switch is legible only if each bar can carry its key.
   const pitch = Math.max(
     1,
-    Math.min(Math.floor(CHART_W / Math.max(1, buckets.length)), 48),
+    Math.min(Math.floor(width / Math.max(1, buckets.length)), 48),
   );
   const gapW = pitch >= 3 ? 1 : 0;
   const barW = Math.max(1, pitch - gapW);
-  const offsetX = Math.round((CHART_W - pitch * buckets.length) / 2);
+  const offsetX = Math.round((width - pitch * buckets.length) / 2);
   const hovered = hover !== null ? (buckets[hover] ?? null) : null;
   const bubbleLeft = tooltipLeft(
     offsetX + (hover ?? 0) * pitch + pitch / 2,
-    CHART_W,
+    width,
   );
   // Ticks on the frame's own ladder: every 6 hours, every weekday, every 7th
   // day of the month. 全部 has no ladder, so it thins by label width instead.
@@ -355,17 +517,21 @@ function UsageChart({
     if (last <= 0) return [0];
     const ladder =
       period === "week" ? 1 : period === "day" ? 6 : period === "month" ? 7 : 0;
-    const step =
-      ladder > 0
-        ? ladder
-        : Math.max(
-            1,
-            Math.ceil((Math.max(...buckets.map((bucket) => bucket.label.length)) * 4.5 + 10) / pitch),
-          );
+    const labelWidth =
+      Math.max(...buckets.map((bucket) => bucket.label.length)) * 4.5 + 10;
+    const step = ladder > 0 ? ladder : Math.max(1, Math.ceil(labelWidth / pitch));
     const indices: number[] = [];
     for (let index = 0; index < buckets.length; index += step) indices.push(index);
-    // 月 的最后一格会贴上前一个标签，其余留个右边界。
-    if (period !== "month" && indices[indices.length - 1] !== last) indices.push(last);
+    // Only add the last tick when it has room; forcing it would collide with
+    // the previous label in dense All frames. 月 already ends on its own ladder.
+    const lastTick = indices[indices.length - 1]!;
+    if (
+      period !== "month" &&
+      lastTick !== last &&
+      (last - lastTick) * pitch >= labelWidth
+    ) {
+      indices.push(last);
+    }
     return indices;
   })();
 
@@ -378,11 +544,11 @@ function UsageChart({
     .join(" ");
 
   return (
-    <div className="relative" style={{ width: CHART_W }}>
+    <div className="relative w-full" style={{ width }}>
       <svg
-        width={CHART_W}
+        width={width}
         height={CHART_H}
-        viewBox={"0 0 " + CHART_W + " " + CHART_H}
+        viewBox={"0 0 " + width + " " + CHART_H}
         role="img"
         aria-label={ariaLabel}
       >
@@ -427,7 +593,7 @@ function UsageChart({
         })}
         <line
           x1={0}
-          x2={CHART_W}
+          x2={width}
           y1={BAR_H + GAP_H - 0.5}
           y2={BAR_H + GAP_H - 0.5}
           stroke="var(--_dk-line)"
@@ -441,7 +607,7 @@ function UsageChart({
         />
         {empty && (
           <text
-            x={CHART_W / 2}
+            x={width / 2}
             y={BAR_H / 2}
             fontSize={9}
             fill="var(--_dk-text-disabled)"
@@ -503,23 +669,54 @@ export function providerBuckets(
   provider: WorkspaceUsageProvider,
   period: Period,
   today: string,
+  allFrame?: AllFrame,
 ): UsageBucket[] {
-  return period === "day"
-    ? bucketHours(provider.hours)
-    : bucketDays(provider.days, period, today);
+  if (period === "day") return bucketHours(provider.hours);
+  if (period === "all") {
+    return bucketAll(provider.days, allFrame ?? buildAllFrame(provider.days, today));
+  }
+  return bucketDays(provider.days, period, today);
+}
+
+/** Measure the panel's content box; the chart has no width of its own. */
+function useContentWidth(fallback: number) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(fallback);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const next = el.clientWidth;
+      if (next > 0) setWidth(next);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [fallback]);
+  return [ref, width] as const;
 }
 
 /** The panel body: aggregates first, the chart that explains them second. */
 export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport }) {
   const [period, setPeriod] = useState<Period>("day");
+  const [contentRef, chartWidth] = useContentWidth(FALLBACK_CHART_W);
   const today = report.today || localDay();
-  const buckets = useMemo(
+  const allFrame = useMemo(
     () =>
-      period === "day"
-        ? bucketHours(report.hours)
-        : bucketDays(report.days, period, today),
-    [period, report.days, report.hours, today],
+      buildAllFrame(
+        report.days,
+        today,
+        Math.max(1, Math.floor(chartWidth / MIN_BUCKET_PITCH)),
+      ),
+    [chartWidth, report.days, today],
   );
+  const buckets = useMemo(() => {
+    if (period === "day") return bucketHours(report.hours);
+    if (period === "all") return bucketAll(report.days, allFrame);
+    return bucketDays(report.days, period, today);
+  }, [allFrame, period, report.days, report.hours, today]);
 
   // The aggregates cover the selected window, so they always add up to the
   // chart directly under them.
@@ -545,7 +742,7 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
     () =>
       (report.providers ?? [])
         .map((provider) => {
-          const providerDays = providerBuckets(provider, period, today);
+          const providerDays = providerBuckets(provider, period, today, allFrame);
           return { provider, buckets: providerDays, totals: windowTotals(providerDays) };
         })
         .filter((view) => view.totals.requests > 0)
@@ -560,7 +757,7 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
           if (bId === null) return -1;
           return aId < bId ? -1 : aId > bId ? 1 : 0;
         }),
-    [report.providers, period, today],
+    [allFrame, report.providers, period, today],
   );
 
   return (
@@ -573,7 +770,10 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
       </div>
 
       {/* Aggregates: what was read, how much of it was cached, what it cost. */}
-      <div className="flex flex-col gap-0.5 border-t border-(--_dk-line) pt-2.5">
+      <div
+        ref={contentRef}
+        className="flex flex-col gap-0.5 border-t border-(--_dk-line) pt-2.5"
+      >
         <AggregateRow
           color={HIT_FILL}
           label="Prompt"
@@ -621,6 +821,7 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
           key={period}
           buckets={buckets}
           period={period}
+          width={chartWidth}
           ariaLabel={i18n.t("usage.chartAria", { axis: axisTitle(period) })}
         />
 
@@ -674,6 +875,12 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
                 <FoldCard
                   defaultOpen={false}
                   readyOnMount
+                  icon={
+                    <ProviderLogo
+                      providerId={provider.provider_id ?? undefined}
+                      title={name}
+                    />
+                  }
                   label={
                     <span className="flex w-full min-w-0 items-baseline justify-between gap-2">
                       <span className="min-w-0 truncate text-(--_dk-text-secondary)">
@@ -694,6 +901,7 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
                     key={period}
                     buckets={providerBucket}
                     period={period}
+                    width={chartWidth}
                     ariaLabel={i18n.t("usage.providerChartAria", {
                       provider: name,
                       axis: axisTitle(period),

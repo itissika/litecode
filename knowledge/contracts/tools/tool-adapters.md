@@ -20,8 +20,3 @@ domain : tools-permission
 父节点：[@ key="tool-implementation-contract"]。
 相关：[@ key="tool-implementation-contract"]、[@ key="tool-identity"]、[@ key="tool-output-shaping"]、[@ key="tool-call-lifecycle"]。
 契约展开：[@ key="mcp-connection-pool"]、[@ key="custom-tool-hub"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- 共同 Tool 面 —— [@ file="src/tool/trait_.rs" symbol="trait Tool › fn execute"]。
-- Custom spawn_blocking + 信封 —— [@ file="src/tools/custom.rs" symbol="impl Tool for CustomTool › fn execute"]、[@ file="src/tools/custom.rs" symbol="fn result_from_stdout"]。
-- MCP await 池 —— [@ file="src/tools/mcp_tool.rs" symbol="impl Tool for McpTool › fn execute"]；连接出口见 [@ key="mcp-connection-pool"]。

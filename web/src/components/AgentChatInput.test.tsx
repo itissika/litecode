@@ -8,6 +8,12 @@ import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useToastStore } from "../stores/toastStore";
 import { EMPTY_SLICE, useTurnStore } from "../stores/turnStore";
+import {
+  DRAFT_TOO_LONG,
+  MAX_DRAFT_CHARS,
+  MAX_MESSAGE_CHARS,
+  MESSAGE_TOO_LONG,
+} from "../lib/composerLimits";
 import { AgentChatInput, composerPlaceholder } from "./AgentChatInput";
 import { composerEditor, composerText, pressComposerKey, setComposerText } from "./mention/composerDom";
 
@@ -83,6 +89,42 @@ afterEach(() => {
 });
 
 describe("AgentChatInput silent send", () => {
+  it("blocks a message over the hard limit and explains why", () => {
+    const sendRpc = vi.fn(async () => ({ started: true }));
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+    render(<AgentChatInput sessionId="session-1" />);
+
+    setComposerText(COMPOSER, "x".repeat(MAX_MESSAGE_CHARS + 1));
+    const send = screen.getByTitle(MESSAGE_TOO_LONG) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+
+    pressComposerKey(COMPOSER, "Enter");
+    expect(sendRpc).not.toHaveBeenCalled();
+    expect(
+      useToastStore.getState().toasts.map((toast) => toast.message),
+    ).toContain(MESSAGE_TOO_LONG);
+  });
+
+  it("clears a draft above the retention ceiling instead of holding it", () => {
+    render(<AgentChatInput sessionId="session-1" />);
+
+    const field = document.querySelector(`[aria-label="${COMPOSER}"]`);
+    if (!field) throw new Error("composer missing");
+    fireEvent.paste(field, {
+      clipboardData: {
+        getData: (type: string) =>
+          type === "text/plain" ? "x".repeat(MAX_DRAFT_CHARS + 1) : "",
+        items: [],
+        files: [],
+      },
+    });
+
+    expect(composerText(COMPOSER)).toBe("");
+    expect(
+      useToastStore.getState().toasts.map((toast) => toast.message),
+    ).toContain(DRAFT_TOO_LONG);
+  });
+
   it("queues on Enter while a turn runs: no toast, no optimistic row, draft clears on ack", async () => {
     const sendRpc = vi.fn(async (method: string) => {
       if (method === "session/pending-enqueue") {
@@ -139,7 +181,7 @@ describe("AgentChatInput silent send", () => {
     ).toHaveLength(1);
   });
 
-  it("queues while an auto compaction runs in the turn; a standalone one stays blocked", async () => {
+  it("queues while an auto compaction runs in the turn; manual compaction does not block send", async () => {
     const sendRpc = vi.fn(async () => ({ queued: true }));
     useConnectionStore.setState({ state: "connected", sendRpc } as never);
     // Auto compaction: the turn is alive, so the queue action stays available.
@@ -158,8 +200,8 @@ describe("AgentChatInput silent send", () => {
       session_id: "session-1",
     });
 
-    // Standalone compaction on an idle session is still blocked: no send, no
-    // queue, and Enter stays silent (the exclusive lease owns the session).
+    // Manual compaction is a separate session axis: an idle session may send
+    // while it runs.
     act(() => {
       useTurnStore.setState({
         byId: new Map([
@@ -177,10 +219,18 @@ describe("AgentChatInput silent send", () => {
     });
     setComposerText(COMPOSER, "steer again");
     const send = screen.getByTitle("Send") as HTMLButtonElement;
-    expect(send.disabled).toBe(true);
+    expect(send.disabled).toBe(false);
     expect(screen.queryByTitle("Queue for the next step")).toBeNull();
     pressComposerKey(COMPOSER, "Enter");
-    expect(sendRpc).not.toHaveBeenCalledWith("agent/run", expect.anything());
+    await waitFor(() => {
+      expect(sendRpc).toHaveBeenCalledWith(
+        "agent/run",
+        expect.objectContaining({
+          input: "steer again",
+          session_id: "session-1",
+        }),
+      );
+    });
 
     // An automatic branch that outlives the turn keeps the marker but does not
     // own the manual lease, so the next send stays available.

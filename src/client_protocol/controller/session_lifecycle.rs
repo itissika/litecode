@@ -5,13 +5,14 @@ use crate::client_protocol::protocol::{
     ErrorCode, OperationKind, SessionBindingProjection, SessionFolder, SessionInfo, SessionList,
 };
 use crate::context_pipeline::{
-    BudgetPolicy, CompactPolicy, ContextEnvelope, measure_persisted_context_with_breakdown,
+    BudgetPolicy, CompactPolicy, ContextEnvelope, ProviderPromptBaseline,
+    measure_persisted_context_with_breakdown,
 };
 use crate::permission::PermissionSink;
+use crate::runtime::exec::spawn_compaction_worker;
+use crate::runtime::observer::{CompactionFailKind, CompactionTrigger};
 use crate::runtime::{TurnOptions, spawn_turn};
-use crate::session::store::Session;
 use crate::types::{LitecodeError, UserInput};
-use tokio_util::sync::CancellationToken;
 
 use super::{SessionController, StartTurnError};
 
@@ -250,128 +251,148 @@ impl SessionController {
             .await
             .map_err(LitecodeError::Anyhow)?;
         self.sessions.ensure_entry(session_id).await?;
-        self.runtime.apply_non_engine()?;
-        // Match the main turn's pre-request tool view: disk is the source of
-        // truth for workspace MCP / custom-tool readiness.
-        self.runtime.sync_workspace_tool_readiness();
 
-        // Manual compaction is a call mode of this session's main model. Build
-        // the same runtime shape a turn would use so provider/model,
-        // instructions, and active tool schemas are frozen together.
-        let default_primary = self.runtime.desired_primary_agent();
-        let agent_id = self.sessions.resolve_primary_agent(
-            session_id,
-            default_primary,
-            &self.runtime.resolved,
-        )?;
-        // Turn parity: a sticky model that was never set or can no longer run
-        // is repaired before manual compaction freezes the request shape.
-        crate::runtime::ensure_session_model(
-            &self.runtime.resolved,
-            &self.sessions,
-            session_id,
-            &agent_id,
-        );
-        let depth = self
+        // Claim before any expensive runtime build. Manual is just another
+        // trigger: it does not take the turn's activity lease and may run while
+        // a turn is appending its tail.
+        let mut lease = self
             .sessions
-            .data()
-            .meta_blocking(session_id)?
-            .subagent_depth;
-        let mut compaction_runtime = self.runtime.build_runtime(
-            session_id.to_string(),
-            Arc::clone(&self.sessions),
-            &agent_id,
-            depth,
-            crate::permission::deny_permission_sink(),
-            Arc::new(crate::runtime::observer::NoopObserver),
-        )?;
-        compaction_runtime.ensure_tooling_initialized().await?;
-        let compaction_request = compaction_runtime.compaction_request_context()?;
-        if compaction_request.context_window == 0 {
-            return Err(LitecodeError::Config(
-                "no context window configured for this session".into(),
-            ));
-        }
+            .try_begin_compaction_episode(session_id, CompactionTrigger::Manual)?;
+        let operation_id = lease.id().to_string();
 
-        let lease = self.sessions.try_begin_operation(
-            session_id,
-            crate::session::manager::SessionOperationKind::Compact,
-        )?;
-        let operation_id = lease.operation_id().to_string();
+        // Every precheck failure below must finish the episode with a terminal;
+        // the worker is not started until all immutable inputs are available.
+        let prepared: Result<
+            (
+                crate::llm::CompactionRequestContext,
+                BudgetPolicy,
+                std::path::PathBuf,
+            ),
+            LitecodeError,
+        > = async {
+            self.runtime.apply_non_engine()?;
+            // Match the main turn's pre-request tool view: disk is the source of
+            // truth for workspace MCP / custom-tool readiness.
+            self.runtime.sync_workspace_tool_readiness();
 
-        let mut transcript = self.sessions.data().transcript_blocking(session_id)?;
-        Session::snip_stale_results(&mut transcript);
-        let budget = BudgetPolicy::new(compaction_request.context_window);
-        let envelope = ContextEnvelope::from_compaction_request(&compaction_request);
-        let data_root = self.sessions.data_root_path();
-        let (meter, breakdown) = measure_persisted_context_with_breakdown(
-            &self.sessions,
-            session_id,
-            &envelope,
-            &compaction_request.target,
-            &data_root,
-        )?;
-        // Publish the exact server meter+buckets before returning either gate
-        // result so a refreshed UI sees the same projection the decision used.
-        if let Some(proj) = self.projection_mut(session_id) {
-            proj.context_window = compaction_request.context_window;
-            proj.context_envelope = envelope.clone();
-            proj.context_meter = meter.clone();
-            proj.context_tokens_estimate = meter.used_tokens;
-            proj.context_token_breakdown = breakdown;
-        }
-        if !meter.manual_eligible() {
-            return Err(LitecodeError::NothingToCompact);
-        }
-        if !CompactPolicy::can_compact(&budget, &transcript) {
-            // A manual trigger may still prune when there is no summary cut.
-            // `can_prune` enforces the fixed protected line; `compact_now`
-            // still runs prune before deciding whether to invoke the summarizer.
-            let rows = self.sessions.data().working_set_blocking(session_id)?;
-            let protected = crate::context_pipeline::protected_conversation_tokens_for_request(
-                &compaction_request,
+            // Manual compaction is a call mode of this session's main model. Build
+            // the same runtime shape a turn would use so provider/model,
+            // instructions, and active tool schemas are frozen together.
+            let default_primary = self.runtime.desired_primary_agent();
+            let agent_id = self.sessions.resolve_primary_agent(
+                session_id,
+                default_primary,
+                &self.runtime.resolved,
+            )?;
+            // Turn parity: a sticky model that was never set or can no longer run
+            // is repaired before manual compaction freezes the request shape.
+            crate::runtime::ensure_session_model(
+                &self.runtime.resolved,
+                &self.sessions,
+                session_id,
+                &agent_id,
             );
-            if !CompactPolicy::can_prune(&rows, protected) {
+            let depth = self
+                .sessions
+                .data()
+                .meta_blocking(session_id)?
+                .subagent_depth;
+            let mut compaction_runtime = self.runtime.build_runtime(
+                session_id.to_string(),
+                Arc::clone(&self.sessions),
+                &agent_id,
+                depth,
+                crate::permission::deny_permission_sink(),
+                Arc::new(crate::runtime::observer::NoopObserver),
+            )?;
+            compaction_runtime.ensure_tooling_initialized().await?;
+            let compaction_request = compaction_runtime.compaction_request_context()?;
+            if compaction_request.context_window == 0 {
+                return Err(LitecodeError::Config(
+                    "no context window configured for this session".into(),
+                ));
+            }
+
+            let budget = BudgetPolicy::new(compaction_request.context_window);
+            let envelope = ContextEnvelope::from_compaction_request(&compaction_request);
+            let data_root = self.sessions.data_root_path();
+            let state = self
+                .sessions
+                .data()
+                .working_set_state_blocking(session_id)?;
+            // The meter shown to the UI is the full persisted context. The
+            // manual gate itself is sealed-only; an in-progress tail must not
+            // make manual compaction look eligible.
+            let (meter, breakdown) = measure_persisted_context_with_breakdown(
+                &self.sessions,
+                session_id,
+                &envelope,
+                &compaction_request.target,
+                &data_root,
+            )?;
+            let sealed_meter = CompactPolicy::measure_sealed_meter(
+                &self.sessions,
+                session_id,
+                &compaction_request,
+                &ProviderPromptBaseline::default(),
+                &data_root,
+            );
+            let manual_eligible =
+                sealed_meter.as_ref().is_some_and(|meter| meter.manual_eligible());
+            // Publish the exact server meter+buckets before returning either gate
+            // result so a refreshed UI sees the same projection the decision used.
+            if let Some(proj) = self.projection_mut(session_id) {
+                proj.context_window = compaction_request.context_window;
+                proj.context_envelope = envelope.clone();
+                proj.context_meter = meter.clone();
+                proj.context_tokens_estimate = meter.used_tokens;
+                proj.context_token_breakdown = breakdown;
+            }
+            if !manual_eligible {
                 return Err(LitecodeError::NothingToCompact);
             }
-        }
-
-        let sessions = Arc::clone(&self.sessions);
-        let sid = session_id.to_string();
-        let op_id = operation_id.clone();
-        tokio::spawn(async move {
-            let cancel = CancellationToken::new();
-            let sessions_for_sink = Arc::clone(&sessions);
-            let sid_for_sink = sid.clone();
-            let sink: Arc<dyn Fn(crate::llm::reconnect::LlmReconnect) + Send + Sync> =
-                Arc::new(move |notice| {
-                    sessions_for_sink.publish_internal(
-                        &sid_for_sink,
-                        crate::runtime::observer::InternalEvent::LlmReconnect(notice),
+            if !CompactPolicy::can_compact_sealed(&state.rows, &state.in_progress, &budget) {
+                // A manual trigger may still prune when there is no summary cut.
+                // The worker makes the final decision; this is a fast-fail only.
+                let protected =
+                    crate::context_pipeline::protected_conversation_tokens_for_request(
+                        &compaction_request,
                     );
-                });
-            let result = crate::llm::reconnect::scope(
-                sink,
-                CompactPolicy::compact_now(
-                    &budget,
-                    &sessions,
-                    &sid,
-                    &compaction_request,
-                    crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
-                    &cancel,
-                    Some(&op_id),
-                    &data_root,
-                ),
-            )
-            .await
-            .map(|_| ());
-
-            if result.is_ok() {
-                let _ = sessions.data().revision_blocking(&sid);
+                if !CompactPolicy::can_prune_sealed(&state.rows, &state.in_progress, protected) {
+                    return Err(LitecodeError::NothingToCompact);
+                }
             }
-            drop(lease);
-        });
+            Ok((compaction_request, budget, data_root))
+        }
+        .await;
 
+        let (compaction_request, budget, data_root) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let kind = if matches!(error, LitecodeError::NothingToCompact) {
+                    CompactionFailKind::NothingToCompact
+                } else {
+                    CompactionFailKind::Failed
+                };
+                lease.finish(crate::session::manager::EpisodeOutcome::Failed {
+                    kind,
+                    message: error.to_string(),
+                    action: crate::session::manager::CompactionFailureAction::Continue,
+                });
+                return Err(error);
+            }
+        };
+
+        spawn_compaction_worker(
+            lease,
+            budget,
+            Arc::clone(&self.sessions),
+            session_id.to_string(),
+            compaction_request,
+            CompactionTrigger::Manual,
+            data_root,
+            None,
+        );
         Ok(operation_id)
     }
 

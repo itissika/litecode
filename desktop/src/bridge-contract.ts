@@ -30,6 +30,8 @@ export const BROWSER_CLOSE_CHANNEL = "litecode:browser-close";
 export const BROWSER_AGENT_ACTIVITY_CHANNEL = "litecode:browser-agent-activity";
 /** Turn-finished toast clicked. main -> renderer, one-way: `{ sessionId }`. */
 export const TURN_NOTIFICATION_CLICK_CHANNEL = "litecode:turn-notification-click";
+/** renderer -> main: a session in this workspace is running (close guard). */
+export const SESSIONS_ACTIVE_CHANNEL = "litecode:sessions-active";
 
 /**
  * Remote session lost. main -> renderer, one-way.
@@ -222,6 +224,8 @@ export type LitecodeDesktopBridge = {
   windowMaximizeToggle(): Promise<boolean>;
   windowIsMaximized(): Promise<boolean>;
   windowClose(): Promise<void>;
+  /** Any session running or cancelling: the host asks before it closes. */
+  setSessionsActive(active: boolean): Promise<void>;
   popoutSetAlwaysOnTop(dockId: string, onTop: boolean): Promise<boolean>;
   /** Window controls for one popout window, addressed by its dock id. */
   popoutWindowMinimize(dockId: string): Promise<void>;

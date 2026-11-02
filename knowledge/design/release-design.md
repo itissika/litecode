@@ -13,7 +13,5 @@ domain : release-desktop
 
 上层：[@ key="product-brief"]。
 框架展开：[@ key="desktop-shell"]。
-基线：075308b
 
-**核实结论：一致，无漂移。**（基线 075308b）
 - 默认瘦 NSIS —— [@ file="scripts/package_win.ps1"]、[@ file="desktop/package.json"]；按需组件契约见 [@ key="component-distribution"]。

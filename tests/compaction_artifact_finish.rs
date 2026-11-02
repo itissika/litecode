@@ -96,7 +96,6 @@ async fn failed_summary_finish_never_writes_a_compacted_checkpoint() {
             CompactionTrigger::Auto,
             Some(&format!("summary-gate-{index}")),
             &sessions.data_root_path(),
-            None,
             2,
         )
         .await
@@ -195,7 +194,6 @@ async fn assert_legacy_heuristic_summary_is_accepted(anchor: &str, summary: Stri
         CompactionTrigger::Auto,
         Some(label),
         &sessions.data_root_path(),
-        None,
         2,
     )
     .await
@@ -644,7 +642,6 @@ async fn assert_real_codec_case_rejected(case: CodecCase) {
         CompactionTrigger::Auto,
         Some(case.name),
         &sessions.data_root_path(),
-        None,
         2,
     )
     .await
@@ -727,7 +724,6 @@ async fn successful_real_codec_preserves_artifact_finish_usage_and_model() {
         CompactionTrigger::Auto,
         Some("real-codec-finish-success"),
         &sessions.data_root_path(),
-        None,
         2,
     )
     .await

@@ -1,9 +1,16 @@
 import { type FormEvent, useEffect, useMemo, useRef } from "react";
 
 import type { ContextMode, ThinkingTier } from "../api/types";
+import {
+  DRAFT_TOO_LONG,
+  MESSAGE_TOO_LONG,
+  draftTooLong,
+  messageTooLong,
+} from "../lib/composerLimits";
 import { mentionKeysOf } from "../lib/knowledge/flowProjection";
 import { useKnowledgeStore } from "../stores/knowledgeStore";
 import { useSessionStore } from "../stores/sessionStore";
+import { useToastStore } from "../stores/toastStore";
 import { actionButtonGlass, composerCardClass } from "./composerCard";
 import { AgentPicker, ContextModeToggle, ThinkSlider } from "./AgentChatInput";
 import { ImageThumb } from "./ImageThumb";
@@ -49,9 +56,31 @@ export function MiniChatInput({
     editorRef.current?.focus();
   }, []);
 
+  const change = (next: string) => {
+    if (draftTooLong(next)) {
+      onChange("", settings);
+      useToastStore.getState().showToast(DRAFT_TOO_LONG, "error", 5000, "composer-size");
+      return;
+    }
+    onChange(next, settings);
+  };
+
+  const rejectOversizedPaste = (event: ClipboardEvent) => {
+    const pastedText = event.clipboardData?.getData("text/plain") ?? "";
+    if (!draftTooLong(pastedText)) return false;
+    event.preventDefault();
+    onChange("", settings);
+    useToastStore.getState().showToast(DRAFT_TOO_LONG, "error", 5000, "composer-size");
+    return true;
+  };
+
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
     if (disabled || !settings.modelId) return;
+    if (messageTooLong(draft)) {
+      useToastStore.getState().showToast(MESSAGE_TOO_LONG, "error", 5000, "composer-size");
+      return;
+    }
     if (!draft.trim() && images.length === 0) return;
     onSubmit(draft, settings);
   };
@@ -125,8 +154,9 @@ export function MiniChatInput({
             className="mention-composer-input w-full px-3 py-2 pr-12 text-sm text-(--_dk-text-primary)"
             symbolLines
             submitOnEnter={!disabled}
-            onChange={(next) => onChange(next, settings)}
+            onChange={change}
             onSubmit={() => submit()}
+            onPaste={rejectOversizedPaste}
             onEscape={onDismiss}
             onMentionDrop
           />
@@ -136,6 +166,7 @@ export function MiniChatInput({
           disabled={
             disabled ||
             !settings.modelId ||
+            messageTooLong(draft) ||
             (!draft.trim() && images.length === 0)
           }
           className={`${actionButtonGlass} absolute right-2 bottom-2 flex h-[30px] w-[30px] items-center justify-center rounded-md border border-(--_dk-border-strong) text-(--_dk-text-primary) transition-transform duration-100 hover:brightness-110 active:scale-90 disabled:cursor-not-allowed disabled:opacity-40`}

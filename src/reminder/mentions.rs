@@ -1,6 +1,10 @@
 //! Attachment of what a user message cited.
 //!
-//! Written immediately after that user row. A citation is left out when a
+//! The turn path no longer writes this reminder: the user message already
+//! carries the citation, and that pointer is the smallest truthful form. The
+//! builder stays for existing rows and for callers that opt in.
+//!
+//! A citation is left out when a
 //! mentions reminder still on the live surface carries the same snapshot.
 //! Compaction removes that copy, so citing it again attaches a fresh one.
 //! It is not a seam reminder: nothing restores it on its own.
@@ -313,8 +317,8 @@ mod tests {
             .open_session_sync(workspace.to_str().unwrap(), "default", None)
             .unwrap();
         let text = symbol_mention_source("src/a.rs", Some("fn save"), None);
-        mgr.append_user_message_with_mentions(&sid, text.as_str(), &workspace)
-            .unwrap();
+        mgr.append_user_message(&sid, text.as_str()).unwrap();
+        mgr.append_mentions_for(&sid, &workspace, text.as_str());
         let events = mgr.data().events_blocking(&sid).unwrap();
         let kinds: Vec<_> = events
             .iter()
@@ -336,6 +340,36 @@ mod tests {
     }
 
     #[test]
+    fn a_user_message_no_longer_attaches_mentions() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("ws");
+        fs::create_dir_all(workspace.join("src")).unwrap();
+        fs::write(
+            workspace.join("src/a.rs"),
+            "fn save() {\n    let n = 1;\n}\n",
+        )
+        .unwrap();
+        let db = dir.path().join("sessions.db");
+        let mgr = SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db.to_str().unwrap().to_string(),
+        );
+        let sid = mgr
+            .open_session_sync(workspace.to_str().unwrap(), "default", None)
+            .unwrap();
+        let text = symbol_mention_source("src/a.rs", Some("fn save"), None);
+        mgr.append_user_message_with_knowledge_status(&sid, text.as_str(), &workspace)
+            .unwrap();
+        let events = mgr.data().events_blocking(&sid).unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|event| event.event_type.as_str() != "reminder/mentions"),
+            "the turn path must not expand citations into the transcript"
+        );
+    }
+
+    #[test]
     fn unchanged_symbol_is_not_attached_again_until_the_body_changes() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("ws");
@@ -354,10 +388,10 @@ mod tests {
             .open_session_sync(workspace.to_str().unwrap(), "default", None)
             .unwrap();
         let text = symbol_mention_source("src/a.rs", Some("fn save"), None);
-        mgr.append_user_message_with_mentions(&sid, text.as_str(), &workspace)
-            .unwrap();
-        mgr.append_user_message_with_mentions(&sid, text.as_str(), &workspace)
-            .unwrap();
+        mgr.append_user_message(&sid, text.as_str()).unwrap();
+        mgr.append_mentions_for(&sid, &workspace, text.as_str());
+        mgr.append_user_message(&sid, text.as_str()).unwrap();
+        mgr.append_mentions_for(&sid, &workspace, text.as_str());
         let events = mgr.data().events_blocking(&sid).unwrap();
         let mentions: Vec<_> = events
             .iter()
@@ -370,8 +404,8 @@ mod tests {
             "fn save() {\n    let n = 2;\n}\n",
         )
         .unwrap();
-        mgr.append_user_message_with_mentions(&sid, text.as_str(), &workspace)
-            .unwrap();
+        mgr.append_user_message(&sid, text.as_str()).unwrap();
+        mgr.append_mentions_for(&sid, &workspace, text.as_str());
         let events = mgr.data().events_blocking(&sid).unwrap();
         let mentions: Vec<_> = events
             .iter()

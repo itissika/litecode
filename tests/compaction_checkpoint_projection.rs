@@ -13,6 +13,7 @@ use litecode::context_pipeline::{
     ProviderPromptBaseline,
 };
 use litecode::llm::COMPACTION_INSTRUCTION;
+use litecode::runtime::observer::CompactionTrigger;
 use litecode::session::working::{CompactionCheckpoint, WorkingPayload, project_items};
 use litecode::types::{Item, item_text_preview, user_text};
 use tokio_util::sync::CancellationToken;
@@ -87,21 +88,24 @@ async fn second_compaction_reuses_one_checkpoint_prefix_and_merge_prior_instruct
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
     let cancel = CancellationToken::new();
 
-    assert!(
-        CompactPolicy::compact_now(
-            &budget,
-            &sessions,
-            &sid,
-            &request,
-            COMPACT_MAX_OUTPUT_TOKENS,
-            &cancel,
-            Some("pr2-first"),
-            &sessions.data_root_path(),
-        )
-        .await
-        .unwrap(),
-        "first compaction commits"
-    );
+    let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+    let first = CompactPolicy::compact_transcript(
+        &budget,
+        &sessions,
+        &sid,
+        &request,
+        COMPACT_MAX_OUTPUT_TOKENS,
+        &ProviderPromptBaseline::default(),
+        &mut rows,
+        &cancel,
+        CompactionTrigger::Manual,
+        Some("pr2-first"),
+        &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+    )
+    .await
+    .unwrap();
+    assert!(first.is_some(), "first compaction commits");
 
     let first_rows = sessions.data().working_set_blocking(&sid).unwrap();
     let first_row = first_rows.first().expect("first checkpoint row");
@@ -185,21 +189,24 @@ async fn second_compaction_reuses_one_checkpoint_prefix_and_merge_prior_instruct
         "reminder/queued append must not perturb the model-view prefix"
     );
 
-    assert!(
-        CompactPolicy::compact_now(
-            &budget,
-            &sessions,
-            &sid,
-            &request,
-            COMPACT_MAX_OUTPUT_TOKENS,
-            &cancel,
-            Some("pr2-second"),
-            &sessions.data_root_path(),
-        )
-        .await
-        .unwrap(),
-        "second compaction commits"
-    );
+    let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+    let second = CompactPolicy::compact_transcript(
+        &budget,
+        &sessions,
+        &sid,
+        &request,
+        COMPACT_MAX_OUTPUT_TOKENS,
+        &ProviderPromptBaseline::default(),
+        &mut rows,
+        &cancel,
+        CompactionTrigger::Manual,
+        Some("pr2-second"),
+        &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+    )
+    .await
+    .unwrap();
+    assert!(second.is_some(), "second compaction commits");
 
     let requests = captured.captured();
     assert_eq!(requests.len(), 2, "two compaction requests");
@@ -286,17 +293,21 @@ fn legacy_labeled_checkpoint_body_loads_and_projects_without_the_label() {
     sessions
         .insert_detail_rows(&sid, &[user_text("archive"), user_text("keep")])
         .unwrap();
-    let expected = sessions.data().revision_blocking(&sid).unwrap();
+    let rows = sessions.data().working_set_blocking(&sid).unwrap();
+    let prior = rows
+        .first()
+        .and_then(|row| row.checkpoint().and(row.log_seq));
+    let from = rows.first().and_then(|row| row.log_seq).unwrap_or(0);
     sessions
         .mutate_blocking(litecode::session::SessionMutation::Compact {
             session_id: sid.clone(),
-            expected_revision: expected,
             operation_id: litecode::session::MutationId::new(),
             summary: "[Conversation summary]\nprior facts".into(),
             token_estimate: 10,
             kept_from: Some(1),
             at: None,
-            expected_prefix: None,
+            expected_prior_checkpoint: prior,
+            expected_from: from,
             usage: None,
             provider_id: None,
         })

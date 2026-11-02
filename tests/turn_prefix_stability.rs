@@ -20,7 +20,10 @@ use litecode::authority::responses::{
 };
 use litecode::config::TurnGuard;
 use litecode::config::workspace::set_runtime_paths;
-use litecode::context_pipeline::{Context, ContextPipeline, ProviderPromptBaseline};
+use litecode::context_pipeline::{
+    BudgetPolicy, CompactPolicy, Context, ContextPipeline, ProviderPromptBaseline,
+};
+use litecode::runtime::observer::CompactionTrigger;
 use litecode::session::manager::SessionManager;
 use litecode::session::{WorkingRow, project_items};
 use litecode::types::{Item, Result, item_text_preview, user_text};
@@ -269,20 +272,37 @@ async fn prepare_snapshot(
 ) -> Vec<serde_json::Value> {
     let provider = common::ScriptedProvider::with_text("unused");
     let cancel = CancellationToken::new();
-    pipeline.stage_working(turn.clone());
     let baseline = ProviderPromptBaseline::default();
-    pipeline
-        .compact_step(
+    let budget = pipeline.budget_policy();
+    let request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
+    let mut rows = turn.clone();
+    let meter = CompactPolicy::measure_meter(
+        sessions,
+        sid,
+        &request,
+        &baseline,
+        &rows,
+        &sessions.data_root_path(),
+    );
+    if meter.should_compact() {
+        CompactPolicy::compact_transcript(
+            &budget,
             sessions,
             sid,
-            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
+            &request,
             1024,
             &baseline,
-            step,
+            &mut rows,
             &cancel,
+            CompactionTrigger::Auto,
+            Some("prepare-snapshot"),
+            &sessions.data_root_path(),
+            litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
         )
         .await
-        .expect("compact_step");
+        .expect("compact");
+    }
+    pipeline.stage_working(rows);
     pipeline
         .build_view(sessions, sid, &baseline, &test_model())
         .expect("build_view");
@@ -663,11 +683,27 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
         pipeline.context_window(),
         max_output_tokens,
     );
-    let compacted = pipeline
-        .compact_step(&sessions, &sid, &request, 1024, &baseline, 1, &cancel)
-        .await
-        .expect("compact");
+    let budget = pipeline.budget_policy();
+    let mut compact_rows = turn;
+    let compacted = CompactPolicy::compact_transcript(
+        &budget,
+        &sessions,
+        &sid,
+        &request,
+        1024,
+        &baseline,
+        &mut compact_rows,
+        &cancel,
+        CompactionTrigger::Auto,
+        Some("turn-prefix-compact"),
+        &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+    )
+    .await
+    .expect("compact")
+    .is_some();
     assert!(compacted, "the recorded baseline must force a compact");
+    pipeline.stage_working(compact_rows);
     pipeline
         .build_view(&sessions, &sid, &baseline, &test_model())
         .expect("build_view");

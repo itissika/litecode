@@ -534,7 +534,7 @@ export function SessionList() {
               belongs. Same popover shell as the per-session ctx ring, so the two
               usage surfaces read as one idea. Reads only on open. */}
           <Popover
-            width={240}
+            width="auto"
             trigger={({ open, toggle: togglePopover }) => (
               <button
                 type="button"

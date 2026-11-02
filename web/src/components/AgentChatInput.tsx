@@ -9,6 +9,12 @@ import {
   normalizeImage,
 } from "../lib/imageNormalize";
 
+import {
+  DRAFT_TOO_LONG,
+  MESSAGE_TOO_LONG,
+  draftTooLong,
+  messageTooLong,
+} from "../lib/composerLimits";
 import { paintDragCursor, viewOf } from "../lib/domView";
 import { mentionKeysOf } from "../lib/knowledge/flowProjection";
 import { useConnectionStore } from "../stores/connectionStore";
@@ -250,6 +256,17 @@ export function AgentChatInput({
   const [draft, setDraft] = useState("");
   const [images, setImages] = useState<ComposerImage[]>([]);
   const imageEpoch = useRef(0);
+
+  // A single message larger than this is an accidental paste, not a useful
+  // turn: the backend may otherwise try to compact an empty session and fail.
+  const applyDraft = (next: string) => {
+    if (draftTooLong(next)) {
+      setDraft("");
+      useToastStore.getState().showToast(DRAFT_TOO_LONG, "error", 5000, "composer-size");
+      return;
+    }
+    setDraft(next);
+  };
   useEffect(() => {
     imageEpoch.current += 1;
     setDraft("");
@@ -334,6 +351,7 @@ export function AgentChatInput({
   const imagesMasked = images.length > 0 && !supportsImage;
   const imagesBlockSend = imagesBusy || imagesMasked;
   const hasBody = draft.trim().length > 0 || readyRefs.length > 0;
+  const tooLong = messageTooLong(draft);
 
   const boxRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<MentionEditorHandle>(null);
@@ -427,8 +445,7 @@ export function AgentChatInput({
   // so sending is allowed as soon as ANY model is selectable. With no model at
   // all the turn really cannot run — stay blocked.
   const hasModel = Boolean(sessionModelId) || availableModels.length > 0;
-  const connBlocked =
-    connection !== "connected" || isRunning || manualCompacting || replaying;
+  const connBlocked = connection !== "connected" || isRunning || replaying;
   // Stop is the one control that must survive a live turn: `connBlocked`
   // folds in `isRunning`, which is exactly the state a stop exists to
   // interrupt. Only a dead connection blocks the cancel RPC.
@@ -476,6 +493,10 @@ export function AgentChatInput({
 
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
+    if (tooLong) {
+      useToastStore.getState().showToast(MESSAGE_TOO_LONG, "error", 5000, "composer-size");
+      return;
+    }
     const trimmed = draft.trim();
     if (!hasBody) return;
     if (imagesBusy) return;
@@ -509,6 +530,14 @@ export function AgentChatInput({
   };
 
   const onPasteImage = (event: ClipboardEvent) => {
+    // Reject an oversized text paste before Tiptap builds a document for it.
+    const pastedText = event.clipboardData?.getData("text/plain") ?? "";
+    if (draftTooLong(pastedText)) {
+      event.preventDefault();
+      setDraft("");
+      useToastStore.getState().showToast(DRAFT_TOO_LONG, "error", 5000, "composer-size");
+      return true;
+    }
     const files = clipboardImageFiles(event.clipboardData);
     if (files.length === 0) return false;
     event.preventDefault();
@@ -751,7 +780,7 @@ export function AgentChatInput({
             className="mention-composer-input w-full px-3 pt-2 pb-11 text-sm text-(--_dk-text-primary)"
             symbolLines
             submitOnEnter
-            onChange={setDraft}
+            onChange={applyDraft}
             onSubmit={submitFromKeys}
             onPaste={onPasteImage}
             onMentionDrop
@@ -814,8 +843,8 @@ export function AgentChatInput({
             type={sendAction === "send" ? "submit" : "button"}
             disabled={
               (sendAction === "send" &&
-                (isBlocked || !hasBody || imagesBlockSend)) ||
-              (sendAction === "queue" && imagesBlockSend)
+                (isBlocked || !hasBody || tooLong || imagesBlockSend)) ||
+              (sendAction === "queue" && (tooLong || imagesBlockSend))
             }
             onClick={
               sendAction === "send"
@@ -828,9 +857,11 @@ export function AgentChatInput({
               isRunning ? " send-spin-glow" : ""
             }`}
             title={
-              sendAction !== "cancel" && imagesMasked
-                ? "Switch to a model that supports images"
-                : sendAction !== "cancel" && imagesBusy
+              sendAction !== "cancel" && tooLong
+                ? MESSAGE_TOO_LONG
+                : sendAction !== "cancel" && imagesMasked
+                  ? "Switch to a model that supports images"
+                  : sendAction !== "cancel" && imagesBusy
                   ? "Waiting for the image to upload"
                   : sendAction === "send"
                     ? "Send"

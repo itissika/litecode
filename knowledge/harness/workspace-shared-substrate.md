@@ -19,10 +19,4 @@ h : 408
 
 向下展开：[@ key="workspace-sandbox"]、[@ key="workspace-watcher"]、[@ key="terminal-pty"]。
 上层：[@ key="product-brief"]、[@ key="ux-design"]。
-依据：[@ file="src/workspace/sandbox.rs"]、[@ file="src/workspace/watcher.rs"]、[@ file="src/session/workspace_lock.rs"]。
-基线：075308b
-
-**核实结论：一致，无漂移。**（基线 075308b）
-- 唯一安全门与唯一 watcher —— [@ file="src/workspace/sandbox.rs" symbol="impl Sandbox › fn resolve"]、[@ file="src/workspace/watcher.rs" symbol="impl WorkspaceWatcher › fn start"]；跨进程独占锁 [@ file="src/session/workspace_lock.rs" symbol="impl WorkspaceLock › fn acquire"]。
-- PTY / 引擎基座清单与子节点一致；终端死亡清单通过（`terminal_bypass_death_list`）。
-- ISSUE-010（WP-067 已关，不否定唯一门主张）—— `copy_path` 现保链接（顶层+嵌套），链出仍 Escape；非 B3。热切换死亡清单误报见 ISSUE-007（已关）。
+依据：[@ file="src/workspace/sandbox.rs"]、[@ file="src/workspace/watcher.rs"]、[@ file="src/session/workspace_lock.rs"]、[@ file="src/workspace/sandbox.rs" symbol="impl Sandbox › fn resolve"]、[@ file="src/workspace/watcher.rs" symbol="impl WorkspaceWatcher › fn start"]、[@ file="src/session/workspace_lock.rs" symbol="impl WorkspaceLock › fn acquire"]。

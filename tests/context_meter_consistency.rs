@@ -10,12 +10,15 @@ use common::scripted_provider::ScriptedProvider;
 use litecode::client_protocol::controller::Projection;
 use litecode::client_protocol::protocol::SessionBindingProjection;
 use litecode::context_pipeline::{
-    Context, ContextEnvelope, ContextMeterSource, ContextPipeline, ProviderPromptBaseline,
-    measure_persisted_context, measure_request_context, request_token_breakdown_for_rows,
+    BudgetPolicy, COMPACT_MAX_OUTPUT_TOKENS, CompactPolicy, Context, ContextEnvelope,
+    ContextMeterSource, ContextPipeline, ProviderPromptBaseline, measure_persisted_context,
+    measure_request_context, request_token_breakdown_for_rows,
 };
 use litecode::platform_knobs::ContextMode;
 use litecode::provider_catalog::ResolvedModel;
-use litecode::runtime::observer::{InternalEvent, TurnEndReason, TurnTokenStats};
+use litecode::runtime::observer::{
+    CompactionTrigger, InternalEvent, TurnEndReason, TurnTokenStats,
+};
 use litecode::types::{Item, user_message, user_text};
 use tokio_util::sync::CancellationToken;
 
@@ -168,19 +171,25 @@ async fn auto_manual_and_ui_share_provider_plus_suffix_meter() {
     assert_eq!(snap.context_envelope.output_reserve, 1_024);
 
     // The auto trigger consumes the same projection/meter.
-    pipeline.stage_working(rows);
-    let compacted = pipeline
-        .compact_step(
-            &sessions,
-            &sid,
-            &request,
-            litecode::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
-            &baseline,
-            1,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("auto compaction");
+    let budget = pipeline.budget_policy();
+    let mut compact_rows = rows;
+    let compacted = CompactPolicy::compact_transcript(
+        &budget,
+        &sessions,
+        &sid,
+        &request,
+        COMPACT_MAX_OUTPUT_TOKENS,
+        &baseline,
+        &mut compact_rows,
+        &CancellationToken::new(),
+        CompactionTrigger::Auto,
+        Some("meter-shared"),
+        &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+    )
+    .await
+    .expect("auto compaction")
+    .is_some();
     assert!(compacted, "auto must trigger from the shared ContextMeter");
 }
 
@@ -301,19 +310,25 @@ async fn covered_pad_is_not_charged_again_as_provider_suffix() {
     assert!(auto_meter.should_compact());
     assert!(auto_meter.manual_eligible());
 
-    pipeline.stage_working(rows);
-    let compacted = pipeline
-        .compact_step(
-            &sessions,
-            &sid,
-            &request,
-            litecode::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
-            &baseline,
-            1,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("auto compaction");
+    let budget = pipeline.budget_policy();
+    let mut compact_rows = rows;
+    let compacted = CompactPolicy::compact_transcript(
+        &budget,
+        &sessions,
+        &sid,
+        &request,
+        COMPACT_MAX_OUTPUT_TOKENS,
+        &baseline,
+        &mut compact_rows,
+        &CancellationToken::new(),
+        CompactionTrigger::Auto,
+        Some("meter-padded"),
+        &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+    )
+    .await
+    .expect("auto compaction")
+    .is_some();
     assert!(compacted, "auto must trigger from the padded request meter");
 }
 

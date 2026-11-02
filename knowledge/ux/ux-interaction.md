@@ -21,4 +21,3 @@ h : 449
 上层：[@ key="ux-design"]。
 相关：[@ key="ux"]、[@ key="client-projection"]、[@ key="tool-pipeline"]。
 依据：[@ file="web/src/components/PermissionModal.tsx"]、[@ file="web/src/components/SessionStatusLine.tsx"]、[@ file="web/src/stores/connectionStore.ts"]。
-基线：075308b

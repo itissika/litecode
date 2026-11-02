@@ -18,6 +18,4 @@ domain : tools-permission
 - 身份两级：tool name 是工具身份，call_id 是调用身份，二者不是一回事。
 
 上层：[@ key="tools"]。相关：[@ key="tool-pipeline"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
 - 管线职责拆到 tool-request-entry / lifecycle / delivery / shaping；与实现入口 `run_tool` 一致。

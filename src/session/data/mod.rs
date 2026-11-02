@@ -141,6 +141,20 @@ impl SessionData {
         }
     }
 
+    pub fn working_set_state_blocking(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::data::command::WorkingSetState> {
+        match self.read_blocking(SessionRead::WorkingSetState {
+            session_id: session_id.to_string(),
+        })? {
+            ReadValue::WorkingSetState(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected working-set state".into(),
+            )),
+        }
+    }
+
     pub fn events_blocking(
         &self,
         session_id: &str,
@@ -560,16 +574,23 @@ impl SessionData {
         kept_from: Option<i64>,
         token_estimate: i64,
     ) -> Result<()> {
-        let expected = self.revision_blocking(session_id)?;
+        let rows = self.working_set_blocking(session_id)?;
+        let prior = rows
+            .first()
+            .and_then(|row| row.checkpoint().and(row.log_seq));
+        let from = rows
+            .first()
+            .and_then(|row| row.log_seq)
+            .unwrap_or(self.seq_cursor_blocking(session_id)?.1);
         self.mutate_blocking(SessionMutation::Compact {
             session_id: session_id.to_string(),
-            expected_revision: expected,
             operation_id: MutationId::new(),
             summary: summary.to_string(),
             token_estimate,
             kept_from: kept_from.map(|s| s as crate::session::event::Seq),
             at: None,
-            expected_prefix: None,
+            expected_prior_checkpoint: prior,
+            expected_from: from,
             usage: None,
             provider_id: None,
         })?;

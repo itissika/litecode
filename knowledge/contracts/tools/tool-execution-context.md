@@ -19,7 +19,3 @@ domain : tools-permission
 
 父节点：[@ key="tool-control-boundary"]。
 相关：[@ key="tool-control-boundary"]、[@ key="tool-scheduling"]、[@ key="tool-call-lifecycle"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- 结构体字段与 session_reader 硬失败 —— [@ file="src/tool/trait_.rs" symbol="struct ToolExecutionContext"]、[@ file="src/tool/trait_.rs" symbol="impl ToolExecutionContext › fn session_reader"]。
-- 装配在 run_tool；消费逐工具（read/bash）—— 与主张「提供≠消费」一致。

@@ -11,8 +11,3 @@ domain : ide-substrate
 
 依据：[@ file="src/workspace/watcher.rs" symbol="impl WorkspaceWatcher › fn start"]、[@ file="src/workspace/watcher.rs" symbol="fn spawn_watcher"]、`tests/workspace_hotswitch_death_list.rs`（已删除）。
 上层：[@ key="workspace-shared-substrate"]。
-基线：075308b
-
-**核实结论：一致，无漂移。**（基线 075308b）
-- 工作区唯一 notify 所有者 —— [@ file="src/workspace/watcher.rs" symbol="impl WorkspaceWatcher › fn start"]、[@ file="src/workspace/watcher.rs" symbol="fn spawn_watcher"]；排除规则在源端硬切后调用 `reload_workspace_excludes_from_disk`（不是根热切换）。
-- 死亡清单 `death_list_forbidden_hot_switch_symbols` 因子串误报失败 —— ISSUE-007（建议收窄 FORBIDDEN，禁止静默删测）。

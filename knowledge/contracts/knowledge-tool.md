@@ -12,6 +12,3 @@ domain : knowledge
 依据：[@ file="src/tools/knowledge.rs" symbol="impl Tool for KnowledgeTool › fn execute"]、[@ file="src/tools/knowledge.rs" symbol="impl KnowledgeTool › fn check"]、[@ file="src/tools/knowledge.rs" symbol="impl KnowledgeTool › fn refs"]、[@ file="src/knowledge/index.rs" symbol="impl KnowledgeIndex › fn notify_paths"]。
 上层：[@ key="knowledge"]。
 相关：[@ key="featured-tools"]、[@ key="knowledge-index"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- 工具读索引、写后 notify —— [@ file="src/tools/knowledge.rs" symbol="impl Tool for KnowledgeTool › fn execute"]、[@ file="src/tools/knowledge.rs" symbol="impl KnowledgeTool › fn check"]、[@ file="src/knowledge/index.rs" symbol="impl KnowledgeIndex › fn notify_paths"]。

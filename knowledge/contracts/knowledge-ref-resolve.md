@@ -12,7 +12,3 @@ domain : knowledge
 依据：[@ file="src/knowledge/validate.rs" symbol="fn resolve"]、[@ file="src/knowledge/validate.rs" symbol="fn validate_with"]、[@ file="src/knowledge/fsref.rs" symbol="fn lookup"]、[@ file="src/knowledge/fsref.rs" symbol="fn read_text"]、[@ file="src/knowledge/spec_tests.rs" symbol="fn resolution_follows_the_spec"]。
 上层：[@ key="knowledge"]。
 相关：[@ key="knowledge-ref-authority"]、[@ key="knowledge-parse"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- resolve / validate_with —— [@ file="src/knowledge/validate.rs" symbol="fn resolve"]、[@ file="src/knowledge/validate.rs" symbol="fn validate_with"]。
-- 状态码锁定 —— [@ file="src/knowledge/spec_tests.rs" symbol="fn resolution_follows_the_spec"]。

@@ -17,7 +17,5 @@ h : 321
 框架展开：[@ key="config"]。
 契约展开：[@ key="engine-lifecycle"]、[@ key="retrieval-contract"]。
 上层：[@ key="product-brief"]。
-基线：075308b
 
-**核实结论：一致，无漂移。**（基线 075308b）
 - 理念层（长生命周期、configured≠Warm、两腿两语料）与 [@ key="engine-lifecycle"] / [@ key="retrieval-contract"] 及 `src/engines/*` 一致；无独立产品漂移。

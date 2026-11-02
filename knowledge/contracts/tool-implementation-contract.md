@@ -20,6 +20,4 @@ domain : tools-permission
 上层：[@ key="tools"]。
 相关：[@ key="tool-call-contract"]。
 契约展开：[@ key="webfetch-ssrf"]、[@ key="websearch"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
 - 实现契约由 adapters / identity / webfetch-ssrf / websearch 展开；挂树完整。

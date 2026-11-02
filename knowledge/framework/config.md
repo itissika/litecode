@@ -16,8 +16,6 @@ h : 337
 
 契约展开：[@ key="config-commit"]、[@ key="engine-lifecycle"]、[@ key="provider-catalog"]。
 上层：[@ key="engine-design"]。
-基线：075308b
 
-**核实结论：一致，无漂移。**（基线 075308b）
 - 唯一写入门 ConfigGate / SettingsWriter —— 见 [@ key="config-commit"]；分层 Builtin < Global < Workspace 由 ResolvedConfig 兑现。
-- 运行态是投影、永不写文档 —— ADR docs/adr/0002-config-gate.md 与实现一致。
+- 运行态是投影、永不写文档 —— 与 [@ key="config-commit"] 一致，无旁路写入。

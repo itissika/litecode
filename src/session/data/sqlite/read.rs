@@ -36,6 +36,9 @@ pub fn execute(
             &session_id,
             data_root,
         )?)),
+        SessionRead::WorkingSetState { session_id } => Ok(ReadValue::WorkingSetState(
+            load_working_set_state(conn, &session_id, data_root)?,
+        )),
         SessionRead::Events { session_id } => Ok(ReadValue::Events(load_events(
             conn,
             &session_id,
@@ -626,13 +629,38 @@ fn load_working_set(
     session_id: &str,
     data_root: &std::path::Path,
 ) -> Result<Vec<WorkingRow>> {
-    if let Some(rows) = load_working_set_anchored(conn, session_id, data_root)? {
-        return Ok(rows);
+    Ok(load_working_view(conn, session_id, data_root)?.rows()?)
+}
+
+/// Rows plus the set of log seqs still in flight. Compaction uses this to keep
+/// its summarised/rewritten prefix strictly below the first unsealed row.
+fn load_working_set_state(
+    conn: &Connection,
+    session_id: &str,
+    data_root: &std::path::Path,
+) -> Result<crate::session::data::command::WorkingSetState> {
+    let view = load_working_view(conn, session_id, data_root)?;
+    Ok(crate::session::data::command::WorkingSetState {
+        rows: view.rows()?,
+        in_progress: view.in_progress_seqs().clone(),
+    })
+}
+
+/// One folded view, anchored when possible. The anchor only removes rows the
+/// checkpoint already replaced; the result is row-for-row identical to a full
+/// fold, and a refused anchor falls back to the full log.
+fn load_working_view(
+    conn: &Connection,
+    session_id: &str,
+    data_root: &std::path::Path,
+) -> Result<crate::session::view::WorkingView> {
+    if let Some(view) = load_working_set_anchored_view(conn, session_id, data_root)? {
+        return Ok(view);
     }
     let events = load_events(conn, session_id, data_root)?;
     let mut view = crate::session::view::WorkingView::from_events(&events)?;
     view.set_epoch(session::Session::load_truncate_epoch_on(conn, session_id)?);
-    view.rows()
+    Ok(view)
 }
 
 /// [`load_working_set`] starting at the checkpoint instead of seq 0.
@@ -645,10 +673,20 @@ fn load_working_set_anchored(
     session_id: &str,
     data_root: &std::path::Path,
 ) -> Result<Option<Vec<WorkingRow>>> {
+    Ok(load_working_set_anchored_view(conn, session_id, data_root)?
+        .map(|view| view.rows())
+        .transpose()?)
+}
+
+fn load_working_set_anchored_view(
+    conn: &Connection,
+    session_id: &str,
+    data_root: &std::path::Path,
+) -> Result<Option<crate::session::view::WorkingView>> {
     let Some(anchor) = session::load_compact_anchor_on(conn, session_id)? else {
         return Ok(None);
     };
-    let anchored = (|| -> Result<Vec<WorkingRow>> {
+    let anchored = (|| -> Result<crate::session::view::WorkingView> {
         let start = i64::try_from(anchor.start).map_err(|_| {
             LitecodeError::InvalidSessionEvent(format!(
                 "fold anchor {} exceeds the seq range",
@@ -668,10 +706,10 @@ fn load_working_set_anchored(
                 anchor.start, anchor.checkpoint
             )));
         }
-        Ok(rows)
+        Ok(view)
     })();
     match anchored {
-        Ok(rows) => Ok(Some(rows)),
+        Ok(view) => Ok(Some(view)),
         Err(error) => {
             tracing::warn!(
                 session_id,
@@ -1345,20 +1383,24 @@ mod workspace_usage_tests {
             .data()
             .insert_items(session_id, &[user_text("seed")])
             .expect("seed row");
-        let expected = manager
+        let rows = manager
             .data()
-            .revision_blocking(session_id)
-            .expect("revision");
+            .working_set_blocking(session_id)
+            .expect("working set");
+        let expected_from = rows
+            .first()
+            .and_then(|row| row.log_seq)
+            .expect("seed row");
         manager
             .mutate_blocking(SessionMutation::Compact {
                 session_id: session_id.to_string(),
-                expected_revision: expected,
                 operation_id: MutationId::new(),
                 summary: format!("summary-{}", provider_id.unwrap_or("unknown")),
                 token_estimate: 1,
                 kept_from: None,
                 at: None,
-                expected_prefix: None,
+                expected_prior_checkpoint: None,
+                expected_from,
                 usage: Some(usage(amount, amount / 2, 5)),
                 provider_id: provider_id.map(str::to_string),
             })

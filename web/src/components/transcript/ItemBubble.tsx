@@ -13,6 +13,7 @@ import { useSessionStore } from "../../stores/sessionStore";
 import { useTurnStore } from "../../stores/turnStore";
 import { MiniChatInput, type MiniChatInputSettings } from "../MiniChatInput";
 import { processGroupAutoOpen } from "../toolCallStatus";
+import { MessageCopyButton } from "./MessageCopyButton";
 import { NodeView, ProcessGroup } from "./NodeView";
 
 export interface EditingUserAnchor {
@@ -146,6 +147,12 @@ function ItemBubbleImpl({
   const hasContent = nodes.length > 0 || !streaming;
   const groups = groupNodes(nodes);
   const userText = nodes.find((node) => node.kind === "text")?.text ?? "";
+  // The whole reply, source form: every text node with its citations intact.
+  const replyText = nodes
+    .filter((node) => node.kind === "text")
+    .map((node) => node.text)
+    .join("\n\n")
+    .trim();
   const userImages =
     nodes.find((node) => node.kind === "images")?.refs ?? [];
   const editing =
@@ -272,9 +279,16 @@ function ItemBubbleImpl({
           </div>
         )
       ) : (
-        <div className="flex items-start gap-2">
+        <div className="group relative flex items-start gap-2">
           <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-text-muted)" />
           <div className="min-w-0 flex-1">{body}</div>
+          {/* Floats over the reply instead of reserving a column, so the prose
+              keeps the full bubble width; the backdrop keeps it legible. */}
+          {!streaming && replyText ? (
+            <div className="absolute top-0 right-0 z-10 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+              <MessageCopyButton text={replyText} />
+            </div>
+          ) : null}
         </div>
       )}
     </div>

@@ -11,8 +11,3 @@ domain : ide-substrate
 
 依据：[@ file="src/terminal/pty.rs" symbol="impl PtySession › fn spawn_interactive"]、[@ file="src/terminal/pty.rs" symbol="impl Drop for PtySession"]、[@ file="src/terminal/mod.rs" symbol="fn install_hub"]、[@ file="tests/terminal_bypass_death_list.rs" symbol="fn death_list_src_pty_symbols_only_in_terminal_module"]。
 上层：[@ key="workspace-shared-substrate"]。
-基线：075308b
-
-**核实结论：一致，无漂移。**（基线 075308b）
-- 唯一 PTY 基座 —— [@ file="src/terminal/pty.rs" symbol="impl PtySession › fn spawn_interactive"]、[@ file="src/terminal/mod.rs" symbol="fn install_hub"]；Drop 回收见 [@ file="src/terminal/pty.rs" symbol="impl Drop for PtySession"]。
-- 死亡清单三测全过 —— `death_list_no_node_pty_*` / `death_list_src_pty_symbols_only_in_terminal_module`。

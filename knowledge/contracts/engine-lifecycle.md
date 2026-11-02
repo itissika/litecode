@@ -20,9 +20,3 @@ h : 414
 契约展开：[@ key="lsp-hub-lifecycle"]、[@ key="process-lifetime"]。
 上层：[@ key="config"]、[@ key="engine-design"]。
 依据：[@ file="src/engines/mod.rs"]、[@ file="src/engines/status_view.rs"]。
-基线：075308b
-
-**核实结论：一致，无漂移。**（基线 075308b）
-- desired 与 `EngineState` 分立 —— [@ file="src/engines/mod.rs"]（Idle/Warming/Warm/Failed/Stopped）+ `workspace_engine_desired`；投影 [@ file="src/engines/status_view.rs"]。
-- code / session 执行门解耦 —— session 语义需 code_search Warm；索引状态独立于 desired。
-- 子契约 lsp-hub-lifecycle / process-lifetime 已对照；ISSUE-009 已关（gate）；无产品层阻止扩写的矛盾。

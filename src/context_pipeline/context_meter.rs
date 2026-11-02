@@ -169,28 +169,29 @@ impl ContextMeter {
         self.pressure_enabled() && self.used_tokens > self.prompt_limit
     }
 
-    /// Hard send gate: 100% of the selected product window, capped by the
-    /// physical prompt ceiling minus the safety margin. Standard mode therefore
-    /// stops at its own window (the gauge reaches 100%); max mode stops at the
-    /// provider's prompt ceiling, which can sit below the selected window.
-    /// Deliberately later than [`Self::should_compact`] (the 0.8 prepare line).
-    pub fn must_compact_before_send(&self, margin: usize) -> bool {
-        let physical = self.prompt_limit.saturating_sub(margin);
-        self.pressure_enabled() && self.used_tokens > physical.min(self.context_window)
+    /// The actual no-send line: the smaller of the selected product window and
+    /// the physical prompt ceiling. Standard mode stops at its own window; max
+    /// mode stops at the provider's prompt ceiling.
+    pub fn hard_limit(&self) -> usize {
+        self.context_window.min(self.prompt_limit)
+    }
+
+    pub fn is_over_hard_line(&self) -> bool {
+        self.pressure_enabled() && self.used_tokens > self.hard_limit()
+    }
+
+    /// Early wait point, strictly below the no-send line. The turn may wait
+    /// here, but it may still send if the episode fails and the meter remains
+    /// below [`Self::hard_limit`].
+    pub fn is_at_wait_line(&self, margin: usize) -> bool {
+        self.pressure_enabled()
+            && self.used_tokens > self.hard_limit().saturating_sub(margin)
     }
 
     /// Prompt occupancy plus the separate output reservation. Useful for
     /// diagnostics; pressure decisions compare `used_tokens` to `compact_at`.
     pub fn occupied_with_output(&self) -> usize {
         self.used_tokens.saturating_add(self.output_reserve)
-    }
-
-    pub fn enforce_prompt_limit(&self) -> Result<()> {
-        if self.is_over_prompt_limit() {
-            Err(LitecodeError::TokenBudgetExceeded)
-        } else {
-            Ok(())
-        }
     }
 
     pub fn log_iteration(&self, step: u64) {
@@ -587,8 +588,8 @@ mod tests {
             8_501,
             ContextMeterSource::LocalEnvelope,
         );
-        assert!(!below.must_compact_before_send(500));
-        assert!(over.must_compact_before_send(500));
+        assert!(!below.is_at_wait_line(500));
+        assert!(over.is_at_wait_line(500));
         // The 0.8 line is not the send gate: 8_100 is below 8_500.
         let prepare_only = ContextMeter::new(
             10_000,
@@ -598,10 +599,10 @@ mod tests {
             ContextMeterSource::LocalEnvelope,
         );
         assert!(prepare_only.should_compact());
-        assert!(!prepare_only.must_compact_before_send(500));
+        assert!(!prepare_only.is_at_wait_line(500));
         // Unknown/short windows never force a send stop.
         let unknown = ContextMeter::new(1, 1, 0, 1, ContextMeterSource::LocalEnvelope);
-        assert!(!unknown.must_compact_before_send(500));
+        assert!(!unknown.is_at_wait_line(500));
     }
 
     #[test]
@@ -629,12 +630,21 @@ mod tests {
             256_001,
             ContextMeterSource::LocalEnvelope,
         );
-        assert!(!below.must_compact_before_send(5_120));
-        assert!(
-            !at.must_compact_before_send(5_120),
-            "strict > allows exactly 100%"
+        // The wait line is 2% below the product hard line (250_880 here), not
+        // the product window itself.
+        let well_below = ContextMeter::new(
+            256_000,
+            1_050_000,
+            128_000,
+            250_000,
+            ContextMeterSource::LocalEnvelope,
         );
-        assert!(over.must_compact_before_send(5_120));
+        assert!(!well_below.is_at_wait_line(5_120));
+        assert!(below.is_at_wait_line(5_120));
+        assert!(at.is_at_wait_line(5_120));
+        assert!(over.is_at_wait_line(5_120));
+        assert!(!at.is_over_hard_line(), "strict > allows exactly 100%");
+        assert!(over.is_over_hard_line());
         assert!(
             at.should_compact(),
             "the 0.8 prepare line is already crossed"
@@ -656,8 +666,8 @@ mod tests {
             901_001,
             ContextMeterSource::LocalEnvelope,
         );
-        assert!(!max_at.must_compact_before_send(21_000));
-        assert!(max_over.must_compact_before_send(21_000));
+        assert!(!max_at.is_at_wait_line(21_000));
+        assert!(max_over.is_at_wait_line(21_000));
     }
 
     #[test]

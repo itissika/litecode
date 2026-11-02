@@ -187,6 +187,10 @@ describe("AgentMarkdown citations", () => {
     expect(file.parentElement?.className).toContain("is-file");
     expect(file.parentElement?.className).not.toContain("is-symbol");
     expect(file.parentElement?.getAttribute("title")).toBeNull();
+    // Copy hands over the reference, not the label the capsule shows.
+    expect(file.parentElement?.getAttribute("data-citation")).toBe(
+      '[@ file="src/a.rs"]',
+    );
     fireEvent.mouseEnter(file.parentElement!);
     expect(screen.getByRole("tooltip").textContent).toBe("src/a.rs");
     fireEvent.mouseLeave(file.parentElement!);
@@ -194,6 +198,9 @@ describe("AgentMarkdown citations", () => {
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     const rangeChip = screen.getByRole("button", { name: "a.rs : 4-9" });
     expect(rangeChip.parentElement?.className).not.toContain("is-symbol");
+    expect(rangeChip.parentElement?.getAttribute("data-citation")).toBe(
+      '[@ file="src/a.rs" lines="4-9"]',
+    );
     fireEvent.mouseEnter(rangeChip.parentElement!);
     expect(screen.getByRole("tooltip").textContent).toBe("src/a.rs : 4-9");
     fireEvent.mouseLeave(rangeChip.parentElement!);

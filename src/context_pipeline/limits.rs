@@ -22,13 +22,13 @@ pub const MANUAL_COMPACT_RATIO_PERCENT: usize = 30;
 /// Headroom kept below the hard prompt ceiling before a request must stop.
 /// The background summary may start at the 0.8 prepare line; this is the
 /// later line where continuing without a committed compaction is unsafe.
-pub const COMPACT_PREFETCH_MARGIN_PERCENT: usize = 2;
+pub const COMPACT_WAIT_MARGIN_PERCENT: usize = 2;
 /// A 2% margin is too small on short windows; keep a fixed floor.
-pub const COMPACT_PREFETCH_MARGIN_FLOOR_TOKENS: usize = 4_096;
+pub const COMPACT_WAIT_MARGIN_FLOOR_TOKENS: usize = 4_096;
 
 /// Margin below `prompt_limit` used by the send gate. The hard stop is
 /// `prompt_limit - margin`, never `compact_at`.
-pub fn compact_prefetch_margin(context_window: usize) -> usize {
-    (context_window.saturating_mul(COMPACT_PREFETCH_MARGIN_PERCENT) / 100)
-        .max(COMPACT_PREFETCH_MARGIN_FLOOR_TOKENS)
+pub fn compact_wait_margin(context_window: usize) -> usize {
+    (context_window.saturating_mul(COMPACT_WAIT_MARGIN_PERCENT) / 100)
+        .max(COMPACT_WAIT_MARGIN_FLOOR_TOKENS)
 }

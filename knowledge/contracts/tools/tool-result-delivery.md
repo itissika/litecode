@@ -19,8 +19,3 @@ domain : tools-permission
 
 父节点：[@ key="tool-call-contract"]。
 相关：[@ key="tool-call-lifecycle"]、[@ key="tool-identity"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- call_id 映射再按序回放 —— [@ file="src/tool/executor.rs" symbol="fn outputs_from_tool_results"]。
-- 中断补位 —— [@ file="src/agent/core.rs" symbol="fn interrupted_outputs"]。
-- 孤儿丢弃 / 尾部封口 —— [@ file="src/session/data/sqlite/session.rs" symbol="impl Session › fn commit_turn_delta_with_orphan_cleanup"]、[@ file="src/session/data/sqlite/session.rs" symbol="impl Session › fn seal_tail_unanswered_calls"]。

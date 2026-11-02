@@ -11,8 +11,3 @@ domain : client-ux
 
 依据：[@ file="src/serve/run.rs" symbol="fn validate_serve_bind"]、[@ file="src/serve/auth.rs" symbol="fn middleware"]、[@ file="src/serve/auth.rs" symbol="fn extract_token"]、[@ file="src/serve/auth.rs" symbol="fn extract_query_token"]、[@ file="tests/serve_bind_auth.rs" symbol="fn bind_auth_matrix"]。
 上层：[@ key="ux"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- 非回环必须认证 —— [@ file="src/serve/run.rs" symbol="fn validate_serve_bind"]。
-- `/api` 只认 Bearer；`/ws` 可 query token；`/health` 与静态放行 —— [@ file="src/serve/auth.rs" symbol="fn middleware"]、[@ file="src/serve/auth.rs" symbol="fn extract_token"]、[@ file="src/serve/auth.rs" symbol="fn extract_query_token"]。
-- 矩阵测试见 [@ file="tests/serve_bind_auth.rs" symbol="fn bind_auth_matrix"]。唯一 serve 安全门，绕过对应 B3。

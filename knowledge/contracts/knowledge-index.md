@@ -12,6 +12,3 @@ domain : knowledge
 依据：[@ file="src/knowledge/index.rs" symbol="fn start"]、[@ file="src/knowledge/index.rs" symbol="impl KnowledgeIndex › fn snapshot"]、[@ file="src/knowledge/index.rs" symbol="fn fresh_content"]、[@ file="src/knowledge/index.rs" symbol="fn turn_note"]。
 上层：[@ key="knowledge"]。
 相关：[@ key="knowledge-ref-authority"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- 常驻索引 start/snapshot/fresh_content/turn_note —— [@ file="src/knowledge/index.rs" symbol="fn start"]、[@ file="src/knowledge/index.rs" symbol="impl KnowledgeIndex › fn snapshot"]、[@ file="src/knowledge/index.rs" symbol="fn fresh_content"]、[@ file="src/knowledge/index.rs" symbol="fn turn_note"]。

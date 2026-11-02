@@ -12,8 +12,3 @@ domain : release-desktop
 依据：[@ file="desktop/src/bundle-paths.ts" symbol="fn resolveBundledModelDir"]、[@ file="desktop/src/bundle-paths.ts" symbol="fn devRepoRoot"]、[@ file="desktop/src/components.ts" symbol="fn resolveComponentSource"]。
 上层：[@ key="desktop-shell"]。
 相关：[@ key="component-distribution"]。
-基线：075308b
-
-**核实结论：一致，无漂移。**（基线 075308b）
-- 查找序 + packaged 不回落 —— [@ file="desktop/src/bundle-paths.ts" symbol="fn resolveBundledModelDir"]、[@ file="desktop/src/bundle-paths.ts" symbol="fn devRepoRoot"]。
-- 构建路径前缀卫生（第三方 panic）见 ISSUE-015（gate，不升产品）。

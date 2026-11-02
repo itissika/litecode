@@ -711,6 +711,13 @@
       },
       "bootFailed": {
         "title": "Litecode failed to start"
+      },
+      "runningSession": {
+        "title": "A session is still running",
+        "message": "Litecode is still working in this workspace.",
+        "detail": "Closing the window stops the running turn and anything it started. Keep the window open to let the agent finish.",
+        "close": "Close anyway",
+        "cancel": "Keep working"
       }
     },
     "progress": {

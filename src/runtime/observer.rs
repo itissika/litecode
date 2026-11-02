@@ -29,15 +29,25 @@ pub enum CompactionTrigger {
     Overflow,
 }
 
+/// In-flight phase of the one session compaction episode. Terminal outcomes
+/// live on [`CompactionStage`], not here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionPhase {
+    Deciding,
+    MechanicalCommit,
+    SummaryPlanning,
+    Summarizing,
+    SummaryCommit,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompactionStage {
     Started,
     Succeeded,
     Failed,
-    /// The branch ended without a checkpoint because its frozen plan no longer
-    /// matched the surface. No user action is required.
-    Abandoned,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -22,12 +22,16 @@ function boxRect(
   } as DOMRect;
 }
 
-function openInPane(pane: DOMRect, at: DOMRect) {
+function openInPane(
+  pane: DOMRect,
+  at: DOMRect,
+  width: number | "auto" = 320,
+) {
   render(
     <div className="dv-groupview">
       <div className="dv-content-container" data-testid="pane">
         <Popover
-          width={320}
+          width={width}
           trigger={({ toggle }) => (
             <button type="button" onClick={toggle}>
               Open
@@ -64,6 +68,16 @@ describe("Popover pane bounds", () => {
     expect(panel.style.top).toBe("148px");
     // Below the tile: 260px of room minus the 8px gap and 8px margin.
     expect(panel.style.maxHeight).toBe("244px");
+  });
+
+  it("fills the dock pane in auto width mode", () => {
+    const panel = openInPane(
+      boxRect(0, 400, 0, 280),
+      boxRect(100, 140, 8, 84),
+      "auto",
+    ).panel;
+    expect(panel.style.width).toBe("264px");
+    expect(panel.style.left).toBe("8px");
   });
 
   it("closes once the trigger scrolls out of the pane", () => {

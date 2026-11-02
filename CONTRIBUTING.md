@@ -1,6 +1,6 @@
 # 贡献指南
 
-感谢你考虑为 LiteCode 做贡献。项目原则很简单：**把 Tool 和 Context 两件事做到极致**，不追新概念，用心写好每一处设计。
+LiteCode 的原则很简单：**把 Tool 和 Context 两件事做到极致**，不追新概念，用心写好每一处设计。
 
 ## 行为准则
 
@@ -12,39 +12,11 @@
 - Node.js 22+（web / desktop）
 - Linux 打包需原生 Linux 环境
 
-## 构建与测试
-
-```bash
-# Rust
-cargo check          # 快速类型检查
-cargo test           # 全部测试
-
-# Web
-cd web && npm install && npm run build
-
-# Desktop
-cd desktop && npm install && npm run test
-```
-
-提交前请确保 `cargo check` 与 `cargo test` 通过，且不引入无关改动。
-
-## 临时脚本
-
-调试用的复现脚本、一次性探针、截图产物等，一律放在已忽略的 `.tmp/` 目录下（如 `web/.tmp/probe.mjs`），不得散落在 `src/`、`web/` 等源码目录，也不得进入提交。提交前用 `git status` 复查，清掉这类残留。
-
-## 提交规范
-
-所有提交必须遵守 [Agent.md](Agent.md) 中的「提交铁律」，要点：
-
-- Conventional Commits：`type(scope): 描述`
-- 一次提交只做一件事（原子提交）
-- 禁止提交密钥、token、真实邮箱、大文件或编译产物
-
-## 提交 PR 流程
+## PR 流程
 
 1. Fork 仓库，基于 `master` 建分支。
-2. 提交时遵守上述规范，写清「做了什么、为什么」。
-3. 确保本地测试通过。
+2. 提交时写清「做了什么、为什么」，规范见 [AGENTS.md](AGENTS.md)。
+3. 确保本地构建通过。
 4. 发起 PR，描述变更动机与影响面。
 
 PR 会触发 Windows CI（sidecar 构建与冒烟）。评审关注：
@@ -55,5 +27,6 @@ PR 会触发 Windows CI（sidecar 构建与冒烟）。评审关注：
 
 ## 参考
 
-- 系统提示词与项目契约：[Agent.md](Agent.md)
-- 架构与模块划分：[README.md](README.md#项目结构)
+- 项目契约（提交、日常、路由）：[AGENTS.md](AGENTS.md)
+- 发版与打包：[docs/agents/](docs/agents/)
+- 架构与模块划分：[README.md](README.md)

@@ -272,7 +272,6 @@ pub enum SessionMutation {
     },
     Compact {
         session_id: String,
-        expected_revision: u64,
         operation_id: MutationId,
         /// Raw, role-free checkpoint summary. Never a projected model Item.
         summary: String,
@@ -281,7 +280,13 @@ pub enum SessionMutation {
         /// Trigger-time tail seq, persisted as the checkpoint's display anchor.
         /// Display only; the shadow range stays `kept_from`.
         at: Option<Seq>,
-        expected_prefix: Option<usize>,
+        /// Leading checkpoint the plan saw. A different one means another
+        /// compaction already rewrote the prefix, so this plan must not commit.
+        expected_prior_checkpoint: Option<Seq>,
+        /// First surface node the plan summarised. `kept_from` alone is not
+        /// enough: an empty-keep plan and a first-row replacement both need the
+        /// same identity check.
+        expected_from: Seq,
         /// Bill for the summarizer request that produced `summary`. Stored on the
         /// checkpoint row itself, so the call is never silently free.
         usage: Option<crate::session::store::ProviderUsage>,
@@ -293,7 +298,6 @@ pub enum SessionMutation {
     /// replacement is a new log event; the original rows are never deleted.
     ReplaceSurface {
         session_id: String,
-        expected_revision: u64,
         operation_id: MutationId,
         replacements: Vec<SurfaceReplacement>,
     },
@@ -473,6 +477,8 @@ impl SessionMutation {
         match self {
             Self::Create { .. }
             | Self::RecordProviderUsage { .. }
+            | Self::Compact { .. }
+            | Self::ReplaceSurface { .. }
             | Self::SetTitle { .. }
             | Self::SetFolder { .. }
             | Self::CreateFolder { .. }
@@ -510,12 +516,6 @@ impl SessionMutation {
                 expected_revision, ..
             }
             | Self::CommitTurnDelta {
-                expected_revision, ..
-            }
-            | Self::Compact {
-                expected_revision, ..
-            }
-            | Self::ReplaceSurface {
                 expected_revision, ..
             }
             | Self::SaveTaskState {
@@ -562,6 +562,10 @@ pub enum SessionRead {
         session_id: String,
     },
     WorkingSet {
+        session_id: String,
+    },
+    /// Rows plus the seqs still in flight, for compaction's sealed-prefix gate.
+    WorkingSetState {
         session_id: String,
     },
     Events {
@@ -704,10 +708,17 @@ pub struct UserAnchorWindow {
 }
 
 #[derive(Debug, Clone)]
+pub struct WorkingSetState {
+    pub rows: Vec<WorkingRow>,
+    pub in_progress: std::collections::HashSet<crate::session::event::Seq>,
+}
+
+#[derive(Debug, Clone)]
 pub enum ReadValue {
     Meta(crate::session::model::SessionMeta),
     Transcript(crate::types::Transcript),
     WorkingSet(Vec<WorkingRow>),
+    WorkingSetState(WorkingSetState),
     Events(Vec<crate::session::event::SessionEvent>),
     SeqCursor {
         last_seq: i64,

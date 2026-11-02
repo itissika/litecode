@@ -1,12 +1,10 @@
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-#[cfg(test)]
-use std::cell::Cell;
-
 use crate::authority::responses::{
-    FunctionCallOutput, InputContent, InputTextContent, MessageItem, OutputStatus,
+    FunctionCallOutput, InputContent, InputRole, InputTextContent, MessageItem, OutputStatus,
 };
 use crate::context_pipeline::keep_recent::find_keep_recent_cut;
 use crate::context_pipeline::project_model_view;
@@ -14,8 +12,12 @@ use crate::llm::CompactionRequestContext;
 use crate::runtime::observer::{
     CompactionFailKind, CompactionStage, CompactionTelemetry, CompactionTrigger, InternalEvent,
 };
+use crate::session::data::command::WorkingSetState;
 use crate::session::event::Seq;
-use crate::session::manager::SessionManager;
+use crate::session::manager::{
+    CompactionCancelReason, CompactionCommitKind, CompactionEpisodeLease,
+    CompactionFailureAction, EpisodeOutcome, SessionManager,
+};
 #[cfg(test)]
 use crate::session::working::WorkingPayload;
 use crate::session::working::{CompactedView, CompactionCheckpoint, WorkingRow, project_items};
@@ -135,132 +137,903 @@ pub struct CompactionPlan {
     pub at: Seq,
 }
 
-/// Read-only plan material for one compaction. The sync path commits this
-/// snapshot directly; a background summary reuses the identities and lets the
-/// commit re-anchor them on the current surface.
-struct CompactionPlanBuild {
-    plan: CompactionPlan,
-    snapshot: Vec<WorkingRow>,
-    tail: Vec<WorkingRow>,
-    kept: Vec<Item>,
-    expected_revision: u64,
+
+/// One compaction input. Ordinary compaction receives only sealed rows;
+/// overflow receives the full surface plus the live tail. The input is frozen
+/// when the episode starts and never changes under the worker.
+struct CompactionInput {
+    /// Ordinary compaction carries the sealed prefix itself. Overflow carries
+    /// the full surface plus the live tail so its keep-recent calculation sees
+    /// everything the provider rejected.
+    rows: Vec<WorkingRow>,
+    /// Prefix of `rows` that may be rewritten by the commit. Overflow may see
+    /// persisted-in-progress or pending rows in the tail; they stay outside the
+    /// checkpoint even though they participate in pressure measurement.
+    sealed_len: usize,
+    prior_checkpoint_seq: Option<Seq>,
+    first_seq: Seq,
+    last_seq: Seq,
 }
 
-/// A summary produced away from the main loop, with its cut frozen.
-/// The branch owns both this value and the one compaction commit it feeds.
-#[derive(Debug, Clone)]
-pub struct PreparedCompaction {
-    plan: CompactionPlan,
-    artifact: SummaryArtifact,
-    review: SummaryReview,
-    summary_attempts: u8,
-    /// The branch already emitted `Started` before the summary call.
-    started: bool,
-}
+impl CompactionInput {
+    fn from_rows(rows: &[WorkingRow], in_progress: &HashSet<Seq>) -> Option<Self> {
+        let sealed_len = sealed_prefix_len(rows, in_progress);
+        if sealed_len == 0 {
+            return None;
+        }
+        Self::from_rows_and_sealed_len(rows[..sealed_len].to_vec(), sealed_len)
+    }
 
-impl PreparedCompaction {
-    /// The first row the frozen plan keeps; the commit must land the same cut.
-    pub fn kept_from_seq(&self) -> u64 {
-        self.plan.kept_from_seq
+    fn from_rows_full(rows: &[WorkingRow], in_progress: &HashSet<Seq>) -> Option<Self> {
+        let sealed_len = sealed_prefix_len(rows, in_progress);
+        if sealed_len == 0 {
+            return None;
+        }
+        Self::from_rows_and_sealed_len(rows.to_vec(), sealed_len)
+    }
+
+    fn from_rows_and_sealed_len(rows: Vec<WorkingRow>, sealed_len: usize) -> Option<Self> {
+        let first_seq = rows.first().and_then(|row| row.log_seq)?;
+        let prior_checkpoint_seq = rows
+            .first()
+            .and_then(|row| row.checkpoint().and(row.log_seq));
+        let last_seq = rows.get(sealed_len - 1).and_then(|row| row.log_seq)?;
+        Some(Self {
+            rows,
+            sealed_len,
+            prior_checkpoint_seq,
+            first_seq,
+            last_seq,
+        })
+    }
+
+    fn from_state(state: &WorkingSetState) -> Option<Self> {
+        Self::from_rows(&state.rows, &state.in_progress)
+    }
+
+    fn from_state_full(state: &WorkingSetState) -> Option<Self> {
+        Self::from_rows_full(&state.rows, &state.in_progress)
     }
 }
 
-/// One resolved commit candidate. Both the synchronous and prepared paths
-/// converge here; only this value feeds the single Compact mutation.
-struct CompactionCommit {
-    snapshot: Vec<WorkingRow>,
-    prefix_len: usize,
-    tail: Vec<WorkingRow>,
-    kept: Vec<Item>,
-    expected_revision: u64,
-    plan: CompactionPlan,
-    artifact: SummaryArtifact,
-    review: SummaryReview,
-    summary_attempts: u8,
-    tokens_before: usize,
-    tokens_pruned: usize,
-    tokens_after_prune: usize,
-    prune_plan: Option<MechanicalPrunePlan>,
-    started: bool,
+/// The one selected method. Selection is pure and happens before any write.
+enum CompactionSelection {
+    Mechanical {
+        plan: MechanicalPrunePlan,
+        tokens_before: usize,
+        meter_after: ContextMeter,
+    },
+    Summary {
+        plan: CompactionPlan,
+        tokens_before: usize,
+    },
 }
 
-/// Build the seq-aware cut without touching the durable surface.
-#[allow(clippy::too_many_arguments)]
-fn build_compaction_plan(
+/// The durable result of the one commit. Rebuild reads this back and verifies
+/// the surface; the commit is a fact, but success is only published after that
+/// verification.
+struct CommittedCompaction {
+    kind: CompactionCommitKind,
+    telemetry: CompactionTelemetry,
+    summary: Option<SummaryArtifact>,
+    rebuild: RebuildTarget,
+}
+
+enum RebuildTarget {
+    Summary(Seq),
+    Mechanical(Vec<Seq>),
+}
+
+fn build_summary_plan_from_input(
+    input: &CompactionInput,
     budget: &BudgetPolicy,
-    sessions: &SessionManager,
-    session_id: &str,
     request: &CompactionRequestContext,
     max_tokens: u32,
-    rows: &[WorkingRow],
     trigger: CompactionTrigger,
-) -> Result<Option<CompactionPlanBuild>> {
-    let snapshot = rows.to_vec();
-    // Capture revision with the snapshot so the optimistic lock covers
-    // snapshot→persist (ISSUE-035). Fail closed — never unwrap_or(0).
-    let expected_revision = sessions.data().revision_blocking(session_id)?;
-    let prefix_len = persisted_prefix_len(rows);
-    let mut persisted = rows.to_vec();
-    let tail = persisted.split_off(prefix_len);
-    let transcript = project_items(&persisted);
-
-    let Some(raw_cut) = find_keep_recent_cut(&transcript, budget.keep_recent_tokens) else {
-        tracing::debug!(
-            keep_recent_tokens = budget.keep_recent_tokens,
-            prefix_len,
-            "keep-recent: entire persisted prefix within keep window, skipping compact"
-        );
-        return Ok(None);
-    };
-
-    // Checkpoint identity, not summary text, decides the leading boundary.
-    // A leading checkpoint is item zero; when keep-recent can compact, the
-    // discarded range must include it, so cut is at least one.
-    let prior_checkpoint_seq = persisted
-        .first()
-        .and_then(|row| row.checkpoint().and(row.log_seq));
-    let cut = if prior_checkpoint_seq.is_some() {
+) -> Option<CompactionPlan> {
+    // Overflow sees the full surface + tail, but a checkpoint can only end on a
+    // sealed row. Keep at least one sealed row and leave the tail outside the
+    // checkpoint; the final meter includes it and decides whether overflow
+    // actually recovered.
+    let max_cut = input.sealed_len.checked_sub(1)?;
+    if max_cut == 0 {
+        return None;
+    }
+    let transcript = project_items(&input.rows);
+    let raw_cut = find_keep_recent_cut(&transcript, budget.keep_recent_tokens)?;
+    let cut = if input.prior_checkpoint_seq.is_some() {
         raw_cut.max(1)
     } else {
         raw_cut
-    };
-    debug_assert!(prior_checkpoint_seq.is_none() || cut > 0);
-
-    let kept_from_seq = match persisted.get(cut).and_then(|row| row.log_seq) {
-        Some(seq) => seq,
-        None => {
-            return Err(LitecodeError::ToolExecution(format!(
-                "compact cut {cut} has no log seq (persisted prefix len={prefix_len})"
-            )));
-        }
-    };
-
-    let summary_max_tokens = budget
+    }
+    .min(max_cut);
+    let kept_from_seq = input.rows.get(cut).and_then(|row| row.log_seq)?;
+    let summary_cap = budget
         .compact_output_tokens(max_tokens)
         .min(request.max_output_tokens);
-    // The display anchor: the newest persisted row at freeze time. Rows written
-    // after it are the ones that must render below the checkpoint.
-    let at = persisted
-        .iter()
-        .rev()
-        .find_map(|row| row.log_seq)
-        .unwrap_or(kept_from_seq);
-    let plan = CompactionPlan {
+    Some(CompactionPlan {
         trigger,
-        prefix_len,
+        prefix_len: input.rows.len(),
         cut,
         kept_from_seq,
-        prior_checkpoint_seq,
-        summary_cap: summary_max_tokens,
-        at,
+        prior_checkpoint_seq: input.prior_checkpoint_seq,
+        summary_cap,
+        at: input.last_seq,
+    })
+}
+
+/// Pure branch selection. A worthwhile prune that relieves the sealed input's
+/// pressure wins; otherwise the summary branch is chosen. No write happens here.
+fn select_compaction_method(
+    input: &CompactionInput,
+    budget: &BudgetPolicy,
+    request: &CompactionRequestContext,
+    max_tokens: u32,
+    trigger: CompactionTrigger,
+    data_root: &std::path::Path,
+) -> Result<Option<CompactionSelection>> {
+    let input_meter = context_meter_for_rows_local(request, &input.rows, data_root);
+    let tokens_before = input_meter.used_tokens;
+    let protected_tokens = protected_conversation_tokens_for_request(request);
+    let plan = MechanicalPrunePlan::build_limited(
+        &input.rows,
+        MechanicalPruneConfig::default(),
+        protected_tokens,
+        input.sealed_len,
+    );
+    if plan.is_worthwhile() {
+        let mut candidate = input.rows.clone();
+        for replacement in &plan.replacements {
+            if let Some(row) = candidate
+                .iter_mut()
+                .find(|row| row.log_seq == Some(replacement.seq))
+            {
+                row.replace_item(replacement.item.clone());
+            }
+        }
+        let meter_after = context_meter_for_rows_local(request, &candidate, data_root);
+        if meter_after.pressure_enabled() && !meter_after.should_compact() {
+            return Ok(Some(CompactionSelection::Mechanical {
+                plan,
+                tokens_before,
+                meter_after,
+            }));
+        }
+    }
+    let Some(plan) = build_summary_plan_from_input(input, budget, request, max_tokens, trigger)
+    else {
+        return Ok(None);
     };
-    Ok(Some(CompactionPlanBuild {
+    Ok(Some(CompactionSelection::Summary {
         plan,
-        snapshot,
-        tail,
-        kept: transcript[cut..].to_vec(),
-        expected_revision,
+        tokens_before,
     }))
+}
+
+fn is_contention_error(err: &LitecodeError) -> bool {
+    if let LitecodeError::Sqlite(error) = err
+        && matches!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        )
+    {
+        return true;
+    }
+    match err {
+        LitecodeError::SessionStorage(message) => {
+            let lower = message.to_ascii_lowercase();
+            lower.contains("locked") || lower.contains("busy")
+        }
+        LitecodeError::SessionBackpressure => true,
+        _ => false,
+    }
+}
+
+fn is_corruption_error(err: &LitecodeError) -> bool {
+    if let LitecodeError::Sqlite(error) = err
+        && matches!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase)
+        )
+    {
+        return true;
+    }
+    match err {
+        LitecodeError::SessionStorage(message) => {
+            let lower = message.to_ascii_lowercase();
+            lower.contains("malformed")
+                || lower.contains("corrupt")
+                || lower.contains("not a database")
+        }
+        _ => false,
+    }
+}
+
+fn is_retryable_write_error(err: &LitecodeError) -> bool {
+    if is_contention_error(err) {
+        return true;
+    }
+    match err {
+        LitecodeError::SessionStorage(message) => {
+            let lower = message.to_ascii_lowercase();
+            lower.contains("commit")
+                || lower.contains("before begin")
+                || lower.contains("after commit")
+        }
+        _ => false,
+    }
+}
+
+/// Read the durable working state. Contention is retried a bounded number of
+/// times; the data layer already falls back from an anchored fold to the full
+/// log when the anchor cannot be proven. A terminal read failure is a compaction
+/// failure, not a panic and not a fake success.
+fn read_compaction_state_result(
+    sessions: &SessionManager,
+    session_id: &str,
+) -> Result<WorkingSetState> {
+    for attempt in 1..=COMPACTION_STORE_RETRIES {
+        match sessions.data().working_set_state_blocking(session_id) {
+            Ok(state) => return Ok(state),
+            Err(error) if is_contention_error(&error) && attempt < COMPACTION_STORE_RETRIES => {
+                tracing::warn!(
+                    session_id,
+                    attempt,
+                    error = %error,
+                    "compaction surface read is blocked; retrying"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(LitecodeError::SessionStorage(
+        "compaction surface read kept contending".into(),
+    ))
+}
+
+fn read_compaction_surface(
+    sessions: &SessionManager,
+    session_id: &str,
+) -> Result<Vec<WorkingRow>> {
+    read_compaction_state_result(sessions, session_id).map(|state| state.rows)
+}
+
+fn measure_final_surface(
+    request: &CompactionRequestContext,
+    checkpoint: &CompactionCheckpoint,
+    rows_after_cut: &[WorkingRow],
+    data_root: &std::path::Path,
+) -> ContextMeter {
+    let envelope = ContextEnvelope::from_compaction_request(request);
+    let mut view = vec![checkpoint.model_item()];
+    view.extend(rows_after_cut.iter().map(|row| row.payload.model_item()));
+    let view_seqs = vec![None; view.len()];
+    let projection = super::project_model_view(
+        &view,
+        &view_seqs,
+        None,
+        None,
+        &request.target,
+        data_root,
+    );
+    ContextMeter::measure_local(
+        request.context_window,
+        request.target.context_window_max,
+        request.max_output_tokens as usize,
+        &envelope,
+        &projection.items,
+    )
+}
+
+fn commit_mechanical_plan(
+    sessions: &SessionManager,
+    session_id: &str,
+    operation_id: &str,
+    plan: &MechanicalPrunePlan,
+) -> Result<Vec<Seq>> {
+    let replacements: Vec<crate::session::data::command::SurfaceReplacement> = plan
+        .replacements
+        .iter()
+        .map(
+            |replacement| crate::session::data::command::SurfaceReplacement {
+                start: replacement.seq,
+                end: replacement.seq,
+                item: replacement.item.clone(),
+                source_seqs: replacement.source_seqs.clone(),
+            },
+        )
+        .collect();
+    for attempt in 1..=COMPACTION_STORE_RETRIES {
+        let mutation = crate::session::data::command::SessionMutation::ReplaceSurface {
+            session_id: session_id.to_string(),
+            operation_id: crate::session::data::command::MutationId(operation_id.to_string()),
+            replacements: replacements.clone(),
+        };
+        match sessions.mutate_blocking(mutation) {
+                Ok(receipt) => match receipt.outcome {
+                    crate::session::data::command::CommitKind::Replaced { seqs } => {
+                        return Ok(seqs);
+                    }
+                    other => {
+                        return Err(LitecodeError::ToolExecution(format!(
+                            "mechanical prune mutation returned unexpected outcome {other:?}"
+                        )));
+                    }
+                },
+                Err(error) if is_corruption_error(&error) => {
+                    panic!("mechanical prune commit hit a corrupt session store: {error}");
+                }
+                Err(error)
+                    if is_retryable_write_error(&error)
+                        && attempt < COMPACTION_STORE_RETRIES =>
+                {
+                    tracing::warn!(
+                        attempt,
+                        error = %error,
+                        "mechanical prune commit blocked; retrying"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    Err(LitecodeError::SessionStorage(
+        "mechanical prune commit kept contending".into(),
+    ))
+}
+
+struct SummaryCommitPlan {
+    plan: CompactionPlan,
+    checkpoint: CompactionCheckpoint,
+    summary: SummaryArtifact,
+    first_seq: Seq,
+    tokens_after: usize,
+    telemetry: CompactionTelemetry,
+}
+
+enum CompactionCommitPlan {
+    Mechanical {
+        plan: MechanicalPrunePlan,
+        telemetry: CompactionTelemetry,
+    },
+    Summary(SummaryCommitPlan),
+}
+
+impl CompactionCommitPlan {
+    fn telemetry(&self) -> &CompactionTelemetry {
+        match self {
+            Self::Mechanical { telemetry, .. } => telemetry,
+            Self::Summary(commit) => &commit.telemetry,
+        }
+    }
+}
+
+fn commit_summary_plan(
+    sessions: &SessionManager,
+    session_id: &str,
+    operation_id: &str,
+    request: &CompactionRequestContext,
+    commit: &SummaryCommitPlan,
+) -> Result<Seq> {
+    for attempt in 1..=COMPACTION_STORE_RETRIES {
+        let mutation = crate::session::data::command::SessionMutation::Compact {
+            session_id: session_id.to_string(),
+            operation_id: crate::session::data::command::MutationId(operation_id.to_string()),
+            summary: commit.checkpoint.summary.clone(),
+            token_estimate: commit.tokens_after as i64,
+            kept_from: Some(commit.plan.kept_from_seq),
+            at: Some(commit.plan.at),
+            expected_prior_checkpoint: commit.plan.prior_checkpoint_seq,
+            expected_from: commit.first_seq,
+            usage: commit.summary.usage.clone(),
+            provider_id: Some(request.target.provider_id.clone()),
+        };
+        match sessions.mutate_blocking(mutation) {
+                Ok(receipt) => match receipt.outcome {
+                    crate::session::data::command::CommitKind::Compacted { seq } => {
+                        return Ok(seq);
+                    }
+                    other => {
+                        return Err(LitecodeError::ToolExecution(format!(
+                            "summary compact mutation returned unexpected outcome {other:?}"
+                        )));
+                    }
+                },
+                Err(error) if is_corruption_error(&error) => {
+                    panic!("summary commit hit a corrupt session store: {error}");
+                }
+                Err(error)
+                    if is_retryable_write_error(&error)
+                        && attempt < COMPACTION_STORE_RETRIES =>
+                {
+                    tracing::warn!(
+                        attempt,
+                        error = %error,
+                        "summary commit blocked; retrying"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    Err(LitecodeError::SessionStorage(
+        "summary commit kept contending".into(),
+    ))
+}
+
+fn rebuild_summary_surface(
+    sessions: &SessionManager,
+    session_id: &str,
+    checkpoint_seq: Seq,
+) -> Result<Vec<WorkingRow>> {
+    let rows = read_compaction_surface(sessions, session_id)?;
+    let first = rows.first();
+    if first
+        .and_then(|row| row.log_seq)
+        .is_none_or(|seq| seq != checkpoint_seq)
+        || first.and_then(|row| row.checkpoint()).is_none()
+    {
+        return Err(LitecodeError::CompactionSurfaceChanged(format!(
+            "summary commit {checkpoint_seq} is not the first durable checkpoint row for {session_id}"
+        )));
+    }
+    Ok(rows)
+}
+
+fn rebuild_mechanical_surface(
+    sessions: &SessionManager,
+    session_id: &str,
+    replacement_seqs: &[Seq],
+) -> Result<Vec<WorkingRow>> {
+    let rows = read_compaction_surface(sessions, session_id)?;
+    for seq in replacement_seqs {
+        if !rows.iter().any(|row| row.log_seq == Some(*seq)) {
+            return Err(LitecodeError::CompactionSurfaceChanged(format!(
+                "mechanical replacement seq {seq} missing from durable surface for {session_id}"
+            )));
+        }
+    }
+    Ok(rows)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_summary_commit(
+    sessions: &SessionManager,
+    session_id: &str,
+    request: &CompactionRequestContext,
+    input: &CompactionInput,
+    plan: CompactionPlan,
+    tokens_before: usize,
+    cancel: &CancellationToken,
+    trigger: CompactionTrigger,
+    operation_id: &str,
+    data_root: &std::path::Path,
+    max_attempts: u8,
+) -> Result<SummaryCommitPlan> {
+    let base_telemetry = compaction_telemetry(trigger, tokens_before, 0, tokens_before, None);
+    emit_compact_started(
+        sessions,
+        session_id,
+        trigger,
+        Some(operation_id),
+        base_telemetry,
+        Some(plan.at),
+    );
+    let (summary, _review, summary_attempts) = match CompactPolicy::first_pass_compaction(
+        request,
+        plan.summary_cap,
+        plan.cut,
+        &input.rows,
+        sessions,
+        cancel,
+        max_attempts,
+    )
+    .await
+    {
+        Ok(accepted) => accepted,
+        Err(failure) => {
+            let telemetry = compaction_telemetry(
+                trigger,
+                tokens_before,
+                0,
+                tokens_before,
+                Some(failure.attempts),
+            );
+            record_compact_failure(
+                sessions,
+                session_id,
+                trigger,
+                Some(operation_id),
+                &failure.error,
+                telemetry,
+            );
+            return Err(failure.error);
+        }
+    };
+    if cancel.is_cancelled() {
+        let error = LitecodeError::Canceled;
+        let telemetry = compaction_telemetry(
+            trigger,
+            tokens_before,
+            0,
+            tokens_before,
+            Some(summary_attempts),
+        );
+        record_compact_failure(
+            sessions,
+            session_id,
+            trigger,
+            Some(operation_id),
+            &error,
+            telemetry,
+        );
+        return Err(error);
+    }
+
+    let current = read_compaction_state_result(sessions, session_id)?.rows;
+    if current.first().and_then(|row| row.log_seq) != Some(input.first_seq)
+        || current
+            .first()
+            .and_then(|row| row.checkpoint().and(row.log_seq))
+            != input.prior_checkpoint_seq
+    {
+        let error = LitecodeError::CompactionSurfaceChanged(
+            "sealed prefix leading identity changed".into(),
+        );
+        let telemetry = compaction_telemetry(
+            trigger,
+            tokens_before,
+            0,
+            tokens_before,
+            Some(summary_attempts),
+        );
+        record_compact_failure(
+            sessions,
+            session_id,
+            trigger,
+            Some(operation_id),
+            &error,
+            telemetry,
+        );
+        return Err(error);
+    }
+    let Some(cut) = current
+        .iter()
+        .position(|row| row.log_seq == Some(plan.kept_from_seq))
+    else {
+        let error = LitecodeError::CompactionSurfaceChanged(format!(
+            "kept_from seq {} left the surface",
+            plan.kept_from_seq
+        ));
+        let telemetry = compaction_telemetry(
+            trigger,
+            tokens_before,
+            0,
+            tokens_before,
+            Some(summary_attempts),
+        );
+        record_compact_failure(
+            sessions,
+            session_id,
+            trigger,
+            Some(operation_id),
+            &error,
+            telemetry,
+        );
+        return Err(error);
+    };
+    let checkpoint = CompactionCheckpoint {
+        summary: summary.text.clone(),
+        from: input.first_seq,
+        to: plan.kept_from_seq,
+    };
+    // Measure the same frozen input that selected the method. Ordinary/manual
+    // sees only its sealed prefix; overflow sees surface + tail. Rows appended
+    // after this plan are not allowed to decide whether this attempt succeeded.
+    let rows_after_cut = &input.rows[cut..];
+    let final_meter = measure_final_surface(request, &checkpoint, rows_after_cut, data_root);
+    let final_count = final_meter.used_tokens;
+    if final_meter.is_over_hard_line() {
+        let error = LitecodeError::ContextStillOverLimit {
+            used: final_count,
+            limit: final_meter.hard_limit(),
+        };
+        let telemetry = compaction_telemetry(
+            trigger,
+            tokens_before,
+            0,
+            final_count,
+            Some(summary_attempts),
+        );
+        record_compact_failure(
+            sessions,
+            session_id,
+            trigger,
+            Some(operation_id),
+            &error,
+            telemetry,
+        );
+        return Err(error);
+    }
+    if cancel.is_cancelled() {
+        let error = LitecodeError::Canceled;
+        let telemetry = compaction_telemetry(
+            trigger,
+            tokens_before,
+            0,
+            final_count,
+            Some(summary_attempts),
+        );
+        record_compact_failure(
+            sessions,
+            session_id,
+            trigger,
+            Some(operation_id),
+            &error,
+            telemetry,
+        );
+        return Err(error);
+    }
+    Ok(SummaryCommitPlan {
+        plan,
+        checkpoint,
+        summary,
+        first_seq: input.first_seq,
+        tokens_after: final_count,
+        telemetry: compaction_telemetry(
+            trigger,
+            tokens_before,
+            0,
+            final_count,
+            Some(summary_attempts),
+        ),
+    })
+}
+
+fn commit_plan(
+    sessions: &SessionManager,
+    session_id: &str,
+    request: &CompactionRequestContext,
+    operation_id: &str,
+    trigger: CompactionTrigger,
+    cancel: &CancellationToken,
+    plan: CompactionCommitPlan,
+) -> Result<CommittedCompaction> {
+    if cancel.is_cancelled() {
+        let error = LitecodeError::Canceled;
+        record_compact_failure(
+            sessions,
+            session_id,
+            trigger,
+            Some(operation_id),
+            &error,
+            plan.telemetry().clone(),
+        );
+        return Err(error);
+    }
+    match plan {
+        CompactionCommitPlan::Mechanical { plan, telemetry } => {
+            let replacement_seqs = match commit_mechanical_plan(
+                sessions,
+                session_id,
+                operation_id,
+                &plan,
+            ) {
+                Ok(seqs) => seqs,
+                Err(error) => {
+                    record_compact_failure(
+                        sessions,
+                        session_id,
+                        trigger,
+                        Some(operation_id),
+                        &error,
+                        telemetry,
+                    );
+                    return Err(error);
+                }
+            };
+            Ok(CommittedCompaction {
+                kind: CompactionCommitKind::Mechanical {
+                    replacements: plan.replacements.len(),
+                },
+                telemetry,
+                summary: None,
+                rebuild: RebuildTarget::Mechanical(replacement_seqs),
+            })
+        }
+        CompactionCommitPlan::Summary(commit) => {
+            let checkpoint_seq = match commit_summary_plan(
+                sessions,
+                session_id,
+                operation_id,
+                request,
+                &commit,
+            ) {
+                Ok(seq) => seq,
+                Err(error) => {
+                    record_compact_failure(
+                        sessions,
+                        session_id,
+                        trigger,
+                        Some(operation_id),
+                        &error,
+                        commit.telemetry.clone(),
+                    );
+                    return Err(error);
+                }
+            };
+            Ok(CommittedCompaction {
+                kind: CompactionCommitKind::Checkpoint { seq: checkpoint_seq },
+                telemetry: commit.telemetry,
+                summary: Some(commit.summary),
+                rebuild: RebuildTarget::Summary(checkpoint_seq),
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_REBUILD_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_rebuild_reads(count: usize) {
+    FAIL_NEXT_REBUILD_READS.with(|slot| slot.set(count));
+}
+
+#[cfg(test)]
+fn injected_rebuild_read_failure() -> Option<LitecodeError> {
+    FAIL_NEXT_REBUILD_READS.with(|slot| {
+        let remaining = slot.get();
+        if remaining == 0 {
+            return None;
+        }
+        slot.set(remaining - 1);
+        Some(LitecodeError::SessionStorage(
+            "injected committed-surface read failure".into(),
+        ))
+    })
+}
+
+/// Read the committed surface back. This is the delivery gate: a committed
+/// compaction is retried on transient reads and only becomes Succeeded after
+/// the durable surface is verified.
+fn rebuild_committed_surface(
+    sessions: &SessionManager,
+    session_id: &str,
+    committed: &CommittedCompaction,
+) -> Result<Vec<WorkingRow>> {
+    // Retry read failures a few times before declaring the committed surface
+    // undeliverable. The reader itself has already tried the anchored fold and
+    // the full durable log; this loop only rides out a transient read-side
+    // failure. A validation mismatch is deterministic and is not retried.
+    let mut last_error = None;
+    for attempt in 1..=3 {
+        #[cfg(test)]
+        if let Some(error) = injected_rebuild_read_failure() {
+            last_error = Some(error);
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+        let read = match &committed.rebuild {
+            RebuildTarget::Summary(seq) => rebuild_summary_surface(sessions, session_id, *seq),
+            RebuildTarget::Mechanical(seqs) => {
+                rebuild_mechanical_surface(sessions, session_id, seqs)
+            }
+        };
+        match read {
+            Ok(rows) => return Ok(rows),
+            Err(error)
+                if attempt < 3
+                    && !matches!(
+                        error,
+                        LitecodeError::CompactionSurfaceChanged(_)
+                            | LitecodeError::InvalidSessionEvent(_)
+                    ) =>
+            {
+                tracing::warn!(
+                    session_id,
+                    attempt,
+                    error = %error,
+                    "committed compaction surface read failed; retrying"
+                );
+                last_error = Some(error);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        LitecodeError::SessionStorage("committed surface read failed".into())
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn compact_input(
+    sessions: &SessionManager,
+    session_id: &str,
+    request: &CompactionRequestContext,
+    budget: &BudgetPolicy,
+    input: CompactionInput,
+    cancel: &CancellationToken,
+    trigger: CompactionTrigger,
+    operation_id: &str,
+    max_tokens: u32,
+    data_root: &std::path::Path,
+    max_attempts: u8,
+) -> Result<Option<CommittedCompaction>> {
+    if cancel.is_cancelled() {
+        return Err(LitecodeError::Canceled);
+    }
+    let Some(selection) = select_compaction_method(
+        &input,
+        budget,
+        request,
+        max_tokens,
+        trigger,
+        data_root,
+    )?
+    else {
+        return Ok(None);
+    };
+
+    let plan = match selection {
+        CompactionSelection::Mechanical {
+            plan,
+            tokens_before,
+            meter_after,
+        } => {
+            let tokens_after = meter_after.used_tokens;
+            let telemetry = compaction_telemetry(
+                trigger,
+                tokens_before,
+                tokens_before.saturating_sub(tokens_after),
+                tokens_after,
+                Some(0),
+            );
+            emit_compact_started(
+                sessions,
+                session_id,
+                trigger,
+                Some(operation_id),
+                telemetry.clone(),
+                Some(input.last_seq),
+            );
+            CompactionCommitPlan::Mechanical { plan, telemetry }
+        }
+        CompactionSelection::Summary {
+            plan,
+            tokens_before,
+        } => CompactionCommitPlan::Summary(
+            prepare_summary_commit(
+                sessions,
+                session_id,
+                request,
+                &input,
+                plan,
+                tokens_before,
+                cancel,
+                trigger,
+                operation_id,
+                data_root,
+                max_attempts,
+            )
+            .await?,
+        ),
+    };
+
+    let run = commit_plan(
+        sessions,
+        session_id,
+        request,
+        operation_id,
+        trigger,
+        cancel,
+        plan,
+    )?;
+    Ok(Some(run))
 }
 
 /// First-version mechanical-prune budgets. All values live here; the pruner
@@ -388,7 +1161,18 @@ impl MechanicalPrunePlan {
         config: MechanicalPruneConfig,
         protected_tokens: usize,
     ) -> Self {
-        let persisted_len = persisted_prefix_len(rows);
+        Self::build_limited(rows, config, protected_tokens, persisted_prefix_len(rows))
+    }
+
+    /// Build against an explicit sealed prefix. Rows at or after `sealed_len`
+    /// are never candidates: a seal rewrites their payload in place.
+    fn build_limited(
+        rows: &[WorkingRow],
+        config: MechanicalPruneConfig,
+        protected_tokens: usize,
+        sealed_len: usize,
+    ) -> Self {
+        let persisted_len = sealed_len.min(persisted_prefix_len(rows));
         let starts = row_start_tokens(rows, persisted_len);
         let total_tokens = starts.last().copied().unwrap_or(0);
         let Some(eligible_start) = starts
@@ -521,6 +1305,10 @@ pub enum SummaryFailure {
 
 /// One total-attempt budget: first try plus one identical retry.
 pub const MAX_SUMMARY_ATTEMPTS: u8 = 2;
+
+/// Bounded retries for a blocked read/write. After this the failure goes back
+/// to the session; the pipeline never spins on a busy store.
+const COMPACTION_STORE_RETRIES: u8 = 3;
 /// Provider-confirmed context overflow may recover at most once.
 pub const MAX_CONTEXT_OVERFLOW_RETRIES: u8 = 1;
 
@@ -586,20 +1374,6 @@ struct SummaryPassFailure {
     attempts: u8,
 }
 
-/// One successful compaction at the boundary between summarize and commit.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CompactionOutcome {
-    pub checkpoint_seq: Seq,
-    pub checkpoint: CompactionCheckpoint,
-    pub plan: CompactionPlan,
-    pub prune: Option<MechanicalPrunePlan>,
-    pub summary: SummaryArtifact,
-    pub review: SummaryReview,
-    pub tokens_before: usize,
-    pub tokens_after: usize,
-    pub summary_attempts: u8,
-}
-
 fn worse_summary_finish(a: SummaryFinish, b: SummaryFinish) -> SummaryFinish {
     fn severity(finish: SummaryFinish) -> u8 {
         match finish {
@@ -614,14 +1388,6 @@ fn worse_summary_finish(a: SummaryFinish, b: SummaryFinish) -> SummaryFinish {
         }
     }
     if severity(b) >= severity(a) { b } else { a }
-}
-
-/// Result of one worthwhile, already-committed prune pass.
-struct MechanicalPruneRun {
-    plan: MechanicalPrunePlan,
-    tokens_before: usize,
-    meter_after: ContextMeter,
-    relieved: bool,
 }
 
 fn is_media_part(part: &InputContent) -> bool {
@@ -855,123 +1621,6 @@ pub fn prune_is_worthwhile(rows: &[WorkingRow], protected_tokens: usize) -> bool
         .is_worthwhile()
 }
 
-/// Build, gate, and commit one mechanical prune pass. Returns `None` when the
-/// plan is empty, misses the protected line or either savings gate, or would
-/// not relieve pressure; in those cases no event is written.
-fn apply_mechanical_prune_if_worthwhile(
-    sessions: &SessionManager,
-    session_id: &str,
-    request: &CompactionRequestContext,
-    prompt_baseline: &ProviderPromptBaseline,
-    rows: &mut Vec<WorkingRow>,
-    data_root: &std::path::Path,
-) -> Result<Option<MechanicalPruneRun>> {
-    let protected_tokens = protected_conversation_tokens_for_request(request);
-    let plan = MechanicalPrunePlan::build(rows, MechanicalPruneConfig::default(), protected_tokens);
-    if !plan.is_worthwhile() {
-        tracing::debug!(
-            estimated_saved_tokens = plan.estimated_saved_tokens,
-            protected_tokens,
-            rewritten_suffix_tokens = plan.rewritten_suffix_tokens,
-            min_saved = prune_min_saved_tokens(),
-            min_suffix_percent = PRUNE_MIN_SAVED_SUFFIX_PERCENT,
-            replacements = plan.replacements.len(),
-            "mechanical prune skipped: no eligible tail, below savings floor, or below suffix share"
-        );
-        return Ok(None);
-    }
-
-    // Preflight the relief gate before writing: a prune that still leaves the
-    // surface over the pressure line only buys a cache miss that the summary
-    // rewrite would pay again.
-    let mut candidate = rows.clone();
-    for replacement in &plan.replacements {
-        if let Some(row) = candidate
-            .iter_mut()
-            .find(|row| row.log_seq == Some(replacement.seq))
-        {
-            row.replace_item(replacement.item.clone());
-        }
-    }
-    let meter_after = context_meter_for_rows_local(request, &candidate, data_root);
-    if meter_after.should_compact() {
-        tracing::debug!(
-            estimated_saved_tokens = plan.estimated_saved_tokens,
-            protected_tokens,
-            rewritten_suffix_tokens = plan.rewritten_suffix_tokens,
-            used_after = meter_after.used_tokens,
-            compact_at = meter_after.compact_at,
-            "mechanical prune skipped: would not relieve pressure"
-        );
-        return Ok(None);
-    }
-
-    let tokens_before = context_meter_for_rows_local(request, rows, data_root).used_tokens;
-    let pending_tail: Vec<WorkingRow> = rows
-        .iter()
-        .filter(|row| row.log_seq.is_none())
-        .cloned()
-        .collect();
-    let expected_revision = sessions.data().revision_blocking(session_id)?;
-    let replacements = plan
-        .replacements
-        .iter()
-        .map(
-            |replacement| crate::session::data::command::SurfaceReplacement {
-                start: replacement.seq,
-                end: replacement.seq,
-                item: replacement.item.clone(),
-                source_seqs: replacement.source_seqs.clone(),
-            },
-        )
-        .collect();
-    let receipt = sessions.mutate_blocking(
-        crate::session::data::command::SessionMutation::ReplaceSurface {
-            session_id: session_id.to_string(),
-            expected_revision,
-            operation_id: crate::session::data::command::MutationId::new(),
-            replacements,
-        },
-    )?;
-    match receipt.outcome {
-        crate::session::data::command::CommitKind::Replaced { .. } => {}
-        other => {
-            return Err(LitecodeError::ToolExecution(format!(
-                "mechanical prune mutation returned unexpected outcome {other:?}"
-            )));
-        }
-    }
-
-    let mut model = sessions.data().working_set_blocking(session_id)?;
-    model.extend(pending_tail);
-    *rows = model;
-    // The old bill describes a prefix that no longer exists. Keep the local
-    // envelope authoritative until the next provider request records a fresh
-    // bill over the rewritten surface.
-    prompt_baseline.invalidate();
-
-    let meter_after = context_meter_for_rows_local(request, rows, data_root);
-    let relieved = meter_after.pressure_enabled() && !meter_after.should_compact();
-    tracing::info!(
-        replacements = plan.replacements.len(),
-        estimated_saved_tokens = plan.estimated_saved_tokens,
-        tokens_before,
-        tokens_after = meter_after.used_tokens,
-        protected_tokens,
-        rewritten_suffix_tokens = plan.rewritten_suffix_tokens,
-        min_saved = prune_min_saved_tokens(),
-        min_suffix_percent = PRUNE_MIN_SAVED_SUFFIX_PERCENT,
-        relieved,
-        "mechanical prune committed as one surface replacement batch"
-    );
-    Ok(Some(MechanicalPruneRun {
-        plan,
-        tokens_before,
-        meter_after,
-        relieved,
-    }))
-}
-
 /// Compaction policy and execution.
 pub struct CompactPolicy;
 
@@ -980,77 +1629,62 @@ impl CompactPolicy {
         find_keep_recent_cut(transcript, budget.keep_recent_tokens).is_some()
     }
 
-    /// Manual admission fallback when keep-recent has no cut but a mechanical
+    /// Manual fast-fail against the sealed prefix only. In-progress or pending
+    /// tail rows cannot make a manual summary look eligible.
+    pub fn can_compact_sealed(
+        rows: &[WorkingRow],
+        in_progress: &HashSet<Seq>,
+        budget: &BudgetPolicy,
+    ) -> bool {
+        let sealed_len = sealed_prefix_len(rows, in_progress);
+        if sealed_len == 0 {
+            return false;
+        }
+        Self::can_compact(budget, &project_items(&rows[..sealed_len]))
+    }
+
+    /// Manual admission discovery when keep-recent has no cut but a mechanical
     /// prune would clear the fixed protected line and both savings gates. This
-    /// is deliberately only a discovery predicate: the summary path still runs
-    /// prune first and may skip the LLM entirely when the pruned surface is
-    /// already below pressure.
+    /// is only a predicate; the episode selects on the sealed prefix and commits
+    /// at most one method.
     pub fn can_prune(rows: &[WorkingRow], protected_tokens: usize) -> bool {
         prune_is_worthwhile(rows, protected_tokens)
     }
 
-    /// One mechanical-prune decision for one compaction episode. A prune is
-    /// all-or-nothing: it writes only when it alone relieves pressure. If it
-    /// does not, the summary path sees the untouched surface; the decision is
-    /// never reopened by rows that arrive later.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn prune_once(
+    /// Admission predicate for the sealed prefix only. In-progress rows stay in
+    /// the tail and must not make a manual prune look eligible.
+    pub fn can_prune_sealed(
+        rows: &[WorkingRow],
+        in_progress: &HashSet<Seq>,
+        protected_tokens: usize,
+    ) -> bool {
+        let sealed_len = sealed_prefix_len(rows, in_progress);
+        prune_is_worthwhile(&rows[..sealed_len], protected_tokens)
+    }
+
+    /// Meter for the ordinary/manual auto trigger: only sealed rows count.
+    /// The full working-set meter remains the hard send gate; overflow uses
+    /// its own full input. `None` means there is no sealed row to compact.
+    pub fn measure_sealed_meter(
         sessions: &SessionManager,
         session_id: &str,
         request: &CompactionRequestContext,
         prompt_baseline: &ProviderPromptBaseline,
-        rows: &mut Vec<WorkingRow>,
         data_root: &std::path::Path,
-    ) -> Result<bool> {
-        let Some(run) = apply_mechanical_prune_if_worthwhile(
+    ) -> Option<ContextMeter> {
+        let state = sessions.data().working_set_state_blocking(session_id).ok()?;
+        let sealed_len = sealed_prefix_len(&state.rows, &state.in_progress);
+        if sealed_len == 0 {
+            return None;
+        }
+        Some(Self::measure_meter(
             sessions,
             session_id,
             request,
             prompt_baseline,
-            rows,
+            &state.rows[..sealed_len],
             data_root,
-        )?
-        else {
-            return Ok(false);
-        };
-        let tokens_after = run.meter_after.used_tokens;
-        let telemetry = compaction_telemetry(
-            CompactionTrigger::Auto,
-            run.tokens_before,
-            run.tokens_before.saturating_sub(tokens_after),
-            tokens_after,
-            Some(0),
-        );
-        tracing::info!(
-            tokens_before = run.tokens_before,
-            tokens_after,
-            replacements = run.plan.replacements.len(),
-            relieved = run.relieved,
-            "mechanical prune committed at the compaction trigger"
-        );
-        emit_compact_lifecycle_with_telemetry(
-            sessions,
-            session_id,
-            CompactionTrigger::Auto,
-            CompactionStage::Started,
-            None,
-            None,
-            None,
-            telemetry.clone(),
-            None,
-        );
-        emit_compact_lifecycle_with_telemetry(
-            sessions,
-            session_id,
-            CompactionTrigger::Auto,
-            CompactionStage::Succeeded,
-            None,
-            None,
-            None,
-            telemetry,
-            None,
-        );
-        Ok(true)
+        ))
     }
 
     /// The meter used by the auto trigger and the hard send gate. Keeping this
@@ -1083,337 +1717,23 @@ impl CompactPolicy {
         max_tokens: u32,
         rows: &[WorkingRow],
     ) -> Result<Option<CompactionPlan>> {
-        Ok(build_compaction_plan(
-            budget,
-            sessions,
-            session_id,
-            request,
-            max_tokens,
-            rows,
-            CompactionTrigger::Auto,
-        )?
-        .map(|build| build.plan))
-    }
-
-    /// Prepare half of compaction: choose the cut and ask the model for a
-    /// summary without writing the session. The branch owns the follow-up
-    /// commit; a synchronous caller may use the value as its frozen plan.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn prepare_compaction(
-        budget: &BudgetPolicy,
-        sessions: &SessionManager,
-        session_id: &str,
-        request: &CompactionRequestContext,
-        max_tokens: u32,
-        rows: &[WorkingRow],
-        cancel: &CancellationToken,
-        _data_root: &std::path::Path,
-    ) -> Result<Option<PreparedCompaction>> {
-        Self::prepare_compaction_with_attempts(
-            budget, sessions, session_id, request, max_tokens, rows, cancel, _data_root, 1, false,
-            None,
-        )
-        .await
-    }
-
-    /// Prepare a summary from one frozen plan. The whole attempt budget uses
-    /// the same request/prefix/cut; no retry may re-plan.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn prepare_compaction_with_attempts(
-        budget: &BudgetPolicy,
-        sessions: &SessionManager,
-        session_id: &str,
-        request: &CompactionRequestContext,
-        max_tokens: u32,
-        rows: &[WorkingRow],
-        cancel: &CancellationToken,
-        data_root: &std::path::Path,
-        max_attempts: u8,
-        emit_started: bool,
-        operation_id: Option<&str>,
-    ) -> Result<Option<PreparedCompaction>> {
-        if cancel.is_cancelled() {
-            return Ok(None);
-        }
-        let Some(build) = build_compaction_plan(
-            budget,
-            sessions,
-            session_id,
-            request,
-            max_tokens,
-            rows,
-            CompactionTrigger::Auto,
-        )?
-        else {
+        let in_progress = read_compaction_state_result(sessions, session_id)?.in_progress;
+        let Some(input) = CompactionInput::from_rows(rows, &in_progress) else {
             return Ok(None);
         };
-        let tokens_before = context_meter_for_rows_local(request, rows, data_root).used_tokens;
-        if emit_started {
-            emit_compact_lifecycle_with_telemetry(
-                sessions,
-                session_id,
-                CompactionTrigger::Auto,
-                CompactionStage::Started,
-                operation_id,
-                None,
-                None,
-                compaction_telemetry(
-                    CompactionTrigger::Auto,
-                    tokens_before,
-                    0,
-                    tokens_before,
-                    None,
-                ),
-                Some(build.plan.at),
-            );
-        }
-        let (artifact, review, summary_attempts) = Self::first_pass_compaction(
+        Ok(build_summary_plan_from_input(
+            &input,
+            budget,
             request,
-            build.plan.summary_cap,
-            build.plan.cut,
-            &build.snapshot,
-            sessions,
-            cancel,
-            max_attempts,
-        )
-        .await
-        .map_err(|failure| {
-            if emit_started {
-                if matches!(&failure.error, LitecodeError::Canceled) {
-                    emit_compaction_abandoned(sessions, session_id, operation_id);
-                } else {
-                    emit_compact_failed_with_telemetry(
-                        sessions,
-                        session_id,
-                        CompactionTrigger::Auto,
-                        operation_id,
-                        &failure.error,
-                        compaction_telemetry(
-                            CompactionTrigger::Auto,
-                            tokens_before,
-                            0,
-                            tokens_before,
-                            Some(failure.attempts),
-                        ),
-                    );
-                }
-            }
-            failure.error
-        })?;
-        debug_assert!(review.accepted);
-        Ok(Some(PreparedCompaction {
-            plan: build.plan,
-            artifact,
-            review,
-            summary_attempts,
-            started: emit_started,
-        }))
+            max_tokens,
+            CompactionTrigger::Auto,
+        ))
     }
 
-    /// One-shot user-triggered compaction.
+    /// Compatibility/test entry for one sealed-prefix compaction.
     ///
-    /// Product eligibility is enforced by the caller's `ContextMeter`. This
-    /// deliberately skips the automatic pressure trigger and post-compact loop
-    /// reminders.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn compact_now(
-        budget: &BudgetPolicy,
-        sessions: &SessionManager,
-        session_id: &str,
-        request: &CompactionRequestContext,
-        max_tokens: u32,
-        cancel: &CancellationToken,
-        operation_id: Option<&str>,
-        data_root: &std::path::Path,
-    ) -> Result<bool> {
-        let mut rows = sessions.data().working_set_blocking(session_id)?;
-        let prompt_baseline = ProviderPromptBaseline::default();
-        let _ = sessions.settle_stale_plan(session_id);
-        let before_prune = rows.clone();
-        let outcome = Self::compact_transcript(
-            budget,
-            sessions,
-            session_id,
-            request,
-            max_tokens,
-            &prompt_baseline,
-            &mut rows,
-            cancel,
-            CompactionTrigger::Manual,
-            operation_id,
-            data_root,
-            None,
-            MAX_SUMMARY_ATTEMPTS,
-        )
-        .await?;
-        let Some(artifact) = outcome else {
-            if rows != before_prune {
-                let meter = context_meter_for_rows_local(request, &rows, data_root);
-                if !meter.pressure_enabled() || !meter.should_compact() {
-                    tracing::info!(
-                        session_id,
-                        tokens_after = meter.used_tokens,
-                        "mechanical prune relieved context pressure; manual summary skipped"
-                    );
-                    return Ok(true);
-                }
-                // The prune was worthwhile and durable, but the prefix still
-                // has no keep-recent cut to summarize. Report that no summary
-                // checkpoint was possible; the committed trim is not rolled back.
-                tracing::warn!(
-                    session_id,
-                    tokens_after = meter.used_tokens,
-                    "mechanical prune committed but pressure remains and no summary cut exists"
-                );
-            }
-            let before_tokens =
-                context_meter_for_rows_local(request, &before_prune, data_root).used_tokens;
-            let after_meter = context_meter_for_rows_local(request, &rows, data_root);
-            let telemetry = compaction_telemetry(
-                CompactionTrigger::Manual,
-                before_tokens,
-                before_tokens.saturating_sub(after_meter.used_tokens),
-                after_meter.used_tokens,
-                Some(0),
-            );
-            let err = LitecodeError::NothingToCompact;
-            emit_compact_failed_with_telemetry(
-                sessions,
-                session_id,
-                CompactionTrigger::Manual,
-                operation_id,
-                &err,
-                telemetry,
-            );
-            return Err(err);
-        };
-        tracing::info!(
-            finish = ?artifact.finish,
-            model = %artifact.model,
-            usage = ?artifact.usage,
-            "manual compaction committed"
-        );
-        Ok(true)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn compact_if_needed(
-        &self,
-        budget: &BudgetPolicy,
-        sessions: &SessionManager,
-        session_id: &str,
-        request: &CompactionRequestContext,
-        max_tokens: u32,
-        prompt_baseline: &ProviderPromptBaseline,
-        rows: &mut Vec<WorkingRow>,
-        step: u64,
-        cancel: &CancellationToken,
-        data_root: &std::path::Path,
-        prepared: Option<PreparedCompaction>,
-        max_attempts: u8,
-        force: bool,
-    ) -> Result<bool> {
-        // Returns `true` when this compaction stage changed the durable surface:
-        // a checkpoint was written, or a worthwhile mechanical prune relieved
-        // pressure. This is the single source of truth the caller uses to
-        // restage its working set.
-        if cancel.is_cancelled() {
-            return Ok(false);
-        }
-
-        let meter = context_meter_for_rows(
-            sessions,
-            session_id,
-            request,
-            prompt_baseline,
-            rows,
-            data_root,
-        );
-        meter.log_iteration(step);
-
-        if force || meter.should_compact() {
-            if cancel.is_cancelled() {
-                return Ok(false);
-            }
-
-            tracing::info!(
-                used_tokens = meter.used_tokens,
-                compact_at = meter.compact_at,
-                prompt_limit = meter.prompt_limit,
-                source = ?meter.source,
-                "context pressure reached; triggering compaction"
-            );
-            // Prune is the first stage of this trigger. `compact_transcript`
-            // commits it before selecting a keep-recent cut, so a prune that
-            // relieves pressure can skip summarization even when the whole
-            // persisted prefix would otherwise fit in the keep window.
-            let before_prune = rows.clone();
-            let outcome = Self::compact_transcript(
-                budget,
-                sessions,
-                session_id,
-                request,
-                max_tokens,
-                prompt_baseline,
-                rows,
-                cancel,
-                CompactionTrigger::Auto,
-                None,
-                data_root,
-                prepared,
-                max_attempts,
-            )
-            .await?;
-            let did_compact = outcome.is_some();
-            let prune_applied = rows != &before_prune;
-            if let Some(artifact) = outcome {
-                tracing::info!(
-                    finish = ?artifact.finish,
-                    model = %artifact.model,
-                    usage = ?artifact.usage,
-                    "automatic compaction committed"
-                );
-            } else if prune_applied {
-                tracing::info!(
-                    "mechanical prune changed the surface; no summary checkpoint was written"
-                );
-            }
-
-            if cancel.is_cancelled() {
-                return Ok(false);
-            }
-            // Defensive: if a summary was skipped (cut race or prune-only), the
-            // current surface must still honor the hard prompt limit. The old
-            // provider bill cannot price the rewritten surface, so use the same
-            // local ContextMeter projection the prune stage used.
-            if !did_compact {
-                let meter = if prune_applied {
-                    context_meter_for_rows_local(request, rows, data_root)
-                } else {
-                    context_meter_for_rows(
-                        sessions,
-                        session_id,
-                        request,
-                        prompt_baseline,
-                        rows,
-                        data_root,
-                    )
-                };
-                meter.enforce_prompt_limit()?;
-            }
-            return Ok(did_compact || prune_applied);
-        }
-
-        meter.enforce_prompt_limit()?;
-        Ok(false)
-    }
-
-    /// Returns the PR-1 artifact when a checkpoint was written. `Ok(None)`
-    /// means no checkpoint: either keep-recent found nothing to discard, or a
-    /// worthwhile mechanical prune relieved pressure and the summary was
-    /// skipped (the prune itself is already durable). The provider
-    /// finish/usage/model stays on the artifact across the compaction boundary
-    /// instead of being collapsed to a boolean or plain summary text.
+    /// Production episodes call the same `compact_input` core directly; this
+    /// wrapper only reattaches unpersisted test rows after the common rebuild.
     #[allow(clippy::too_many_arguments)]
     pub async fn compact_transcript(
         budget: &BudgetPolicy,
@@ -1427,548 +1747,176 @@ impl CompactPolicy {
         trigger: CompactionTrigger,
         operation_id: Option<&str>,
         data_root: &std::path::Path,
-        prepared: Option<PreparedCompaction>,
         max_attempts: u8,
     ) -> Result<Option<SummaryArtifact>> {
-        if cancel.is_cancelled() {
+        let in_progress = read_compaction_state_result(sessions, session_id)?.in_progress;
+        let Some(input) = CompactionInput::from_rows(rows, &in_progress) else {
             return Ok(None);
-        }
-
-        // A prepared summary is a frozen plan. The prune decision was made
-        // when the plan was created; rows written afterwards are appended after
-        // the cut and must not re-open that decision.
-        let commit = if let Some(prepared) = prepared {
-            // The background summary was computed against an earlier snapshot.
-            // Re-anchor it on the current surface: keep the same first kept
-            // row, validate the leading checkpoint, and let any rows written
-            // since prepare stay verbatim after the cut.
-            let snapshot = rows.clone();
-            let prefix_len = persisted_prefix_len(&snapshot);
-            let mut persisted = snapshot.clone();
-            let tail = persisted.split_off(prefix_len);
-            let prior_checkpoint_seq = persisted
-                .first()
-                .and_then(|row| row.checkpoint().and(row.log_seq));
-            if prior_checkpoint_seq != prepared.plan.prior_checkpoint_seq {
-                tracing::info!(
-                    expected = ?prepared.plan.prior_checkpoint_seq,
-                    actual = ?prior_checkpoint_seq,
-                    "prefetched compaction rejected: leading checkpoint changed"
-                );
-                return Ok(None);
-            }
-            let Some(cut) = persisted
-                .iter()
-                .position(|row| row.log_seq == Some(prepared.plan.kept_from_seq))
-            else {
-                tracing::info!(
-                    kept_from_seq = prepared.plan.kept_from_seq,
-                    "prefetched compaction rejected: kept_from_seq left the surface"
-                );
-                return Ok(None);
-            };
-            let transcript = project_items(&persisted);
-            let kept = transcript[cut..].to_vec();
-            let tokens_before = context_meter_for_rows(
-                sessions,
-                session_id,
-                request,
-                prompt_baseline,
-                &snapshot,
-                data_root,
-            )
-            .used_tokens;
-            let mut plan = prepared.plan;
-            plan.prefix_len = prefix_len;
-            plan.cut = cut;
-            plan.prior_checkpoint_seq = prior_checkpoint_seq;
-            CompactionCommit {
-                snapshot,
-                prefix_len,
-                tail,
-                kept,
-                expected_revision: sessions.data().revision_blocking(session_id)?,
-                plan,
-                artifact: prepared.artifact,
-                review: prepared.review,
-                summary_attempts: prepared.summary_attempts,
-                tokens_before,
-                tokens_pruned: 0,
-                tokens_after_prune: tokens_before,
-                prune_plan: None,
-                started: prepared.started,
-            }
-        } else {
-            // Stage one of every compaction trigger: deterministic mechanical
-            // pruning. It runs here, never in build_view, so ordinary turns keep
-            // their cached prefix. A below-floor plan writes no surface event.
-            let prune_run = apply_mechanical_prune_if_worthwhile(
-                sessions,
-                session_id,
-                request,
-                prompt_baseline,
-                rows,
-                data_root,
-            )?;
-            if cancel.is_cancelled() {
-                return Ok(None);
-            }
-            let prune_plan = prune_run.as_ref().map(|run| run.plan.clone());
-            if prune_run.as_ref().is_some_and(|run| run.relieved) {
-                let tokens_after = prune_run
-                    .as_ref()
-                    .map(|run| run.meter_after.used_tokens)
-                    .unwrap_or_else(|| {
-                        context_meter_for_rows_local(request, rows, data_root).used_tokens
-                    });
-                tracing::info!(
-                    tokens_after,
-                    replacements = prune_plan
-                        .as_ref()
-                        .map_or(0, |plan| plan.replacements.len()),
-                    "mechanical prune alone relieved context pressure; skipping summary"
-                );
-                let telemetry = prune_run.as_ref().map_or_else(
-                    || compaction_telemetry(trigger, tokens_after, 0, tokens_after, Some(0)),
-                    |run| {
-                        compaction_telemetry(
-                            trigger,
-                            run.tokens_before,
-                            run.tokens_before
-                                .saturating_sub(run.meter_after.used_tokens),
-                            run.meter_after.used_tokens,
-                            Some(0),
-                        )
-                    },
-                );
-                emit_compact_lifecycle_with_telemetry(
-                    sessions,
-                    session_id,
-                    trigger,
-                    CompactionStage::Started,
-                    operation_id,
-                    None,
-                    None,
-                    telemetry.clone(),
-                    None,
-                );
-                emit_compact_lifecycle_with_telemetry(
-                    sessions,
-                    session_id,
-                    trigger,
-                    CompactionStage::Succeeded,
-                    operation_id,
-                    None,
-                    None,
-                    telemetry,
-                    None,
-                );
-                return Ok(None);
-            }
-
-            let tokens_before = prune_run
-                .as_ref()
-                .map(|run| run.tokens_before)
-                .unwrap_or_else(|| {
-                    context_meter_for_rows(
-                        sessions,
-                        session_id,
-                        request,
-                        prompt_baseline,
-                        rows,
-                        data_root,
-                    )
-                    .used_tokens
-                });
-            let tokens_pruned = prune_run
-                .as_ref()
-                .map(|run| {
-                    run.tokens_before
-                        .saturating_sub(run.meter_after.used_tokens)
-                })
-                .unwrap_or(0);
-            let tokens_after_prune = prune_run
-                .as_ref()
-                .map(|run| run.meter_after.used_tokens)
-                .unwrap_or(tokens_before);
-            let base_telemetry = compaction_telemetry(
-                trigger,
-                tokens_before,
-                tokens_pruned,
-                tokens_after_prune,
-                None,
-            );
-            let build = match build_compaction_plan(
-                budget, sessions, session_id, request, max_tokens, rows, trigger,
-            ) {
-                Ok(Some(build)) => build,
-                Ok(None) => return Ok(None),
-                Err(error) => {
-                    emit_compact_failed_with_telemetry(
-                        sessions,
-                        session_id,
-                        trigger,
-                        operation_id,
-                        &error,
-                        base_telemetry,
-                    );
-                    return Err(error);
-                }
-            };
-            emit_compact_lifecycle_with_telemetry(
-                sessions,
-                session_id,
-                trigger,
-                CompactionStage::Started,
-                operation_id,
-                None,
-                None,
-                base_telemetry.clone(),
-                Some(build.plan.at),
-            );
-
-            let (artifact, review, summary_attempts) = match Self::first_pass_compaction(
-                request,
-                build.plan.summary_cap,
-                build.plan.cut,
-                &build.snapshot,
-                sessions,
-                cancel,
-                max_attempts,
-            )
-            .await
-            {
-                Ok(accepted) => accepted,
-                Err(failure) => {
-                    let telemetry = compaction_telemetry(
-                        trigger,
-                        tokens_before,
-                        tokens_pruned,
-                        tokens_after_prune,
-                        Some(failure.attempts),
-                    );
-                    emit_compact_failed_with_telemetry(
-                        sessions,
-                        session_id,
-                        trigger,
-                        operation_id,
-                        &failure.error,
-                        telemetry,
-                    );
-                    return Err(failure.error);
-                }
-            };
-            debug_assert!(review.accepted);
-
-            if cancel.is_cancelled() {
-                let err = LitecodeError::Canceled;
-                let telemetry = compaction_telemetry(
-                    trigger,
-                    tokens_before,
-                    tokens_pruned,
-                    tokens_after_prune,
-                    Some(summary_attempts),
-                );
-                emit_compact_failed_with_telemetry(
-                    sessions,
-                    session_id,
-                    trigger,
-                    operation_id,
-                    &err,
-                    telemetry,
-                );
-                return Err(err);
-            }
-
-            CompactionCommit {
-                snapshot: build.snapshot,
-                prefix_len: build.plan.prefix_len,
-                tail: build.tail,
-                kept: build.kept,
-                expected_revision: build.expected_revision,
-                plan: build.plan,
-                artifact,
-                review,
-                summary_attempts,
-                tokens_before,
-                tokens_pruned,
-                tokens_after_prune,
-                prune_plan,
-                started: true,
-            }
         };
-
-        let CompactionCommit {
-            snapshot,
-            prefix_len,
-            tail,
-            kept,
-            expected_revision,
-            plan,
-            artifact,
-            review,
-            summary_attempts,
-            tokens_before,
-            tokens_pruned,
-            tokens_after_prune,
-            prune_plan,
-            started,
-        } = commit;
-        let cut = plan.cut;
-        let checkpoint = CompactionCheckpoint {
-            summary: artifact.text.clone(),
-            from: snapshot
-                .first()
-                .and_then(|row| row.log_seq)
-                .unwrap_or(plan.kept_from_seq),
-            to: plan.kept_from_seq,
-        };
-        let envelope = ContextEnvelope::from_compaction_request(request);
-        let final_meter = {
-            let mut view = vec![checkpoint.model_item()];
-            view.extend(kept.iter().cloned());
-            view.extend(tail.iter().map(|row| row.payload.model_item()));
-            let view_seqs = vec![None; view.len()];
-            let projection = super::project_model_view(
-                &view,
-                &view_seqs,
-                None,
-                None,
-                &request.target,
-                data_root,
-            );
-            // The rewritten view is not a suffix of the billed request; count
-            // the complete local envelope over the same request projection.
-            ContextMeter::measure_local(
-                request.context_window,
-                request.target.context_window_max,
-                request.max_output_tokens as usize,
-                &envelope,
-                &projection.items,
-            )
-        };
-        let final_count = final_meter.used_tokens;
-        if !started {
-            let telemetry = compaction_telemetry(
-                trigger,
-                tokens_before,
-                tokens_pruned,
-                tokens_after_prune,
-                None,
-            );
-            emit_compact_lifecycle_with_telemetry(
-                sessions,
-                session_id,
-                trigger,
-                CompactionStage::Started,
-                operation_id,
-                None,
-                None,
-                telemetry,
-                Some(plan.at),
-            );
-        }
-        if final_meter.is_over_prompt_limit() {
-            *rows = snapshot;
-            tracing::error!(
-                final_count,
-                limit = final_meter.prompt_limit,
-                "token budget still exceeded after autocompact"
-            );
-            let err = LitecodeError::TokenBudgetExceeded;
-            let telemetry = compaction_telemetry(
-                trigger,
-                tokens_before,
-                tokens_pruned,
-                final_count,
-                Some(summary_attempts),
-            );
-            emit_compact_failed_with_telemetry(
-                sessions,
-                session_id,
-                trigger,
-                operation_id,
-                &err,
-                telemetry,
-            );
-            return Err(err);
-        }
-
-        // Persist only the raw, role-free summary. The framed user checkpoint is
-        // a model projection and must never round-trip into durable storage.
-        let receipt = match sessions.mutate_blocking(
-            crate::session::data::command::SessionMutation::Compact {
-                session_id: session_id.to_string(),
-                expected_revision,
-                operation_id: crate::session::data::command::MutationId::new(),
-                summary: artifact.text.clone(),
-                token_estimate: final_count as i64,
-                kept_from: Some(plan.kept_from_seq),
-                at: Some(plan.at),
-                expected_prefix: Some(prefix_len),
-                // Already captured off the response stream; persisting it is what
-                // stops the summarizer call from being an unrecorded cost.
-                usage: artifact.usage.clone(),
-                // The summarizer inherits the main binding, so its provider is the
-                // same one the turn is using. Persist it for per-provider spend.
-                provider_id: Some(request.target.provider_id.clone()),
-            },
-        ) {
-            Ok(receipt) => receipt,
-            Err(e) => {
-                *rows = snapshot;
-                let telemetry = compaction_telemetry(
-                    trigger,
-                    tokens_before,
-                    tokens_pruned,
-                    final_count,
-                    Some(summary_attempts),
-                );
-                emit_compact_failed_with_telemetry(
-                    sessions,
-                    session_id,
-                    trigger,
-                    operation_id,
-                    &e,
-                    telemetry,
-                );
-                return Err(e);
-            }
-        };
-        let checkpoint_seq = match receipt.outcome {
-            crate::session::data::command::CommitKind::Compacted { seq } => seq,
-            other => {
-                *rows = snapshot;
-                let err = LitecodeError::ToolExecution(format!(
-                    "compact mutation returned unexpected outcome {other:?}"
-                ));
-                let telemetry = compaction_telemetry(
-                    trigger,
-                    tokens_before,
-                    tokens_pruned,
-                    final_count,
-                    Some(summary_attempts),
-                );
-                emit_compact_failed_with_telemetry(
-                    sessions,
-                    session_id,
-                    trigger,
-                    operation_id,
-                    &err,
-                    telemetry,
-                );
-                return Err(err);
-            }
-        };
-        // Prefer the exact body just persisted. The computed body is a fallback
-        // for an events read failure; the seq is already authoritative.
-        let checkpoint = sessions
-            .data()
-            .events_blocking(session_id)
-            .ok()
-            .and_then(|events| events.into_iter().find(|event| event.seq == checkpoint_seq))
-            .and_then(|event| {
-                serde_json::from_value::<crate::session::model::CompactedBody>(event.data).ok()
-            })
-            .map(CompactionCheckpoint::from)
-            .unwrap_or(checkpoint);
-        let outcome = CompactionOutcome {
-            checkpoint_seq,
-            checkpoint: checkpoint.clone(),
-            plan,
-            prune: prune_plan,
-            summary: artifact,
-            review,
-            tokens_before,
-            tokens_after: final_count,
-            summary_attempts,
-        };
-
-        // One reload. The pending tail was split off before the summary call.
-        // ISSUE-035 / WP-039: after Compact has committed, DB is sole truth.
-        // Reload failure must not roll memory back to the pre-compact snapshot
-        // or emit Failed (that would pretend compaction never happened).
-        // Keep `working_set_blocking` in this fn body (death_list g2 item-level gate).
-        let reload_result = {
-            #[cfg(test)]
-            {
-                if INJECT_RELOAD_ERR_AFTER_COMPACT.with(|flag| flag.replace(false)) {
-                    Err(LitecodeError::ToolExecution(
-                        "injected working_set reload failure after Compact persist".into(),
-                    ))
-                } else {
-                    sessions.data().working_set_blocking(session_id)
-                }
-            }
-            #[cfg(not(test))]
-            {
-                sessions.data().working_set_blocking(session_id)
-            }
-        };
-        let telemetry = compaction_telemetry(
-            trigger,
-            outcome.tokens_before,
-            tokens_pruned,
-            outcome.tokens_after,
-            Some(outcome.summary_attempts),
-        );
-        let mut model = match reload_result {
-            Ok(loaded) => loaded,
-            Err(e) => {
-                tracing::warn!(
-                    session_id,
-                    error = %e,
-                    "compact persisted but working_set reload failed; installing emergency cache"
-                );
-                let mut emergency = vec![WorkingRow::persisted_checkpoint(
-                    checkpoint_seq,
-                    outcome.checkpoint.clone(),
-                )];
-                emergency.extend(snapshot[cut..].iter().cloned());
-                *rows = emergency;
-                prompt_baseline.clear();
-                emit_compact_lifecycle_with_telemetry(
-                    sessions,
-                    session_id,
-                    trigger,
-                    CompactionStage::Succeeded,
-                    operation_id,
-                    None,
-                    None,
-                    telemetry,
-                    None,
-                );
-                return Ok(Some(outcome.summary));
-            }
-        };
-        model.extend(tail);
-        *rows = model;
-
-        tracing::info!(
-            checkpoint_seq = outcome.checkpoint_seq,
-            checkpoint_from = outcome.checkpoint.from,
-            checkpoint_to = outcome.checkpoint.to,
-            prior_checkpoint_seq = ?outcome.plan.prior_checkpoint_seq,
-            tokens_before = outcome.tokens_before,
-            tokens_after = outcome.tokens_after,
-            summary_attempts = outcome.summary_attempts,
-            "compaction checkpoint committed"
-        );
-        let summary = outcome.summary;
-        prompt_baseline.clear();
-        emit_compact_lifecycle_with_telemetry(
+        let pending_tail: Vec<WorkingRow> = rows
+            .iter()
+            .filter(|row| row.log_seq.is_none())
+            .cloned()
+            .collect();
+        let operation_id = operation_id
+            .map(str::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let Some(run) = compact_input(
             sessions,
             session_id,
+            request,
+            budget,
+            input,
+            cancel,
             trigger,
-            CompactionStage::Succeeded,
-            operation_id,
-            None,
-            None,
-            telemetry,
-            None,
+            &operation_id,
+            max_tokens,
+            data_root,
+            max_attempts,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        // The old bill describes a prefix that no longer exists. The runtime
+        // clears its own baseline after the episode; this keeps the test-facing
+        // wrapper's baseline in step too.
+        prompt_baseline.invalidate();
+        sessions.set_compaction_terminal_telemetry(
+            session_id,
+            Some(&operation_id),
+            run.telemetry.clone(),
         );
-        Ok(Some(summary))
+        let mut surface = rebuild_committed_surface(sessions, session_id, &run)?;
+        surface.extend(pending_tail);
+        *rows = surface;
+        Ok(run.summary)
     }
+
+    /// Run the one session-owned episode. Ordinary/manual snapshots the sealed
+    /// prefix; overflow snapshots the full surface + live tail. Exactly one of
+    /// `ReplaceSurface` / `Compact` may land. The commit is the fact; read-back
+    /// is a separate delivery stage. A committed but unverified surface is not
+    /// Succeeded; it is reported so the session can try the read. The terminal is
+    /// published by `CompactionEpisodeLease::finish` (manager).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_episode(
+        lease: &mut CompactionEpisodeLease,
+        budget: &BudgetPolicy,
+        sessions: &SessionManager,
+        session_id: &str,
+        request: &CompactionRequestContext,
+        trigger: CompactionTrigger,
+        data_root: &std::path::Path,
+        overflow_rows: Option<Vec<WorkingRow>>,
+    ) -> Result<()> {
+        let state = match read_compaction_state_result(sessions, session_id) {
+            Ok(state) => state,
+            Err(error) => {
+                lease.finish(EpisodeOutcome::Failed {
+                    kind: compact_fail_kind(&error),
+                    action: failure_action(trigger, &error),
+                    message: format!("compaction input read failed: {error}"),
+                });
+                return Ok(());
+            }
+        };
+        let operation_id = lease.id().to_string();
+        let cancel = lease.cancel_token();
+        let input = match trigger {
+            CompactionTrigger::Overflow => overflow_rows
+                .as_deref()
+                .and_then(|rows| CompactionInput::from_rows_full(rows, &state.in_progress))
+                .or_else(|| CompactionInput::from_state_full(&state)),
+            _ => CompactionInput::from_state(&state),
+        };
+        let Some(input) = input else {
+            let terminal = EpisodeOutcome::Failed {
+                kind: CompactionFailKind::NothingToCompact,
+                message: "session has no sealed rows to compact".into(),
+                action: failure_action(trigger, &LitecodeError::NothingToCompact),
+            };
+            lease.finish(terminal);
+            return Ok(());
+        };
+
+        let result = compact_input(
+            sessions,
+            session_id,
+            request,
+            budget,
+            input,
+            &cancel,
+            trigger,
+            &operation_id,
+            crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
+            data_root,
+            MAX_SUMMARY_ATTEMPTS,
+        )
+        .await;
+
+        let committed = match result {
+            Ok(Some(run)) => run,
+            Ok(None) => {
+                lease.finish(EpisodeOutcome::Failed {
+                    kind: CompactionFailKind::NothingToCompact,
+                    message: "no sealed-prefix prune or summary cut".into(),
+                    action: failure_action(trigger, &LitecodeError::NothingToCompact),
+                });
+                return Ok(());
+            }
+            Err(LitecodeError::Canceled) => {
+                lease.finish(EpisodeOutcome::Cancelled {
+                    reason: CompactionCancelReason::External,
+                });
+                return Ok(());
+            }
+            Err(error) => {
+                lease.finish(EpisodeOutcome::Failed {
+                    kind: compact_fail_kind(&error),
+                    action: failure_action(trigger, &error),
+                    message: error.to_string(),
+                });
+                return Ok(());
+            }
+        };
+
+        // The mutation is the commit fact. Mark it before read-back so an
+        // abort still leaves the durable commit visible; delivery is recorded
+        // only after the read surface is verified.
+        let commit = committed.kind.clone();
+        lease.mark_committed(commit.clone());
+        sessions.set_compaction_terminal_telemetry(
+            session_id,
+            Some(&operation_id),
+            committed.telemetry.clone(),
+        );
+        let verified_surface = match rebuild_committed_surface(sessions, session_id, &committed) {
+            Ok(rows) => rows,
+            Err(error) => {
+                // The commit is durable, but its product is not verified yet.
+                // Do not report success: let the session try the read. A
+                // validation mismatch is a bad surface and stops the turn.
+                lease.finish(EpisodeOutcome::Failed {
+                    kind: compact_fail_kind(&error),
+                    action: readback_failure_action(trigger, &error),
+                    message: format!(
+                        "compaction committed but surface read-back failed: {error}"
+                    ),
+                });
+                return Ok(());
+            }
+        };
+        tracing::debug!(
+            session_id,
+            rows = verified_surface.len(),
+            "committed compaction surface delivered"
+        );
+        lease.mark_delivered();
+        lease.finish(EpisodeOutcome::Succeeded { commit });
+        Ok(())
+    }
+
     async fn first_pass_compaction(
         request: &CompactionRequestContext,
         max_tokens: u32,
@@ -1989,12 +1937,13 @@ impl CompactPolicy {
         // The request input is the discarded prefix in original Item order,
         // projected exactly as the main view would project it. `kept` stays in
         // the working set and never enters this request.
-        let prefix = match build_compaction_input(request, sessions, rows, cut) {
-            Ok(prefix) => prefix,
-            Err(error) => {
-                return Err(SummaryPassFailure { error, attempts: 0 });
-            }
-        };
+        let (prefix, omitted_history) =
+            match build_compaction_input(request, sessions, rows, cut, max_tokens) {
+                Ok(prefix) => prefix,
+                Err(error) => {
+                    return Err(SummaryPassFailure { error, attempts: 0 });
+                }
+            };
         let mut last_review: Option<SummaryReview> = None;
 
         for attempt in 1..=max_attempts {
@@ -2031,12 +1980,17 @@ impl CompactPolicy {
 
             let review = SummaryAcceptance::review(&artifact, &prefix);
             if review.accepted {
+                let mut artifact = artifact;
+                if omitted_history {
+                    artifact.text = format!("{OMITTED_HISTORY_MARKER}{}", artifact.text);
+                }
                 tracing::info!(
                     summary_len = artifact.text.len(),
                     finish = ?artifact.finish,
                     model = %artifact.model,
                     usage = ?artifact.usage,
                     attempt,
+                    omitted_history,
                     "keep-recent compaction accepted"
                 );
                 return Ok((artifact, review, attempt));
@@ -2183,12 +2137,23 @@ impl CompactPolicy {
 /// Build the compaction input from the same projected view as the main
 /// request. The selected items are the prefix whose source row index is in the
 /// discarded range; synthetic pads inherit the unanswered call's index.
+const OMITTED_HISTORY_MARKER: &str =
+    "[Earlier history was omitted before this summary.]\n\n";
+
+fn is_user_message(item: &Item) -> bool {
+    matches!(
+        item,
+        Item::Message(MessageItem::Input(message)) if matches!(message.role, InputRole::User)
+    )
+}
+
 fn build_compaction_input(
     request: &CompactionRequestContext,
     sessions: &SessionManager,
     rows: &[WorkingRow],
     cut: usize,
-) -> Result<Vec<Item>> {
+    summary_cap: u32,
+) -> Result<(Vec<Item>, bool)> {
     let (turn_view, source_seqs, inherited_before_checkpoint, replacement_media) =
         if let Some(view) = CompactedView::from_working_rows(rows) {
             (
@@ -2225,6 +2190,51 @@ fn build_compaction_input(
         }
     }
 
+    // The summary call is a real request with its own physical prompt limit.
+    // Keep its input under 80% of that limit, dropping the oldest whole user
+    // turns first. Tool calls/outputs and assistant segments are never split
+    // because the cut only lands on user-message boundaries.
+    let summary_cap = summary_cap as usize;
+    let fixed = ContextEnvelope::from_compaction_request(request)
+        .with_output_reserve(summary_cap)
+        .fixed_prompt_tokens()
+        .saturating_add(crate::session::estimate::count_text_tokens(
+            crate::config::global_db::COMPACTION_INSTRUCTION,
+        ));
+    let physical = request
+        .target
+        .context_window_max
+        .saturating_sub(summary_cap)
+        .max(1);
+    let target = (physical.saturating_mul(4) / 5).max(1);
+    let mut omitted = false;
+    if fixed.saturating_add(crate::session::estimate::compute_token_estimate(&input)) > target {
+        let starts = std::iter::once(0).chain(
+            input
+                .iter()
+                .enumerate()
+                .filter_map(|(index, item)| is_user_message(item).then_some(index)),
+        );
+        let Some(start) = starts
+            .filter(|&start| {
+                fixed.saturating_add(crate::session::estimate::compute_token_estimate(
+                    &input[start..],
+                )) <= target
+            })
+            .next()
+        else {
+            return Err(LitecodeError::CompactionInputTooLarge(format!(
+                "summary input still exceeds {target} tokens after dropping oldest history"
+            )));
+        };
+        if start > 0 {
+            input = input[start..].to_vec();
+            input_seqs = input_seqs[start..].to_vec();
+            input_rebased = input_rebased[start..].to_vec();
+            omitted = true;
+        }
+    }
+
     let producers = crate::runtime::llm_resolve::producers_from_origins(
         sessions
             .request_origins(&request.session_id)
@@ -2246,7 +2256,7 @@ fn build_compaction_input(
             block.message()
         )));
     }
-    Ok(input)
+    Ok((input, omitted))
 }
 
 fn finish_from_response_status(status: &crate::authority::responses::Status) -> SummaryFinish {
@@ -2278,13 +2288,6 @@ fn provider_usage_from_response(
 // Test-only: next post-persist `working_set_blocking` in compact returns Err once.
 #[cfg(test)]
 thread_local! {
-    static INJECT_RELOAD_ERR_AFTER_COMPACT: Cell<bool> = const { Cell::new(false) };
-}
-
-/// Arm a one-shot reload failure after a successful Compact persist (WP-039 / ISSUE-035).
-#[cfg(test)]
-pub fn inject_reload_err_after_compact_once() {
-    INJECT_RELOAD_ERR_AFTER_COMPACT.with(|flag| flag.set(true));
 }
 
 fn compaction_telemetry(
@@ -2303,6 +2306,53 @@ fn compaction_telemetry(
     }
 }
 
+fn failure_action(
+    trigger: CompactionTrigger,
+    err: &LitecodeError,
+) -> CompactionFailureAction {
+    // Manual has no turn to stop. Its failure is reported through the
+    // lifecycle; an auto turn that happens to share the session must not be
+    // stopped by a manual episode's outcome.
+    if trigger == CompactionTrigger::Manual {
+        return CompactionFailureAction::Continue;
+    }
+    if trigger == CompactionTrigger::Overflow
+        || matches!(
+            err,
+            LitecodeError::ContextStillOverLimit { .. }
+                | LitecodeError::CompactionInputTooLarge(_)
+                | LitecodeError::SessionStorage(_)
+                | LitecodeError::Sqlite(_)
+                | LitecodeError::InvalidSessionEvent(_)
+                | LitecodeError::SessionDataClosed
+        )
+    {
+        CompactionFailureAction::StopTurn
+    } else {
+        CompactionFailureAction::Continue
+    }
+}
+
+/// A committed surface that cannot be read back is unverified, not success:
+/// the session still gets to try the read. A validation mismatch is a bad
+/// surface and stops the turn. Manual never stops a turn.
+fn readback_failure_action(
+    trigger: CompactionTrigger,
+    err: &LitecodeError,
+) -> CompactionFailureAction {
+    if trigger == CompactionTrigger::Manual {
+        return CompactionFailureAction::Continue;
+    }
+    if matches!(
+        err,
+        LitecodeError::CompactionSurfaceChanged(_) | LitecodeError::InvalidSessionEvent(_)
+    ) {
+        CompactionFailureAction::StopTurn
+    } else {
+        CompactionFailureAction::Continue
+    }
+}
+
 fn compact_fail_kind(err: &LitecodeError) -> CompactionFailKind {
     match err {
         LitecodeError::NothingToCompact => CompactionFailKind::NothingToCompact,
@@ -2312,90 +2362,44 @@ fn compact_fail_kind(err: &LitecodeError) -> CompactionFailKind {
             crate::types::CompactionFailureKind::Quality => CompactionFailKind::Quality,
             crate::types::CompactionFailureKind::Transport => CompactionFailKind::Transport,
         },
+        LitecodeError::CompactionSurfaceChanged(_) => CompactionFailKind::Failed,
+        LitecodeError::CompactionInputTooLarge(_) => CompactionFailKind::Failed,
         _ => CompactionFailKind::Failed,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn emit_compact_lifecycle_with_telemetry(
+/// Publish the one Started event. Terminal events belong to the episode owner
+/// (`run_episode`) and are published only after the lease has finished.
+fn emit_compact_started(
     sessions: &SessionManager,
     session_id: &str,
     trigger: CompactionTrigger,
-    stage: CompactionStage,
     operation_id: Option<&str>,
-    fail_kind: Option<CompactionFailKind>,
-    error: Option<String>,
     telemetry: CompactionTelemetry,
     at: Option<Seq>,
 ) {
-    // The lifecycle emitter is the single writer of the session's compaction
-    // state. A snapshot built after this call therefore always agrees with the
-    // stage it carries; clients project the state instead of re-deriving it.
-    let operation_id = match stage {
-        CompactionStage::Started => {
-            let (_, id) = sessions.begin_compaction_blocking(session_id, operation_id, trigger, at);
-            Some(id)
-        }
-        CompactionStage::Succeeded | CompactionStage::Failed | CompactionStage::Abandoned => {
-            let (_, id) = sessions.end_compaction_blocking(session_id, operation_id, trigger);
-            id.or_else(|| operation_id.map(str::to_string))
-        }
-    };
+    // The episode was admitted by `try_begin_compaction_episode`; this only
+    // updates the display anchor and never creates a second record.
+    let (_, id) = sessions.begin_compaction_blocking(session_id, operation_id, trigger, at);
     sessions.publish_internal(
         session_id,
         InternalEvent::CompactionLifecycle {
             trigger,
-            stage,
-            operation_id,
-            fail_kind,
-            error,
+            stage: CompactionStage::Started,
+            operation_id: Some(id),
+            fail_kind: None,
+            error: None,
             telemetry,
             at,
         },
     );
 }
 
-pub(crate) fn emit_compaction_abandoned(
-    sessions: &SessionManager,
-    session_id: &str,
-    operation_id: Option<&str>,
-) {
-    emit_compact_lifecycle_with_telemetry(
-        sessions,
-        session_id,
-        CompactionTrigger::Auto,
-        CompactionStage::Abandoned,
-        operation_id,
-        None,
-        None,
-        CompactionTelemetry::default(),
-        None,
-    );
-}
-
-/// Publish the terminal event after [`SessionManager::finish_background_compaction`]
-/// already cleared the episode. Used only by the worker's drop guard, which is
-/// the last chance to seal a branch that died without a terminal event.
-pub(crate) fn publish_compaction_abandoned(
-    sessions: &SessionManager,
-    session_id: &str,
-    operation_id: &str,
-) {
-    sessions.publish_internal(
-        session_id,
-        InternalEvent::CompactionLifecycle {
-            trigger: CompactionTrigger::Auto,
-            stage: CompactionStage::Abandoned,
-            operation_id: Some(operation_id.to_string()),
-            fail_kind: None,
-            error: None,
-            telemetry: CompactionTelemetry::default(),
-            at: None,
-        },
-    );
-}
-
-fn emit_compact_failed_with_telemetry(
+/// Record the terminal telemetry without publishing a terminal. The episode
+/// owner publishes exactly one terminal after `finish`; publishing here would
+/// make clients see a pre-finish terminal and, on cancellation, a Failed
+/// followed by Cancelled.
+fn record_compact_failure(
     sessions: &SessionManager,
     session_id: &str,
     trigger: CompactionTrigger,
@@ -2413,17 +2417,7 @@ fn emit_compact_failed_with_telemetry(
         telemetry = ?telemetry,
         "compaction failed"
     );
-    emit_compact_lifecycle_with_telemetry(
-        sessions,
-        session_id,
-        trigger,
-        CompactionStage::Failed,
-        operation_id,
-        Some(fail_kind),
-        Some(err.to_string()),
-        telemetry,
-        None,
-    );
+    sessions.set_compaction_terminal_telemetry(session_id, operation_id, telemetry);
 }
 
 /// Items as the model view will carry them, so the budget never counts media
@@ -2457,6 +2451,17 @@ fn persisted_prefix_len(rows: &[WorkingRow]) -> usize {
         .unwrap_or(rows.len())
 }
 
+/// Leading persisted rows that are already sealed. The first in-progress row
+/// ends the summarisable/rewritable prefix: a seal rewrites that same seq, so a
+/// summary that read it would be stale before it commits.
+fn sealed_prefix_len(rows: &[WorkingRow], in_progress: &HashSet<Seq>) -> usize {
+    let persisted = persisted_prefix_len(rows);
+    rows[..persisted]
+        .iter()
+        .position(|row| row.log_seq.is_some_and(|seq| in_progress.contains(&seq)))
+        .unwrap_or(persisted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2469,7 +2474,6 @@ mod tests {
     }
 
     use crate::config::TurnGuard;
-    use crate::context_pipeline::{Context, ContextPipeline};
     use crate::llm::{LlmProvider, ModelRequest, RequestPurpose, ToolDef};
     use crate::platform_knobs::ThinkingSpec;
     use crate::provider_catalog::ProviderCatalog;
@@ -3048,10 +3052,55 @@ max_output = 8192
         assert_eq!(req.session_id.as_deref(), Some("s1"));
     }
 
-    /// WP-039 / ISSUE-035: Compact persist succeeds, reload fails → Ok(true),
-    /// Succeeded (not Failed), DB has summary, memory ≠ pre-compact snapshot.
+    /// A commit that durable-succeeds but returns AfterCommit is retried with
+    /// the same operation id; the journal must return the one receipt instead
+    /// of dispatching a second checkpoint.
     #[tokio::test]
-    async fn compact_persist_ok_reload_err_keeps_db_truth() {
+    async fn commit_retry_reuses_operation_id_after_after_commit_fault() {
+        let (sessions, sid, _header) = open_seeded();
+        let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+        let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
+        let request = compact_context(Arc::new(TextProvider));
+        sessions
+            .data()
+            .hooks()
+            .inject(crate::session::data::FaultKind::AfterCommit);
+
+        let outcome = CompactPolicy::compact_transcript(
+            &budget,
+            &sessions,
+            &sid,
+            &request,
+            1024,
+            &ProviderPromptBaseline::default(),
+            &mut rows,
+            &CancellationToken::new(),
+            CompactionTrigger::Auto,
+            Some("retry-after-commit"),
+            &sessions.data_root_path(),
+            MAX_SUMMARY_ATTEMPTS,
+        )
+        .await
+        .expect("AfterCommit must be retried, not surfaced as failure")
+        .expect("summary committed");
+        assert!(outcome.text.contains("Short checkpoint text"));
+
+        let events = sessions.data().events_blocking(&sid).expect("events");
+        let compacted: Vec<_> = events
+            .iter()
+            .filter(|event| matches!(event.event_type, crate::session::EventType::Compacted))
+            .collect();
+        assert_eq!(
+            compacted.len(),
+            1,
+            "same operation id must not create two checkpoints"
+        );
+    }
+
+    /// A committed Compact is rebuilt from DB; pending test rows are reattached
+    /// after the common rebuild, never synthesized into the durable surface.
+    #[tokio::test]
+    async fn compact_persist_rebuilds_from_db_and_keeps_pending_tail() {
         let sessions = Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             String::new(),
@@ -3062,7 +3111,10 @@ max_output = 8192
         let seed = long_seed();
         sessions.insert_detail_rows(&sid, &seed).expect("seed");
 
-        let mut rx = sessions.subscribe(&sid).expect("subscribe lifecycle");
+        let lease = sessions
+            .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
+            .expect("manual episode");
+        let op_id = lease.id().to_string();
 
         let mut rows = sessions
             .data()
@@ -3073,8 +3125,6 @@ max_output = 8192
             .map(|row| item_text_preview(&row.payload.model_item()))
             .collect();
         rows.push(WorkingRow::pending(user_text("pending-tail-after-prefix")));
-
-        inject_reload_err_after_compact_once();
 
         let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
         let baseline = ProviderPromptBaseline::default();
@@ -3089,13 +3139,12 @@ max_output = 8192
             &mut rows,
             &CancellationToken::new(),
             CompactionTrigger::Manual,
-            Some("wp039-reload-err"),
+            Some(&op_id),
             &sessions.data_root_path(),
-            None,
             MAX_SUMMARY_ATTEMPTS,
         )
         .await
-        .expect("persist ok + reload err must return Ok");
+        .expect("persist + common rebuild must return Ok");
         assert!(outcome.is_some(), "compaction committed");
 
         let mem_previews: Vec<String> = rows
@@ -3106,24 +3155,24 @@ max_output = 8192
             mem_previews
                 .first()
                 .is_some_and(|t| t.contains("Short checkpoint text for the main request.")),
-            "emergency cache must lead with the checkpoint summary, got {mem_previews:?}"
+            "rebuilt surface must lead with the checkpoint summary, got {mem_previews:?}"
         );
         assert!(
             mem_previews
                 .iter()
                 .any(|t| t.contains("pending-tail-after-prefix")),
-            "emergency cache must keep pending tail, got {mem_previews:?}"
+            "rebuilt surface must keep pending tail, got {mem_previews:?}"
         );
         assert_ne!(
             &mem_previews[..before_previews.len().min(mem_previews.len())],
             before_previews.as_slice(),
             "memory must not equal pre-compact snapshot content"
         );
-        let checkpoint_row = rows.first().expect("emergency checkpoint");
+        let checkpoint_row = rows.first().expect("rebuilt checkpoint");
         assert!(checkpoint_row.checkpoint().is_some());
         assert!(
             checkpoint_row.log_seq.is_some(),
-            "emergency checkpoint must retain the committed seq"
+            "rebuilt checkpoint must retain the committed seq"
         );
         assert!(
             rows.last().is_some_and(|row| row.log_seq.is_none()),
@@ -3141,7 +3190,7 @@ max_output = 8192
         );
         assert_eq!(
             checkpoint_row.log_seq, db_rows[0].log_seq,
-            "emergency checkpoint seq must match DB truth"
+            "rebuilt checkpoint seq must match DB truth"
         );
         assert!(matches!(&db_rows[0].payload, WorkingPayload::Checkpoint(_)));
         assert!(
@@ -3149,34 +3198,20 @@ max_output = 8192
             "DB fold rows must be persisted"
         );
 
-        let mut saw_succeeded = false;
-        let mut saw_failed = false;
-        while let Ok(env) = rx.try_recv() {
-            if let InternalEvent::CompactionLifecycle {
-                trigger: CompactionTrigger::Manual,
-                stage,
-                operation_id,
-                telemetry,
-                ..
-            } = env.event
-            {
-                assert_eq!(operation_id.as_deref(), Some("wp039-reload-err"));
-                match stage {
-                    CompactionStage::Succeeded => {
-                        saw_succeeded = true;
-                        assert!(telemetry.tokens_before.is_some());
-                        assert!(telemetry.tokens_pruned.is_some());
-                        assert!(telemetry.tokens_after.is_some());
-                        assert!(telemetry.summary_attempts.is_some());
-                        assert_eq!(telemetry.overflow_retry, Some(0));
-                    }
-                    CompactionStage::Failed => saw_failed = true,
-                    _ => {}
-                }
-            }
-        }
-        assert!(saw_succeeded, "must emit Succeeded after Compact persist");
-        assert!(!saw_failed, "must not emit Failed after Compact persist");
+        // The episode owner publishes the terminal after `finish`; the
+        // pipeline only records telemetry. No terminal event may be emitted
+        // by compact_transcript itself.
+        let telemetry = sessions
+            .take_compaction_terminal_telemetry(&sid, &op_id)
+            .expect("Compact persist must record terminal telemetry");
+        assert!(telemetry.tokens_before.is_some());
+        assert!(telemetry.tokens_pruned.is_some());
+        assert!(telemetry.tokens_after.is_some());
+        assert!(telemetry.summary_attempts.is_some());
+        assert_eq!(telemetry.overflow_retry, Some(0));
+
+        drop(lease);
+        assert!(!sessions.is_compacting_blocking(&sid));
     }
 
     fn long_seed() -> Vec<Item> {
@@ -3207,6 +3242,163 @@ max_output = 8192
             )
             .expect("header");
         (sessions, sid, header)
+    }
+
+    #[tokio::test]
+    async fn precommit_summary_failure_keeps_the_old_surface() {
+        let (sessions, sid, _) = open_seeded();
+        let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
+        let request = compact_context(Arc::new(InvalidSummaryProvider::new()));
+        let mut lease = sessions
+            .try_begin_compaction_episode(&sid, CompactionTrigger::Auto)
+            .expect("auto episode");
+        let id = lease.id().to_string();
+
+        CompactPolicy::run_episode(
+            &mut lease,
+            &budget,
+            &sessions,
+            &sid,
+            &request,
+            CompactionTrigger::Auto,
+            &sessions.data_root_path(),
+            None,
+        )
+        .await
+        .expect("precommit failure must settle");
+
+        let outcome = sessions
+            .last_episode_outcome(&sid, &id)
+            .expect("terminal outcome");
+        match outcome {
+            EpisodeOutcome::Failed { action, .. } => assert_eq!(
+                action,
+                crate::session::manager::CompactionFailureAction::Continue
+            ),
+            other => panic!("expected soft precommit failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn committed_surface_readback_retries_a_transient_failure() {
+        let (sessions, sid, _) = open_seeded();
+        let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
+        let request = compact_context(Arc::new(TextProvider));
+        let mut lease = sessions
+            .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
+            .expect("manual episode");
+        let id = lease.id().to_string();
+
+        super::fail_next_rebuild_reads(1);
+        CompactPolicy::run_episode(
+            &mut lease,
+            &budget,
+            &sessions,
+            &sid,
+            &request,
+            CompactionTrigger::Manual,
+            &sessions.data_root_path(),
+            None,
+        )
+        .await
+        .expect("transient readback failure must settle");
+
+        let outcome = sessions
+            .last_episode_outcome(&sid, &id)
+            .expect("terminal outcome");
+        assert!(
+            matches!(outcome, EpisodeOutcome::Succeeded { .. }),
+            "a retried readback must be Succeeded, got {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn readback_failure_action_separates_unverified_from_bad_and_manual() {
+        let unreadable = LitecodeError::SessionStorage("read failed".into());
+        let bad = LitecodeError::CompactionSurfaceChanged("wrong checkpoint".into());
+        assert_eq!(
+            readback_failure_action(CompactionTrigger::Auto, &unreadable),
+            CompactionFailureAction::Continue,
+            "an unreadable commit is unverified, not a turn stop"
+        );
+        assert_eq!(
+            readback_failure_action(CompactionTrigger::Auto, &bad),
+            CompactionFailureAction::StopTurn,
+            "a readable but wrong surface is bad"
+        );
+        assert_eq!(
+            readback_failure_action(CompactionTrigger::Manual, &bad),
+            CompactionFailureAction::Continue,
+            "manual has no turn to stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn committed_surface_readback_failure_is_unverified() {
+        let (sessions, sid, _) = open_seeded();
+        let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
+        let request = compact_context(Arc::new(TextProvider));
+        let mut lease = sessions
+            .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
+            .expect("manual episode");
+        let id = lease.id().to_string();
+        let mut lifecycle = sessions.subscribe(&sid).expect("subscribe");
+
+        super::fail_next_rebuild_reads(3);
+        CompactPolicy::run_episode(
+            &mut lease,
+            &budget,
+            &sessions,
+            &sid,
+            &request,
+            CompactionTrigger::Manual,
+            &sessions.data_root_path(),
+            None,
+        )
+        .await
+        .expect("committed readback failure must settle");
+
+        let outcome = sessions
+            .last_episode_outcome(&sid, &id)
+            .expect("terminal outcome");
+        match outcome {
+            EpisodeOutcome::Failed {
+                action,
+                message,
+                ..
+            } => {
+                assert_eq!(
+                    action,
+                    crate::session::manager::CompactionFailureAction::Continue,
+                    "unreadable read-back is unverified, not a turn stop"
+                );
+                assert!(message.contains("read-back failed"), "got {message}");
+            }
+            other => panic!("expected unverified readback failure, got {other:?}"),
+        }
+        assert!(
+            sessions
+                .data()
+                .events_blocking(&sid)
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event.event_type, crate::session::EventType::Compacted)),
+            "the failure happened after the durable checkpoint landed"
+        );
+
+        let mut succeeded = 0;
+        let mut failed = 0;
+        while let Ok(envelope) = lifecycle.try_recv() {
+            if let InternalEvent::CompactionLifecycle { stage, .. } = envelope.event {
+                match stage {
+                    CompactionStage::Succeeded => succeeded += 1,
+                    CompactionStage::Failed => failed += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(succeeded, 0, "unverified commit must not publish success");
+        assert_eq!(failed, 1, "exactly one failure terminal");
     }
 
     fn bill(prompt: u64) -> crate::session::store::ProviderUsage {
@@ -3250,25 +3442,10 @@ max_output = 8192
             meter.source,
             crate::context_pipeline::ContextMeterSource::Provider
         );
-        let did = CompactPolicy
-            .compact_if_needed(
-                &budget,
-                &sessions,
-                &sid,
-                &request,
-                1024,
-                &baseline,
-                &mut rows,
-                1,
-                &CancellationToken::new(),
-                &sessions.data_root_path(),
-                None,
-                MAX_SUMMARY_ATTEMPTS,
-                false,
-            )
-            .await
-            .unwrap();
-        assert!(!did);
+        assert!(
+            !meter.should_compact(),
+            "a provider bill covering the prefix must win over the hot local estimate"
+        );
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
@@ -3291,7 +3468,6 @@ max_output = 8192
             CompactionTrigger::Auto,
             Some("summary-retry"),
             &sessions.data_root_path(),
-            None,
             MAX_SUMMARY_ATTEMPTS,
         )
         .await
@@ -3347,7 +3523,6 @@ max_output = 8192
             CompactionTrigger::Auto,
             Some("summary-rejection"),
             &sessions.data_root_path(),
-            None,
             MAX_SUMMARY_ATTEMPTS,
         )
         .await
@@ -3428,7 +3603,7 @@ max_output = 8192
         let before_revision = sessions.data().revision_blocking(&sid).unwrap();
         let provider = Arc::new(InvalidSummaryProvider::new());
         let mut request = compact_context(provider.clone());
-        set_request_window(&mut request, 10_000, 1_024);
+        set_request_window(&mut request, 128_000, 1_024);
         let error = CompactPolicy::compact_transcript(
             &BudgetPolicy::new(10_000).with_keep_recent_tokens(1),
             &sessions,
@@ -3441,7 +3616,6 @@ max_output = 8192
             CompactionTrigger::Auto,
             Some("prune-survives-summary-failure"),
             &sessions.data_root_path(),
-            None,
             MAX_SUMMARY_ATTEMPTS,
         )
         .await
@@ -3484,78 +3658,124 @@ max_output = 8192
         );
     }
 
-    #[tokio::test]
-    async fn forced_overflow_compaction_requires_surface_advance() {
-        let (sessions, sid, _header) = open_seeded();
-        let pipeline = ContextPipeline::new(
-            128_000,
-            Context {
-                cwd: Path::new("/p").to_path_buf(),
-                workspace_paths: crate::config::WorkspacePaths::for_legacy_root(Path::new("/p")),
-                agents_md: None,
-                claude_md: None,
-            },
-            sessions.data_root_path(),
-        )
-        .with_keep_recent_tokens(1);
-        let provider = Arc::new(CountingProvider::new());
-        let mut request = compact_context(provider.clone());
-        request.session_id = sid.clone();
-        let before = sessions.data().revision_blocking(&sid).unwrap();
-        let advanced = pipeline
-            .force_compact_overflow(
-                &sessions,
-                &sid,
-                &request,
-                crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("forced overflow compaction");
-        let after = sessions.data().revision_blocking(&sid).unwrap();
-        assert!(advanced, "a checkpoint must advance the surface");
-        assert!(after > before, "revision must advance");
-        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    #[test]
+    fn sealed_prefix_stops_at_the_first_in_progress_row() {
+        let rows = vec![
+            WorkingRow::persisted(0, user_text("sealed-0")),
+            WorkingRow::persisted(1, user_text("in-flight")),
+            WorkingRow::persisted(2, user_text("later-sealed")),
+        ];
+        let in_progress = HashSet::from([1u64]);
+        assert_eq!(sealed_prefix_len(&rows, &in_progress), 1);
+        assert_eq!(sealed_prefix_len(&rows, &HashSet::new()), 3);
+    }
 
-        // A transcript that keep-recent cannot split has no compactable
-        // range: no provider call, no surface generation, no retry proof.
-        let sessions2 = Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            String::new(),
-        ));
-        let sid2 = sessions2
-            .open_session_sync("/p", "default", Some("test/test-primary-model"))
-            .expect("open session");
-        sessions2
-            .insert_detail_rows(&sid2, &[user_text("one indivisible request")])
-            .expect("seed");
-        let pipeline2 = ContextPipeline::new(
-            128_000,
-            Context {
-                cwd: Path::new("/p").to_path_buf(),
-                workspace_paths: crate::config::WorkspacePaths::for_legacy_root(Path::new("/p")),
-                agents_md: None,
-                claude_md: None,
-            },
-            sessions2.data_root_path(),
+    #[test]
+    fn overflow_input_retains_full_rows_but_checkpoint_stays_sealed() {
+        let rows = vec![
+            WorkingRow::persisted(0, user_text("oldest")),
+            WorkingRow::persisted(1, user_text("newest sealed")),
+            WorkingRow::pending(user_text("live tail")),
+        ];
+        let input = CompactionInput::from_rows_full(&rows, &HashSet::new())
+            .expect("overflow input");
+        assert_eq!(input.rows.len(), 3, "overflow sees surface + tail");
+        assert_eq!(input.sealed_len, 2, "commit may end only on sealed rows");
+        assert_eq!(input.last_seq, 1, "checkpoint anchor is the sealed tail");
+
+        let plan = build_summary_plan_from_input(
+            &input,
+            &BudgetPolicy::new(128_000).with_keep_recent_tokens(1),
+            &compact_context(Arc::new(TextProvider)),
+            1_024,
+            CompactionTrigger::Overflow,
+        )
+        .expect("summary plan");
+        assert!(
+            plan.cut < input.sealed_len,
+            "kept_from must be a sealed row, got cut {} of {}",
+            plan.cut,
+            input.sealed_len
         );
-        let provider2 = Arc::new(CountingProvider::new());
-        let mut request2 = compact_context(provider2.clone());
-        request2.session_id = sid2.clone();
-        let before2 = sessions2.data().revision_blocking(&sid2).unwrap();
-        let advanced2 = pipeline2
-            .force_compact_overflow(
-                &sessions2,
-                &sid2,
-                &request2,
-                crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("no cut is not an internal error");
-        assert!(!advanced2, "no surface advance means no overflow retry");
-        assert_eq!(sessions2.data().revision_blocking(&sid2).unwrap(), before2);
-        assert_eq!(provider2.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(plan.kept_from_seq, input.rows[plan.cut].log_seq.unwrap());
+
+        let ordinary = CompactionInput::from_rows(&rows, &HashSet::new())
+            .expect("ordinary input");
+        assert_eq!(ordinary.rows.len(), 2);
+        assert_eq!(ordinary.sealed_len, 2);
+    }
+
+    #[tokio::test]
+    async fn overflow_final_meter_includes_the_live_tail() {
+        let (sessions, sid, _) = open_seeded();
+        let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+        rows.push(WorkingRow::pending(user_text(format!(
+            "overflow-tail {}",
+            "x".repeat(2_000_000)
+        ))));
+        let input = CompactionInput::from_rows_full(&rows, &HashSet::new())
+            .expect("full overflow input");
+        let request = compact_context(Arc::new(TextProvider));
+        let error = match compact_input(
+            &sessions,
+            &sid,
+            &request,
+            &BudgetPolicy::new(128_000).with_keep_recent_tokens(1),
+            input,
+            &CancellationToken::new(),
+            CompactionTrigger::Overflow,
+            "overflow-tail-meter",
+            1_024,
+            &sessions.data_root_path(),
+            MAX_SUMMARY_ATTEMPTS,
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("a tail that still exceeds the hard line must fail before commit"),
+        };
+        assert!(
+            matches!(error, LitecodeError::ContextStillOverLimit { .. }),
+            "expected hard-line failure, got {error:?}"
+        );
+        assert!(
+            !sessions
+                .data()
+                .events_blocking(&sid)
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event.event_type, crate::session::EventType::Compacted)),
+            "a rejected overflow must not write a checkpoint"
+        );
+    }
+
+    #[test]
+    fn summary_input_drops_oldest_units_to_fit_the_physical_cap() {
+        let sessions = SessionManager::ephemeral_registry();
+        let mut request = compact_context(Arc::new(TextProvider));
+        let mut target = (*request.target).clone();
+        target.context_window_max = 2_000;
+        request.target = Arc::new(target);
+        let rows = vec![
+            WorkingRow::persisted(0, user_text(format!("old {}", "word ".repeat(5_000)))),
+            WorkingRow::persisted(1, user_text("newest user anchor")),
+        ];
+        let (input, omitted) = build_compaction_input(&request, &sessions, &rows, 2, 512)
+            .expect("summary input");
+        assert!(omitted, "oldest history must be dropped");
+        assert!(
+            input
+                .first()
+                .is_some_and(|item| item_text_preview(item).contains("newest user anchor")),
+            "the newest unit must survive: {:?}",
+            input.iter().map(item_text_preview).collect::<Vec<_>>()
+        );
+        assert!(
+            input
+                .iter()
+                .all(|item| !item_text_preview(item).contains("old word word")),
+            "the oldest unit must not remain"
+        );
     }
 
     #[test]
@@ -3637,25 +3857,23 @@ max_output = 8192
         let provider = Arc::new(CountingProvider::new());
         let mut request = compact_context(provider.clone());
         set_request_window(&mut request, budget.budget_limit(), 1_024);
-        let did = CompactPolicy
-            .compact_if_needed(
-                &budget,
-                &sessions,
-                &sid,
-                &request,
-                1024,
-                &baseline,
-                &mut rows,
-                1,
-                &CancellationToken::new(),
-                &sessions.data_root_path(),
-                None,
-                MAX_SUMMARY_ATTEMPTS,
-                false,
-            )
-            .await
-            .unwrap();
-        assert!(did, "a provider prompt over 80% must compact");
+        let did = CompactPolicy::compact_transcript(
+            &budget,
+            &sessions,
+            &sid,
+            &request,
+            1024,
+            &baseline,
+            &mut rows,
+            &CancellationToken::new(),
+            CompactionTrigger::Auto,
+            Some("provider-bill-compact"),
+            &sessions.data_root_path(),
+            MAX_SUMMARY_ATTEMPTS,
+        )
+        .await
+        .unwrap();
+        assert!(did.is_some(), "a provider prompt over 80% must compact");
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         let compacted = sessions
             .data()
@@ -3700,28 +3918,10 @@ max_output = 8192
         assert!(meter.used_tokens <= meter.prompt_limit, "count {local}");
         assert!(!meter.should_compact(), "count {local}");
         let provider = Arc::new(CountingProvider::new());
-        let mut request = compact_context(provider.clone());
-        set_request_window(&mut request, budget.budget_limit(), 1_024);
-        let mut rows = rows;
-        let did = CompactPolicy
-            .compact_if_needed(
-                &budget,
-                &sessions,
-                &sid,
-                &request,
-                1024,
-                &stale,
-                &mut rows,
-                2,
-                &CancellationToken::new(),
-                &sessions.data_root_path(),
-                None,
-                MAX_SUMMARY_ATTEMPTS,
-                false,
-            )
-            .await
-            .unwrap();
-        assert!(!did);
+        assert!(
+            !meter.should_compact(),
+            "the retired bill must not trigger a second compact"
+        );
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 

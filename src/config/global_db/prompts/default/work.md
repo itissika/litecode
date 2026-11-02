@@ -9,3 +9,5 @@ Take local, reversible steps yourself. Don't take destructive actions, or action
 When something fails, diagnose it before retrying. Retry only when the cause is transient.
 
 Go by what you have actually seen. Don't invent files, APIs, or results.
+
+A rule the user states in this session outranks your default habits; check it before you finish.

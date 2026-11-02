@@ -1,7 +1,7 @@
 ```node
 node : slim-packaging
 status : pending
-summary : Windows 发布默认瘦 NSIS：不内嵌 embed 模型与 Linux tar；portable 不再作为发布形态。
+summary : Windows 发布默认瘦 NSIS：不内嵌 embed 模型与 Linux tar；portable 不是发布形态。
 x : 5598
 y : 1278
 domain : release-desktop
@@ -11,7 +11,3 @@ domain : release-desktop
 
 依据：[@ file="scripts/package_win.ps1"]、[@ file="desktop/package.json"]、[@ file="scripts/assemble_product.ps1"]。
 上层：[@ key="desktop-shell"]。
-基线：075308b
-
-**核实结论：一致，无漂移。**（基线 075308b）
-- 默认 slim —— [@ file="scripts/package_win.ps1"]；`extraResources` 仅 sidecar（无 models/linux）—— [@ file="desktop/package.json"]。

@@ -1,3 +1,4 @@
+import { installCitationCopy } from "../../lib/knowledge/citationCopy";
 import { THEME_CHANGE_EVENT } from "../../lib/theme";
 import { getWindows, registeredDocuments, subscribeWindows } from "../workbench/windows";
 import { releaseOrphanRenderOverlays } from "./orphanOverlay";
@@ -15,6 +16,9 @@ export function preparePopoutDocument(doc: Document, dvTheme: string): void {
   doc.documentElement.classList.add("litecode-dv-base", POPOUT_DOCUMENT_CLASS);
   doc.body.style.margin = "0";
   doc.body.style.background = "var(--_dk-root)";
+  // A popout owns its document and selection, so citation copy is installed
+  // per document; the guard makes the repeated theme syncs cheap.
+  installCitationCopy(doc);
 }
 
 function currentDvTheme(): string {

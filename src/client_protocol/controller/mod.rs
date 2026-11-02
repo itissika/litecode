@@ -1160,13 +1160,6 @@ impl Projection {
             crate::runtime::observer::InternalEvent::FileRevertUpdated { max_seq } => {
                 self.max_file_revert_seq = *max_seq;
             }
-            crate::runtime::observer::InternalEvent::CompactionLifecycle {
-                trigger: crate::runtime::observer::CompactionTrigger::Auto,
-                stage: crate::runtime::observer::CompactionStage::Started,
-                ..
-            } if self.turn_id.is_some() => {
-                self.phase = TurnPhase::Compacting;
-            }
             _ => {}
         }
     }

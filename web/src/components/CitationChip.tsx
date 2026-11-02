@@ -4,6 +4,7 @@ import { useMemo, type MouseEvent } from "react";
 import { followCitation } from "../lib/knowledge/panel";
 import {
   citationRefKey,
+  citationSource,
   resolveCitation,
   type Citation,
   type CitationChipModel,
@@ -78,6 +79,10 @@ export function CitationChip({
     [citation, source, target, ref, ready, externalOpen, label],
   );
 
+  // Copy hands the reference back as source text: the chip itself is not
+  // selectable, so a selection that crosses it would otherwise lose it (see
+  // `onCitationCopy`).
+  const shortcode = useMemo(() => citationSource(citation), [citation]);
   const detail = model.detail && model.detail !== model.label ? model.detail : null;
   // Full reference first, then the verdict text: a shortened label never hides
   // where it points, and an issue keeps its own line.
@@ -94,7 +99,12 @@ export function CitationChip({
       : null;
 
   return (
-    <ImageChipPreview className={chipClass(model, nodrag)} path={previewPath} text={text}>
+    <ImageChipPreview
+      className={chipClass(model, nodrag)}
+      path={previewPath}
+      text={text}
+      source={shortcode}
+    >
       {model.resolvable ? (
         <button
           type="button"

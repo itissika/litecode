@@ -39,7 +39,6 @@ use crate::llm::LlmProvider;
 use crate::mcp::McpConnectionPool;
 use crate::optional::EngineManager;
 use crate::permission::{CancellingPermissionSink, PermissionEngine, PermissionSink};
-use crate::platform_knobs::CompactionPrefetchMode;
 use crate::runtime::observer::{
     ChannelObserver, InternalEnvelope, InternalEvent, RuntimeObserver, TurnEndReason,
     TurnErrorKind, TurnPhase, TurnTokenStats,
@@ -380,9 +379,6 @@ impl From<&str> for TurnInput {
 #[derive(Clone, Debug, Default)]
 pub struct TurnOptions {
     pub identity: AgentIdentity,
-    /// Test/canary override. None reads LITECODE_COMPACT_PREFETCH at runtime
-    /// construction; some callers (CLI / controller) never set it.
-    pub compaction_prefetch: Option<CompactionPrefetchMode>,
 }
 
 impl TurnOptions {
@@ -458,9 +454,6 @@ pub fn spawn_turn(
         permission_sink,
         observer,
     )?;
-    if let Some(mode) = opts.compaction_prefetch {
-        agent_loop.set_compaction_prefetch_mode(mode);
-    }
     stages.mark("build_runtime");
 
     let cancel = agent_loop.cancel_token();
@@ -489,29 +482,6 @@ pub fn spawn_turn(
         turn_id,
         step_max,
     })
-}
-
-/// Result of one independent compaction branch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CompactionPrefetchOutcome {
-    /// The checkpoint was written by the branch.
-    Committed,
-    /// The frozen plan no longer matches the current surface.
-    Rejected,
-    /// The plan had no keep-recent cut.
-    NoCut,
-    /// The summary or commit failed.
-    Failed,
-}
-
-/// One in-flight independent compaction branch as seen by this turn. The
-/// worker itself is session-owned (it survives the turn); this slot only holds
-/// the outcome the turn can observe at its next boundary.
-struct CompactionPrefetch {
-    rx: tokio::sync::oneshot::Receiver<Result<CompactionPrefetchOutcome>>,
-    cancel: tokio_util::sync::CancellationToken,
-    started: std::time::Instant,
-    step: u64,
 }
 
 pub struct AgentRuntime {
@@ -547,17 +517,10 @@ pub struct AgentRuntime {
     /// `run_with_turn` entry, only while `litecode::latency` is enabled; the
     /// first `call_model` of the turn reports `turn_to_first_request` from it.
     pub(crate) latency_turn_start: Option<std::time::Instant>,
-    /// `LITECODE_COMPACT_PREFETCH`; On is the production default.
-    pub(crate) compaction_prefetch_mode: CompactionPrefetchMode,
-    /// This turn's view of at most one independent compaction branch. The
-    /// worker is session-owned; the slot only receives its outcome.
-    prefetch: Mutex<Option<CompactionPrefetch>>,
-    /// One compaction branch per pressure episode.
-    prefetch_attempted: AtomicBool,
-    /// A frozen plan no longer matched the surface; the sync path may replan.
-    prefetch_rejected: AtomicBool,
-    /// The branch failed; do not silently replan its content.
-    prefetch_failed: AtomicBool,
+    /// Episode this turn started or observed as its own pressure response.
+    /// Used only to stop a same-turn retry after a terminal failure.
+    pub(crate) compaction_episode: Mutex<Option<String>>,
+    pub(crate) compaction_failed_this_turn: AtomicBool,
 }
 
 /// Parameters needed to call build_tool_list lazily on first turn.
@@ -664,11 +627,8 @@ impl AgentRuntime {
             build_tool_params: Some(build_tool_params),
             pending_snapshot_track: Mutex::new(None),
             latency_turn_start: None,
-            compaction_prefetch_mode: CompactionPrefetchMode::from_env(),
-            prefetch: Mutex::new(None),
-            prefetch_attempted: AtomicBool::new(false),
-            prefetch_rejected: AtomicBool::new(false),
-            prefetch_failed: AtomicBool::new(false),
+            compaction_episode: Mutex::new(None),
+            compaction_failed_this_turn: AtomicBool::new(false),
         };
         Ok(runtime)
     }
@@ -694,11 +654,6 @@ impl AgentRuntime {
 
     pub fn context(&self) -> &Context {
         &self.base_ctx
-    }
-
-    /// Test/canary override for the background compaction mode.
-    pub fn set_compaction_prefetch_mode(&mut self, mode: CompactionPrefetchMode) {
-        self.compaction_prefetch_mode = mode;
     }
 
     pub fn prepared_view(&self) -> Option<crate::context_pipeline::PreparedView> {
@@ -1122,29 +1077,15 @@ impl AgentRuntime {
         self.latency_turn_start = crate::telemetry::latency::now();
         self.ensure_tooling_initialized().await?;
 
-        // A compaction branch is independent of the main turn. Keep one that
-        // is still in flight across turn boundaries; a reused runtime may
-        // consume its committed result at the next boundary. A branch that
-        // already finished belongs to the previous turn: settle it, keep any
-        // committed checkpoint durable, and start the new turn with a clean
-        // pressure episode.
-        let (has_branch, branch_finished) = {
-            let slot = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
-            let finished = slot
-                .as_ref()
-                .is_some_and(|prefetch| prefetch.rx.is_terminated());
-            (slot.is_some(), finished)
-        };
-        if self.compaction_prefetch_mode != CompactionPrefetchMode::On {
-            self.abort_compaction_prefetch().await;
-            self.reset_compaction_episode();
-        } else if !has_branch || branch_finished {
-            if branch_finished {
-                self.abort_compaction_prefetch().await;
-                self.prompt_usage_baseline.clear();
-            }
-            self.reset_compaction_episode();
-        }
+        // Compaction is session-owned. A new turn starts with a clean
+        // same-turn retry flag; any episode still running belongs to the
+        // session, not to this turn's runtime.
+        *self
+            .compaction_episode
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+        self.compaction_failed_this_turn
+            .store(false, Ordering::SeqCst);
 
         tracing::info!(
             session_id = %self.session_id,
@@ -1218,8 +1159,8 @@ impl AgentRuntime {
             if commit_outcome.committed {
                 self.emit_internal(crate::runtime::observer::InternalEvent::StepCommitted);
             }
-            // The file snapshot is named for this user row (`seq + 1`) even when
-            // a mentions reminder is appended afterwards and takes the next seq.
+            // The file snapshot is named for this user row (`seq + 1`); the
+            // knowledge-status reminder takes the next seq.
             fresh_user_seq = if !wake && commit_outcome.committed {
                 working
                     .iter()
@@ -1230,11 +1171,6 @@ impl AgentRuntime {
                 None
             };
             if !wake && commit_outcome.committed {
-                self.sessions.append_mentions_for(
-                    &self.session_id,
-                    self.runtime_handle.workspace_root(),
-                    &user_input.text,
-                );
                 self.sessions.append_knowledge_status_for(
                     &self.session_id,
                     self.runtime_handle.workspace_root(),
@@ -1323,9 +1259,6 @@ impl AgentRuntime {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     self.seal_rows_still_in_flight();
-                    // The final commit can fail after a tool window started a
-                    // background summary; do not leave it running past the turn.
-                    self.abort_compaction_prefetch().await;
                     return Err(error);
                 }
             };
@@ -1406,13 +1339,8 @@ impl AgentRuntime {
             total_items = self.context_pipeline.working_set().len(),
             "agent loop complete"
         );
-        // Normal turn end does not own the compaction branch. The worker runs
-        // on its own session-owned thread and commits independently when the
-        // summary is ready, even after this turn is gone. A canceled turn
-        // still seals the provider call.
-        if self.is_cancelled() {
-            self.abort_compaction_prefetch().await;
-        }
+        // A turn ending or being cancelled does not cancel the session-owned
+        // episode: only revert/delete do.
         self.context_pipeline.end_turn();
         finalize_result
     }
@@ -1423,7 +1351,9 @@ impl AgentRuntime {
 /// consumes this instead of matching `final_text`.
 fn turn_error_kind(err: &LitecodeError) -> Option<TurnErrorKind> {
     match err {
-        LitecodeError::CompactionFailed => Some(TurnErrorKind::CompactionFailed),
+        LitecodeError::CompactionFailed | LitecodeError::CompactionUnverified(_) => {
+            Some(TurnErrorKind::CompactionFailed)
+        }
         LitecodeError::CompactionFailure { kind, .. } => Some(match kind {
             CompactionFailureKind::SummaryFinish => TurnErrorKind::CompactionSummaryFinish,
             CompactionFailureKind::Quality => TurnErrorKind::CompactionQuality,

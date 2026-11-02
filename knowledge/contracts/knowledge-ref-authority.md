@@ -12,7 +12,3 @@ domain : knowledge
 依据：契约由 [@ file="src/knowledge/spec_tests.rs"] 与 [@ file="tests/fixtures/knowledge_refs/cases.json"] 锁定；索引实现见 [@ file="src/knowledge/index.rs" symbol="fn compute_once"]。
 上层：[@ key="knowledge"]。
 相关：[@ key="knowledge-client-view"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- KR-INV 由 [@ file="src/knowledge/spec_tests.rs"] 与 [@ file="tests/fixtures/knowledge_refs/cases.json"] 锁定。
-- 同一 Content —— [@ file="src/knowledge/index.rs" symbol="fn compute_once"]。

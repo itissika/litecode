@@ -11,9 +11,3 @@ domain : harness-core
 
 依据：[@ file="src/platform_knobs.rs" symbol="enum ThinkingSpec"]、[@ file="src/platform_knobs.rs" symbol="enum ContextMode"]、[@ file="src/llm/request.rs" symbol="struct CompactionRequestContext"]、[@ file="src/runtime/llm_resolve.rs" symbol="impl TurnLlmBinding › fn compaction_context"]、[@ file="src/types/death_list_gate.rs"]。
 上层：[@ key="agent-harness-philosophy"]。相关：[@ key="provider-catalog"]。
-基线：666540c
-
-**核实结论：按实现订正。**（基线 666540c）
-- 两个平台意图不变 —— [@ file="src/platform_knobs.rs" symbol="enum ThinkingSpec"]、[@ file="src/platform_knobs.rs" symbol="enum ContextMode"]。
-- 压缩复用主请求：provider、model、指令、工具、thinking 全部复制 —— [@ file="src/llm/request.rs" symbol="struct CompactionRequestContext"]、[@ file="src/runtime/llm_resolve.rs" symbol="impl TurnLlmBinding › fn compaction_context"]；原「压缩强制 Off」不成立，`ModelRequest::compact` 这个入口已删。
-- 厂商字面量只在目录 tiers —— [@ file="src/types/death_list_gate.rs"]。

@@ -241,9 +241,6 @@ impl Fixture {
             | SessionMutation::SealInProgress {
                 expected_revision, ..
             }
-            | SessionMutation::Compact {
-                expected_revision, ..
-            }
             | SessionMutation::Apply {
                 expected_revision, ..
             } => *expected_revision = rev,

@@ -985,9 +985,8 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         });
       }
       if (life.stage === "started") {
-        if (life.trigger !== "manual") {
-          patch(sessionId, { turnPhase: "compacting" as const });
-        }
+        // The session snapshot's `compaction` state is the only compact
+        // signal. Do not synthesize a turn phase here.
         return;
       }
       if (life.stage === "succeeded") {
@@ -996,9 +995,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         }
         return;
       }
-      if (life.stage === "abandoned") {
-        // The frozen branch no longer matched the surface. A fresh sync path
-        // may still compact; never leave the wave spinner stuck.
+      if (life.stage === "cancelled") {
+        // Revert/delete (or owner shutdown) cancelled the episode. Never leave
+        // the wave spinner stuck.
         return;
       }
       if (life.trigger !== "manual") {

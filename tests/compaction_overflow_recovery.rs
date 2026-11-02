@@ -7,18 +7,21 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use common::{build_runtime_with_provider, test_agent};
 use litecode::client_protocol::observer::InternalEvent;
 use litecode::llm::{LlmProvider, ModelRequest, RequestPurpose};
-use litecode::runtime::observer::{CompactionStage, CompactionTrigger};
+use litecode::runtime::observer::{CompactionFailKind, CompactionStage, CompactionTrigger};
 use litecode::session::EventType;
+use litecode::session::manager::{CompactionFailureAction, EpisodeOutcome};
 use litecode::types::{Item, LitecodeError, StreamEvents, assistant_text, user_text};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy)]
 enum Mode {
     RecoverOnce,
+    RecoverAfterUnverified,
     OverflowAlways,
     MaxTokensParameterError,
 }
@@ -62,9 +65,9 @@ impl LlmProvider for OverflowProvider {
             )
         };
         match (self.mode, call, is_compaction) {
-            (Mode::RecoverOnce, 0, false) | (Mode::OverflowAlways, 0, false) => {
-                Box::pin(async move { Err(overflow()) })
-            }
+            (Mode::RecoverOnce, 0, false)
+            | (Mode::RecoverAfterUnverified, 0, false)
+            | (Mode::OverflowAlways, 0, false) => Box::pin(async move { Err(overflow()) }),
             (_, 1, true) => {
                 common::emit_completed_terminal(&mut on_event);
                 let text = common::valid_summary_for_request(request);
@@ -73,6 +76,10 @@ impl LlmProvider for OverflowProvider {
             (Mode::RecoverOnce, 2, false) => {
                 common::emit_completed_terminal(&mut on_event);
                 Box::pin(async move { Ok(vec![assistant_text("recovered after compaction")]) })
+            }
+            (Mode::RecoverAfterUnverified, _, false) => {
+                common::emit_completed_terminal(&mut on_event);
+                Box::pin(async move { Ok(vec![assistant_text("recovered after unverified")]) })
             }
             (Mode::OverflowAlways, _, false) => Box::pin(async move { Err(overflow()) }),
             (Mode::MaxTokensParameterError, _, false) => Box::pin(async move {
@@ -135,6 +142,8 @@ async fn provider_overflow_compacts_and_retries_the_main_request_once() {
             .iter()
             .any(|event| matches!(event.event_type, EventType::Compacted))
     );
+    let mut started_count = 0;
+    let mut succeeded_count = 0;
     let mut started_telemetry = None;
     let mut succeeded_telemetry = None;
     while let Ok(envelope) = events.try_recv() {
@@ -146,15 +155,23 @@ async fn provider_overflow_compacts_and_retries_the_main_request_once() {
         } = envelope.event
         {
             match stage {
-                CompactionStage::Started => started_telemetry = Some(telemetry),
-                CompactionStage::Succeeded => succeeded_telemetry = Some(telemetry),
+                CompactionStage::Started => {
+                    started_count += 1;
+                    started_telemetry = Some(telemetry);
+                }
+                CompactionStage::Succeeded => {
+                    succeeded_count += 1;
+                    succeeded_telemetry = Some(telemetry);
+                }
                 CompactionStage::Failed => panic!("forced recovery must not fail compaction"),
-                CompactionStage::Abandoned => {
-                    panic!("forced recovery must not abandon compaction")
+                CompactionStage::Cancelled => {
+                    panic!("forced recovery must not cancel compaction")
                 }
             }
         }
     }
+    assert_eq!(started_count, 1, "exactly one Started event");
+    assert_eq!(succeeded_count, 1, "exactly one Succeeded terminal");
     let started =
         started_telemetry.expect("forced recovery must emit an Overflow/Started lifecycle");
     assert!(
@@ -185,6 +202,99 @@ async fn provider_overflow_compacts_and_retries_the_main_request_once() {
         Some(1),
         "Overflow/Succeeded must report the recovery retry"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_unverified_overflow_terminal_reads_the_new_surface_and_retries_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(OverflowProvider::new(Mode::RecoverAfterUnverified));
+    let mut runtime = build_runtime_with_provider(
+        dir.path(),
+        test_agent(vec!["read".into()], "readonly", 5),
+        provider.clone(),
+    );
+    let sessions = Arc::clone(runtime.sessions());
+    let sid = runtime.session_id.clone();
+    let mut lease = sessions
+        .try_begin_compaction_episode(&sid, CompactionTrigger::Overflow)
+        .expect("pre-claimed overflow episode");
+    let calls = Arc::clone(&provider.calls);
+    let finisher_sessions = Arc::clone(&sessions);
+    let finisher_sid = sid.clone();
+    let finisher = tokio::spawn(async move {
+        while calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // The unverified commit's durable surface is what the retry must read.
+        finisher_sessions
+            .insert_detail_rows(&finisher_sid, &[user_text("new unverified surface")])
+            .expect("append the post-commit row");
+        lease.finish(EpisodeOutcome::Failed {
+            kind: CompactionFailKind::Failed,
+            message: "simulated committed read-back failure".into(),
+            action: CompactionFailureAction::Continue,
+        });
+    });
+
+    let result = runtime
+        .run("recover from an unverified overflow")
+        .await
+        .expect("an unverified surface that re-reads under the hard line may retry");
+    assert_eq!(result, "recovered after unverified");
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        2,
+        "one main call, then exactly one retry after the session re-read"
+    );
+    finisher.await.expect("finisher task");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_unverified_overflow_read_failure_stops_with_the_read_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(OverflowProvider::new(Mode::RecoverAfterUnverified));
+    let mut runtime = build_runtime_with_provider(
+        dir.path(),
+        test_agent(vec!["read".into()], "readonly", 5),
+        provider.clone(),
+    );
+    let sessions = Arc::clone(runtime.sessions());
+    let sid = runtime.session_id.clone();
+    let mut lease = sessions
+        .try_begin_compaction_episode(&sid, CompactionTrigger::Overflow)
+        .expect("pre-claimed overflow episode");
+    let db_path = sessions.data().path().to_path_buf();
+    let calls = Arc::clone(&provider.calls);
+    let finisher_sessions = Arc::clone(&sessions);
+    let finisher = tokio::spawn(async move {
+        while calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        finisher_sessions.data().shutdown();
+        std::fs::remove_file(db_path).expect("remove session db to force a read failure");
+        lease.finish(EpisodeOutcome::Failed {
+            kind: CompactionFailKind::Failed,
+            message: "simulated committed read-back failure".into(),
+            action: CompactionFailureAction::Continue,
+        });
+    });
+
+    let error = runtime
+        .run("stop when the unverified surface cannot be read")
+        .await
+        .expect_err("a failed session read must stop the overflow recovery");
+    assert!(
+        !error.to_string().contains("context_length_exceeded"),
+        "the read error must replace the original overflow, got {error}"
+    );
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        1,
+        "a failed read must not spend the overflow retry"
+    );
+    finisher.await.expect("finisher task");
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -12,7 +12,3 @@ domain : release-desktop
 依据：[@ file="desktop/src/components.ts" symbol="class ComponentManager"]、[@ file="desktop/src/components.ts" symbol="fn parseManifest"]、[@ file="desktop/src/components.ts" symbol="fn releaseDownloadPrefix"]、[@ file="scripts/build_components.mjs"]。
 上层：[@ key="desktop-shell"]。
 相关：[@ key="slim-packaging"]。
-基线：075308b
-
-**核实结论：一致，无漂移。**（基线 075308b）
-- 清单+校验+本仓 URL —— [@ file="desktop/src/components.ts" symbol="class ComponentManager"]、[@ file="desktop/src/components.ts" symbol="fn parseManifest"]；CI/脚本 [@ file="scripts/build_components.mjs"]。v0.2.3 Release 已含组件资产（ISSUE-020 closed）。

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { knowledgeFixture } from "../../test/fixtures/knowledge";
-import { chipForMarker, citationRefKey, relationStripChips, resolveCitation } from "./refDisplay";
+import {
+  chipForMarker,
+  citationRefKey,
+  citationSource,
+  relationStripChips,
+  resolveCitation,
+} from "./refDisplay";
 import { normalizeKey } from "./markers";
 import type { KnowledgeNode, KnowledgeRefState, KnowledgeRefStatus } from "./types";
 
@@ -193,6 +199,28 @@ describe("refDisplay", () => {
     );
     expect(chip.tone).toBe("error");
     expect(chip.title).toBe("lines on a symbol");
+  });
+
+  it("writes a citation back as the shortcode the source carried", () => {
+    expect(citationSource({ kind: "node", key: " seq " })).toBe('[@ key="seq"]');
+    expect(citationSource({ kind: "file", path: "src/a.rs" })).toBe(
+      '[@ file="src/a.rs"]',
+    );
+    expect(citationSource({ kind: "file", path: "src/a.rs", lines: "4-9" })).toBe(
+      '[@ file="src/a.rs" lines="4-9"]',
+    );
+    // A plain link names its start line only; copy still writes a full span.
+    expect(citationSource({ kind: "file", path: "src/a.rs", line: 42 })).toBe(
+      '[@ file="src/a.rs" lines="42"]',
+    );
+    expect(
+      citationSource({
+        kind: "file",
+        path: "src/a.rs",
+        symbol: "impl Store › fn save",
+        lines: "4-9",
+      }),
+    ).toBe('[@ file="src/a.rs" symbol="impl Store › fn save"]');
   });
 });
 

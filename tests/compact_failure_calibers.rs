@@ -16,7 +16,7 @@ use litecode::context_pipeline::{
 use litecode::runtime::observer::{
     CompactionFailKind, CompactionStage, CompactionTrigger, InternalEvent,
 };
-use litecode::session::manager::{SessionManager, SessionOperationKind};
+use litecode::session::manager::{EpisodeOutcome, SessionManager};
 use litecode::session::{WorkingRow, project_items};
 use litecode::types::{LitecodeError, item_text_preview, user_text};
 use tokio_util::sync::CancellationToken;
@@ -93,15 +93,21 @@ async fn compact_failure_restores_transcript_snapshot() {
     );
 
     let provider = ScriptedProvider::with_texts(&["", ""]);
-    let err = CompactPolicy::compact_now(
+    let request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
+    let mut rows = before.clone();
+    let err = CompactPolicy::compact_transcript(
         &budget,
         &sessions,
         &sid,
-        &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
+        &request,
         1024,
+        &ProviderPromptBaseline::default(),
+        &mut rows,
         &CancellationToken::new(),
+        CompactionTrigger::Manual,
         Some("op-restore"),
         &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
     )
     .await
     .expect_err("empty summary must fail compact");
@@ -127,7 +133,7 @@ async fn compact_failure_restores_transcript_snapshot() {
     );
 }
 
-/// Caliber 2 (auto path): `compact_step` Err leaves the staged working set intact.
+/// Caliber 2 (auto path): `compact_transcript` Err leaves the staged working set intact.
 #[tokio::test(flavor = "current_thread")]
 async fn auto_compact_failure_restores_pipeline_working_set() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -166,24 +172,29 @@ async fn auto_compact_failure_restores_pipeline_working_set() {
         max_output_tokens,
     );
 
-    let err = pipeline
-        .compact_step(
-            &sessions,
-            &sid,
-            &request,
-            1024,
-            &prompt_baseline,
-            1,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect_err("auto compact empty summary must Err");
+    let mut compact_rows = pipeline.working_set();
+    let err = CompactPolicy::compact_transcript(
+        &pipeline.budget_policy(),
+        &sessions,
+        &sid,
+        &request,
+        1024,
+        &prompt_baseline,
+        &mut compact_rows,
+        &CancellationToken::new(),
+        CompactionTrigger::Auto,
+        Some("op-auto"),
+        &sessions.data_root_path(),
+        litecode::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+    )
+    .await
+    .expect_err("auto compact empty summary must Err");
     assert!(
         err.is_compaction_failure(),
         "expected CompactionFailure, got {err:?}"
     );
 
-    // compact_step returns Err before restaging — staged set must still be the snapshot.
+    // compact_transcript returns Err before restaging — staged set must still be the snapshot.
     let staged = pipeline.working_set();
     assert_eq!(
         row_previews(&staged),
@@ -199,8 +210,63 @@ async fn auto_compact_failure_restores_pipeline_working_set() {
     );
 }
 
-/// Caliber 3: mirrors `start_manual_compact` — lease → compact_now → drop(lease).
+/// Caliber 3: mirrors `start_manual_compact` — episode → run_episode → finish.
 /// After Failed, a new Compact lease must be acquirable (user retry, not agent/retry).
+/// Cancellation must surface as exactly one Cancelled terminal, never a
+/// pre-finish Failed followed by Cancelled.
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_episode_emits_only_cancelled_terminal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+
+    let seed: Vec<_> = (0..12)
+        .map(|i| user_text(format!("cancel-seed-{i}")))
+        .collect();
+    sessions.insert_detail_rows(&sid, &seed).unwrap();
+
+    let mut rx = sessions.subscribe(&sid).expect("subscribe lifecycle");
+    let mut lease = sessions
+        .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
+        .expect("manual episode");
+    let op_id = lease.id().to_string();
+    sessions.cancel_compaction(&sid);
+
+    let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
+    let provider = ScriptedProvider::with_texts(&[""]);
+    let request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
+    CompactPolicy::run_episode(
+        &mut lease,
+        &budget,
+        &sessions,
+        &sid,
+        &request,
+        CompactionTrigger::Manual,
+        &sessions.data_root_path(),
+        None,
+    )
+    .await
+    .expect("cancelled episode must settle");
+
+    let mut cancelled = 0;
+    let mut failed = 0;
+    while let Ok(env) = rx.try_recv() {
+        if let InternalEvent::CompactionLifecycle { stage, .. } = env.event {
+            match stage {
+                CompactionStage::Cancelled => cancelled += 1,
+                CompactionStage::Failed => failed += 1,
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(cancelled, 1, "exactly one Cancelled terminal");
+    assert_eq!(failed, 0, "cancellation must not publish Failed first");
+    assert!(matches!(
+        sessions.last_episode_outcome(&sid, &op_id),
+        Some(EpisodeOutcome::Cancelled { .. })
+    ));
+    assert!(!sessions.is_compacting_blocking(&sid));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn manual_compact_failure_releases_lease_for_retry() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -215,17 +281,17 @@ async fn manual_compact_failure_releases_lease_for_retry() {
         .subscribe(&sid)
         .expect("subscribe for Failed lifecycle");
 
-    let lease = sessions
-        .try_begin_operation(&sid, SessionOperationKind::Compact)
-        .expect("first Compact lease");
-    let op_id = lease.operation_id().to_string();
+    let mut lease = sessions
+        .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
+        .expect("first Compact episode");
+    let op_id = lease.id().to_string();
     assert!(sessions.is_compacting_blocking(&sid));
     assert!(sessions.is_session_busy_blocking(&sid));
 
     // Second acquire must fail while the lease is held (same gate start_manual_compact uses).
     assert!(
         matches!(
-            sessions.try_begin_operation(&sid, SessionOperationKind::Compact),
+            sessions.try_begin_compaction_episode(&sid, CompactionTrigger::Manual),
             Err(LitecodeError::AgentAlreadyRunning)
         ),
         "overlapping Compact lease must be refused"
@@ -233,22 +299,29 @@ async fn manual_compact_failure_releases_lease_for_retry() {
 
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
     let provider = ScriptedProvider::with_texts(&["", ""]);
-    let err = CompactPolicy::compact_now(
+    let request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
+    CompactPolicy::run_episode(
+        &mut lease,
         &budget,
         &sessions,
         &sid,
-        &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
-        1024,
-        &CancellationToken::new(),
-        Some(&op_id),
+        &request,
+        CompactionTrigger::Manual,
         &sessions.data_root_path(),
+        None,
     )
     .await
-    .expect_err("manual compact empty summary must fail");
-    assert!(err.is_compaction_failure());
+    .expect("manual compact episode must finish");
+    assert!(matches!(
+        sessions.last_episode_outcome(&sid, &op_id),
+        Some(EpisodeOutcome::Failed {
+            kind: CompactionFailKind::SummaryFinish,
+            ..
+        })
+    ));
 
-    // Drain lifecycle: Started then Failed (same events start_manual_compact's spawn emits).
-    let mut saw_failed = false;
+    // Exactly one terminal, published after the lease finished.
+    let mut failed_count = 0;
     while let Ok(env) = rx.try_recv() {
         if let InternalEvent::CompactionLifecycle {
             trigger: CompactionTrigger::Manual,
@@ -260,22 +333,22 @@ async fn manual_compact_failure_releases_lease_for_retry() {
         {
             assert_eq!(fail_kind, Some(CompactionFailKind::SummaryFinish));
             assert_eq!(operation_id.as_deref(), Some(op_id.as_str()));
-            saw_failed = true;
+            failed_count += 1;
         }
     }
-    assert!(
-        saw_failed,
-        "manual compact failure must emit CompactionStage::Failed"
+    assert_eq!(
+        failed_count, 1,
+        "manual compact failure must emit exactly one CompactionStage::Failed"
     );
 
-    // session_lifecycle::start_manual_compact drops the lease after compact_now returns.
+    // run_episode has already finished the lease.
     drop(lease);
     assert!(!sessions.is_compacting_blocking(&sid));
     assert!(!sessions.is_session_busy_blocking(&sid));
 
     let retry = sessions
-        .try_begin_operation(&sid, SessionOperationKind::Compact)
-        .expect("after Failed + lease drop, user must be able to start_manual_compact again");
+        .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
+        .expect("after Failed + episode drop, user must be able to start_manual_compact again");
     assert!(sessions.is_compacting_blocking(&sid));
     drop(retry);
 }

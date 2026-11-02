@@ -244,10 +244,6 @@ describe("turnStore convergence", () => {
     expect(useTurnStore.getState().byId.get(sessionId)?.manualCompacting).toBe(
       false,
     );
-    expect(useTurnStore.getState().byId.get(sessionId)?.turnPhase).toBe(
-      "compacting",
-    );
-
     useTurnStore.getState().onCompactLifecycle({
       session_id: sessionId,
       trigger: "auto",
@@ -318,7 +314,7 @@ describe("turnStore convergence", () => {
     useTurnStore.getState().onCompactLifecycle({
       session_id: sessionId,
       trigger: "auto",
-      stage: "abandoned",
+      stage: "cancelled",
       snapshot: { ...snap, compacting: false },
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
@@ -381,10 +377,6 @@ describe("turnStore convergence", () => {
       snapshot: { ...snap, compacting: false },
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(true);
-    expect(useTurnStore.getState().byId.get(sessionId)?.turnPhase).toBe(
-      "compacting",
-    );
-
     useTurnStore.getState().onCompactLifecycle({
       session_id: sessionId,
       trigger: "overflow",

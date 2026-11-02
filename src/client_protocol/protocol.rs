@@ -3,7 +3,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 pub use crate::runtime::observer::{
-    CompactionFailKind, CompactionStage, CompactionTrigger, TurnEndReason, TurnTokenStats,
+    CompactionFailKind, CompactionPhase, CompactionStage, CompactionTrigger, TurnEndReason,
+    TurnTokenStats,
 };
 use crate::session::task_state::TodoItem;
 
@@ -417,6 +418,8 @@ pub struct CompactionStateWire {
     pub trigger: Option<CompactionTrigger>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<CompactionPhase>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

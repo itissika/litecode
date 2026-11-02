@@ -101,7 +101,11 @@ pub fn try_begin_pending_flush(
             Err(_) => return PendingFlush::SkippedSessionGone,
         };
         let anchor_user_seq =
-            match sessions.append_user_message_with_mentions(sid, input.clone(), workspace_root) {
+            match sessions.append_user_message_with_knowledge_status(
+                sid,
+                input.clone(),
+                workspace_root,
+            ) {
                 Ok(seq) => seq,
                 Err(error) => {
                     tracing::warn!(session_id = sid, %error, "failed to persist follow-up");
@@ -137,7 +141,8 @@ pub fn try_begin_pending_flush(
 
     let input = crate::session::manager::merge_pending(&claimed);
     let anchor_user_seq =
-        match sessions.append_user_message_with_mentions(sid, input.clone(), workspace_root) {
+        match sessions.append_user_message_with_knowledge_status(sid, input.clone(), workspace_root)
+        {
             Ok(seq) => seq,
             Err(error) => {
                 tracing::warn!(session_id = sid, %error, "failed to persist pending messages");

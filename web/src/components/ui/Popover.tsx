@@ -8,7 +8,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import { viewOf } from "../../lib/domView";
+import { hostResizeObserver, viewOf } from "../../lib/domView";
 import { dockPane, opensUpward, visibleBox, VIEWPORT_MARGIN } from "./dockPane";
 import { useFloatingLayer } from "./useFloatingLayer";
 
@@ -27,8 +27,9 @@ interface PopoverProps {
    *  vertically when the requested direction would run off the dock pane (or
    *  the viewport outside dockview). */
   placement?: "up-right" | "up-left" | "down-right" | "down-left";
-  /** Fixed pixel width of the panel, or "trigger" to match the trigger width. */
-  width?: number | "trigger";
+  /** Fixed pixel width, "trigger" to match the trigger, or "auto" to fill
+   *  the dock pane (minus the viewport margin). */
+  width?: number | "trigger" | "auto";
   /** Gap in px between trigger and panel. */
   gap?: number;
   /** Hover mode: delay (ms) before the panel opens. */
@@ -175,9 +176,14 @@ export function Popover({
       return;
     }
 
+    const available = Math.max(0, boxW - 2 * VIEWPORT_MARGIN);
     const wanted =
-      width === "trigger" ? Math.max(rect.width, MIN_TRIGGER_WIDTH) : width;
-    const w = Math.min(wanted, boxW - 2 * VIEWPORT_MARGIN);
+      width === "trigger"
+        ? Math.max(rect.width, MIN_TRIGGER_WIDTH)
+        : width === "auto"
+          ? available
+          : width;
+    const w = Math.min(wanted, available);
 
     // Vertical: prefer the requested side, flip when it cannot hold the panel
     // and the other side can (or has more room). The panel is then capped to
@@ -242,6 +248,19 @@ export function Popover({
       raw.endsWith("px") && Number.isFinite(px) ? px : Number.POSITIVE_INFINITY;
     update();
   }, [open, pos, update]);
+
+  // "auto" width follows the dock pane when a splitter resizes it. Window
+  // resize already calls update(); dockview pane resizes do not.
+  useEffect(() => {
+    if (!open || width !== "auto") return;
+    const el = rootRef.current;
+    const observer = hostResizeObserver(el);
+    const pane = el ? dockPane(el) : null;
+    if (!observer || !pane) return;
+    const ro = new observer(() => update());
+    ro.observe(pane);
+    return () => ro.disconnect();
+  }, [open, width, update]);
 
   // Single-open: claim on open, release on close/unmount.
   useEffect(() => {

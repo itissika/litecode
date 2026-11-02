@@ -14,7 +14,3 @@ domain : client-ux
 依据：[@ file="web/src/theme/tokens.ts"]、[@ file="web/src/components/composerCard.ts"]、[@ file="web/src/theme/tokens.css"]。
 上层：[@ key="ux"]。
 相关：[@ key="ux-design"]。
-基线：075308b
-
-**核实结论：一致，无漂移。**（基线 075308b）
-- 唯一 token 定义 —— [@ file="web/src/theme/tokens.css"]；磨砂 [@ file="web/src/components/composerCard.ts"]。

@@ -290,6 +290,23 @@ fn legacy_no_caller_helpers_stay_deleted() {
 }
 
 #[test]
+fn session_surface_read_failures_are_not_swallowed() {
+    let pipeline = read("src/context_pipeline/mod.rs");
+    assert!(
+        !pipeline.contains("let Ok(mut rows) = sessions.data().working_set_blocking"),
+        "a working-set read failure must not fall back to the old fold"
+    );
+    assert!(
+        pipeline.contains("working_set_blocking(session_id)?"),
+        "the working-set read error must reach the caller"
+    );
+    assert!(
+        !pipeline.contains("let max_seq = sessions.entry_wire_seq_cursor(session_id).0"),
+        "the sync cursor read must be fallible too"
+    );
+}
+
+#[test]
 fn lifecycle_carries_unified_telemetry() {
     let observer = read("src/runtime/observer.rs");
     assert!(observer.contains("pub struct CompactionTelemetry"));
@@ -307,7 +324,26 @@ fn lifecycle_carries_unified_telemetry() {
         );
     }
     let compact = read("src/context_pipeline/compact.rs");
-    assert!(compact.contains("emit_compact_lifecycle_with_telemetry("));
+    assert!(
+        compact.contains("fn emit_compact_started("),
+        "the started event must go through the one lifecycle emitter"
+    );
+    assert!(
+        !compact.contains("let _rows = rebuild_committed_surface"),
+        "read-back must not be discarded before the success terminal"
+    );
+    assert!(
+        compact.contains("lease.mark_delivered()"),
+        "success must require a delivered surface"
+    );
+    assert!(
+        compact.contains("surface read-back failed"),
+        "a committed read-back failure must be surfaced as unverified, never success"
+    );
+    assert!(
+        compact.contains("CompactionLifecycle"),
+        "compaction lifecycle events must use the shared internal event"
+    );
     assert!(compact.contains("CompactionTelemetry {"));
     assert!(
         compact.contains("overflow_retry: Some(u8::from(trigger == CompactionTrigger::Overflow))")

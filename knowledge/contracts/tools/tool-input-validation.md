@@ -18,7 +18,3 @@ domain : tools-permission
 - 边界：未知键的 Warning 不掩盖被工具语义校验或授权拒绝的调用。
 
 父节点：[@ key="tool-call-contract"]。
-基线：075308b
-**核实结论：一致，无漂移。**（基线 075308b）
-- 严格 JSON 解析 —— [@ file="src/tool/schema_validate.rs" symbol="fn parse_tool_arguments"]。
-- 未知顶层默认 Warning；additionalProperties:false → Error —— 同文件 unknown_top_level / validate_object 路径。

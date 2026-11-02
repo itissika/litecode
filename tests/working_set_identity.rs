@@ -94,17 +94,21 @@ fn append_rows_reader_working_set_matches_full_fold() {
 #[test]
 fn keep_recent_compact_reader_matches_fold_checkpoint_then_kept() {
     let (sessions, sid) = open_with_users(&["a", "b", "c"]);
-    let expected = sessions.data().revision_blocking(&sid).unwrap_or(0);
+    let rows = sessions.data().working_set_blocking(&sid).unwrap();
+    let prior = rows
+        .first()
+        .and_then(|row| row.checkpoint().and(row.log_seq));
+    let from = rows.first().and_then(|row| row.log_seq).unwrap_or(0);
     sessions
         .mutate_blocking(SessionMutation::Compact {
             session_id: sid.clone(),
-            expected_revision: expected,
             operation_id: MutationId::new(),
             summary: "sum".into(),
             token_estimate: 10,
             kept_from: Some(1),
             at: None,
-            expected_prefix: None,
+            expected_prior_checkpoint: prior,
+            expected_from: from,
             usage: None,
             provider_id: None,
         })
@@ -254,17 +258,21 @@ fn pipeline_begin_turn_pending_tail_has_no_log_seq() {
     assert_eq!(persisted, vec![0, 1]);
 }
 fn compact(sessions: &SessionManager, sid: &str, summary: &str, kept_from: Option<u64>) {
-    let expected = sessions.data().revision_blocking(sid).unwrap_or(0);
+    let rows = sessions.data().working_set_blocking(sid).unwrap();
+    let prior = rows
+        .first()
+        .and_then(|row| row.checkpoint().and(row.log_seq));
+    let from = rows.first().and_then(|row| row.log_seq).unwrap_or(0);
     sessions
         .mutate_blocking(SessionMutation::Compact {
             session_id: sid.to_string(),
-            expected_revision: expected,
             operation_id: MutationId::new(),
             summary: summary.into(),
             token_estimate: 10,
             kept_from,
             at: None,
-            expected_prefix: None,
+            expected_prior_checkpoint: prior,
+            expected_from: from,
             usage: None,
             provider_id: None,
         })

@@ -21,4 +21,3 @@ h : 414
 契约展开：[@ key="connection-ask-registry"]。
 上层：[@ key="ux"]。相关：[@ key="session-model"]。
 依据：[@ file="src/client_protocol/protocol.rs"]、[@ file="web/src/stores/messageStore.ts"]。
-基线：075308b

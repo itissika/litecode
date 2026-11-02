@@ -12,7 +12,8 @@ use crate::llm::reconnect::{LlmReconnect, LlmReconnectPhase};
 use crate::runtime::RuntimeHandle;
 use crate::runtime::TurnHandle;
 use crate::runtime::observer::{
-    CompactionTrigger, InternalEnvelope, InternalEvent, TurnEndReason, TurnPhase,
+    CompactionFailKind, CompactionPhase, CompactionStage, CompactionTelemetry, CompactionTrigger,
+    InternalEnvelope, InternalEvent, TurnEndReason, TurnPhase,
 };
 use crate::session::data::command::{MutationId, ReadValue, SessionMutation, SessionRead};
 use crate::session::data::{SessionData, SessionDataReader};
@@ -231,7 +232,6 @@ impl SessionActivity {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionOperationKind {
-    Compact,
     Revert,
     Delete,
 }
@@ -257,39 +257,211 @@ impl Drop for SessionOperationLease {
     }
 }
 
-/// Who owns one compaction episode. Only `Background` episodes are paired
-/// with a session-owned worker; the projection uses this to reap an episode
-/// whose worker is already gone instead of leaving clients "compacting"
-/// forever.
+/// Why an episode ended without a committed result. Kept distinct from a
+/// summary failure so telemetry and UI can tell "user/revert asked it to stop"
+/// from "it tried and failed".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompactionOwner {
-    /// Synchronous compaction inside the turn (including a prune-only pass).
-    Turn,
-    /// The independent auto-compaction worker owned by the session.
-    Background,
-    /// User-triggered compaction holding the exclusive session lease.
-    Manual,
+pub enum CompactionCancelReason {
+    Revert,
+    Delete,
+    OwnerDropped,
+    /// The episode's own cancellation token fired (turn/runtime shutdown).
+    External,
 }
 
-/// One in-flight compaction episode. Manual compaction and the automatic
-/// background branch both write this one record; snapshots and lifecycle
-/// events project it instead of each deriving their own flag.
+/// The one durable result an episode may produce.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveCompaction {
-    pub operation_id: String,
-    pub trigger: CompactionTrigger,
-    /// Tail seq the cut froze at; `None` before a plan picks its cut.
-    pub at: Option<u64>,
-    pub owner: CompactionOwner,
+pub enum CompactionCommitKind {
+    Mechanical { replacements: usize },
+    Checkpoint { seq: crate::session::event::Seq },
 }
 
-/// One session-owned background compaction worker. The worker owns the
-/// summary and its commit; the record owns the cancellation token and a
-/// completion signal so a later turn can wait for an episode it did not start.
-struct BackgroundCompaction {
-    operation_id: String,
+/// What the turn should do with a failed compaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionFailureAction {
+    /// Do not stop the turn here. The old surface may still be usable, or the
+    /// committed surface is unverified and the session read decides.
+    Continue,
+    /// The surface is known bad; the turn cannot safely build/send its next request.
+    StopTurn,
+}
+
+/// Terminal episode result. `Succeeded` always carries exactly one commit;
+/// `Failed` and `Cancelled` never carry one. A `Failed` may still happen after
+/// the durable commit when that commit could not deliver a verified surface;
+/// it is not success, but `Continue` lets the session attempt the read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EpisodeOutcome {
+    Succeeded { commit: CompactionCommitKind },
+    Failed {
+        kind: CompactionFailKind,
+        message: String,
+        action: CompactionFailureAction,
+    },
+    Cancelled {
+        reason: CompactionCancelReason,
+    },
+}
+
+struct EpisodeDone {
+    outcome: std::sync::Mutex<Option<EpisodeOutcome>>,
+    cv: Condvar,
+    tx: watch::Sender<Option<EpisodeOutcome>>,
+}
+
+impl EpisodeDone {
+    fn new() -> Self {
+        let (tx, _) = watch::channel(None);
+        Self {
+            outcome: std::sync::Mutex::new(None),
+            cv: Condvar::new(),
+            tx,
+        }
+    }
+
+    fn complete(&self, outcome: EpisodeOutcome) {
+        if let Ok(mut slot) = self.outcome.lock() {
+            *slot = Some(outcome.clone());
+            self.cv.notify_all();
+        }
+        let _ = self.tx.send(Some(outcome));
+    }
+
+    fn outcome(&self) -> Option<EpisodeOutcome> {
+        self.outcome.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    fn subscribe(&self) -> watch::Receiver<Option<EpisodeOutcome>> {
+        self.tx.subscribe()
+    }
+
+    fn wait(&self) -> Option<EpisodeOutcome> {
+        let mut slot = self.outcome.lock().ok()?;
+        while slot.is_none() {
+            slot = self.cv.wait(slot).ok()?;
+        }
+        slot.clone()
+    }
+}
+
+/// The one session-owned compaction episode. There is no second owner: the
+/// turn, manual path, and background worker all observe this record.
+struct CompactionEpisode {
+    id: String,
+    trigger: CompactionTrigger,
+    phase: CompactionPhase,
+    at: Option<crate::session::event::Seq>,
+    started_at_ms: i64,
     cancel: CancellationToken,
-    done_tx: watch::Sender<bool>,
+    done: Arc<EpisodeDone>,
+    /// Telemetry from the lifecycle emitter's terminal, carried to the
+    /// post-finish event so the last event still has measured token fields.
+    terminal_telemetry: Option<CompactionTelemetry>,
+}
+
+/// Admission result for one episode. Dropping an unfinished lease records a
+/// cancellation; a committed lease reports `Succeeded` only after its surface
+/// was delivered. An unverified commit is reported as `Failed` with
+/// `Continue`: it is not success, but the session may still try to read it.
+pub struct CompactionEpisodeLease {
+    manager: Arc<SessionManager>,
+    session_id: String,
+    id: String,
+    finished: bool,
+    committed: Option<CompactionCommitKind>,
+    /// The committed surface has been read back and validated. A committed but
+    /// undelivered lease must never become Succeeded.
+    delivered: bool,
+}
+
+impl CompactionEpisodeLease {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.manager
+            .records
+            .lock()
+            .unwrap()
+            .get(&self.session_id)
+            .and_then(|record| record.episode.as_ref())
+            .filter(|episode| episode.id == self.id)
+            .map(|episode| episode.cancel.clone())
+            .unwrap_or_else(CancellationToken::new)
+    }
+
+    pub fn set_phase(&self, phase: CompactionPhase) {
+        self.manager
+            .set_compaction_phase(&self.session_id, &self.id, phase);
+    }
+
+    pub fn set_at(&self, at: crate::session::event::Seq) {
+        self.manager.set_compaction_at(&self.session_id, &self.id, at);
+    }
+
+    pub fn mark_committed(&mut self, commit: CompactionCommitKind) {
+        self.committed = Some(commit);
+        self.delivered = false;
+    }
+
+    pub fn mark_delivered(&mut self) {
+        self.delivered = self.committed.is_some();
+    }
+
+    pub fn committed_kind(&self) -> Option<CompactionCommitKind> {
+        self.committed.clone()
+    }
+
+    pub fn is_delivered(&self) -> bool {
+        self.delivered
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    /// Returns true when this lease was the owner that finished the episode.
+    pub fn finish(&mut self, outcome: EpisodeOutcome) -> bool {
+        if self.finished {
+            return false;
+        }
+        self.finished = true;
+        self.manager
+            .finish_compaction_episode(&self.session_id, &self.id, outcome)
+    }
+}
+
+impl Drop for CompactionEpisodeLease {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let outcome = match self.committed.take() {
+            Some(commit) if self.delivered => EpisodeOutcome::Succeeded { commit },
+            Some(_) => EpisodeOutcome::Failed {
+                kind: CompactionFailKind::Failed,
+                message: "compaction committed but its surface was not verified".into(),
+                action: CompactionFailureAction::Continue,
+            },
+            None => EpisodeOutcome::Cancelled {
+                reason: CompactionCancelReason::OwnerDropped,
+            },
+        };
+        self.manager
+            .finish_compaction_episode(&self.session_id, &self.id, outcome);
+    }
+}
+
+/// Client-facing projection of the active episode. The manager still owns the
+/// full record; this type contains no admission logic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveCompactionProjection {
+    pub id: String,
+    pub trigger: CompactionTrigger,
+    pub phase: CompactionPhase,
+    pub at: Option<crate::session::event::Seq>,
+    pub started_at_ms: i64,
 }
 
 /// Session-level compaction state. `revision` is monotonic and bumps on every
@@ -298,7 +470,7 @@ struct BackgroundCompaction {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompactionStateSnapshot {
     pub revision: u64,
-    pub active: Option<ActiveCompaction>,
+    pub active: Option<ActiveCompactionProjection>,
 }
 
 /// One session: exclusive activity + L2 subscription fanout + committed revision.
@@ -343,12 +515,10 @@ pub struct SessionRecord {
     llm_reconnect: Option<LlmReconnect>,
     /// Process-lifetime compaction state; the lifecycle emitter is the single
     /// writer and every transition bumps `compaction_revision`.
-    compaction: Option<ActiveCompaction>,
     compaction_revision: u64,
-    /// The live worker paired with a `CompactionOwner::Background` episode.
-    /// A registration outlives the turn that started it; only its own guard,
-    /// a session delete, or the reaper in `compaction_state_blocking` drops it.
-    background_compaction: Option<BackgroundCompaction>,
+    /// The one compaction episode. There is no second record.
+    episode: Option<CompactionEpisode>,
+    last_episode: Option<(String, EpisodeOutcome)>,
 }
 
 impl SessionRecord {
@@ -381,9 +551,9 @@ impl SessionRecord {
             last_permission_sink: None,
             file_tracker: crate::reminder::FileTracker::default(),
             llm_reconnect: None,
-            compaction: None,
             compaction_revision: 0,
-            background_compaction: None,
+            episode: None,
+            last_episode: None,
         }
     }
 
@@ -2213,6 +2383,8 @@ impl SessionManager {
                         operation_id: operation_id.clone(),
                         kind: SessionOperationKind::Revert,
                     };
+                    drop(records);
+                    self.cancel_compaction_and_wait_blocking(session_id);
                     return Ok(Some(SessionOperationLease {
                         manager: Arc::clone(self),
                         session_id: session_id.to_string(),
@@ -2237,6 +2409,7 @@ impl SessionManager {
                     };
                     drop(records);
                     self.turn_guard.end_turn();
+                    self.cancel_compaction_and_wait_blocking(session_id);
                     return Ok(Some(SessionOperationLease {
                         manager: Arc::clone(self),
                         session_id: session_id.to_string(),
@@ -2263,6 +2436,8 @@ impl SessionManager {
                     kind: SessionOperationKind::Revert,
                 } if active == &operation_id
             ) {
+                drop(records);
+                self.cancel_compaction_and_wait_blocking(session_id);
                 return Ok(Some(SessionOperationLease {
                     manager: Arc::clone(self),
                     session_id: session_id.to_string(),
@@ -2290,19 +2465,19 @@ impl SessionManager {
         let records = self.records.lock().unwrap();
         records
             .get(session_id)
-            .is_some_and(|r| r.activity.is_busy())
+            .is_some_and(|r| r.activity.is_busy() || r.episode.is_some())
     }
 
-    /// Enter the session's single compaction state. Background branches pass
-    /// `None` and get a generated id, so every episode has one identity.
+    /// The old lifecycle emitter reports `Started` for the episode it was
+    /// already given. This only updates the display anchor; it never creates a
+    /// second record. Admission is `try_begin_compaction_episode`.
     pub fn begin_compaction_blocking(
         &self,
         session_id: &str,
         operation_id: Option<&str>,
-        trigger: CompactionTrigger,
+        _trigger: CompactionTrigger,
         at: Option<u64>,
     ) -> (u64, String) {
-        let has_operation_id = operation_id.is_some();
         let operation_id = operation_id
             .map(str::to_string)
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -2310,192 +2485,336 @@ impl SessionManager {
         let Some(record) = records.get_mut(session_id) else {
             return (0, operation_id);
         };
-        // A background worker registers its operation id before it emits
-        // `Started`, so the registry is the owner identity. A manual episode
-        // carries its own id; a synchronous one has no id at all.
-        let owner = if record
-            .background_compaction
-            .as_ref()
-            .is_some_and(|task| task.operation_id == operation_id)
+        if let Some(episode) = record.episode.as_mut()
+            && episode.id == operation_id
         {
-            CompactionOwner::Background
-        } else if has_operation_id {
-            CompactionOwner::Manual
-        } else {
-            CompactionOwner::Turn
-        };
-        record.compaction = Some(ActiveCompaction {
-            operation_id: operation_id.clone(),
-            trigger,
-            at,
-            owner,
-        });
-        record.compaction_revision = record.compaction_revision.saturating_add(1);
+            if let Some(at) = at {
+                episode.at = Some(at);
+            }
+            record.compaction_revision = record.compaction_revision.saturating_add(1);
+        }
         (record.compaction_revision, operation_id)
     }
 
-    /// Leave the compaction state. A terminal transition only clears the
-    /// episode it belongs to: a manual id never clears an auto episode, and an
-    /// auto terminal never clears a manual one.
+    /// The old lifecycle emitter reports a terminal *before* the owner lease
+    /// finishes. Report the matching id so the event carries it; clearing the
+    /// episode is the lease's job (the post-finish terminal clears clients).
     pub fn end_compaction_blocking(
         &self,
         session_id: &str,
         operation_id: Option<&str>,
         trigger: CompactionTrigger,
     ) -> (u64, Option<String>) {
-        let mut records = self.records.lock().unwrap();
-        let Some(record) = records.get_mut(session_id) else {
+        let records = self.records.lock().unwrap();
+        let Some(record) = records.get(session_id) else {
             return (0, None);
         };
-        let Some(active) = record.compaction.as_ref() else {
+        let Some(episode) = record.episode.as_ref() else {
             return (record.compaction_revision, None);
         };
-        let matches =
-            operation_id.map_or(active.trigger == trigger, |id| active.operation_id == id);
+        let matches = operation_id.map_or(episode.trigger == trigger, |id| episode.id == id);
         if !matches {
             return (record.compaction_revision, None);
         }
-        let cleared = record.compaction.take().map(|active| active.operation_id);
-        record.compaction_revision = record.compaction_revision.saturating_add(1);
-        (record.compaction_revision, cleared)
+        (record.compaction_revision, Some(episode.id.clone()))
     }
 
-    /// Claim the session's one background compaction worker. Returns `false`
-    /// when another worker is already live; the caller must not start a second.
-    pub fn begin_background_compaction(
+    /// Read the one compaction state a snapshot/event should project. The
+    /// session-owned episode is the only source; there is no reaper and no
+    /// second lifecycle-owned flag.
+    pub fn compaction_state_blocking(&self, session_id: &str) -> CompactionStateSnapshot {
+        let records = self.records.lock().unwrap();
+        let Some(record) = records.get(session_id) else {
+            return CompactionStateSnapshot::default();
+        };
+        let active = record.episode.as_ref().map(|episode| ActiveCompactionProjection {
+            id: episode.id.clone(),
+            trigger: episode.trigger,
+            phase: episode.phase,
+            at: episode.at,
+            started_at_ms: episode.started_at_ms,
+        });
+        CompactionStateSnapshot {
+            revision: record.compaction_revision,
+            active,
+        }
+    }
+
+    /// Whether a compaction episode is active. Admission state, not the
+    /// client projection; snapshots read [`Self::compaction_state_blocking`].
+    pub fn is_compacting_blocking(&self, session_id: &str) -> bool {
+        let records = self.records.lock().unwrap();
+        records
+            .get(session_id)
+            .is_some_and(|record| record.episode.is_some())
+    }
+
+    /// Claim the session's one compaction episode. Auto/manual/overflow all
+    /// come through here; a second claim is refused, never joined.
+    pub fn try_begin_compaction_episode(
+        self: &Arc<Self>,
+        session_id: &str,
+        trigger: CompactionTrigger,
+    ) -> Result<CompactionEpisodeLease> {
+        let mut records = self.records.lock().unwrap();
+        let record = records.get_mut(session_id).ok_or_else(|| {
+            LitecodeError::ToolExecution(format!("session {session_id} not found"))
+        })?;
+        if record.episode.is_some() {
+            return Err(LitecodeError::AgentAlreadyRunning);
+        }
+        // Revert/delete own the session exclusively. A compaction must never be
+        // admitted into that window.
+        if matches!(&record.activity, SessionActivity::Exclusive { .. }) {
+            return Err(LitecodeError::AgentAlreadyRunning);
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        record.episode = Some(CompactionEpisode {
+            id: id.clone(),
+            trigger,
+            phase: CompactionPhase::Deciding,
+            at: None,
+            started_at_ms: chrono::Utc::now().timestamp_millis(),
+            cancel: CancellationToken::new(),
+            done: Arc::new(EpisodeDone::new()),
+            terminal_telemetry: None,
+        });
+        record.compaction_revision = record.compaction_revision.saturating_add(1);
+        drop(records);
+        Ok(CompactionEpisodeLease {
+            manager: Arc::clone(self),
+            session_id: session_id.to_string(),
+            id,
+            finished: false,
+            committed: None,
+            delivered: false,
+        })
+    }
+
+    fn set_compaction_phase(&self, session_id: &str, id: &str, phase: CompactionPhase) {
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return;
+        };
+        if let Some(episode) = record.episode.as_mut()
+            && episode.id == id
+        {
+            episode.phase = phase;
+            record.compaction_revision = record.compaction_revision.saturating_add(1);
+        }
+    }
+
+    fn set_compaction_at(
         &self,
         session_id: &str,
-        operation_id: &str,
-        cancel: CancellationToken,
+        id: &str,
+        at: crate::session::event::Seq,
+    ) {
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return;
+        };
+        if let Some(episode) = record.episode.as_mut()
+            && episode.id == id
+        {
+            episode.at = Some(at);
+            record.compaction_revision = record.compaction_revision.saturating_add(1);
+        }
+    }
+
+    /// Finish exactly one episode. Late terminals from a replaced owner are
+    /// ignored; the id is the ownership token.
+    fn finish_compaction_episode(
+        &self,
+        session_id: &str,
+        id: &str,
+        outcome: EpisodeOutcome,
     ) -> bool {
-        let (done_tx, _) = watch::channel(false);
         let mut records = self.records.lock().unwrap();
         let Some(record) = records.get_mut(session_id) else {
             return false;
         };
-        if record.background_compaction.is_some() {
+        let owns = record
+            .episode
+            .as_ref()
+            .is_some_and(|episode| episode.id == id);
+        if !owns {
             return false;
         }
-        record.background_compaction = Some(BackgroundCompaction {
-            operation_id: operation_id.to_string(),
-            cancel,
-            done_tx,
-        });
+        let episode = record.episode.take().expect("checked above");
+        record.compaction_revision = record.compaction_revision.saturating_add(1);
+        record.last_episode = Some((id.to_string(), outcome.clone()));
+        drop(records);
+
+        // The episode record is gone before this event is published, so every
+        // finish path (worker, spawn failure, precheck, owner drop) leaves the
+        // client with exactly one terminal. Publishing here, rather than from
+        // each caller, makes "ended without a result" unrepresentable.
+        let telemetry = episode.terminal_telemetry.clone().unwrap_or_default();
+        let (stage, fail_kind, error) = match &outcome {
+            EpisodeOutcome::Succeeded { .. } => (CompactionStage::Succeeded, None, None),
+            EpisodeOutcome::Failed {
+                kind, message, ..
+            } => (CompactionStage::Failed, Some(*kind), Some(message.clone())),
+            EpisodeOutcome::Cancelled { reason } => (
+                CompactionStage::Cancelled,
+                None,
+                Some(format!("{reason:?}")),
+            ),
+        };
+        self.publish_internal(
+            session_id,
+            InternalEvent::CompactionLifecycle {
+                trigger: episode.trigger,
+                stage,
+                operation_id: Some(episode.id.clone()),
+                fail_kind,
+                error,
+                telemetry,
+                at: None,
+            },
+        );
+        episode.done.complete(outcome);
         true
     }
 
-    /// Cancel the live background worker, if any. Used when a turn must take
-    /// the session surface for a forced overflow compaction; the worker's
-    /// guard still emits its terminal event and releases the registration.
-    pub fn cancel_background_compaction(&self, session_id: &str) {
-        let records = self.records.lock().unwrap();
-        if let Some(task) = records
-            .get(session_id)
-            .and_then(|record| record.background_compaction.as_ref())
-        {
-            task.cancel.cancel();
-        }
-    }
-
-    /// Whether a background compaction worker is live for this session.
-    pub fn has_background_compaction(&self, session_id: &str) -> bool {
-        let records = self.records.lock().unwrap();
-        records
-            .get(session_id)
-            .is_some_and(|record| record.background_compaction.is_some())
-    }
-
-    /// Subscribe to the current worker's completion. `None` means no worker is
-    /// live; a receiver that already reads `true` means it finished before the
-    /// subscription. A later turn uses this to wait for an episode it did not
-    /// start (the worker still owns its commit).
-    pub fn subscribe_background_compaction(
+    pub fn set_compaction_terminal_telemetry(
         &self,
         session_id: &str,
-    ) -> Option<watch::Receiver<bool>> {
+        operation_id: Option<&str>,
+        telemetry: CompactionTelemetry,
+    ) {
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return;
+        };
+        if let Some(episode) = record.episode.as_mut()
+            && operation_id.is_none_or(|id| episode.id == id)
+        {
+            episode.terminal_telemetry = Some(telemetry);
+        }
+    }
+
+    pub fn take_compaction_terminal_telemetry(
+        &self,
+        session_id: &str,
+        operation_id: &str,
+    ) -> Option<CompactionTelemetry> {
+        let mut records = self.records.lock().unwrap();
+        records
+            .get_mut(session_id)
+            .and_then(|record| record.episode.as_mut())
+            .filter(|episode| episode.id == operation_id)
+            .and_then(|episode| episode.terminal_telemetry.take())
+    }
+
+    pub fn active_compaction(&self, session_id: &str) -> Option<ActiveCompactionProjection> {
         let records = self.records.lock().unwrap();
         records
             .get(session_id)
-            .and_then(|record| record.background_compaction.as_ref())
-            .map(|task| task.done_tx.subscribe())
+            .and_then(|record| record.episode.as_ref())
+            .map(|episode| ActiveCompactionProjection {
+                id: episode.id.clone(),
+                trigger: episode.trigger,
+                phase: episode.phase,
+                at: episode.at,
+                started_at_ms: episode.started_at_ms,
+            })
     }
 
-    /// Release one background worker. Returns `true` when this call also
-    /// cleared the matching active episode, so the caller can publish its
-    /// terminal event. Clearing is keyed by operation id, not by the task slot:
-    /// a terminal written by the branch itself already removed the episode and
-    /// this is then only a registration cleanup.
-    pub fn finish_background_compaction(&self, session_id: &str, operation_id: &str) -> bool {
-        let mut records = self.records.lock().unwrap();
-        let Some(record) = records.get_mut(session_id) else {
-            return false;
-        };
-        let owns_task = record
-            .background_compaction
-            .as_ref()
-            .is_some_and(|task| task.operation_id == operation_id);
-        let task = if owns_task {
-            record.background_compaction.take()
-        } else {
-            None
-        };
-        let clears_active = record
-            .compaction
-            .as_ref()
-            .is_some_and(|active| active.operation_id == operation_id);
-        if clears_active {
-            record.compaction = None;
-            record.compaction_revision = record.compaction_revision.saturating_add(1);
-        }
-        drop(records);
-        if let Some(task) = task {
-            let _ = task.done_tx.send(true);
-        }
-        clears_active
-    }
-
-    /// Read the one compaction state a snapshot/event should project.
-    pub fn compaction_state_blocking(&self, session_id: &str) -> CompactionStateSnapshot {
-        let mut records = self.records.lock().unwrap();
-        let Some(record) = records.get_mut(session_id) else {
-            return CompactionStateSnapshot::default();
-        };
-        // Last-resort reaper: a background episode whose worker registration
-        // is gone can never produce a terminal event. Projecting it as active
-        // would leave clients "compacting" forever; clear it here so no
-        // snapshot can resurrect a dead episode. Normal transitions are still
-        // written once by the lifecycle emitter.
-        let leaked = record.compaction.as_ref().is_some_and(|active| {
-            active.owner == CompactionOwner::Background
-                && !record
-                    .background_compaction
-                    .as_ref()
-                    .is_some_and(|task| task.operation_id == active.operation_id)
-        });
-        if leaked {
-            record.compaction = None;
-            record.compaction_revision = record.compaction_revision.saturating_add(1);
-        }
-        CompactionStateSnapshot {
-            revision: record.compaction_revision,
-            active: record.compaction.clone(),
-        }
-    }
-
-    /// Whether a manual compaction currently holds the exclusive session
-    /// lease. This is admission/ownership, not the episode state projected to
-    /// clients; use [`Self::compaction_state_blocking`] for that.
-    pub fn is_compacting_blocking(&self, session_id: &str) -> bool {
+    pub fn last_episode_outcome(
+        &self,
+        session_id: &str,
+        id: &str,
+    ) -> Option<EpisodeOutcome> {
         let records = self.records.lock().unwrap();
-        records.get(session_id).is_some_and(|r| {
-            matches!(
-                &r.activity,
-                SessionActivity::Exclusive {
-                    kind: SessionOperationKind::Compact,
-                    ..
-                }
-            )
-        })
+        records
+            .get(session_id)
+            .and_then(|record| record.last_episode.as_ref())
+            .filter(|(last, _)| last == id)
+            .map(|(_, outcome)| outcome.clone())
+    }
+
+    /// Wait for one episode. Returns the terminal it produced; if the episode
+    /// already finished, the remembered terminal is returned by id.
+    pub async fn wait_compaction(
+        &self,
+        session_id: &str,
+        id: &str,
+    ) -> Option<EpisodeOutcome> {
+        let (rx, existing) = {
+            let records = self.records.lock().unwrap();
+            let record = records.get(session_id)?;
+            match record.episode.as_ref().filter(|episode| episode.id == id) {
+                Some(episode) => (Some(episode.done.subscribe()), episode.done.outcome()),
+                None => (
+                    None,
+                    record
+                        .last_episode
+                        .as_ref()
+                        .filter(|(last, _)| last == id)
+                        .map(|(_, outcome)| outcome.clone()),
+                ),
+            }
+        };
+        if existing.is_some() {
+            return existing;
+        }
+        let mut rx = rx?;
+        loop {
+            if let Some(outcome) = rx.borrow().clone() {
+                return Some(outcome);
+            }
+            if rx.changed().await.is_err() {
+                return None;
+            }
+        }
+    }
+
+    pub fn wait_compaction_blocking(
+        &self,
+        session_id: &str,
+        id: &str,
+    ) -> Option<EpisodeOutcome> {
+        let (done, existing) = {
+            let records = self.records.lock().unwrap();
+            let record = records.get(session_id)?;
+            match record.episode.as_ref().filter(|episode| episode.id == id) {
+                Some(episode) => (Some(Arc::clone(&episode.done)), episode.done.outcome()),
+                None => (
+                    None,
+                    record
+                        .last_episode
+                        .as_ref()
+                        .filter(|(last, _)| last == id)
+                        .map(|(_, outcome)| outcome.clone()),
+                ),
+            }
+        };
+        existing.or_else(|| done.and_then(|done| done.wait()))
+    }
+
+    pub fn cancel_compaction(&self, session_id: &str) {
+        let records = self.records.lock().unwrap();
+        if let Some(episode) = records
+            .get(session_id)
+            .and_then(|record| record.episode.as_ref())
+        {
+            episode.cancel.cancel();
+        }
+    }
+
+    /// Cancel and wait for the terminal. Used by revert/delete after they own
+    /// the session exclusively; it never mutates a surface itself.
+    pub fn cancel_compaction_and_wait_blocking(&self, session_id: &str) -> Option<EpisodeOutcome> {
+        let (id, done) = {
+            let records = self.records.lock().unwrap();
+            let record = records.get(session_id)?;
+            let episode = record.episode.as_ref()?;
+            episode.cancel.cancel();
+            (episode.id.clone(), Arc::clone(&episode.done))
+        };
+        done.wait().or_else(|| self.last_episode_outcome(session_id, &id))
     }
 
     /// Acquire a process-local exclusive lease while the session is idle.
@@ -2558,7 +2877,7 @@ impl SessionManager {
         {
             let records = self.records.lock().unwrap();
             if let Some(record) = records.get(session_id)
-                && record.activity.is_busy()
+                && (record.activity.is_busy() || record.episode.is_some())
             {
                 return false;
             }
@@ -2774,6 +3093,7 @@ impl SessionManager {
         }
 
         let mut pending_turn_ends = 0usize;
+        let mut episode_done = Vec::new();
         for id in &remove_ids {
             if let Some(record) = records.get_mut(id) {
                 if matches!(
@@ -2786,9 +3106,9 @@ impl SessionManager {
                 // The worker is outside the turn machinery; cancel it before
                 // the record disappears so it cannot commit into a deleted
                 // session. Its guard then finds no record and stays silent.
-                if let Some(task) = record.background_compaction.take() {
-                    task.cancel.cancel();
-                    let _ = task.done_tx.send(true);
+                if let Some(episode) = record.episode.take() {
+                    episode.cancel.cancel();
+                    episode_done.push(episode.done);
                 }
             }
         }
@@ -2799,6 +3119,9 @@ impl SessionManager {
 
         for _ in 0..pending_turn_ends {
             self.turn_guard.end_turn();
+        }
+        for done in episode_done {
+            let _ = done.wait();
         }
 
         let mut removed_children: Vec<String> = remove_ids
@@ -2831,6 +3154,14 @@ impl SessionManager {
                 }
             }
         }
+        // Cancel and wait for every episode in the subtree *before* the rows
+        // disappear. A worker that already passed its cancel check must land
+        // its terminal (and any commit) before the delete starts.
+        self.cancel_compaction_and_wait_blocking(session_id);
+        for child_id in &known_children {
+            self.cancel_compaction_and_wait_blocking(child_id);
+        }
+
         // WP-091 R7: parents must be read before the rows go.
         let mut parents: std::collections::HashMap<String, Option<String>> =
             std::collections::HashMap::new();
@@ -3607,18 +3938,18 @@ impl SessionManager {
         }
     }
 
-    /// Persist a user message, then the hidden mentions attachment when it has one.
+    /// Persist a user message, then the hidden knowledge-status attachment.
     ///
-    /// A failed attachment is logged and does not undo the user row.
-    pub fn append_user_message_with_mentions(
+    /// The user's own citation text is the pointer to what they referenced;
+    /// mentions are not expanded into the transcript. A failed attachment is
+    /// logged and does not undo the user row.
+    pub fn append_user_message_with_knowledge_status(
         &self,
         session_id: &str,
         input: impl Into<crate::types::UserInput>,
         workspace: &std::path::Path,
     ) -> anyhow::Result<crate::session::event::Seq> {
-        let input = input.into();
-        let seq = self.append_user_message(session_id, input.clone())?;
-        self.append_mentions_for(session_id, workspace, &input.text);
+        let seq = self.append_user_message(session_id, input)?;
         self.append_knowledge_status_for(session_id, workspace);
         Ok(seq)
     }
@@ -4141,14 +4472,6 @@ fn apply_event_to_progress(progress: &mut TurnProgress, ev: &InternalEvent) -> b
             progress.awaiting_permission = *awaiting;
             true
         }
-        InternalEvent::CompactionLifecycle {
-            trigger: crate::runtime::observer::CompactionTrigger::Auto,
-            stage: crate::runtime::observer::CompactionStage::Started,
-            ..
-        } => {
-            progress.phase = TurnPhase::Compacting;
-            true
-        }
         _ => false,
     }
 }
@@ -4405,18 +4728,20 @@ mod child_session_tests {
             "/proj",
         )
         .unwrap();
-        assert!(matches!(
-            mgr.try_begin_operation(&sid, SessionOperationKind::Compact),
-            Err(LitecodeError::AgentAlreadyRunning)
-        ));
+        // Manual is independent of the turn axis: it may be claimed while a
+        // turn is running.
+        let compact = mgr
+            .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
+            .expect("manual episode admitted during a turn");
+        drop(compact);
         append_turn_end(&mgr, &sid, "t1", "error");
         mgr.finish_turn(&sid, "t1").unwrap();
         assert!(!mgr.is_turn_running_blocking(&sid));
         assert!(!guard.is_turn_in_progress());
         {
             let _lease = mgr
-                .try_begin_operation(&sid, SessionOperationKind::Compact)
-                .expect("compact admitted after error termination");
+                .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
+                .expect("manual episode admitted after error termination");
         }
         mgr.begin_turn(
             &sid,
@@ -4626,33 +4951,20 @@ mod child_session_tests {
         let sid = mgr.open_session("/proj", "default", None).await.unwrap();
 
         let compact = mgr
-            .try_begin_operation(&sid, SessionOperationKind::Compact)
-            .expect("reserve compact");
+            .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
+            .expect("reserve manual episode");
         assert!(mgr.is_session_busy_blocking(&sid));
         assert!(mgr.is_compacting_blocking(&sid));
         assert!(!mgr.is_turn_running_blocking(&sid));
 
-        let turn_err = mgr
-            .reserve_turn(&sid, "t1".into(), 5, "default", "/proj")
-            .unwrap_err();
-        assert!(matches!(turn_err, LitecodeError::AgentAlreadyRunning));
-        let revert_err = match mgr.try_begin_operation(&sid, SessionOperationKind::Revert) {
-            Ok(_) => panic!("revert must not overlap compact"),
-            Err(error) => error,
-        };
-        assert!(matches!(revert_err, LitecodeError::AgentAlreadyRunning));
-        let revert_busy = match mgr.try_begin_revert(&sid) {
-            Ok(_) => panic!("try_begin_revert must not overlap compact"),
-            Err(error) => error,
-        };
-        assert!(matches!(revert_busy, LitecodeError::AgentAlreadyRunning));
+        // Manual does not occupy the turn axis: a turn may start beside it.
+        mgr.reserve_turn(&sid, "t1".into(), 5, "default", "/proj")
+            .expect("manual must not block a turn");
+        assert!(mgr.release_turn_reservation(&sid, "t1"));
 
         drop(compact);
         assert!(!mgr.is_session_busy_blocking(&sid));
-        let revert = mgr
-            .try_begin_operation(&sid, SessionOperationKind::Revert)
-            .expect("lease releases on drop");
-        drop(revert);
+        assert!(!mgr.is_compacting_blocking(&sid));
     }
 
     #[tokio::test]
@@ -4746,12 +5058,12 @@ mod child_session_tests {
             mgr.get_cached_progress(&sid).map(|p| p.turn_id),
             Some("reserved".into())
         );
-        assert!(matches!(
-            mgr.try_begin_operation(&sid, SessionOperationKind::Compact),
-            Err(LitecodeError::AgentAlreadyRunning)
-        ));
-
+        // Manual may be claimed beside a reserved turn; it is a separate axis.
+        let compact = mgr
+            .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
+            .expect("manual admitted beside a reserved turn");
         assert!(mgr.release_turn_reservation(&sid, "reserved"));
+        drop(compact);
         assert!(!mgr.is_session_busy_blocking(&sid));
         assert!(!guard.is_turn_in_progress());
     }
@@ -4943,17 +5255,21 @@ mod usage_series_tests {
             .data()
             .insert_items(&small, &[crate::types::user_text("seed")])
             .unwrap();
-        let expected = manager.data().revision_blocking(&small).unwrap();
+        let rows = manager.data().working_set_blocking(&small).unwrap();
+        let expected_from = rows
+            .first()
+            .and_then(|row| row.log_seq)
+            .expect("seed row");
         manager
             .mutate_blocking(SessionMutation::Compact {
                 session_id: small.clone(),
-                expected_revision: expected,
                 operation_id: MutationId::new(),
                 summary: "legacy summary".into(),
                 token_estimate: 1,
                 kept_from: None,
                 at: None,
-                expected_prefix: None,
+                expected_prior_checkpoint: None,
+                expected_from,
                 usage: Some(usage(500, 400, 20)),
                 provider_id: None,
             })
@@ -5127,8 +5443,8 @@ mod pending_message_tests {
         // Only the revert that owns the session may drop the queue: another
         // exclusive operation blocks it and a foreign caller is refused.
         let compact = mgr
-            .try_begin_operation(&sid, SessionOperationKind::Compact)
-            .expect("compact lease");
+            .try_begin_operation(&sid, SessionOperationKind::Revert)
+            .expect("exclusive revert lease");
         let busy = match mgr.try_begin_revert(&sid) {
             Ok(_) => panic!("compact must block the revert"),
             Err(error) => error,
@@ -5187,50 +5503,38 @@ mod compaction_state_tests {
 
     #[test]
     fn compaction_state_has_one_id_and_a_monotonic_revision() {
-        let manager = SessionManager::ephemeral_registry();
+        let manager = Arc::new(SessionManager::ephemeral_registry());
         let sid = manager.open_session_sync("", "default", None).unwrap();
         assert_eq!(
             manager.compaction_state_blocking(&sid),
             CompactionStateSnapshot::default()
         );
 
-        let (revision, id) =
-            manager.begin_compaction_blocking(&sid, None, CompactionTrigger::Auto, Some(41));
-        assert_eq!(revision, 1);
-        assert!(!id.is_empty());
+        let mut lease = manager
+            .try_begin_compaction_episode(&sid, CompactionTrigger::Auto)
+            .expect("claim");
+        let id = lease.id().to_string();
+        lease.set_at(41);
         let state = manager.compaction_state_blocking(&sid);
-        assert_eq!(state.revision, 1);
+        assert!(state.revision >= 1);
         let active = state.active.expect("started state must be visible");
-        assert_eq!(active.operation_id, id);
+        assert_eq!(active.id, id);
         assert_eq!(active.trigger, CompactionTrigger::Auto);
         assert_eq!(active.at, Some(41));
 
-        let (revision, _) = manager.begin_compaction_blocking(
-            &sid,
-            Some("manual-1"),
-            CompactionTrigger::Manual,
-            Some(7),
+        assert!(
+            manager
+                .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
+                .is_err(),
+            "the one episode is exclusive"
         );
-        assert_eq!(revision, 2);
 
-        // An auto terminal must not steal a manual episode.
-        let (revision, cleared) =
-            manager.end_compaction_blocking(&sid, None, CompactionTrigger::Auto);
-        assert_eq!(revision, 2);
-        assert_eq!(cleared, None);
-        assert!(manager.compaction_state_blocking(&sid).active.is_some());
-
-        let (revision, cleared) =
-            manager.end_compaction_blocking(&sid, Some("manual-1"), CompactionTrigger::Manual);
-        assert_eq!(revision, 3);
-        assert_eq!(cleared.as_deref(), Some("manual-1"));
-        assert!(manager.compaction_state_blocking(&sid).active.is_none());
-
-        // A terminal for an already-idle session is a no-op.
-        let (revision, cleared) =
-            manager.end_compaction_blocking(&sid, None, CompactionTrigger::Auto);
-        assert_eq!(revision, 3);
-        assert_eq!(cleared, None);
+        lease.finish(EpisodeOutcome::Succeeded {
+            commit: CompactionCommitKind::Mechanical { replacements: 1 },
+        });
+        let state = manager.compaction_state_blocking(&sid);
+        assert!(state.active.is_none());
+        assert!(state.revision > 1);
     }
 
     #[test]
@@ -5310,86 +5614,184 @@ mod memory_tests {
 }
 
 #[cfg(test)]
-mod background_compaction_tests {
+mod compaction_episode_tests {
     use super::*;
+    use crate::runtime::observer::{CompactionPhase, CompactionTrigger};
 
     #[test]
-    fn background_episode_is_session_owned_and_released_by_its_worker() {
-        let manager = SessionManager::ephemeral_registry();
+    fn claim_is_exclusive_and_terminal_is_observable() {
+        let manager = Arc::new(SessionManager::ephemeral_registry());
         let session_id = manager.open_session_sync("", "default", None).unwrap();
-        let cancel = CancellationToken::new();
-        assert!(manager.begin_background_compaction(&session_id, "bg-1", cancel.clone()));
-        assert!(!manager.begin_background_compaction(
-            &session_id,
-            "bg-2",
-            CancellationToken::new()
-        ));
-
-        let (_, started) = manager.begin_compaction_blocking(
-            &session_id,
-            Some("bg-1"),
-            CompactionTrigger::Auto,
-            None,
-        );
-        assert_eq!(started, "bg-1");
-        let state = manager.compaction_state_blocking(&session_id);
-        let active = state.active.expect("episode is active");
-        assert_eq!(active.owner, CompactionOwner::Background);
-
-        let mut done = manager
-            .subscribe_background_compaction(&session_id)
-            .expect("worker registration");
-        assert!(manager.finish_background_compaction(&session_id, "bg-1"));
-        assert!(*done.borrow_and_update(), "finish must wake a later turn");
-        assert!(!manager.has_background_compaction(&session_id));
+        let mut lease = manager
+            .try_begin_compaction_episode(&session_id, CompactionTrigger::Manual)
+            .expect("first claim");
+        let id = lease.id().to_string();
         assert!(
             manager
-                .compaction_state_blocking(&session_id)
-                .active
-                .is_none()
+                .try_begin_compaction_episode(&session_id, CompactionTrigger::Auto)
+                .is_err(),
+            "a second episode must be refused, never joined"
+        );
+        lease.set_phase(CompactionPhase::Summarizing);
+        lease.set_at(7);
+        let active = manager.active_compaction(&session_id).expect("active");
+        assert_eq!(active.id, id);
+        assert_eq!(active.phase, CompactionPhase::Summarizing);
+        assert_eq!(active.at, Some(7));
+
+        lease.finish(EpisodeOutcome::Succeeded {
+            commit: CompactionCommitKind::Checkpoint { seq: 9 },
+        });
+        assert!(manager.active_compaction(&session_id).is_none());
+        assert!(matches!(
+            manager.last_episode_outcome(&session_id, &id),
+            Some(EpisodeOutcome::Succeeded {
+                commit: CompactionCommitKind::Checkpoint { seq: 9 }
+            })
+        ));
+        assert!(manager.wait_compaction_blocking(&session_id, &id).is_some());
+    }
+
+    #[test]
+    fn dropping_an_unfinished_lease_records_cancellation() {
+        let manager = Arc::new(SessionManager::ephemeral_registry());
+        let session_id = manager.open_session_sync("", "default", None).unwrap();
+        let lease = manager
+            .try_begin_compaction_episode(&session_id, CompactionTrigger::Auto)
+            .expect("claim");
+        let id = lease.id().to_string();
+        drop(lease);
+        assert!(matches!(
+            manager.last_episode_outcome(&session_id, &id),
+            Some(EpisodeOutcome::Cancelled {
+                reason: CompactionCancelReason::OwnerDropped
+            })
+        ));
+        assert!(manager.active_compaction(&session_id).is_none());
+    }
+
+    #[test]
+    fn dropping_unfinished_lease_publishes_one_cancelled_terminal() {
+        let manager = Arc::new(SessionManager::ephemeral_registry());
+        let session_id = manager.open_session_sync("", "default", None).unwrap();
+        let mut events = manager.subscribe(&session_id).expect("subscribe");
+        let lease = manager
+            .try_begin_compaction_episode(&session_id, CompactionTrigger::Auto)
+            .expect("claim");
+        drop(lease);
+
+        let mut cancelled = 0;
+        while let Ok(envelope) = events.try_recv() {
+            if let InternalEvent::CompactionLifecycle {
+                stage: CompactionStage::Cancelled,
+                ..
+            } = envelope.event
+            {
+                cancelled += 1;
+            }
+        }
+        assert_eq!(
+            cancelled, 1,
+            "owner drop must publish one terminal, not leave the client active"
         );
     }
 
     #[test]
-    fn projection_reaps_a_background_episode_whose_worker_vanished() {
-        let manager = SessionManager::ephemeral_registry();
+    fn a_committed_but_undelivered_lease_drops_as_unverified() {
+        let manager = Arc::new(SessionManager::ephemeral_registry());
         let session_id = manager.open_session_sync("", "default", None).unwrap();
-        manager.begin_background_compaction(&session_id, "bg-lost", CancellationToken::new());
-        manager.begin_compaction_blocking(
-            &session_id,
-            Some("bg-lost"),
-            CompactionTrigger::Auto,
-            None,
-        );
-        // Simulate a worker registration that disappeared without a terminal
-        // event (e.g. a bug in a future drop path).
-        manager
-            .records
-            .lock()
-            .unwrap()
-            .get_mut(&session_id)
-            .unwrap()
-            .background_compaction = None;
+        let mut lease = manager
+            .try_begin_compaction_episode(&session_id, CompactionTrigger::Auto)
+            .expect("claim");
+        let id = lease.id().to_string();
+        lease.mark_committed(CompactionCommitKind::Mechanical { replacements: 2 });
+        drop(lease);
+        assert!(matches!(
+            manager.last_episode_outcome(&session_id, &id),
+            Some(EpisodeOutcome::Failed {
+                action: CompactionFailureAction::Continue,
+                ..
+            })
+        ));
+    }
 
-        let state = manager.compaction_state_blocking(&session_id);
+    #[test]
+    fn a_delivered_commit_survives_owner_drop() {
+        let manager = Arc::new(SessionManager::ephemeral_registry());
+        let session_id = manager.open_session_sync("", "default", None).unwrap();
+        let mut lease = manager
+            .try_begin_compaction_episode(&session_id, CompactionTrigger::Auto)
+            .expect("claim");
+        let id = lease.id().to_string();
+        lease.mark_committed(CompactionCommitKind::Mechanical { replacements: 2 });
+        lease.mark_delivered();
+        drop(lease);
+        assert!(matches!(
+            manager.last_episode_outcome(&session_id, &id),
+            Some(EpisodeOutcome::Succeeded {
+                commit: CompactionCommitKind::Mechanical { replacements: 2 }
+            })
+        ));
+    }
+
+    #[test]
+    fn cancel_and_wait_blocks_until_the_worker_terminal() {
+        let manager = Arc::new(SessionManager::ephemeral_registry());
+        let session_id = manager.open_session_sync("", "default", None).unwrap();
+        let mut lease = manager
+            .try_begin_compaction_episode(&session_id, CompactionTrigger::Auto)
+            .expect("claim");
+        let cancel = lease.cancel_token();
+        let id = lease.id().to_string();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let waiter = {
+            let manager = Arc::clone(&manager);
+            let session_id = session_id.clone();
+            std::thread::spawn(move || {
+                started_tx.send(()).expect("waiter started");
+                manager.cancel_compaction_and_wait_blocking(&session_id)
+            })
+        };
+        started_rx.recv().expect("waiter running");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(cancel.is_cancelled(), "cancel must reach the worker token");
+        lease.finish(EpisodeOutcome::Cancelled {
+            reason: CompactionCancelReason::Revert,
+        });
+        let outcome = waiter.join().expect("waiter");
         assert!(
-            state.active.is_none(),
-            "a background episode without a worker must not project as active"
+            matches!(
+                outcome,
+                Some(EpisodeOutcome::Cancelled {
+                    reason: CompactionCancelReason::Revert
+                })
+            ),
+            "waiter must observe the terminal by id, got {outcome:?}"
         );
-        assert!(state.revision > 0);
+        assert!(manager.last_episode_outcome(&session_id, &id).is_some());
     }
 
     #[test]
-    fn deleting_a_session_cancels_its_background_worker() {
-        let manager = SessionManager::ephemeral_registry();
+    fn exclusive_revert_blocks_claim_until_released() {
+        let manager = Arc::new(SessionManager::ephemeral_registry());
         let session_id = manager.open_session_sync("", "default", None).unwrap();
-        let cancel = CancellationToken::new();
-        assert!(manager.begin_background_compaction(&session_id, "bg-del", cancel.clone()));
-        manager.remove_session(&session_id).unwrap();
-        assert!(cancel.is_cancelled());
+        let lease = manager
+            .try_begin_operation(&session_id, SessionOperationKind::Revert)
+            .expect("revert lease");
+        assert!(
+            manager
+                .try_begin_compaction_episode(&session_id, CompactionTrigger::Manual)
+                .is_err(),
+            "revert owns the surface until it releases"
+        );
+        drop(lease);
+        assert!(
+            manager
+                .try_begin_compaction_episode(&session_id, CompactionTrigger::Manual)
+                .is_ok()
+        );
     }
 }
-
 
 #[cfg(test)]
 mod stream_checkpoint_retry_tests {

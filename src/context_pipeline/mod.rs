@@ -24,7 +24,7 @@ use crate::types::{Item, LitecodeError, Result, ToolResultData};
 
 pub use budget::{BudgetPolicy, OccupancyBill, ProviderPromptBaseline, occupancy_bill_from};
 pub use compact::{
-    CompactPolicy, CompactionOutcome, CompactionPlan, MechanicalPruneConfig, MechanicalPrunePlan,
+    CompactPolicy, CompactionPlan, MechanicalPruneConfig, MechanicalPrunePlan,
     PRUNE_MIN_SAVED_SUFFIX_PERCENT, PRUNE_MIN_SAVED_TOKENS_FLOOR, PRUNE_PROTECTED_WINDOW_PERCENT,
     PruneReplacement, SummaryArtifact, SummaryFailure, SummaryFinish, SummaryReview, SummaryUsage,
     TOOL_RESULT_PRUNE_HEAD_CHARS, TOOL_RESULT_PRUNE_MARKER, TOOL_RESULT_PRUNE_TAIL_CHARS,
@@ -62,7 +62,7 @@ struct PipelineState {
     /// Whether the last `sync_turn_working` extended the held fold instead of
     /// re-reading the log. Observability only; never read for control flow.
     last_sync_incremental: bool,
-    /// Fixed request shape frozen by the latest `compact_step` call.
+    /// Fixed request shape frozen by the latest compaction call.
     envelope: ContextEnvelope,
     /// Last observed log `MAX(seq)` (`-1` if empty). A later commit treats a
     /// smaller cursor as a revert and discards the turn's tail.
@@ -73,6 +73,32 @@ struct PipelineState {
 }
 
 /// L1 context pipeline: single prepare / commit entry for LLM-bound context.
+#[cfg(test)]
+static FAIL_NEXT_SYNC_READ: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn fail_next_sync_read() {
+    FAIL_NEXT_SYNC_READ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn take_sync_read_failure() -> bool {
+    let mut current = FAIL_NEXT_SYNC_READ.load(std::sync::atomic::Ordering::SeqCst);
+    while current > 0 {
+        match FAIL_NEXT_SYNC_READ.compare_exchange(
+            current,
+            current - 1,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        ) {
+            Ok(_) => return true,
+            Err(next) => current = next,
+        }
+    }
+    false
+}
+
 pub struct ContextPipeline {
     budget: BudgetPolicy,
     compact: CompactPolicy,
@@ -349,15 +375,16 @@ impl ContextPipeline {
     }
 
     /// Runtime decision snapshot: sync the fold, freeze the current request
-    /// envelope, and return both the meter and the rows it measured.
+    /// envelope, and return both the meter and the rows it measured. A session
+    /// read failure is returned; callers must stop rather than send stale rows.
     pub fn measure_working_set(
         &self,
         sessions: &SessionManager,
         session_id: &str,
         compaction_request: &crate::llm::CompactionRequestContext,
         prompt_baseline: &ProviderPromptBaseline,
-    ) -> (ContextMeter, Vec<WorkingRow>) {
-        self.sync_turn_working(sessions, session_id);
+    ) -> Result<(ContextMeter, Vec<WorkingRow>)> {
+        self.sync_turn_working(sessions, session_id)?;
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.envelope = ContextEnvelope::from_compaction_request(compaction_request);
@@ -371,13 +398,13 @@ impl ContextPipeline {
             &rows,
             &self.data_root,
         );
-        (meter, rows)
+        Ok((meter, rows))
     }
 
     pub fn sync_context(&self, _ctx: &Context) {}
 
     /// Freeze the fixed request envelope without running compaction. Production
-    /// calls this through `compact_step`; tests use it to measure a prepared view.
+    /// calls this through the compaction episode; tests use it to measure a prepared view.
     pub fn freeze_request_envelope(&self, envelope: ContextEnvelope) {
         self.state
             .lock()
@@ -448,10 +475,10 @@ impl ContextPipeline {
     ) -> Result<Vec<WorkingRow>> {
         let events = sessions.data().events_blocking(session_id)?;
         let mut view = crate::session::view::WorkingView::from_events(&events)?;
-        view.set_epoch(sessions.entry_truncate_epoch(session_id));
+        view.set_epoch(sessions.data().truncate_epoch_blocking(session_id)?);
         let rows = view.rows()?;
         let hot = project_items(&rows);
-        let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
+        let (max_seq, _) = sessions.data().seq_cursor_blocking(session_id)?;
 
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.turn_id = turn_id;
@@ -478,10 +505,13 @@ impl ContextPipeline {
     /// The reload extends the held fold with the rows the log gained instead of
     /// re-reading the whole session. [`extend_view`] refuses (and this falls
     /// back to the full read) whenever the suffix is not a plain, non-retroactive
-    /// append, so the worst case is the previous cost and never a stale view.
-    fn sync_turn_working(&self, sessions: &SessionManager, session_id: &str) {
-        let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
-        let epoch = sessions.entry_truncate_epoch(session_id);
+    /// append. A failed read is returned to the caller; it never leaves the old
+    /// fold looking current.
+    fn sync_turn_working(&self, sessions: &SessionManager, session_id: &str) -> Result<()> {
+        // Every step reads the cursor from the store. Never turn a failed read
+        // into (-1, 0): that would make the old fold look current.
+        let (max_seq, _) = sessions.data().seq_cursor_blocking(session_id)?;
+        let epoch = sessions.data().truncate_epoch_blocking(session_id)?;
         let (must_reload, shrunk, pending) = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let shrunk = !state.working.is_empty() && max_seq < state.log_max_seq;
@@ -495,7 +525,7 @@ impl ContextPipeline {
             (must_reload, shrunk, pending)
         };
         if !must_reload {
-            return;
+            return Ok(());
         }
 
         let held = {
@@ -518,12 +548,16 @@ impl ContextPipeline {
             state.view = Some(view);
             state.last_sync_incremental = true;
             state.log_max_seq = max_seq;
-            return;
+            return Ok(());
         }
 
-        let Ok(mut rows) = sessions.data().working_set_blocking(session_id) else {
-            return;
-        };
+        #[cfg(test)]
+        if take_sync_read_failure() {
+            return Err(LitecodeError::SessionStorage(
+                "injected working-set read failure".into(),
+            ));
+        }
+        let mut rows = sessions.data().working_set_blocking(session_id)?;
         if !shrunk {
             rows.extend(pending);
         }
@@ -536,6 +570,7 @@ impl ContextPipeline {
         if !shrunk {
             state.log_max_seq = max_seq;
         }
+        Ok(())
     }
 
     pub fn end_turn(&self) {
@@ -554,148 +589,6 @@ impl ContextPipeline {
     /// checkpoint or a mechanical prune). Callers that compact sync the request
     /// seam again before [`Self::build_view`], so restored reminders land after
     /// the rewritten prefix.
-    pub async fn compact_step(
-        &self,
-        sessions: &SessionManager,
-        session_id: &str,
-        compaction_request: &crate::llm::CompactionRequestContext,
-        compact_max_tokens: u32,
-        prompt_baseline: &ProviderPromptBaseline,
-        step: u64,
-        cancel: &CancellationToken,
-    ) -> Result<bool> {
-        self.compact_step_with(
-            sessions,
-            session_id,
-            compaction_request,
-            compact_max_tokens,
-            prompt_baseline,
-            step,
-            cancel,
-            None,
-            crate::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
-            false,
-        )
-        .await
-    }
-
-    /// Compaction with an optional background summary and an attempt budget.
-    /// The synchronous wrapper above keeps the flag-off behavior byte-for-byte.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn compact_step_with(
-        &self,
-        sessions: &SessionManager,
-        session_id: &str,
-        compaction_request: &crate::llm::CompactionRequestContext,
-        compact_max_tokens: u32,
-        prompt_baseline: &ProviderPromptBaseline,
-        step: u64,
-        cancel: &CancellationToken,
-        prepared: Option<crate::context_pipeline::compact::PreparedCompaction>,
-        max_attempts: u8,
-        force: bool,
-    ) -> Result<bool> {
-        // Returns whether a full compaction ran — single source of truth for
-        // the caller's phase/compaction events (no duplicate budget math).
-        if cancel.is_cancelled() {
-            return Ok(false);
-        }
-
-        self.sync_turn_working(sessions, session_id);
-        {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.envelope = ContextEnvelope::from_compaction_request(compaction_request);
-        }
-        let mut rows = self.working_set();
-        let compacted = self
-            .compact
-            .compact_if_needed(
-                &self.budget,
-                sessions,
-                session_id,
-                compaction_request,
-                compact_max_tokens,
-                prompt_baseline,
-                &mut rows,
-                step,
-                cancel,
-                &self.data_root,
-                prepared,
-                max_attempts,
-                force,
-            )
-            .await?;
-
-        if cancel.is_cancelled() {
-            return Ok(false);
-        }
-
-        if compacted {
-            // `compact_if_needed` already reloaded the fold once and put the
-            // pending tail back. Do not load the log again.
-            let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.log_max_seq = max_seq;
-            state.working = rows;
-            state.view = None;
-        }
-        Ok(compacted)
-    }
-
-    /// Provider-confirmed context-overflow recovery: force one compaction
-    /// attempt, bypassing the normal pressure threshold. The caller retries the
-    /// original main request only when the durable surface actually advanced.
-    pub async fn force_compact_overflow(
-        &self,
-        sessions: &SessionManager,
-        session_id: &str,
-        compaction_request: &crate::llm::CompactionRequestContext,
-        compact_max_tokens: u32,
-        cancel: &CancellationToken,
-    ) -> Result<bool> {
-        self.sync_turn_working(sessions, session_id);
-        let mut rows = self.working_set();
-        let before_revision = sessions.data().revision_blocking(session_id)?;
-        let baseline = ProviderPromptBaseline::default();
-        let result = CompactPolicy::compact_transcript(
-            &self.budget,
-            sessions,
-            session_id,
-            compaction_request,
-            compact_max_tokens,
-            &baseline,
-            &mut rows,
-            cancel,
-            crate::runtime::observer::CompactionTrigger::Overflow,
-            None,
-            &self.data_root,
-            None,
-            2,
-        )
-        .await;
-        if matches!(result, Err(LitecodeError::Canceled)) {
-            return Err(LitecodeError::Canceled);
-        }
-        let after_revision = sessions.data().revision_blocking(session_id)?;
-        let advanced = after_revision > before_revision;
-        if advanced {
-            let loaded = sessions.data().working_set_blocking(session_id)?;
-            let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.working = loaded;
-            state.view = None;
-            state.log_max_seq = max_seq;
-            state.prepared = None;
-        }
-        match result {
-            Ok(_) => Ok(advanced),
-            // A committed mechanical prune is sufficient retry proof even
-            // when the optional summary phase failed afterwards.
-            Err(_) if advanced => Ok(true),
-            Err(error) => Err(error),
-        }
-    }
-
     /// Build the ephemeral model view from the current working set.
     ///
     /// Reloads the log first so reminders appended after compaction are in the
@@ -707,7 +600,7 @@ impl ContextPipeline {
         prompt_baseline: &ProviderPromptBaseline,
         model: &crate::provider_catalog::ResolvedModel,
     ) -> Result<()> {
-        self.sync_turn_working(sessions, session_id);
+        self.sync_turn_working(sessions, session_id)?;
         let (rows, envelope) = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             (state.working.clone(), state.envelope.clone())
@@ -771,7 +664,7 @@ impl ContextPipeline {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .log_max_seq;
-        self.sync_turn_working(sessions, session_id);
+        self.sync_turn_working(sessions, session_id)?;
         let mut rows = self.working_set();
         attach_step_items(&mut rows, items, cursor);
         self.commit_step_with_turn(sessions, session_id, &mut rows, "", result_data)
@@ -959,6 +852,37 @@ mod turn_window_tests {
             vec![Some(0), Some(1), Some(2), Some(1), Some(2)],
             "each batched pad must inherit its own call, not the last pending call"
         );
+    }
+
+    #[test]
+    fn a_working_set_read_failure_is_not_a_stale_fallback() {
+        let sessions = SessionManager::ephemeral_registry();
+        let session_id = sessions.open_session_sync("", "default", None).unwrap();
+        let root = std::path::PathBuf::from("/tmp");
+        let pipeline = ContextPipeline::new(
+            128_000,
+            Context {
+                cwd: root.clone(),
+                workspace_paths: crate::config::WorkspacePaths::for_legacy_root(&root),
+                agents_md: None,
+                claude_md: None,
+            },
+            sessions.data_root_path(),
+        );
+        pipeline.stage_working(vec![WorkingRow {
+            log_seq: None,
+            payload: crate::session::working::WorkingPayload::item(user_text("old")),
+            replacement_media: false,
+        }]);
+        // Force the sync to take the full-read branch instead of believing the
+        // staged rows are already current.
+        pipeline.state.lock().unwrap().log_max_seq = -2;
+
+        fail_next_sync_read();
+        let error = pipeline
+            .sync_turn_working(&sessions, &session_id)
+            .expect_err("a failed read must not leave the old working set in use");
+        assert!(matches!(error, LitecodeError::SessionStorage(_)));
     }
 
     #[test]
