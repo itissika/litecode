@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use crate::permission::PermissionSink;
-use crate::runtime::{RuntimeHandle, TurnOptions, spawn_turn};
-use crate::session::{LifecycleEvent, SessionManager};
+use crate::runtime::{RuntimeHandle, TurnOptions};
+use crate::session::{LifecycleEvent, SessionService};
 use crate::types::{LitecodeError, UserInput};
 
 pub enum PendingFlush {
@@ -47,7 +47,7 @@ pub enum PendingFlush {
 /// durable instead of evaporating with the reservation.
 pub fn try_begin_pending_flush(
     runtime: &RuntimeHandle,
-    sessions: &SessionManager,
+    service: &SessionService,
     workspace_root: &Path,
     session_id: &str,
 ) -> PendingFlush {
@@ -57,9 +57,9 @@ pub fn try_begin_pending_flush(
     }
     // WP-098 Q7: steer leftovers (pending) flush first; child follow-ups only
     // once pending is empty, one message per turn, FIFO.
-    let use_follow_up = if sessions.has_pending_messages(sid) {
+    let use_follow_up = if service.has_pending_messages(sid) {
         false
-    } else if sessions.has_follow_ups(sid) {
+    } else if service.has_follow_ups(sid) {
         true
     } else {
         return PendingFlush::SkippedEmpty;
@@ -67,20 +67,20 @@ pub fn try_begin_pending_flush(
 
     // WP-098: a child runs its own (subagent) profile; only roots validate
     // against the primary-agent list.
-    let child = sessions.parent_session_id_of(sid).is_some();
+    let child = service.parent_session_id_of(sid).is_some();
     let primary_agent = if child {
-        match sessions.agent_id(sid) {
+        match service.agent_id(sid) {
             Some(agent) if !agent.is_empty() => agent,
             _ => return PendingFlush::SkippedSessionGone,
         }
     } else {
         let default_primary = runtime.desired_primary_agent();
-        match sessions.resolve_primary_agent(sid, default_primary, &runtime.resolved) {
+        match service.resolve_primary_agent(sid, default_primary, &runtime.resolved) {
             Ok(id) => id,
             Err(_) => return PendingFlush::SkippedSessionGone,
         }
     };
-    let project = sessions
+    let project = service
         .project(sid)
         .unwrap_or_else(|| workspace_root.display().to_string());
     let step_max = crate::config::bridge::agent_config_for(&runtime.resolved, &primary_agent)
@@ -88,7 +88,7 @@ pub fn try_begin_pending_flush(
         .unwrap_or(50);
     let turn_id = uuid::Uuid::new_v4().to_string();
     if use_follow_up {
-        let input = match sessions.reserve_turn_and_pop_follow_up(
+        let input = match service.reserve_follow_up_auto_turn(
             sid,
             turn_id.clone(),
             step_max,
@@ -100,21 +100,20 @@ pub fn try_begin_pending_flush(
             Err(LitecodeError::AgentAlreadyRunning) => return PendingFlush::SkippedBusy,
             Err(_) => return PendingFlush::SkippedSessionGone,
         };
-        let anchor_user_seq =
-            match sessions.append_user_message_with_knowledge_status(
-                sid,
-                input.clone(),
-                workspace_root,
-            ) {
-                Ok(seq) => seq,
-                Err(error) => {
-                    tracing::warn!(session_id = sid, %error, "failed to persist follow-up");
-                    sessions.restore_follow_up_front(sid, input);
-                    sessions.release_turn_reservation(sid, &turn_id);
-                    return PendingFlush::SkippedSessionGone;
-                }
-            };
-        let sink = crate::runtime::auto_turn_sink::auto_turn_permission_sink(sessions, sid);
+        let anchor_user_seq = match service.append_user_message_with_knowledge_status(
+            sid,
+            input.clone(),
+            workspace_root,
+        ) {
+            Ok(seq) => seq,
+            Err(error) => {
+                tracing::warn!(session_id = sid, %error, "failed to persist follow-up");
+                service.restore_follow_up_front(sid, input);
+                service.release_auto_turn(sid, &turn_id);
+                return PendingFlush::SkippedSessionGone;
+            }
+        };
+        let sink = service.auto_turn_permission_sink(sid);
         return PendingFlush::Prepared {
             session_id: sid.to_string(),
             turn_id,
@@ -126,7 +125,7 @@ pub fn try_begin_pending_flush(
             child,
         };
     }
-    let claimed = match sessions.reserve_turn_and_claim_pending(
+    let claimed = match service.reserve_pending_auto_turn(
         sid,
         turn_id.clone(),
         step_max,
@@ -141,18 +140,18 @@ pub fn try_begin_pending_flush(
 
     let input = crate::session::manager::merge_pending(&claimed);
     let anchor_user_seq =
-        match sessions.append_user_message_with_knowledge_status(sid, input.clone(), workspace_root)
+        match service.append_user_message_with_knowledge_status(sid, input.clone(), workspace_root)
         {
             Ok(seq) => seq,
             Err(error) => {
                 tracing::warn!(session_id = sid, %error, "failed to persist pending messages");
-                sessions.restore_pending_messages(sid, claimed);
-                sessions.release_turn_reservation(sid, &turn_id);
+                service.restore_pending_messages(sid, claimed);
+                service.release_auto_turn(sid, &turn_id);
                 return PendingFlush::SkippedSessionGone;
             }
         };
 
-    let sink = crate::runtime::auto_turn_sink::auto_turn_permission_sink(sessions, sid);
+    let sink = service.auto_turn_permission_sink(sid);
     PendingFlush::Prepared {
         session_id: sid.to_string(),
         turn_id,
@@ -167,7 +166,7 @@ pub fn try_begin_pending_flush(
 
 fn spawn_prepared_pending_flush(
     runtime: &RuntimeHandle,
-    sessions: &Arc<SessionManager>,
+    service: &Arc<SessionService>,
     decision: PendingFlush,
 ) {
     let PendingFlush::Prepared {
@@ -183,11 +182,10 @@ fn spawn_prepared_pending_flush(
     else {
         return;
     };
-    let sessions = Arc::clone(sessions);
-    let handle = match spawn_turn(
+    let service = Arc::clone(service);
+    let handle = match service.spawn_auto_turn(
         runtime,
         session_id.clone(),
-        Arc::clone(&sessions),
         crate::runtime::TurnInput::Wake {
             anchor_user_seq: Some(anchor_user_seq),
         },
@@ -202,7 +200,7 @@ fn spawn_prepared_pending_flush(
         Ok(h) => h,
         Err(error) => {
             tracing::warn!(error = %error, "pending flush spawn failed");
-            sessions.release_turn_reservation(&session_id, &turn_id);
+            service.release_auto_turn(&session_id, &turn_id);
             return;
         }
     };
@@ -214,52 +212,46 @@ fn spawn_prepared_pending_flush(
             Ok(rt) => rt,
             Err(error) => {
                 tracing::warn!(error = %error, "pending flush runtime failed");
-                sessions.release_turn_reservation(&session_id, &turn_id);
+                service.release_auto_turn(&session_id, &turn_id);
                 return;
             }
         };
-        if let Err(error) = rt.block_on(sessions.start_turn(
+        if let Err(error) = rt.block_on(service.start_auto_turn_with_handle(
             &session_id,
             handle,
             &primary_agent,
             &project,
-            Arc::clone(&sessions),
         )) {
             tracing::warn!(error = %error, "pending flush start failed");
-            sessions.release_turn_reservation(&session_id, &turn_id);
+            service.release_auto_turn(&session_id, &turn_id);
         }
     });
 }
 
 fn maybe_spawn_pending_flush(
     runtime: &RwLock<RuntimeHandle>,
-    sessions: &Arc<SessionManager>,
+    service: &Arc<SessionService>,
     workspace_root: &Path,
     session_id: &str,
 ) {
     let runtime_snap = runtime.read().expect("runtime lock").clone();
-    let decision = try_begin_pending_flush(&runtime_snap, sessions, workspace_root, session_id);
-    spawn_prepared_pending_flush(&runtime_snap, sessions, decision);
+    let decision = try_begin_pending_flush(&runtime_snap, service, workspace_root, session_id);
+    spawn_prepared_pending_flush(&runtime_snap, service, decision);
 }
 
 pub fn install_pending_flush(
     runtime: Arc<RwLock<RuntimeHandle>>,
-    sessions: Arc<SessionManager>,
+    service: Arc<SessionService>,
     workspace_root: PathBuf,
 ) {
-    let mut rx = sessions.subscribe_lifecycle();
+    let mut rx = service.subscribe_lifecycle();
     let _ = std::thread::Builder::new()
         .name("pending-flush".into())
         .spawn(move || {
             loop {
                 match rx.blocking_recv() {
                     Ok(LifecycleEvent::TurnFinished { session_id, .. }) => {
-                        maybe_spawn_pending_flush(
-                            &runtime,
-                            &sessions,
-                            &workspace_root,
-                            &session_id,
-                        );
+                        maybe_spawn_pending_flush(&runtime, &service, &workspace_root, &session_id);
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -278,6 +270,7 @@ mod tests {
     use crate::engines::WorkspaceEngines;
     use crate::ide_base::IdeBaseHandle;
     use crate::optional::EngineManager;
+    use crate::session::SessionManager;
     use crate::workspace::WorkspaceService;
     use std::sync::atomic::AtomicU64;
 
@@ -314,10 +307,15 @@ mod tests {
         (runtime, sessions)
     }
 
+    fn test_service(sessions: &Arc<SessionManager>) -> Arc<SessionService> {
+        Arc::new(SessionService::new(Arc::clone(sessions)))
+    }
+
     #[test]
     fn busy_session_leaves_the_queue_alone() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions) = test_runtime(dir.path());
+        let service = test_service(&sessions);
         let sid = sessions
             .open_session_sync(&dir.path().display().to_string(), "default", None)
             .unwrap();
@@ -331,7 +329,7 @@ mod tests {
             )
             .unwrap();
         sessions.enqueue_pending_message(&sid, "steer").unwrap();
-        match try_begin_pending_flush(&runtime, &sessions, dir.path(), &sid) {
+        match try_begin_pending_flush(&runtime, &service, dir.path(), &sid) {
             PendingFlush::SkippedBusy => {}
             _ => panic!("expected busy"),
         }
@@ -343,12 +341,13 @@ mod tests {
     fn idle_flush_reserves_claims_and_persists_one_user_row() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions) = test_runtime(dir.path());
+        let service = test_service(&sessions);
         let sid = sessions
             .open_session_sync(&dir.path().display().to_string(), "default", None)
             .unwrap();
         sessions.enqueue_pending_message(&sid, "first").unwrap();
         sessions.enqueue_pending_message(&sid, "second").unwrap();
-        match try_begin_pending_flush(&runtime, &sessions, dir.path(), &sid) {
+        match try_begin_pending_flush(&runtime, &service, dir.path(), &sid) {
             PendingFlush::Prepared {
                 input,
                 turn_id,
@@ -378,6 +377,7 @@ mod tests {
         use crate::permission::{AskOutcome, RecordingPermissionSink};
         let dir = tempfile::tempdir().unwrap();
         let (_runtime, sessions) = test_runtime(dir.path());
+        let service = test_service(&sessions);
         let project = dir.path().display().to_string();
         let parent = sessions
             .open_session_sync(&project, "default", None)
@@ -392,11 +392,9 @@ mod tests {
         sessions.set_last_permission_sink(&parent, allow);
         let cancel = tokio_util::sync::CancellationToken::new();
         let prompt = AskPrompt::permission("bash", "r", "s");
-        let child_sink =
-            crate::runtime::auto_turn_sink::auto_turn_permission_sink(&sessions, &child);
+        let child_sink = service.auto_turn_permission_sink(&child);
         assert_eq!(child_sink.ask(&prompt, &cancel).outcome, AskOutcome::Deny);
-        let parent_sink =
-            crate::runtime::auto_turn_sink::auto_turn_permission_sink(&sessions, &parent);
+        let parent_sink = service.auto_turn_permission_sink(&parent);
         assert_ne!(
             parent_sink.ask(&prompt, &cancel).outcome,
             AskOutcome::Deny,
@@ -409,8 +407,14 @@ mod tests {
     fn busy_child_with_follow_ups(
         dir: &std::path::Path,
         texts: &[&str],
-    ) -> (RuntimeHandle, Arc<SessionManager>, String) {
+    ) -> (
+        RuntimeHandle,
+        Arc<SessionManager>,
+        Arc<SessionService>,
+        String,
+    ) {
         let (runtime, sessions) = test_runtime(dir);
+        let service = test_service(&sessions);
         let project = dir.display().to_string();
         let parent = sessions
             .open_session_sync(&project, "default", None)
@@ -427,7 +431,7 @@ mod tests {
                 .unwrap();
         }
         assert!(sessions.release_turn_reservation(&child, "turn-busy"));
-        (runtime, sessions, child)
+        (runtime, sessions, service, child)
     }
 
     fn prepared_input(flush: PendingFlush) -> (String, String) {
@@ -440,19 +444,19 @@ mod tests {
     #[test]
     fn runtime_queue_multiple_runs_one_turn_each_fifo() {
         let dir = tempfile::tempdir().unwrap();
-        let (runtime, sessions, child) =
+        let (runtime, sessions, service, child) =
             busy_child_with_follow_ups(dir.path(), &["one", "two", "three"]);
         let mut seen = Vec::new();
         for _ in 0..3 {
             let (text, turn_id) = prepared_input(try_begin_pending_flush(
                 &runtime,
-                &sessions,
+                &service,
                 dir.path(),
                 &child,
             ));
             // While that turn runs, nothing else may start.
             assert!(!matches!(
-                try_begin_pending_flush(&runtime, &sessions, dir.path(), &child),
+                try_begin_pending_flush(&runtime, &service, dir.path(), &child),
                 PendingFlush::Prepared { .. }
             ));
             seen.push(text);
@@ -464,7 +468,7 @@ mod tests {
             "one turn per message, FIFO"
         );
         assert!(matches!(
-            try_begin_pending_flush(&runtime, &sessions, dir.path(), &child),
+            try_begin_pending_flush(&runtime, &service, dir.path(), &child),
             PendingFlush::SkippedEmpty
         ));
     }
@@ -473,7 +477,8 @@ mod tests {
     fn runtime_stop_and_send_starting_window() {
         use crate::session::manager::{CancelOutcome, FollowUpOutcome};
         let dir = tempfile::tempdir().unwrap();
-        let (_runtime, sessions, child) = busy_child_with_follow_ups(dir.path(), &["older"]);
+        let (_runtime, sessions, _service, child) =
+            busy_child_with_follow_ups(dir.path(), &["older"]);
         let project = dir.path().display().to_string();
         sessions
             .reserve_turn(&child, "turn-start".into(), 10, "default", &project)

@@ -391,7 +391,7 @@ async fn stop_and_send_cancels_then_runs_follow_up_without_waking_parent() {
     }));
     litecode::runtime::pending_auto_turn::install_pending_flush(
         Arc::new(std::sync::RwLock::new(harness.runtime.clone())),
-        Arc::clone(&sessions),
+        Arc::clone(&harness.service),
         harness.dir.path().to_path_buf(),
     );
     let mut lifecycle = sessions.subscribe_lifecycle();

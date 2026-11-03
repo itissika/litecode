@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use crate::permission::PermissionSink;
-use crate::runtime::{RuntimeHandle, TurnOptions, spawn_turn};
-use crate::session::{LifecycleEvent, SessionManager};
+use crate::runtime::{RuntimeHandle, TurnOptions};
+use crate::session::{LifecycleEvent, SessionService};
 use crate::terminal::TerminalHub;
 use crate::types::LitecodeError;
 
@@ -29,7 +29,7 @@ pub enum IdleAutoTurn {
 pub fn try_begin_idle_auto_turn(
     hub: &TerminalHub,
     runtime: &RuntimeHandle,
-    sessions: &SessionManager,
+    service: &SessionService,
     workspace_root: &Path,
     session_id: &str,
 ) -> IdleAutoTurn {
@@ -40,37 +40,37 @@ pub fn try_begin_idle_auto_turn(
     if !hub.jobs.mailbox_pending(sid) {
         return IdleAutoTurn::SkippedEmptyMailbox;
     }
-    if sessions.subscriber_count_blocking(sid) == 0 {
+    if service.subscriber_count_blocking(sid) == 0 {
         return IdleAutoTurn::SkippedNoUi;
     }
-    if sessions.is_session_busy_blocking(sid) {
+    if service.is_session_busy_blocking(sid) {
         return IdleAutoTurn::SkippedBusy;
     }
 
     let default_primary = runtime.desired_primary_agent();
-    let primary_agent =
-        match sessions.resolve_primary_agent(sid, default_primary, &runtime.resolved) {
-            Ok(id) => id,
-            Err(_) => return IdleAutoTurn::SkippedSessionGone,
-        };
-    let project = sessions
+    let primary_agent = match service.resolve_primary_agent(sid, default_primary, &runtime.resolved)
+    {
+        Ok(id) => id,
+        Err(_) => return IdleAutoTurn::SkippedSessionGone,
+    };
+    let project = service
         .project(sid)
         .unwrap_or_else(|| workspace_root.display().to_string());
     let step_max = crate::config::bridge::agent_config_for(&runtime.resolved, &primary_agent)
         .map(|a| a.max_steps)
         .unwrap_or(50);
     let turn_id = uuid::Uuid::new_v4().to_string();
-    match sessions.reserve_turn(sid, turn_id.clone(), step_max, &primary_agent, &project) {
+    match service.reserve_auto_turn(sid, turn_id.clone(), step_max, &primary_agent, &project) {
         Ok(_) => {}
         Err(LitecodeError::AgentAlreadyRunning) => return IdleAutoTurn::SkippedBusy,
         Err(_) => return IdleAutoTurn::SkippedSessionGone,
     }
 
     if !hub.jobs.mailbox_pending(sid) {
-        sessions.release_turn_reservation(sid, &turn_id);
+        service.release_auto_turn(sid, &turn_id);
         return IdleAutoTurn::SkippedEmptyMailbox;
     }
-    let sink = crate::runtime::auto_turn_sink::auto_turn_permission_sink(sessions, sid);
+    let sink = service.auto_turn_permission_sink(sid);
     IdleAutoTurn::Prepared {
         session_id: sid.to_string(),
         turn_id,
@@ -82,7 +82,7 @@ pub fn try_begin_idle_auto_turn(
 
 fn spawn_prepared_idle_auto_turn(
     runtime: &RuntimeHandle,
-    sessions: &Arc<SessionManager>,
+    service: &Arc<SessionService>,
     decision: IdleAutoTurn,
 ) {
     let IdleAutoTurn::Prepared {
@@ -95,11 +95,10 @@ fn spawn_prepared_idle_auto_turn(
     else {
         return;
     };
-    let sessions = Arc::clone(sessions);
-    let handle = match spawn_turn(
+    let service = Arc::clone(service);
+    let handle = match service.spawn_auto_turn(
         runtime,
         session_id.clone(),
-        Arc::clone(&sessions),
         crate::runtime::TurnInput::Wake {
             anchor_user_seq: None,
         },
@@ -110,7 +109,7 @@ fn spawn_prepared_idle_auto_turn(
         Ok(h) => h,
         Err(error) => {
             tracing::warn!(error = %error, "bash idle auto-turn spawn failed");
-            sessions.release_turn_reservation(&session_id, &turn_id);
+            service.release_auto_turn(&session_id, &turn_id);
             return;
         }
     };
@@ -122,19 +121,18 @@ fn spawn_prepared_idle_auto_turn(
             Ok(rt) => rt,
             Err(error) => {
                 tracing::warn!(error = %error, "bash idle auto-turn runtime failed");
-                sessions.release_turn_reservation(&session_id, &turn_id);
+                service.release_auto_turn(&session_id, &turn_id);
                 return;
             }
         };
-        if let Err(error) = rt.block_on(sessions.start_turn(
+        if let Err(error) = rt.block_on(service.start_auto_turn_with_handle(
             &session_id,
             handle,
             &primary_agent,
             &project,
-            Arc::clone(&sessions),
         )) {
             tracing::warn!(error = %error, "bash idle auto-turn start failed");
-            sessions.release_turn_reservation(&session_id, &turn_id);
+            service.release_auto_turn(&session_id, &turn_id);
         }
     });
 }
@@ -142,31 +140,31 @@ fn spawn_prepared_idle_auto_turn(
 fn maybe_spawn_idle_auto_turn(
     hub: &TerminalHub,
     runtime: &RwLock<RuntimeHandle>,
-    sessions: &Arc<SessionManager>,
+    service: &Arc<SessionService>,
     workspace_root: &Path,
     session_id: &str,
 ) {
     let runtime_snap = runtime.read().expect("runtime lock").clone();
     let decision =
-        try_begin_idle_auto_turn(hub, &runtime_snap, sessions, workspace_root, session_id);
-    spawn_prepared_idle_auto_turn(&runtime_snap, sessions, decision);
+        try_begin_idle_auto_turn(hub, &runtime_snap, service, workspace_root, session_id);
+    spawn_prepared_idle_auto_turn(&runtime_snap, service, decision);
 }
 
 pub fn install_idle_auto_turn(
     hub: Arc<TerminalHub>,
     runtime: Arc<RwLock<RuntimeHandle>>,
-    sessions: Arc<SessionManager>,
+    service: Arc<SessionService>,
     workspace_root: PathBuf,
 ) {
     let hub_for_jobs = Arc::clone(&hub);
     let runtime_for_exit = Arc::clone(&runtime);
-    let sessions_for_exit = Arc::clone(&sessions);
+    let service_for_exit = Arc::clone(&service);
     let root_for_exit = workspace_root.clone();
     hub.jobs.set_exit_handler(Arc::new(move |notice| {
         maybe_spawn_idle_auto_turn(
             &hub_for_jobs,
             &runtime_for_exit,
-            &sessions_for_exit,
+            &service_for_exit,
             &root_for_exit,
             &notice.session_id,
         );
@@ -174,8 +172,8 @@ pub fn install_idle_auto_turn(
 
     let hub_for_life = Arc::clone(&hub);
     let runtime_for_life = Arc::clone(&runtime);
-    let sessions_for_life = Arc::clone(&sessions);
-    let mut rx = sessions.subscribe_lifecycle();
+    let service_for_life = Arc::clone(&service);
+    let mut rx = service.subscribe_lifecycle();
     let _ = std::thread::Builder::new()
         .name("bash-idle-turn-flush".into())
         .spawn(move || {
@@ -185,7 +183,7 @@ pub fn install_idle_auto_turn(
                         maybe_spawn_idle_auto_turn(
                             &hub_for_life,
                             &runtime_for_life,
-                            &sessions_for_life,
+                            &service_for_life,
                             &workspace_root,
                             &session_id,
                         );
@@ -207,6 +205,7 @@ mod tests {
     use crate::engines::WorkspaceEngines;
     use crate::ide_base::IdeBaseHandle;
     use crate::optional::EngineManager;
+    use crate::session::SessionManager;
     use crate::workspace::WorkspaceService;
     use std::sync::atomic::AtomicU64;
 
@@ -245,6 +244,10 @@ mod tests {
         (runtime, sessions, hub)
     }
 
+    fn test_service(sessions: &Arc<SessionManager>) -> Arc<SessionService> {
+        Arc::new(SessionService::new(Arc::clone(sessions)))
+    }
+
     fn finish_echo(hub: &TerminalHub, root: &std::path::Path, sid: &str) {
         hub.jobs
             .insert_finished_pipe_job("bg_ec000001", sid, "", "echo hi", root, Some(0), false)
@@ -261,11 +264,12 @@ mod tests {
     fn idle_without_subscribers_does_not_reserve() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions, hub) = test_runtime(dir.path());
+        let service = test_service(&sessions);
         let sid = sessions
             .open_session_sync(&dir.path().display().to_string(), "default", None)
             .unwrap();
         finish_echo(&hub, dir.path(), &sid);
-        match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
+        match try_begin_idle_auto_turn(&hub, &runtime, &service, dir.path(), &sid) {
             IdleAutoTurn::SkippedNoUi => {}
             _ => panic!("expected no UI"),
         }
@@ -277,6 +281,7 @@ mod tests {
     fn busy_session_leaves_mailbox() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions, hub) = test_runtime(dir.path());
+        let service = test_service(&sessions);
         let sid = sessions
             .open_session_sync(&dir.path().display().to_string(), "default", None)
             .unwrap();
@@ -291,7 +296,7 @@ mod tests {
             )
             .unwrap();
         finish_echo(&hub, dir.path(), &sid);
-        match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
+        match try_begin_idle_auto_turn(&hub, &runtime, &service, dir.path(), &sid) {
             IdleAutoTurn::SkippedBusy => {}
             _ => panic!("expected busy"),
         }
@@ -302,6 +307,7 @@ mod tests {
     fn ui_kill_while_busy_prepares_user_stopped_reminder_once_idle() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions, hub) = test_runtime(dir.path());
+        let service = test_service(&sessions);
         let sid = sessions
             .open_session_sync(&dir.path().display().to_string(), "default", None)
             .unwrap();
@@ -316,13 +322,13 @@ mod tests {
             )
             .unwrap();
         finish_user_killed(&hub, dir.path(), &sid);
-        match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
+        match try_begin_idle_auto_turn(&hub, &runtime, &service, dir.path(), &sid) {
             IdleAutoTurn::SkippedBusy => {}
             _ => panic!("expected busy while turn reserved"),
         }
         assert!(hub.jobs.mailbox_pending(&sid));
         sessions.release_turn_reservation(&sid, "turn-busy");
-        match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
+        match try_begin_idle_auto_turn(&hub, &runtime, &service, dir.path(), &sid) {
             IdleAutoTurn::Prepared { turn_id, .. } => {
                 assert!(hub.jobs.mailbox_pending(&sid));
                 sessions.release_turn_reservation(&sid, &turn_id);

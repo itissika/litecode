@@ -288,6 +288,7 @@ mod tests {
         use crate::permission::{AskOutcome, RecordingPermissionSink};
         let dir = tempfile::tempdir().unwrap();
         let (_runtime, sessions, _hub) = test_runtime(dir.path());
+        let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
         let project = dir.path().display().to_string();
         let parent = sessions
             .open_session_sync(&project, "default", None)
@@ -302,11 +303,9 @@ mod tests {
         sessions.set_last_permission_sink(&parent, allow);
         let cancel = tokio_util::sync::CancellationToken::new();
         let prompt = AskPrompt::permission("bash", "r", "s");
-        let child_sink =
-            crate::runtime::auto_turn_sink::auto_turn_permission_sink(&sessions, &child);
+        let child_sink = service.auto_turn_permission_sink(&child);
         assert_eq!(child_sink.ask(&prompt, &cancel).outcome, AskOutcome::Deny);
-        let parent_sink =
-            crate::runtime::auto_turn_sink::auto_turn_permission_sink(&sessions, &parent);
+        let parent_sink = service.auto_turn_permission_sink(&parent);
         assert_ne!(
             parent_sink.ask(&prompt, &cancel).outcome,
             AskOutcome::Deny,

@@ -139,7 +139,7 @@ impl ServeState {
         crate::runtime::bash_auto_turn::install_idle_auto_turn(
             Arc::clone(&terminal_hub),
             Arc::clone(&runtime),
-            Arc::clone(&sessions),
+            Arc::clone(&service),
             project.clone(),
         );
         crate::runtime::subagent_auto_turn::install_subagent_auto_turn(
@@ -155,12 +155,12 @@ impl ServeState {
         crate::runtime::custom_auto_turn::install_custom_auto_turn(
             Arc::clone(&custom_tool_hub),
             Arc::clone(&runtime),
-            Arc::clone(&sessions),
+            Arc::clone(&service),
             project.clone(),
         );
         crate::runtime::pending_auto_turn::install_pending_flush(
             Arc::clone(&runtime),
-            Arc::clone(&sessions),
+            Arc::clone(&service),
             project.clone(),
         );
         {

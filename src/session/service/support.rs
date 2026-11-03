@@ -269,6 +269,66 @@ impl SessionService {
         self.sessions.subscriber_count_blocking(session_id)
     }
 
+    pub(crate) fn has_pending_messages(&self, session_id: &str) -> bool {
+        self.sessions.has_pending_messages(session_id)
+    }
+
+    pub(crate) fn has_follow_ups(&self, session_id: &str) -> bool {
+        self.sessions.has_follow_ups(session_id)
+    }
+
+    pub(crate) fn follow_ups_len(&self, session_id: &str) -> usize {
+        self.sessions.follow_ups_len(session_id)
+    }
+
+    pub(crate) fn reserve_follow_up_auto_turn(
+        &self,
+        session_id: &str,
+        turn_id: String,
+        step_max: u32,
+        primary_agent: &str,
+        project: &str,
+    ) -> Result<Option<(TurnProgress, UserInput)>> {
+        self.sessions.reserve_turn_and_pop_follow_up(
+            session_id,
+            turn_id,
+            step_max,
+            primary_agent,
+            project,
+        )
+    }
+
+    pub(crate) fn restore_follow_up_front(&self, session_id: &str, input: UserInput) {
+        self.sessions.restore_follow_up_front(session_id, input);
+    }
+
+    pub(crate) fn reserve_pending_auto_turn(
+        &self,
+        session_id: &str,
+        turn_id: String,
+        step_max: u32,
+        primary_agent: &str,
+        project: &str,
+    ) -> Result<Option<(TurnProgress, Vec<PendingMessage>)>> {
+        self.sessions.reserve_turn_and_claim_pending(
+            session_id,
+            turn_id,
+            step_max,
+            primary_agent,
+            project,
+        )
+    }
+
+    pub(crate) fn append_user_message_with_knowledge_status(
+        &self,
+        session_id: &str,
+        input: impl Into<UserInput>,
+        workspace: &Path,
+    ) -> anyhow::Result<Seq> {
+        self.sessions
+            .append_user_message_with_knowledge_status(session_id, input, workspace)
+    }
+
     pub(crate) fn reserve_auto_turn(
         &self,
         session_id: &str,
