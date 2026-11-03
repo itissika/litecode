@@ -23,6 +23,7 @@ use litecode::optional::EngineManager;
 use litecode::runtime::RuntimeHandle;
 use litecode::runtime::observer::InternalEvent;
 use litecode::runtime::subagent_auto_turn::install_subagent_auto_turn;
+use litecode::session::SessionService;
 use litecode::session::event::EventType;
 use litecode::session::manager::SessionManager;
 use litecode::tool::Tool;
@@ -83,12 +84,13 @@ fn launch_tool_on_sessions(
     )
     .with_test_llm_override(Arc::new(provider));
     runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
+    let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
     SubagentLaunchTool::new(
         runtime,
         "default",
         0,
         CancellationToken::new(),
-        sessions,
+        service,
         parent_session_id,
     )
 }
@@ -461,12 +463,13 @@ async fn child_exit_triggers_parent_auto_turn_reminder() {
         cwd.to_path_buf(),
     );
 
+    let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
     let tool = SubagentLaunchTool::new(
         runtime,
         "default",
         0,
         CancellationToken::new(),
-        Arc::clone(&sessions),
+        service,
         parent.clone(),
     );
     let result = run_subagent(

@@ -10,6 +10,7 @@ use crate::ide_base::IdeBaseHandle;
 use crate::mcp::McpToolSchema;
 use crate::optional::EngineManager;
 use crate::runtime::RuntimeHandle;
+use crate::session::SessionService;
 use crate::session::manager::SessionManager;
 use crate::tool::capability::{CapabilitySource, MemberSpec, capability_catalog};
 use crate::tool::project::project_tools;
@@ -342,6 +343,7 @@ fn subagent_tools(
     parent_session_id: &str,
     members: &[MemberSpec],
 ) -> Vec<Arc<dyn Tool>> {
+    let service = Arc::new(SessionService::new(Arc::clone(sessions)));
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     for member in members {
         match member.id.as_str() {
@@ -350,21 +352,21 @@ fn subagent_tools(
                 agent_id,
                 depth,
                 parent_cancel.clone(),
-                Arc::clone(sessions),
+                Arc::clone(&service),
                 parent_session_id.to_string(),
             ))),
-            "subagent_wait" => tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(sessions)))),
-            "subagent_stop" => tools.push(Arc::new(SubagentStopTool::new(Arc::clone(sessions)))),
+            "subagent_wait" => tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(&service)))),
+            "subagent_stop" => tools.push(Arc::new(SubagentStopTool::new(Arc::clone(&service)))),
             "subagent_send" => tools.push(Arc::new(SubagentSendTool::new(
                 runtime.clone(),
-                Arc::clone(sessions),
+                Arc::clone(&service),
                 depth,
             ))),
             "subagent_delete" => tools.push(Arc::new(SubagentDeleteTool::new(
-                Arc::clone(sessions),
+                Arc::clone(&service),
                 Arc::clone(&runtime.subagent_hub),
             ))),
-            "subagent_list" => tools.push(Arc::new(SubagentListTool::new(Arc::clone(sessions)))),
+            "subagent_list" => tools.push(Arc::new(SubagentListTool::new(Arc::clone(&service)))),
             _ => {}
         }
     }

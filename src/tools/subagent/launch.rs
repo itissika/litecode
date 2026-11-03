@@ -8,7 +8,7 @@ use crate::config::schema::AgentRole;
 use crate::config::workspace::workspace_root_from_paths;
 use crate::context_pipeline::Context;
 use crate::runtime::{RuntimeHandle, TurnOptions};
-use crate::session::manager::SessionManager;
+use crate::session::SessionService;
 use crate::session::store::Session;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
@@ -26,7 +26,7 @@ pub struct SpawnDeps {
     /// profile's runtime config.
     pub runtime: RuntimeHandle,
     pub depth: u32,
-    pub sessions: Arc<SessionManager>,
+    pub service: Arc<SessionService>,
 }
 
 pub struct LaunchSpec {
@@ -55,14 +55,14 @@ pub async fn spawn_child_job(
         .map_err(|error| format!("child turn start failed: {error}"))?;
     runtime.sync_workspace_tool_readiness();
 
-    let project = deps.sessions.project(parent_session_id).unwrap_or_else(|| {
+    let project = deps.service.project(parent_session_id).unwrap_or_else(|| {
         workspace_root_from_paths(runtime.resolved.paths())
             .to_string_lossy()
             .to_string()
     });
     let seed_model = crate::runtime::seed_model_ref(&runtime.resolved, &spec.agent_name);
     let child_session_id = deps
-        .sessions
+        .service
         .open_child_session_with_responsibility(
             &project,
             &spec.agent_name,
@@ -73,7 +73,7 @@ pub async fn spawn_child_job(
         )
         .map_err(|error| format!("child turn start failed: {error}"))?;
 
-    if !deps.sessions.publish_internal(
+    if !deps.service.publish_internal(
         parent_session_id,
         crate::runtime::observer::InternalEvent::SubagentBound {
             call_id: call_id.to_string(),
@@ -90,7 +90,7 @@ pub async fn spawn_child_job(
     let opts = TurnOptions::child(spec.agent_name.clone());
     let turn_id = match start_turn_like_human(
         &runtime,
-        &deps.sessions,
+        &deps.service,
         &child_session_id,
         spec.prompt.clone(),
         &spec.agent_name,
@@ -107,7 +107,7 @@ pub async fn spawn_child_job(
                 error = %error,
                 "subagent child turn failed to start"
             );
-            let _ = deps.sessions.remove_session(&child_session_id);
+            let _ = deps.service.remove_session(&child_session_id);
             return Err(format!("child turn start failed: {error}"));
         }
     };
@@ -130,7 +130,7 @@ pub struct SubagentLaunchTool {
     /// cancellation is deliberately not propagated into a child turn;
     /// `subagent_stop` is the explicit session-level cancel path.
     parent_cancel: CancellationToken,
-    sessions: Arc<SessionManager>,
+    service: Arc<SessionService>,
     parent_session_id: String,
     parent_call_id: String,
 }
@@ -141,7 +141,7 @@ impl SubagentLaunchTool {
         parent_agent_id: impl Into<String>,
         depth: u32,
         parent_cancel: CancellationToken,
-        sessions: Arc<SessionManager>,
+        service: Arc<SessionService>,
         parent_session_id: impl Into<String>,
     ) -> Self {
         Self {
@@ -149,7 +149,7 @@ impl SubagentLaunchTool {
             parent_agent_id: parent_agent_id.into(),
             depth,
             parent_cancel,
-            sessions,
+            service,
             parent_session_id: parent_session_id.into(),
             parent_call_id: String::new(),
         }
@@ -161,7 +161,7 @@ impl SubagentLaunchTool {
             parent_agent_id: self.parent_agent_id.clone(),
             depth: self.depth,
             parent_cancel: self.parent_cancel.clone(),
-            sessions: Arc::clone(&self.sessions),
+            service: Arc::clone(&self.service),
             parent_session_id: self.parent_session_id.clone(),
             parent_call_id: self.parent_call_id.clone(),
         }
@@ -254,7 +254,7 @@ impl SubagentLaunchTool {
         let deps = SpawnDeps {
             runtime: self.runtime.clone(),
             depth: self.depth,
-            sessions: Arc::clone(&self.sessions),
+            service: Arc::clone(&self.service),
         };
 
         let responsibility = spec.responsibility.clone();

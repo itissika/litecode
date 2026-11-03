@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 
 use crate::context_pipeline::Context;
-use crate::session::manager::SessionManager;
+use crate::session::SessionService;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
@@ -13,14 +13,14 @@ use crate::types::ToolCallResult;
 use super::status;
 
 pub struct SubagentStopTool {
-    sessions: Arc<SessionManager>,
+    service: Arc<SessionService>,
     session_id: Mutex<String>,
 }
 
 impl SubagentStopTool {
-    pub fn new(sessions: Arc<SessionManager>) -> Self {
+    pub fn new(service: Arc<SessionService>) -> Self {
         Self {
-            sessions,
+            service,
             session_id: Mutex::new(String::new()),
         }
     }
@@ -36,7 +36,7 @@ impl SubagentStopTool {
         };
         let parent = self.session_id();
         if !self
-            .sessions
+            .service
             .descendant_session_ids(&parent)
             .iter()
             .any(|id| id == child_id)
@@ -47,17 +47,17 @@ impl SubagentStopTool {
         // K3: check and cancel happen under one records lock (WP-090
         // CancelOutcome). Cancel never touches the child's pending queue.
         if self
-            .sessions
-            .cancel_turn_sync(child_id, crate::types::StopOrigin::Parent)
+            .service
+            .cancel_turn(child_id, crate::types::StopOrigin::Parent)
             .cancelled()
         {
             // WP-094 L5: the parent stopped it itself — no ChildStopped to self.
             return ToolCallResult::ok(status::format_stopped(child_id));
         }
 
-        match self.sessions.data().latest_turn_result_blocking(child_id) {
+        match self.service.latest_turn_result(child_id) {
             Ok(Some(result)) => {
-                let (agent, responsibility) = status::session_labels(&self.sessions, child_id);
+                let (agent, responsibility) = status::session_labels(&self.service, child_id);
                 ToolCallResult::ok(format!(
                     "status: nothing running\n{}",
                     status::format_turn_result(
@@ -110,7 +110,7 @@ impl Tool for SubagentStopTool {
         execution: ToolExecutionContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let tool = SubagentStopTool {
-            sessions: Arc::clone(&self.sessions),
+            service: Arc::clone(&self.service),
             session_id: Mutex::new(execution.session_id),
         };
         Box::pin(async move { tool.call_stop(input) })

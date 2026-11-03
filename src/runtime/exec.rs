@@ -1039,11 +1039,12 @@ impl AgentRuntime {
                 output_file: display_output_path(&notice.output_path, &cwd),
             })
             .collect::<Vec<_>>();
+        let service = crate::session::SessionService::new(Arc::clone(&self.sessions));
         let settled = completions
             .iter()
             .map(|completion| {
                 let (agent, _) = crate::tools::subagent::status::session_labels(
-                    &self.sessions,
+                    &service,
                     &completion.child_session_id,
                 );
                 let reason = self
@@ -1062,10 +1063,8 @@ impl AgentRuntime {
             .collect::<Vec<_>>();
         let mut settled = settled;
         for notice in &parent_notices {
-            let (agent, _) = crate::tools::subagent::status::session_labels(
-                &self.sessions,
-                notice.child_session_id(),
-            );
+            let (agent, _) =
+                crate::tools::subagent::status::session_labels(&service, notice.child_session_id());
             settled.push(SettledChild {
                 child_session_id: notice.child_session_id().to_string(),
                 turn_id: String::new(),
@@ -1077,7 +1076,7 @@ impl AgentRuntime {
             String::new()
         } else {
             let mut detail =
-                crate::tools::subagent::status::format_batch_results(&self.sessions, &completions);
+                crate::tools::subagent::status::format_batch_results(&service, &completions);
             for notice in &parent_notices {
                 detail.push_str(&format!(
                     "\nchild_session_id: {} · {}\n",

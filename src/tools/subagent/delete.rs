@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 
 use crate::context_pipeline::Context;
-use crate::session::delete::{DeleteSessionError, delete_session_tree};
-use crate::session::manager::SessionManager;
+use crate::session::SessionService;
+use crate::session::delete::DeleteSessionError;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
@@ -14,15 +14,15 @@ use crate::types::ToolCallResult;
 use super::SubagentHub;
 
 pub struct SubagentDeleteTool {
-    sessions: Arc<SessionManager>,
+    service: Arc<SessionService>,
     hub: Arc<SubagentHub>,
     session_id: Mutex<String>,
 }
 
 impl SubagentDeleteTool {
-    pub fn new(sessions: Arc<SessionManager>, hub: Arc<SubagentHub>) -> Self {
+    pub fn new(service: Arc<SessionService>, hub: Arc<SubagentHub>) -> Self {
         Self {
-            sessions,
+            service,
             hub,
             session_id: Mutex::new(String::new()),
         }
@@ -45,9 +45,8 @@ impl SubagentDeleteTool {
         }
         // Only the caller's own direct child (not a grandchild, not a foreign session).
         let is_direct_child = self
-            .sessions
-            .reader()
-            .meta_blocking(&child_id)
+            .service
+            .meta(&child_id)
             .ok()
             .and_then(|meta| meta.parent_session_id)
             .is_some_and(|p| p == parent);
@@ -56,7 +55,7 @@ impl SubagentDeleteTool {
                 "subagent '{child_id}' is not a direct child session of this session"
             ));
         }
-        match delete_session_tree(&self.sessions, &self.hub, &child_id).await {
+        match self.service.delete_session_tree(&self.hub, &child_id).await {
             Ok(deleted) => {
                 // WP-094 L5: the parent deleted it itself — no ChildDeleted to self.
                 let mut result = ToolCallResult::ok(format!(
@@ -142,7 +141,7 @@ impl Tool for SubagentDeleteTool {
         execution: ToolExecutionContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let tool = SubagentDeleteTool {
-            sessions: Arc::clone(&self.sessions),
+            service: Arc::clone(&self.service),
             hub: Arc::clone(&self.hub),
             session_id: Mutex::new(execution.session_id),
         };

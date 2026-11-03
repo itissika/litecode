@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::context_pipeline::Context;
 use crate::runtime::{RuntimeHandle, TurnOptions};
+use crate::session::SessionService;
 use crate::session::manager::FollowUpOutcome;
-use crate::session::manager::SessionManager;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::{LitecodeError, ToolCallResult};
@@ -17,16 +17,16 @@ use super::turn::start_turn_like_human;
 
 pub struct SubagentSendTool {
     runtime: RuntimeHandle,
-    sessions: Arc<SessionManager>,
+    service: Arc<SessionService>,
     depth: u32,
     session_id: Mutex<String>,
 }
 
 impl SubagentSendTool {
-    pub fn new(runtime: RuntimeHandle, sessions: Arc<SessionManager>, depth: u32) -> Self {
+    pub fn new(runtime: RuntimeHandle, service: Arc<SessionService>, depth: u32) -> Self {
         Self {
             runtime,
-            sessions,
+            service,
             depth,
             session_id: Mutex::new(String::new()),
         }
@@ -52,7 +52,7 @@ impl SubagentSendTool {
             );
         }
         let is_child = self
-            .sessions
+            .service
             .descendant_session_ids(&parent)
             .iter()
             .any(|id| id == &child_id);
@@ -65,7 +65,7 @@ impl SubagentSendTool {
             Ok(mode) => mode,
             Err(e) => return ToolCallResult::error(e),
         };
-        if let Err(error) = self.sessions.ensure_entry(&child_id).await {
+        if let Err(error) = self.service.ensure_entry(&child_id).await {
             return ToolCallResult::error(format!("subagent '{child_id}' is unavailable: {error}"));
         }
         // WP-100: route the message by mode. A busy child never gets a second
@@ -73,7 +73,7 @@ impl SubagentSendTool {
         if let Some(result) = self.deliver_to_busy(&child_id, &message, mode) {
             return result;
         }
-        let agent_id = match self.sessions.agent_id(&child_id) {
+        let agent_id = match self.service.agent_id(&child_id) {
             Some(agent) if !agent.is_empty() => agent,
             _ => {
                 return ToolCallResult::error(format!(
@@ -82,16 +82,16 @@ impl SubagentSendTool {
             }
         };
         let project = self
-            .sessions
+            .service
             .project(&child_id)
-            .unwrap_or_else(|| self.sessions.project(&parent).unwrap_or_default());
+            .unwrap_or_else(|| self.service.project(&parent).unwrap_or_default());
         // Identity only — model / tier / context mode come from the child's own
         // session row inside `spawn_turn`.
         let opts = TurnOptions::child(agent_id.clone());
         let retry_message = message.clone();
         let turn_id = match start_turn_like_human(
             &self.runtime,
-            &self.sessions,
+            &self.service,
             &child_id,
             message,
             &agent_id,
@@ -149,7 +149,7 @@ impl SubagentSendTool {
             m
         };
         match mode {
-            SendMode::Queue => match self.sessions.enqueue_follow_up(child_id, input) {
+            SendMode::Queue => match self.service.enqueue_follow_up(child_id, input) {
                 Ok(FollowUpOutcome::Idle) => None,
                 Ok(FollowUpOutcome::Queued { position }) => {
                     let mut r = ToolCallResult::ok(status::format_queued(child_id, position));
@@ -161,10 +161,10 @@ impl SubagentSendTool {
                 ))),
             },
             SendMode::Steer => {
-                if !self.sessions.is_turn_running_blocking(child_id) {
+                if !self.service.is_turn_running_blocking(child_id) {
                     return None;
                 }
-                match self.sessions.enqueue_user_input(child_id, input) {
+                match self.service.enqueue_user_input(child_id, input) {
                     Ok(pending) => {
                         let mut r =
                             ToolCallResult::ok(status::format_steered(child_id, &pending.id));
@@ -179,7 +179,7 @@ impl SubagentSendTool {
                     ))),
                 }
             }
-            SendMode::StopAndSend => match self.sessions.cancel_and_follow_up(
+            SendMode::StopAndSend => match self.service.cancel_and_follow_up(
                 child_id,
                 input,
                 crate::types::StopOrigin::Parent,
@@ -273,7 +273,7 @@ impl Tool for SubagentSendTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let tool = SubagentSendTool {
             runtime: self.runtime.clone(),
-            sessions: Arc::clone(&self.sessions),
+            service: Arc::clone(&self.service),
             depth: self.depth,
             session_id: Mutex::new(execution.session_id.clone()),
         };

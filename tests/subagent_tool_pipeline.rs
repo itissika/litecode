@@ -20,6 +20,7 @@ use litecode::engines::WorkspaceEngines;
 use litecode::llm::{LlmProvider, ModelRequest};
 use litecode::optional::EngineManager;
 use litecode::permission::{PermissionEngine, deny_permission_sink};
+use litecode::session::SessionService;
 use litecode::session::manager::{SessionManager, SessionStatus};
 use litecode::tool::Tool;
 use litecode::tool::ToolPipeline;
@@ -84,12 +85,13 @@ fn launch_tool_with_hub(
     .with_test_llm_override(Arc::from(provider));
     runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
     let hub = Arc::clone(&runtime.subagent_hub);
+    let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
     let tool = SubagentLaunchTool::new(
         runtime,
         "default",
         0,
         CancellationToken::new(),
-        Arc::clone(&sessions),
+        service,
         parent_session_id,
     );
     (tool, hub)
@@ -218,7 +220,7 @@ async fn parent_cancel_does_not_stop_background_child_and_stop_tool_can() {
     assert!(!dropped.load(Ordering::SeqCst));
 
     // The first-class stop operation cancels the child's current turn.
-    let stop = SubagentStopTool::new(Arc::clone(&sessions));
+    let stop = SubagentStopTool::new(Arc::new(SessionService::new(Arc::clone(&sessions))));
     let stop_result = stop
         .execute(
             serde_json::json!({"id": child_id}),

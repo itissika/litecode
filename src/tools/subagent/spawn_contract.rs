@@ -16,6 +16,7 @@ use crate::ide_base::IdeBaseHandle;
 use crate::optional::EngineManager;
 use crate::provider_catalog;
 use crate::runtime::RuntimeHandle;
+use crate::session::SessionService;
 use crate::session::manager::SessionManager;
 use crate::session::model::TurnResult;
 use crate::tools::subagent::{LaunchSpec, SpawnDeps, spawn_child_job};
@@ -95,6 +96,7 @@ fn settings_with_explore_model(explore_model: &str) -> GlobalSettings {
 struct SpawnEnv {
     _dir: tempfile::TempDir,
     sessions: Arc<SessionManager>,
+    service: Arc<SessionService>,
     parent: String,
     /// Held only to keep the settings writer alive for the env's lifetime.
     _writer: SettingsWriter,
@@ -161,9 +163,11 @@ async fn spawn_env(explore_model: &str) -> SpawnEnv {
     );
     runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
 
+    let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
     SpawnEnv {
         _dir: dir,
         sessions,
+        service,
         parent,
         _writer: writer,
         runtime,
@@ -174,7 +178,7 @@ fn make_deps(env: &SpawnEnv) -> SpawnDeps {
     SpawnDeps {
         runtime: env.runtime.clone(),
         depth: 0,
-        sessions: Arc::clone(&env.sessions),
+        service: Arc::clone(&env.service),
     }
 }
 

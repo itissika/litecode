@@ -15,6 +15,7 @@ use litecode::engines::WorkspaceEngines;
 use litecode::llm::LlmProvider;
 use litecode::optional::EngineManager;
 use litecode::runtime::RuntimeHandle;
+use litecode::session::SessionService;
 use litecode::session::manager::SessionManager;
 use litecode::tool::Tool;
 use litecode::tool::trait_::ToolExecutionContext;
@@ -37,6 +38,7 @@ pub struct SubagentHarness {
     pub dir: tempfile::TempDir,
     pub resolved: ResolvedConfig,
     pub sessions: Arc<SessionManager>,
+    pub service: Arc<SessionService>,
     pub runtime: RuntimeHandle,
     pub parent_id: String,
 }
@@ -84,6 +86,7 @@ impl SubagentHarness {
         let parent_id = sessions
             .open_session_sync(&project, PARENT_AGENT, Some(TEST_PRIMARY_MODEL_REF))
             .expect("parent session");
+        let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
 
         let workspace_service =
             litecode::workspace::WorkspaceService::new(workspace.workspace_root.clone())
@@ -111,6 +114,7 @@ impl SubagentHarness {
             dir,
             resolved,
             sessions,
+            service,
             runtime,
             parent_id,
         }
@@ -122,25 +126,25 @@ impl SubagentHarness {
             PARENT_AGENT,
             0,
             tokio_util::sync::CancellationToken::new(),
-            Arc::clone(&self.sessions),
+            Arc::clone(&self.service),
             self.parent_id.clone(),
         )
     }
 
     pub fn wait_tool(&self) -> SubagentWaitTool {
-        SubagentWaitTool::new(Arc::clone(&self.sessions))
+        SubagentWaitTool::new(Arc::clone(&self.service))
     }
 
     pub fn stop_tool(&self) -> SubagentStopTool {
-        SubagentStopTool::new(Arc::clone(&self.sessions))
+        SubagentStopTool::new(Arc::clone(&self.service))
     }
 
     pub fn list_tool(&self) -> SubagentListTool {
-        SubagentListTool::new(Arc::clone(&self.sessions))
+        SubagentListTool::new(Arc::clone(&self.service))
     }
 
     pub fn send_tool(&self) -> SubagentSendTool {
-        SubagentSendTool::new(self.runtime.clone(), Arc::clone(&self.sessions), 0)
+        SubagentSendTool::new(self.runtime.clone(), Arc::clone(&self.service), 0)
     }
 
     pub async fn send(&self, call_id: &str, child_id: &str, message: &str) -> ToolCallResult {

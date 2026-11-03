@@ -1,6 +1,6 @@
 //! Agent-facing rendering of Session facts.
 
-use crate::session::manager::SessionManager;
+use crate::session::SessionService;
 use crate::session::model::TurnResult;
 
 use super::jobs::CompletionRef;
@@ -61,15 +61,12 @@ pub fn format_turn_result(
 }
 
 pub fn session_labels(
-    sessions: &SessionManager,
+    service: &SessionService,
     child_id: &str,
 ) -> (Option<String>, Option<String>) {
-    let agent = sessions
-        .agent_id(child_id)
-        .filter(|value| !value.is_empty());
-    let responsibility = sessions
-        .reader()
-        .meta_blocking(child_id)
+    let agent = service.agent_id(child_id).filter(|value| !value.is_empty());
+    let responsibility = service
+        .meta(child_id)
         .ok()
         .map(|meta| meta.responsibility)
         .filter(|value| !value.is_empty());
@@ -135,20 +132,16 @@ fn truncation_location(result: &TurnResult) -> String {
     }
 }
 
-pub fn format_batch_results(sessions: &SessionManager, completions: &[CompletionRef]) -> String {
+pub fn format_batch_results(service: &SessionService, completions: &[CompletionRef]) -> String {
     if completions.is_empty() {
         return "status: nothing to wait for\n".into();
     }
     let mut out = format!("status: settled\nsettled: {}\n", completions.len());
     for completion in completions {
         out.push_str("---\n");
-        match sessions
-            .data()
-            .turn_result_blocking(&completion.child_session_id, &completion.turn_id)
-        {
+        match service.turn_result(&completion.child_session_id, &completion.turn_id) {
             Ok(result) => {
-                let (agent, responsibility) =
-                    session_labels(sessions, &completion.child_session_id);
+                let (agent, responsibility) = session_labels(service, &completion.child_session_id);
                 out.push_str(&format_turn_result(
                     &completion.child_session_id,
                     agent.as_deref(),
@@ -175,7 +168,7 @@ pub fn format_batch_results(sessions: &SessionManager, completions: &[Completion
 }
 
 pub fn format_wait_outcome(
-    sessions: &SessionManager,
+    service: &SessionService,
     completions: &[CompletionRef],
     skipped: &[(String, String)],
 ) -> String {
@@ -184,7 +177,7 @@ pub fn format_wait_outcome(
         append_skipped(&mut out, skipped);
         return out;
     }
-    let mut out = format_batch_results(sessions, completions);
+    let mut out = format_batch_results(service, completions);
     append_skipped(&mut out, skipped);
     out
 }
