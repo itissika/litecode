@@ -27,6 +27,28 @@ impl JournalWrite {
     }
 }
 
+/// Kick off the one transaction that every write command runs inside.
+///
+/// Kept here so the writer never spells SQL: the writer owns ordering and
+/// lifecycle, while this module owns how sessions.db is opened, read, and
+/// committed.
+pub(crate) fn begin_immediate(conn: &Connection) -> Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| crate::types::LitecodeError::SessionStorage(format!("BEGIN IMMEDIATE: {e}")))
+}
+
+pub(crate) fn commit(conn: &Connection) -> Result<()> {
+    conn.execute_batch("COMMIT")
+        .map_err(|e| crate::types::LitecodeError::SessionStorage(format!("COMMIT: {e}")))
+}
+
+/// Best-effort rollback used on an error path. The caller already has the
+/// original failure; a rollback failure must not replace it.
+pub(crate) fn rollback(conn: &Connection) -> Result<()> {
+    conn.execute_batch("ROLLBACK")
+        .map_err(|e| crate::types::LitecodeError::SessionStorage(format!("ROLLBACK: {e}")))
+}
+
 pub fn load_operation(
     conn: &Connection,
     session_id: &str,
@@ -152,6 +174,30 @@ pub(crate) fn mark_session_dirty(conn: &Connection, session_id: &str) -> Result<
         rusqlite::params![session_id, change_id],
     )?;
     Ok(())
+}
+
+/// Sessions with at least one row a previous process left in flight.
+pub(crate) fn sessions_with_in_progress_items(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT session_id FROM transcript_items
+         WHERE state = 'in_progress' ORDER BY session_id",
+    )?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+/// Sessions whose last transcript row is an unanswered tool call.
+pub(crate) fn sessions_with_unanswered_tail_call(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.session_id FROM transcript_items t
+         WHERE t.kind = 'item/tool_call'
+           AND t.seq = (
+             SELECT MAX(seq) FROM transcript_items u WHERE u.session_id = t.session_id
+           )
+         ORDER BY t.session_id",
+    )?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
 pub fn register_blob_ref(

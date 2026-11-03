@@ -6,6 +6,7 @@ pub mod settings;
 pub mod shutdown;
 pub mod state;
 pub mod web_dist;
+mod writer_monitor;
 
 pub use crate::workspace::WorkspaceWatcher;
 pub use router::listen;

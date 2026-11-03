@@ -7,6 +7,19 @@ pub enum CompactionFailureKind {
     Transport,
 }
 
+/// Stable classification for failures at the session-data write boundary.
+///
+/// Callers should use this instead of matching error strings. Storage is the
+/// only class whose retryability depends on the underlying cause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionWriteErrorKind {
+    Conflict,
+    Backpressure,
+    Timeout,
+    Closed,
+    Storage,
+}
+
 #[derive(Debug, Error)]
 pub enum LitecodeError {
     #[error("git error: {0}")]
@@ -110,6 +123,11 @@ pub enum LitecodeError {
     #[error("session data is closed")]
     SessionDataClosed,
 
+    /// A write waited past its queue deadline. The command may not have run;
+    /// if it did run, its operation id still makes a retry idempotent.
+    #[error("session data write timed out")]
+    SessionDataTimeout,
+
     #[error("session data writer queue is full")]
     SessionBackpressure,
 
@@ -135,6 +153,39 @@ pub enum LitecodeError {
 pub type Result<T> = std::result::Result<T, LitecodeError>;
 
 impl LitecodeError {
+    /// Classify an error that came from the session-data write boundary.
+    /// Returns None for errors that are not writer failures.
+    pub fn session_write_error_kind(&self) -> Option<SessionWriteErrorKind> {
+        match self {
+            Self::SessionConflict { .. } => Some(SessionWriteErrorKind::Conflict),
+            Self::SessionBackpressure => Some(SessionWriteErrorKind::Backpressure),
+            Self::SessionDataTimeout => Some(SessionWriteErrorKind::Timeout),
+            Self::SessionDataClosed => Some(SessionWriteErrorKind::Closed),
+            Self::SessionStorage(_) | Self::Sqlite(_) => Some(SessionWriteErrorKind::Storage),
+            _ => None,
+        }
+    }
+
+    /// Whether a session-data write may be retried without changing its
+    /// meaning. Conflicts, backpressure, and queued-timeout are safe to retry;
+    /// closed is terminal; storage is retryable only for SQLite contention.
+    pub fn is_retryable_session_write(&self) -> bool {
+        match self {
+            Self::SessionConflict { .. } | Self::SessionBackpressure | Self::SessionDataTimeout => {
+                true
+            }
+            Self::Sqlite(error) => matches!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+            ),
+            Self::SessionStorage(message) => {
+                let lower = message.to_ascii_lowercase();
+                lower.contains("locked") || lower.contains("busy")
+            }
+            _ => false,
+        }
+    }
+
     /// Structured compaction boundary: summary finish/quality vs transport.
     pub fn compaction_failure_kind(&self) -> Option<CompactionFailureKind> {
         match self {
@@ -186,4 +237,67 @@ fn contains_context_overflow_marker(text: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_write_errors_have_stable_classes_and_retry_flags() {
+        let conflict = LitecodeError::SessionConflict {
+            expected: 1,
+            actual: 2,
+        };
+        assert_eq!(
+            conflict.session_write_error_kind(),
+            Some(SessionWriteErrorKind::Conflict)
+        );
+        assert!(conflict.is_retryable_session_write());
+
+        let backpressure = LitecodeError::SessionBackpressure;
+        assert_eq!(
+            backpressure.session_write_error_kind(),
+            Some(SessionWriteErrorKind::Backpressure)
+        );
+        assert!(backpressure.is_retryable_session_write());
+
+        let timeout = LitecodeError::SessionDataTimeout;
+        assert_eq!(
+            timeout.session_write_error_kind(),
+            Some(SessionWriteErrorKind::Timeout)
+        );
+        assert!(timeout.is_retryable_session_write());
+
+        let closed = LitecodeError::SessionDataClosed;
+        assert_eq!(
+            closed.session_write_error_kind(),
+            Some(SessionWriteErrorKind::Closed)
+        );
+        assert!(!closed.is_retryable_session_write());
+    }
+
+    #[test]
+    fn storage_retryability_requires_contention_evidence() {
+        let locked = LitecodeError::SessionStorage("database is locked".into());
+        assert_eq!(
+            locked.session_write_error_kind(),
+            Some(SessionWriteErrorKind::Storage)
+        );
+        assert!(locked.is_retryable_session_write());
+
+        let busy = LitecodeError::SessionStorage("writer busy".into());
+        assert!(busy.is_retryable_session_write());
+
+        let disk_full = LitecodeError::SessionStorage("disk full".into());
+        assert_eq!(
+            disk_full.session_write_error_kind(),
+            Some(SessionWriteErrorKind::Storage)
+        );
+        assert!(!disk_full.is_retryable_session_write());
+    }
+
+    #[test]
+    fn non_writer_errors_are_not_classified() {
+        let error = LitecodeError::InvalidSessionEvent("bad row".into());
+        assert_eq!(error.session_write_error_kind(), None);
+        assert!(!error.is_retryable_session_write());
+    }
+}

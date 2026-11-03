@@ -4,9 +4,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -15,6 +16,7 @@ use crate::types::{LitecodeError, Result};
 use super::command::{
     CommitKind, CommitReceipt, MAX_STREAM_BATCH_ROWS, SessionMutation, StreamItemUpdate,
 };
+use super::metrics::{WriterAliveGuard, WriterMetrics, WriterState};
 use super::sqlite::conn::SharedDb;
 use super::sqlite::folders;
 use super::sqlite::ops;
@@ -26,12 +28,36 @@ pub const WRITER_QUEUE_CAPACITY: usize = 256;
 pub struct WriteRequest {
     pub mutation: SessionMutation,
     pub reply: oneshot::Sender<Result<CommitReceipt>>,
+    /// Absolute queue deadline. None preserves the old unbounded wait.
+    deadline: Option<Instant>,
+    /// When this request entered (or started waiting for) the queue.
+    enqueued_at: Instant,
+}
+
+/// Opt-in write behavior. The default keeps every existing caller's behavior.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WriteOptions {
+    /// Total wait budget from the call, covering both queue admission and the
+    /// reply. This does not cancel a command that has entered its transaction:
+    /// after a timeout the write may still commit. Retry with the same
+    /// operation_id to recover the receipt instead of issuing a new write.
+    pub timeout: Option<Duration>,
+}
+
+impl WriteOptions {
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            timeout: Some(timeout),
+        }
+    }
 }
 
 pub struct WriterHandle {
     tx: Mutex<Option<mpsc::Sender<WriteRequest>>>,
-    shutdown: Arc<AtomicBool>,
+    lifecycle: Arc<AtomicU8>,
+    shutdown_lock: Mutex<()>,
     join: Mutex<Option<JoinHandle<()>>>,
+    metrics: Arc<WriterMetrics>,
     pub hooks: Arc<WriterHooks>,
 }
 
@@ -115,7 +141,7 @@ impl WriterHooks {
     }
 }
 
-struct WriterState {
+struct WriterRuntime {
     db: Rc<SharedDb>,
     data_root: PathBuf,
     live: HashMap<String, Session>,
@@ -130,21 +156,36 @@ impl WriterHandle {
     pub fn spawn(path: &Path, data_root: PathBuf) -> Result<Self> {
         let path = path.to_path_buf();
         let (tx, rx) = mpsc::channel(WRITER_QUEUE_CAPACITY);
-        let shutdown = Arc::new(AtomicBool::new(false));
+        let lifecycle = Arc::new(AtomicU8::new(WriterState::Starting as u8));
+        let metrics = WriterMetrics::new(WRITER_QUEUE_CAPACITY);
         let hooks = Arc::new(WriterHooks::default());
         let hooks_thread = Arc::clone(&hooks);
+        let lifecycle_thread = Arc::clone(&lifecycle);
+        let metrics_thread = Arc::clone(&metrics);
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let join = std::thread::Builder::new()
             .name("session-data-writer".into())
-            .spawn(move || writer_loop(path, data_root, rx, hooks_thread, ready_tx))
+            .spawn(move || {
+                writer_loop(
+                    path,
+                    data_root,
+                    rx,
+                    hooks_thread,
+                    lifecycle_thread,
+                    metrics_thread,
+                    ready_tx,
+                )
+            })
             .map_err(|e| LitecodeError::SessionStorage(format!("spawn writer: {e}")))?;
         ready_rx
             .recv()
             .map_err(|_| LitecodeError::SessionStorage("writer died before ready".into()))??;
         Ok(Self {
             tx: Mutex::new(Some(tx)),
-            shutdown,
+            lifecycle,
+            shutdown_lock: Mutex::new(()),
             join: Mutex::new(Some(join)),
+            metrics,
             hooks,
         })
     }
@@ -155,14 +196,26 @@ impl WriterHandle {
             ulid::Ulid::new()
         );
         let (tx, rx) = mpsc::channel(WRITER_QUEUE_CAPACITY);
-        let shutdown = Arc::new(AtomicBool::new(false));
+        let lifecycle = Arc::new(AtomicU8::new(WriterState::Starting as u8));
+        let metrics = WriterMetrics::new(WRITER_QUEUE_CAPACITY);
         let hooks = Arc::new(WriterHooks::default());
         let hooks_thread = Arc::clone(&hooks);
+        let lifecycle_thread = Arc::clone(&lifecycle);
+        let metrics_thread = Arc::clone(&metrics);
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let uri_thread = uri.clone();
         let join = std::thread::Builder::new()
             .name("session-data-writer-mem".into())
-            .spawn(move || writer_loop_ephemeral(uri_thread, rx, hooks_thread, ready_tx))
+            .spawn(move || {
+                writer_loop_ephemeral(
+                    uri_thread,
+                    rx,
+                    hooks_thread,
+                    lifecycle_thread,
+                    metrics_thread,
+                    ready_tx,
+                )
+            })
             .map_err(|e| LitecodeError::SessionStorage(format!("spawn writer: {e}")))?;
         ready_rx.recv().map_err(|_| {
             LitecodeError::SessionStorage("ephemeral writer died before ready".into())
@@ -170,8 +223,10 @@ impl WriterHandle {
         Ok((
             Self {
                 tx: Mutex::new(Some(tx)),
-                shutdown,
+                lifecycle,
+                shutdown_lock: Mutex::new(()),
                 join: Mutex::new(Some(join)),
+                metrics,
                 hooks,
             },
             PathBuf::from(uri),
@@ -187,73 +242,331 @@ impl WriterHandle {
             .ok_or(LitecodeError::SessionDataClosed)
     }
 
-    pub async fn submit(&self, mutation: SessionMutation) -> Result<CommitReceipt> {
-        if self.shutdown.load(Ordering::SeqCst) {
-            return Err(LitecodeError::SessionDataClosed);
+    pub fn state(&self) -> WriterState {
+        WriterState::from_u8(self.lifecycle.load(Ordering::SeqCst))
+    }
+
+    pub fn metrics(&self) -> super::metrics::WriterMetricsSnapshot {
+        self.metrics.snapshot(self.state())
+    }
+
+    fn ensure_ready(&self) -> Result<()> {
+        if self.state() == WriterState::Ready {
+            Ok(())
+        } else {
+            self.metrics.record_closed();
+            Err(LitecodeError::SessionDataClosed)
         }
-        let (reply, rx) = oneshot::channel();
-        self.sender()?
-            .send(WriteRequest { mutation, reply })
-            .await
-            .map_err(|_| LitecodeError::SessionDataClosed)?;
-        rx.await.map_err(|_| LitecodeError::SessionDataClosed)?
+    }
+
+    pub async fn submit(&self, mutation: SessionMutation) -> Result<CommitReceipt> {
+        self.submit_with(mutation, WriteOptions::default()).await
+    }
+
+    pub async fn submit_with(
+        &self,
+        mutation: SessionMutation,
+        options: WriteOptions,
+    ) -> Result<CommitReceipt> {
+        self.ensure_ready()?;
+        let (request, rx) = new_write_request(mutation, options);
+        let deadline = request.deadline;
+        let sender = self.sender().map_err(|error| {
+            self.metrics.record_closed();
+            error
+        })?;
+        if deadline.is_none() {
+            let admission = self.metrics.admit();
+            if sender.send(request).await.is_err() {
+                self.metrics.record_closed();
+                return Err(LitecodeError::SessionDataClosed);
+            }
+            admission.confirm();
+            return rx.await.map_err(|_| {
+                self.metrics.record_closed();
+                LitecodeError::SessionDataClosed
+            })?;
+        }
+
+        let deadline = deadline.expect("checked above");
+        let send_budget = match remaining_until(deadline) {
+            Ok(budget) => budget,
+            Err(error) => {
+                self.metrics.record_timeout();
+                return Err(error);
+            }
+        };
+        let admission = self.metrics.admit();
+        match tokio::time::timeout(send_budget, sender.send(request)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                self.metrics.record_closed();
+                return Err(LitecodeError::SessionDataClosed);
+            }
+            Err(_) => {
+                self.metrics.record_timeout();
+                return Err(LitecodeError::SessionDataTimeout);
+            }
+        }
+        admission.confirm();
+        let reply_budget = match remaining_until(deadline) {
+            Ok(budget) => budget,
+            Err(error) => {
+                self.metrics.record_timeout();
+                return Err(error);
+            }
+        };
+        match tokio::time::timeout(reply_budget, rx).await {
+            Ok(reply) => reply.map_err(|_| {
+                self.metrics.record_closed();
+                LitecodeError::SessionDataClosed
+            })?,
+            Err(_) => {
+                self.metrics.record_timeout();
+                Err(LitecodeError::SessionDataTimeout)
+            }
+        }
     }
 
     pub fn submit_blocking(&self, mutation: SessionMutation) -> Result<CommitReceipt> {
+        self.submit_blocking_with(mutation, WriteOptions::default())
+    }
+
+    pub fn submit_blocking_with(
+        &self,
+        mutation: SessionMutation,
+        options: WriteOptions,
+    ) -> Result<CommitReceipt> {
+        self.ensure_ready()?;
+        let request = new_write_request(mutation, options);
         // Legacy synchronous manager adapters are still invoked from async
-        // controller paths. Tokio forbids `blocking_send` on a runtime worker;
-        // bridge that compatibility path through a short helper thread until
-        // those callers use the async typed SessionData interface directly.
+        // controller paths. Tokio forbids blocking on a runtime worker; bridge
+        // that compatibility path through a short helper thread until those
+        // callers use the async typed SessionData interface directly.
         if tokio::runtime::Handle::try_current().is_ok() {
             return std::thread::scope(|scope| {
                 scope
-                    .spawn(|| self.submit_blocking_inner(mutation))
+                    .spawn(move || self.submit_blocking_request(request))
                     .join()
                     .map_err(|_| {
                         LitecodeError::SessionStorage("writer submit thread panicked".into())
                     })?
             });
         }
-        self.submit_blocking_inner(mutation)
+        self.submit_blocking_request(request)
     }
 
-    fn submit_blocking_inner(&self, mutation: SessionMutation) -> Result<CommitReceipt> {
-        if self.shutdown.load(Ordering::SeqCst) {
-            return Err(LitecodeError::SessionDataClosed);
+    fn submit_blocking_request(
+        &self,
+        (request, rx): (WriteRequest, oneshot::Receiver<Result<CommitReceipt>>),
+    ) -> Result<CommitReceipt> {
+        let sender = self.sender().map_err(|error| {
+            self.metrics.record_closed();
+            error
+        })?;
+        if request.deadline.is_none() {
+            let admission = self.metrics.admit();
+            if sender.blocking_send(request).is_err() {
+                self.metrics.record_closed();
+                return Err(LitecodeError::SessionDataClosed);
+            }
+            admission.confirm();
+            return rx.blocking_recv().map_err(|_| {
+                self.metrics.record_closed();
+                LitecodeError::SessionDataClosed
+            })?;
         }
-        let (reply, rx) = oneshot::channel();
-        self.sender()?
-            .blocking_send(WriteRequest { mutation, reply })
-            .map_err(|_| LitecodeError::SessionDataClosed)?;
-        rx.blocking_recv()
-            .map_err(|_| LitecodeError::SessionDataClosed)?
+
+        let deadline = request.deadline.expect("checked above");
+        let admission = self.metrics.admit();
+        if let Err(error) = enqueue_blocking(sender, request, deadline) {
+            match error {
+                LitecodeError::SessionDataTimeout => self.metrics.record_timeout(),
+                LitecodeError::SessionDataClosed => self.metrics.record_closed(),
+                _ => {}
+            }
+            return Err(error);
+        }
+        admission.confirm();
+        match recv_blocking_until(rx, deadline) {
+            Ok(receipt) => Ok(receipt),
+            Err(error) => {
+                match error {
+                    LitecodeError::SessionDataTimeout => self.metrics.record_timeout(),
+                    LitecodeError::SessionDataClosed => self.metrics.record_closed(),
+                    _ => {}
+                }
+                Err(error)
+            }
+        }
     }
 
     pub fn try_submit_nowait(
         &self,
         mutation: SessionMutation,
     ) -> Result<oneshot::Receiver<Result<CommitReceipt>>> {
-        if self.shutdown.load(Ordering::SeqCst) {
-            return Err(LitecodeError::SessionDataClosed);
+        self.try_submit_with(mutation, WriteOptions::default())
+    }
+
+    pub fn try_submit_with(
+        &self,
+        mutation: SessionMutation,
+        options: WriteOptions,
+    ) -> Result<oneshot::Receiver<Result<CommitReceipt>>> {
+        self.ensure_ready()?;
+        let (request, rx) = new_write_request(mutation, options);
+        if let Some(deadline) = request.deadline
+            && Instant::now() >= deadline
+        {
+            self.metrics.record_timeout();
+            return Err(LitecodeError::SessionDataTimeout);
         }
-        let (reply, rx) = oneshot::channel();
-        self.sender()?
-            .try_send(WriteRequest { mutation, reply })
-            .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(_) => LitecodeError::SessionBackpressure,
-                mpsc::error::TrySendError::Closed(_) => LitecodeError::SessionDataClosed,
-            })?;
+        let sender = self.sender().map_err(|error| {
+            self.metrics.record_closed();
+            error
+        })?;
+        let admission = self.metrics.admit();
+        if let Err(error) = sender.try_send(request) {
+            return Err(match error {
+                mpsc::error::TrySendError::Full(_) => {
+                    self.metrics.record_backpressure();
+                    LitecodeError::SessionBackpressure
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    self.metrics.record_closed();
+                    LitecodeError::SessionDataClosed
+                }
+            });
+        }
+        admission.confirm();
         Ok(rx)
     }
 
     pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::SeqCst);
+        let _shutdown = self.shutdown_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if self.state() == WriterState::Closed {
+            return;
+        }
+        self.metrics.record_shutdown();
+        self.lifecycle
+            .store(WriterState::Draining as u8, Ordering::SeqCst);
         self.hooks.resume();
         drop(self.tx.lock().unwrap_or_else(|e| e.into_inner()).take());
         if let Some(join) = self.join.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = join.join();
         }
+        self.lifecycle
+            .store(WriterState::Closed as u8, Ordering::SeqCst);
+        let snapshot = self.metrics();
+        tracing::info!(?snapshot, "session writer shut down");
     }
+}
+
+struct WriterExitGuard {
+    lifecycle: Arc<AtomicU8>,
+    metrics: Arc<WriterMetrics>,
+}
+
+impl Drop for WriterExitGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.metrics.record_panic();
+        }
+        self.lifecycle
+            .store(WriterState::Closed as u8, Ordering::SeqCst);
+    }
+}
+
+fn new_write_request(
+    mutation: SessionMutation,
+    options: WriteOptions,
+) -> (WriteRequest, oneshot::Receiver<Result<CommitReceipt>>) {
+    let enqueued_at = Instant::now();
+    let (reply, rx) = oneshot::channel();
+    (
+        WriteRequest {
+            mutation,
+            reply,
+            deadline: options.timeout.map(|timeout| enqueued_at + timeout),
+            enqueued_at,
+        },
+        rx,
+    )
+}
+
+fn remaining_until(deadline: Instant) -> Result<Duration> {
+    let now = Instant::now();
+    if now >= deadline {
+        Err(LitecodeError::SessionDataTimeout)
+    } else {
+        Ok(deadline - now)
+    }
+}
+
+/// The blocking deadline path cannot use tokio's blocking_send: it would park
+/// on a full queue with no way to observe the deadline. Polling one slot at a
+/// time is intentionally confined to the opt-in path; the default path keeps
+/// blocking_send unchanged.
+fn enqueue_blocking(
+    sender: mpsc::Sender<WriteRequest>,
+    mut request: WriteRequest,
+    deadline: Instant,
+) -> Result<()> {
+    loop {
+        let remaining = remaining_until(deadline)?;
+        match sender.try_send(request) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::error::TrySendError::Full(returned)) => {
+                request = returned;
+                std::thread::sleep(remaining.min(Duration::from_millis(1)));
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                return Err(LitecodeError::SessionDataClosed);
+            }
+        }
+    }
+}
+
+fn recv_blocking_until(
+    mut rx: oneshot::Receiver<Result<CommitReceipt>>,
+    deadline: Instant,
+) -> Result<CommitReceipt> {
+    loop {
+        match rx.try_recv() {
+            Ok(result) => return result,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                return Err(LitecodeError::SessionDataClosed);
+            }
+            Err(oneshot::error::TryRecvError::Empty) => {
+                let remaining = remaining_until(deadline)?;
+                std::thread::sleep(remaining.min(Duration::from_millis(2)));
+            }
+        }
+    }
+}
+
+fn process_request(state: &mut WriterRuntime, request: WriteRequest, metrics: &WriterMetrics) {
+    let WriteRequest {
+        mutation,
+        reply,
+        deadline,
+        ..
+    } = request;
+    // Queue depth and queue wait are recorded by the loop at dequeue time, not
+    // here: a paused writer has already taken the command off the channel.
+    // A caller that dropped its receiver before the writer reached the command
+    // has cancelled a queued write. Nothing has entered a transaction yet.
+    if reply.is_closed() {
+        metrics.record_canceled();
+        return;
+    }
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        metrics.record_timeout();
+        let _ = reply.send(Err(LitecodeError::SessionDataTimeout));
+        return;
+    }
+    let result = execute(state, mutation, metrics);
+    let _ = reply.send(result);
 }
 
 fn writer_loop(
@@ -261,12 +574,20 @@ fn writer_loop(
     data_root: PathBuf,
     mut rx: mpsc::Receiver<WriteRequest>,
     hooks: Arc<WriterHooks>,
+    lifecycle: Arc<AtomicU8>,
+    metrics: Arc<WriterMetrics>,
     ready: std::sync::mpsc::Sender<Result<()>>,
 ) {
+    let _alive = WriterAliveGuard::new(Arc::clone(&metrics));
+    let _exit = WriterExitGuard {
+        lifecycle: Arc::clone(&lifecycle),
+        metrics: Arc::clone(&metrics),
+    };
     let db = match SharedDb::open_rw(&path) {
         Ok(db) => Rc::new(db),
         Err(e) => {
             tracing::error!(error = %e, "session writer failed to open db");
+            lifecycle.store(WriterState::Closed as u8, Ordering::SeqCst);
             let _ = ready.send(Err(LitecodeError::SessionStorage(e.to_string())));
             while let Some(req) = rx.blocking_recv() {
                 let _ = req
@@ -276,7 +597,7 @@ fn writer_loop(
             return;
         }
     };
-    let mut state = WriterState {
+    let mut state = WriterRuntime {
         db,
         data_root,
         live: HashMap::new(),
@@ -314,11 +635,18 @@ fn writer_loop(
     // Ready only once the startup repair has run: callers treat a successful
     // open as "the store is in a servable state", and the repair is part of
     // that state.
+    let _ = lifecycle.compare_exchange(
+        WriterState::Starting as u8,
+        WriterState::Ready as u8,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    );
     let _ = ready.send(Ok(()));
     while let Some(req) = rx.blocking_recv() {
+        metrics.record_dequeue();
+        metrics.record_queue_wait(req.enqueued_at.elapsed());
         state.hooks.wait_if_paused();
-        let result = execute(&mut state, req.mutation);
-        let _ = req.reply.send(result);
+        process_request(&mut state, req, &metrics);
     }
     let _ = state.db.checkpoint();
 }
@@ -341,16 +669,8 @@ fn writer_loop(
 /// The repair bypasses normal mutations, so it marks each affected session dirty
 /// before sealing. That makes the index run and compare actual searchable keys;
 /// the marker itself is only a wake-up hint.
-fn seal_orphaned_in_progress(state: &WriterState) -> Result<usize> {
-    let ids: Vec<String> = {
-        let conn = state.db.conn();
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT session_id FROM transcript_items
-             WHERE state = 'in_progress' ORDER BY session_id",
-        )?;
-        stmt.query_map([], |row| row.get(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    };
+fn seal_orphaned_in_progress(state: &WriterRuntime) -> Result<usize> {
+    let ids = ops::sessions_with_in_progress_items(state.db.conn())?;
     let mut sealed = 0usize;
     for id in ids {
         // The repair below changes which rows are searchable, but it bypasses
@@ -394,20 +714,8 @@ fn seal_orphaned_in_progress(state: &WriterState) -> Result<usize> {
 /// Runs after [`seal_orphaned_in_progress`]: a call that was still `in_progress`
 /// is final by the time we look, and a session that could not be sealed is
 /// skipped until the next open.
-fn seal_tail_unanswered_calls(state: &WriterState) -> Result<usize> {
-    let ids: Vec<String> = {
-        let conn = state.db.conn();
-        let mut stmt = conn.prepare(
-            "SELECT t.session_id FROM transcript_items t
-             WHERE t.kind = 'item/tool_call'
-               AND t.seq = (
-                 SELECT MAX(seq) FROM transcript_items u WHERE u.session_id = t.session_id
-               )
-             ORDER BY t.session_id",
-        )?;
-        stmt.query_map([], |row| row.get(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?
-    };
+fn seal_tail_unanswered_calls(state: &WriterRuntime) -> Result<usize> {
+    let ids = ops::sessions_with_unanswered_tail_call(state.db.conn())?;
     let mut sealed = 0usize;
     for id in ids {
         // This path appends final, searchable rows outside a SessionMutation.
@@ -431,7 +739,7 @@ fn seal_tail_unanswered_calls(state: &WriterState) -> Result<usize> {
     Ok(sealed)
 }
 
-fn cleanup_orphan_blob_files(state: &WriterState) {
+fn cleanup_orphan_blob_files(state: &WriterRuntime) {
     let live_ids = ops::referenced_blob_ids(state.db.conn()).unwrap_or_default();
     if let Err(error) = super::blob::gc_unreferenced(&state.data_root, &live_ids) {
         tracing::warn!(error = %error, "session blob orphan cleanup failed");
@@ -442,14 +750,28 @@ fn writer_loop_ephemeral(
     uri: String,
     mut rx: mpsc::Receiver<WriteRequest>,
     hooks: Arc<WriterHooks>,
+    lifecycle: Arc<AtomicU8>,
+    metrics: Arc<WriterMetrics>,
     ready: std::sync::mpsc::Sender<Result<()>>,
 ) {
+    let _alive = WriterAliveGuard::new(Arc::clone(&metrics));
+    let _exit = WriterExitGuard {
+        lifecycle: Arc::clone(&lifecycle),
+        metrics: Arc::clone(&metrics),
+    };
     let db = match SharedDb::open_shared_memory(&uri) {
         Ok(db) => {
+            let _ = lifecycle.compare_exchange(
+                WriterState::Starting as u8,
+                WriterState::Ready as u8,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
             let _ = ready.send(Ok(()));
             Rc::new(db)
         }
         Err(e) => {
+            lifecycle.store(WriterState::Closed as u8, Ordering::SeqCst);
             let _ = ready.send(Err(LitecodeError::SessionStorage(e.to_string())));
             while let Some(req) = rx.blocking_recv() {
                 let _ = req
@@ -459,7 +781,7 @@ fn writer_loop_ephemeral(
             return;
         }
     };
-    let mut state = WriterState {
+    let mut state = WriterRuntime {
         db,
         data_root: std::env::temp_dir().join("litecode"),
         live: HashMap::new(),
@@ -467,13 +789,30 @@ fn writer_loop_ephemeral(
         deleted_files: Vec::new(),
     };
     while let Some(req) = rx.blocking_recv() {
+        metrics.record_dequeue();
+        metrics.record_queue_wait(req.enqueued_at.elapsed());
         state.hooks.wait_if_paused();
-        let result = execute(&mut state, req.mutation);
-        let _ = req.reply.send(result);
+        process_request(&mut state, req, &metrics);
     }
 }
 
-fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitReceipt> {
+fn execute(
+    state: &mut WriterRuntime,
+    mutation: SessionMutation,
+    metrics: &WriterMetrics,
+) -> Result<CommitReceipt> {
+    let result = execute_inner(state, mutation, metrics);
+    if result.is_err() {
+        metrics.record_failed();
+    }
+    result
+}
+
+fn execute_inner(
+    state: &mut WriterRuntime,
+    mutation: SessionMutation,
+    metrics: &WriterMetrics,
+) -> Result<CommitReceipt> {
     if state.hooks.take_fault_if(FaultKind::BeforeBegin) {
         return Err(LitecodeError::SessionStorage(
             "injected fault before begin".into(),
@@ -506,21 +845,19 @@ fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitR
             }
             let actual = read::load_revision(state.db.conn(), sid).unwrap_or(0);
             if actual != expected {
+                metrics.record_conflict();
                 return Err(LitecodeError::SessionConflict { expected, actual });
             }
         }
     }
     let affected_session = mutation.session_id().map(str::to_owned);
-    state
-        .db
-        .conn()
-        .execute_batch("BEGIN IMMEDIATE")
-        .map_err(|e| LitecodeError::SessionStorage(format!("BEGIN IMMEDIATE: {e}")))?;
+    let transaction_started = Instant::now();
+    ops::begin_immediate(state.db.conn())?;
     let result = dispatch(state, mutation);
     match result {
         Ok(receipt) => {
             if state.hooks.take_fault_if(FaultKind::BeforeCommit) {
-                let _ = state.db.conn().execute_batch("ROLLBACK");
+                let _ = ops::rollback(state.db.conn());
                 state.deleted_files.clear();
                 if let Some(session_id) = affected_session {
                     state.live.remove(&session_id);
@@ -532,11 +869,8 @@ fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitR
             }
             let orphan_ids = ops::unreferenced_blob_ids(state.db.conn()).unwrap_or_default();
             let _ = ops::delete_blob_rows(state.db.conn(), &orphan_ids);
-            state
-                .db
-                .conn()
-                .execute_batch("COMMIT")
-                .map_err(|e| LitecodeError::SessionStorage(format!("COMMIT: {e}")))?;
+            ops::commit(state.db.conn())?;
+            metrics.record_commit(transaction_started.elapsed());
             for id in orphan_ids {
                 let path = state.data_root.join(super::blob::rel_path_for(&id));
                 if let Err(error) = std::fs::remove_file(&path)
@@ -556,7 +890,7 @@ fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitR
             Ok(receipt)
         }
         Err(e) => {
-            let _ = state.db.conn().execute_batch("ROLLBACK");
+            let _ = ops::rollback(state.db.conn());
             state.deleted_files.clear();
             // The legacy live projection is updated while dispatching.  A
             // rolled-back command must never leave that projection ahead of
@@ -575,7 +909,7 @@ fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitR
 /// Whatever this writes commits or rolls back with the mutation it describes;
 /// content never lands without the receipt or dirty marker its consumers need.
 fn bump_receipt(
-    state: &WriterState,
+    state: &WriterRuntime,
     session_id: &str,
     operation_id: &str,
     previous: u64,
@@ -596,7 +930,7 @@ fn bump_receipt(
 /// Used by structural guards (compact checkpoint / surface replacement) that
 /// allow concurrent tail appends.
 fn bump_receipt_current(
-    state: &WriterState,
+    state: &WriterRuntime,
     session_id: &str,
     operation_id: &str,
     outcome: CommitKind,
@@ -613,7 +947,7 @@ fn bump_receipt_current(
 }
 
 fn bump_receipt_receipt_only(
-    state: &WriterState,
+    state: &WriterRuntime,
     session_id: &str,
     operation_id: &str,
     previous: u64,
@@ -630,7 +964,7 @@ fn bump_receipt_receipt_only(
 }
 
 fn bump_receipt_dirty_only(
-    state: &WriterState,
+    state: &WriterRuntime,
     session_id: &str,
     operation_id: &str,
     previous: u64,
@@ -650,7 +984,7 @@ fn bump_receipt_dirty_only(
 /// change searchable state until they settle. They still advance the CAS
 /// revision, but leave no durable operation or dirty marker behind.
 fn bump_receipt_revision_only(
-    state: &WriterState,
+    state: &WriterRuntime,
     session_id: &str,
     operation_id: &str,
     previous: u64,
@@ -667,7 +1001,7 @@ fn bump_receipt_revision_only(
 }
 
 fn bump_receipt_with_journal(
-    state: &WriterState,
+    state: &WriterRuntime,
     session_id: &str,
     operation_id: &str,
     previous: u64,
@@ -688,7 +1022,7 @@ fn bump_receipt_with_journal(
 }
 
 /// Revision-neutral layout write: report the current CAS revision, never +1.
-fn layout_receipt(state: &WriterState, session_id: &str) -> Result<CommitReceipt> {
+fn layout_receipt(state: &WriterRuntime, session_id: &str) -> Result<CommitReceipt> {
     Ok(CommitReceipt {
         session_id: session_id.to_string(),
         operation_id: String::new(),
@@ -740,7 +1074,7 @@ fn validate_stream_updates(rows: &[StreamItemUpdate]) -> Result<()> {
     Ok(())
 }
 
-fn ensure_live<'a>(state: &'a mut WriterState, session_id: &str) -> Result<&'a mut Session> {
+fn ensure_live<'a>(state: &'a mut WriterRuntime, session_id: &str) -> Result<&'a mut Session> {
     if !state.live.contains_key(session_id) {
         let session =
             Session::resume_shared(Rc::clone(&state.db), state.data_root.clone(), session_id)?;
@@ -749,7 +1083,7 @@ fn ensure_live<'a>(state: &'a mut WriterState, session_id: &str) -> Result<&'a m
     Ok(state.live.get_mut(session_id).expect("just inserted"))
 }
 
-fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitReceipt> {
+fn dispatch(state: &mut WriterRuntime, mutation: SessionMutation) -> Result<CommitReceipt> {
     match mutation {
         SessionMutation::Create {
             operation_id,

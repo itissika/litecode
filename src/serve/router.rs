@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
@@ -255,12 +256,15 @@ pub async fn listen(
     // WP-166 (P1): snapshot-repo warm, then snapshot maintenance, in the
     // background right after bind. Both hold workspace_snapshot_lock.
     drop(spawn_snapshot_upkeep(&snapshot_upkeep_state));
+    let (monitor_stop_tx, monitor_stop_rx) = tokio::sync::watch::channel(false);
+    let monitor = super::writer_monitor::spawn(Arc::clone(&sessions), monitor_stop_rx);
+    let shutdown_monitor = monitor_stop_tx.clone();
     let local_addr = listener.local_addr()?;
     let ready_line = format!("LITECODE_READY http://{local_addr}/");
     writeln!(std::io::stdout(), "{ready_line}")?;
     std::io::stdout().flush()?;
     tracing::info!("{ready_line}");
-    axum::serve(listener, app)
+    let serve_result = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown::wait_for_shutdown(shutdown_watch).await;
             sessions.shutdown_cleanup().await;
@@ -268,8 +272,12 @@ pub async fn listen(
             engine_manager.stop_all();
             workspace_engines.stop_all();
             apps.stop_all();
+            let _ = shutdown_monitor.send(true);
         })
-        .await?;
+        .await;
+    let _ = monitor_stop_tx.send(true);
+    let _ = monitor.await;
+    serve_result?;
     Ok(())
 }
 

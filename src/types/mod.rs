@@ -9,7 +9,9 @@ mod death_list_gate;
 #[cfg(test)]
 mod golden_item_fixtures;
 
-pub use error::{CompactionFailureKind, LitecodeError, Result, is_context_overflow_error};
+pub use error::{
+    CompactionFailureKind, LitecodeError, Result, SessionWriteErrorKind, is_context_overflow_error,
+};
 pub use media::{MediaArtifact, MediaKind, MediaSource, ToolOutputPart};
 pub use result::{ToolCallResult, ToolError, ToolErrorKind, ToolResultData, ToolSignalLevel};
 pub use transcript::{

@@ -4,6 +4,7 @@ mod blob;
 pub mod command;
 #[cfg(test)]
 mod final_immutability_tests;
+mod metrics;
 mod reader;
 pub(crate) mod sqlite;
 mod writer;
@@ -20,8 +21,9 @@ pub use command::{
     SessionFolderRow, SessionListPreview, SessionListRow, SessionMutation, SessionRead,
     SessionRevision, StreamItemUpdate, SurfaceReplacement,
 };
+pub use metrics::{WriterMetricsSnapshot, WriterState};
 pub use reader::SessionReadPool;
-pub use writer::{FaultKind, WRITER_QUEUE_CAPACITY};
+pub use writer::{FaultKind, WRITER_QUEUE_CAPACITY, WriteOptions};
 use writer::{WriterHandle, WriterHooks};
 
 /// Read/write owner of `sessions.db` for one workspace.
@@ -97,8 +99,31 @@ impl SessionData {
         self.writer.submit(mutation).await
     }
 
+    /// Opt-in queue/reply deadline. The default mutate path has none.
+    ///
+    /// A timeout before execution skips the command; a timeout after a
+    /// transaction has begun cannot undo it. Retry with the same operation id
+    /// to recover a possible commit.
+    pub async fn mutate_with(
+        &self,
+        mutation: SessionMutation,
+        options: WriteOptions,
+    ) -> Result<CommitReceipt> {
+        self.writer.submit_with(mutation, options).await
+    }
+
     pub fn mutate_blocking(&self, mutation: SessionMutation) -> Result<CommitReceipt> {
         self.writer.submit_blocking(mutation)
+    }
+
+    /// Blocking opt-in deadline. A timeout may still have committed; retry the
+    /// same operation id to recover the receipt.
+    pub fn mutate_blocking_with(
+        &self,
+        mutation: SessionMutation,
+        options: WriteOptions,
+    ) -> Result<CommitReceipt> {
+        self.writer.submit_blocking_with(mutation, options)
     }
 
     pub fn try_mutate(
@@ -106,6 +131,28 @@ impl SessionData {
         mutation: SessionMutation,
     ) -> Result<tokio::sync::oneshot::Receiver<Result<CommitReceipt>>> {
         self.writer.try_submit_nowait(mutation)
+    }
+
+    /// Non-blocking enqueue with an optional queue deadline. The caller owns
+    /// the receiver wait; the deadline only controls enqueue and pre-transaction
+    /// execution. A caller-side timeout can still race with a committed write.
+    pub fn try_mutate_with(
+        &self,
+        mutation: SessionMutation,
+        options: WriteOptions,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<CommitReceipt>>> {
+        self.writer.try_submit_with(mutation, options)
+    }
+
+    /// Lifecycle snapshot: Starting / Ready / Draining / Closed.
+    pub fn writer_state(&self) -> WriterState {
+        self.writer.state()
+    }
+
+    /// In-process queue and commit counters. Percentiles cover the most recent
+    /// bounded sample window, not the lifetime of the process.
+    pub fn writer_metrics(&self) -> WriterMetricsSnapshot {
+        self.writer.metrics()
     }
 
     pub async fn read(&self, query: SessionRead) -> Result<ReadValue> {
