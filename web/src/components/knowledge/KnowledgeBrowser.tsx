@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileText } from "@phosphor-icons/react";
 
-import { FileTreeContextMenu, type FileTreeMenuItem } from "../FileTreeContextMenu";
+import i18n from "../../i18n";
+import { ContextMenu, type ContextMenuItem } from "../ui/ContextMenu";
+import { useConfirmDialog } from "../ui/useConfirmDialog";
 import { ListRow } from "../ui/ListRow";
 import { normalizeKey } from "../../lib/knowledge/markers";
 import { revealKnowledgeNode } from "../../lib/knowledge/panel";
@@ -127,7 +129,7 @@ function KnowledgeCard({
         size={16}
         weight="regular"
         aria-hidden
-        className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
+        className="h-4 w-4 shrink-0 select-none text-(--_dk-text-muted)"
       />
       <span className="knowledge-card-label min-w-0 flex-1">
         <span
@@ -176,7 +178,7 @@ function KnowledgeUnknownRow({
         size={16}
         weight="regular"
         aria-hidden
-        className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
+        className="h-4 w-4 shrink-0 select-none text-(--_dk-text-muted)"
       />
       <span className="truncate">?{file.name}</span>
     </ListRow>
@@ -243,7 +245,7 @@ function KnowledgeCreateRow({
         size={16}
         weight="regular"
         aria-hidden
-        className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
+        className="h-4 w-4 shrink-0 select-none text-(--_dk-text-muted)"
       />
       <input
         autoFocus
@@ -373,7 +375,7 @@ function KnowledgeFolderBranch({
                 size={16}
                 weight="regular"
                 aria-hidden
-                className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
+                className="h-4 w-4 shrink-0 select-none text-(--_dk-text-muted)"
               />
               <span className="truncate">{folder.name}</span>
             </ListRow>
@@ -414,6 +416,7 @@ function KnowledgeFolderBranch({
 }
 
 export function KnowledgeBrowser() {
+  const { confirm, dialog } = useConfirmDialog();
   const load = useKnowledgeStore((s) => s.load);
   const loading = useKnowledgeStore((s) => s.loading);
   const error = useKnowledgeStore((s) => s.error);
@@ -563,7 +566,7 @@ export function KnowledgeBrowser() {
         </button>
       </div>
       {menu ? (
-        <FileTreeContextMenu
+        <ContextMenu
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
@@ -576,24 +579,31 @@ export function KnowledgeBrowser() {
               const target = menu;
               setMenu(null);
               if (target.kind === "node") {
-                if (!window.confirm(`Delete node "${target.name}"? Its markdown file will be removed.`)) {
-                  return;
-                }
-                void deleteNode(target.id);
+                void confirm({
+                  title: "Delete node",
+                  body: `"${target.name}"? Its markdown file will be removed.`,
+                  danger: true,
+                  confirmLabel: i18n.t("common.delete"),
+                  cancelLabel: i18n.t("common.cancel"),
+                }).then((ok) => {
+                  if (ok) void deleteNode(target.id);
+                });
               } else if (target.kind === "folder") {
-                if (
-                  !window.confirm(
-                    `Delete folder "${target.name}"? Nodes inside it will be removed too.`,
-                  )
-                ) {
-                  return;
-                }
-                void deleteFolder(target.id);
+                void confirm({
+                  title: "Delete folder",
+                  body: `"${target.name}"? Nodes inside it will be removed too.`,
+                  danger: true,
+                  confirmLabel: i18n.t("common.delete"),
+                  cancelLabel: i18n.t("common.cancel"),
+                }).then((ok) => {
+                  if (ok) void deleteFolder(target.id);
+                });
               }
             },
           })}
         />
       ) : null}
+      {dialog}
     </>
   );
 }
@@ -604,7 +614,7 @@ function menuItems(
     create: (kind: CreateDraft["kind"], parentId: string | null) => void;
     remove: () => void;
   },
-): FileTreeMenuItem[] {
+): ContextMenuItem[] {
   if (target.kind === "node") {
     return [
       {
@@ -616,7 +626,7 @@ function menuItems(
     ];
   }
   const parentId = target.kind === "folder" ? target.id : null;
-  const items: FileTreeMenuItem[] = [
+  const items: ContextMenuItem[] = [
     {
       id: "folder",
       label: "New Folder",

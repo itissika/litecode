@@ -36,6 +36,7 @@ import {
   SettingsPageShell,
   useSettingsSaveBlocked,
 } from "./shared";
+import { useConfirmDialog } from "../../../components/ui/useConfirmDialog";
 import {
   flushRegisteredSettings,
   isPersistBusy,
@@ -599,6 +600,7 @@ function agentPersistPayload(draft: AgentProfile): AgentProfile {
 
 export function AgentsSection() {
   const { t } = useTranslation();
+  const { confirm, dialog } = useConfirmDialog();
   const availableTools = useSettingsStore((s) => s.availableTools);
   const llm = useSettingsStore((s) => s.llm);
   const activeModels = useMemo(() => llm?.active_models ?? [], [llm]);
@@ -785,8 +787,15 @@ export function AgentsSection() {
 
   const onDelete = () => {
     if (isProtectedAgent(selectedAgentId)) return;
-    if (!window.confirm(t("settings.agents.deleteConfirm", { id: selectedAgentId }))) return;
-    void removeAgent(selectedAgentId);
+    void confirm({
+      title: t("common.delete"),
+      body: t("settings.agents.deleteConfirm", { id: selectedAgentId }),
+      danger: true,
+      confirmLabel: t("common.delete"),
+      cancelLabel: t("common.cancel"),
+    }).then((ok) => {
+      if (ok) void removeAgent(selectedAgentId);
+    });
   };
 
   if (!draft) {
@@ -983,6 +992,7 @@ export function AgentsSection() {
           />
         ) : null}
       </div>
+      {dialog}
     </SettingsPageShell>
   );
 }

@@ -1,13 +1,16 @@
 import {
   type ReactNode,
-  useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
 import { createPortal } from "react-dom";
 
-import { dockPane, opensUpward, visibleBox, VIEWPORT_MARGIN } from "./dockPane";
+import { opensUpward, visibleBox, VIEWPORT_MARGIN } from "./dockPane";
+import {
+  type PanelPosition,
+  useAnchoredPanel,
+} from "./useAnchoredPanel";
 import { useFloatingLayer } from "./useFloatingLayer";
 
 /** Display + width fallback per variant, applied to the root wrapper.
@@ -47,8 +50,8 @@ const DEFAULT_BG = "bg-(--_dk-overlay)";
  *  genuinely clean (blur fades to nothing exactly at the panel edge), while the
  *  rest of the panel still gets a gentle, low-opacity lift. */
 const SHADOW: Record<"up" | "down", string> = {
-  down: "shadow-[0_6px_18px_rgba(0,0,0,0.18)]",
-  up: "shadow-[0_6px_18px_rgba(0,0,0,0.18)]",
+  down: "shadow-(--_dk-shadow-popover)",
+  up: "shadow-(--_dk-shadow-popover)",
 };
 
 /** Same edge as Popover (bell / context-usage panels). */
@@ -62,7 +65,7 @@ type DropdownVariant = "select" | "menu" | "panel";
 /** Shared item classes for select/menu variants — import and apply per item
  *  so item styling is also defined in one place. */
 export const dropdownItemClass =
-  "block w-full whitespace-nowrap overflow-hidden text-ellipsis px-3 py-1.5 text-left text-[11px] text-(--_dk-text-primary) hover:bg-(--_dk-ix-bg-hover) cursor-pointer";
+  "block w-full whitespace-nowrap overflow-hidden text-ellipsis px-3 py-1.5 text-left text-dk-xs text-(--_dk-text-primary) hover:bg-(--_dk-ix-bg-hover) cursor-pointer";
 export const dropdownItemActiveClass = "text-(--_dk-ix-fg-selected)";
 
 /** Panel max width per variant — mirrors the CSS `max-w` on the select shell.
@@ -72,32 +75,6 @@ const PANEL_MAX_W: Record<DropdownVariant, number> = {
   menu: 240,
   panel: 320,
 };
-
-/** Fixed-position style object for the portaled panel. */
-type PanelPos = {
-  top?: number;
-  bottom?: number;
-  left?: number;
-  right?: number;
-  width?: number;
-  minWidth?: number;
-  maxWidth?: number;
-  maxHeight?: number;
-};
-
-function samePos(a: PanelPos | null, b: PanelPos): boolean {
-  if (!a) return false;
-  return (
-    a.top === b.top &&
-    a.bottom === b.bottom &&
-    a.left === b.left &&
-    a.right === b.right &&
-    a.width === b.width &&
-    a.minWidth === b.minWidth &&
-    a.maxWidth === b.maxWidth &&
-    a.maxHeight === b.maxHeight
-  );
-}
 
 interface DropdownProps {
   /** Direction the panel prefers. It still opens the other way — down
@@ -178,7 +155,6 @@ export function Dropdown({
   children,
 }: DropdownProps) {
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<PanelPos | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   /** Measured portaled-panel height. `flip` uses it as the wish when the
@@ -187,10 +163,7 @@ export function Dropdown({
 
   const autoClose = closeOnSelect ?? variant !== "panel";
 
-  const update = () => {
-    const el = rootRef.current;
-    if (!el) return;
-    const view = el.ownerDocument.defaultView ?? window;
+  const compute = (el: HTMLElement, view: Window): PanelPosition => {
     const rect = el.getBoundingClientRect();
     const vw = view.innerWidth;
     const vh = view.innerHeight;
@@ -212,7 +185,7 @@ export function Dropdown({
         ? Math.min(Math.max(0, wish), room)
         : room;
 
-    const next: PanelPos = { maxHeight: cap };
+    const next: PanelPosition = { maxHeight: cap };
     if (opensUp) next.bottom = vh - rect.top;
     else next.top = rect.bottom;
 
@@ -256,17 +229,19 @@ export function Dropdown({
       next.minWidth = Math.min(rect.width, next.maxWidth ?? rect.width);
     }
 
-    setPos((prev) => (samePos(prev, next) ? prev : next));
+    return next;
   };
 
+  const { pos, update } = useAnchoredPanel({
+    open,
+    rootRef,
+    compute,
+    deps: [direction, align, variant, maxHeight, flip],
+  });
+
   useLayoutEffect(() => {
-    if (!open) {
-      setPos(null);
-      panelHRef.current = null;
-      return;
-    }
-    update();
-  }, [open, direction, align, variant, maxHeight, flip]);
+    if (!open) panelHRef.current = null;
+  }, [open]);
 
   // `flip` re-decides once the real height is known. The equality guard on
   // `panelHRef` keeps a capped panel from looping.
@@ -290,16 +265,6 @@ export function Dropdown({
     onResize: update,
   });
 
-  // Re-clamp when the dock pane the trigger lives in is resized.
-  useEffect(() => {
-    if (!open) return;
-    const pane = rootRef.current ? dockPane(rootRef.current) : null;
-    if (!pane || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => update());
-    observer.observe(pane);
-    return () => observer.disconnect();
-  }, [open, direction, align, variant, maxHeight, flip]);
-
   const placement: "up" | "down" = pos?.bottom != null ? "up" : "down";
 
   return (
@@ -315,7 +280,7 @@ export function Dropdown({
             ref={panelRef}
             data-dropdown-panel
             data-litecode-overlay="dropdown"
-            className={`fixed z-[10000] overflow-x-hidden ${SHADOW[placement]} ${BORDER[placement]} ${bgClassName ?? DEFAULT_BG} ${VARIANT_PANEL[variant]} ${panelClassName}`}
+            className={`fixed z-(--_dk-z-dropdown) overflow-x-hidden ${SHADOW[placement]} ${BORDER[placement]} ${bgClassName ?? DEFAULT_BG} ${VARIANT_PANEL[variant]} ${panelClassName}`}
             style={pos}
             onClick={autoClose ? () => setOpen(false) : undefined}
           >

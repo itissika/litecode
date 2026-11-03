@@ -64,7 +64,7 @@ function TurnBlockedBanner() {
   const blocked = useSettingsSaveBlocked();
   if (!blocked) return null;
   return (
-    <div className="border-b border-(--_dk-amber-900\/20) bg-(--_dk-amber-900\/20) px-4 py-2 text-sm text-(--_dk-amber-500)">
+    <div className="border-b border-(--_dk-tag-warn-border) bg-(--_dk-tag-warn-bg) px-4 py-2 text-sm text-(--_dk-amber-500)">
       {i18n.t("settings.dialog.busy")}
     </div>
   );

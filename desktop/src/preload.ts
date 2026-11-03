@@ -19,6 +19,9 @@ import type {
   REMOTE_DISCONNECTED_CHANNEL as RemoteDisconnectedChannel,
   REMOTE_PROGRESS_CHANNEL as RemoteProgressChannel,
   SESSIONS_ACTIVE_CHANNEL as SessionsActiveChannel,
+  CLOSE_REQUEST_CHANNEL as CloseRequestChannel,
+  CLOSE_RESPONSE_CHANNEL as CloseResponseChannel,
+  CloseAnswer,
   BrowserBounds,
   BrowserState,
   ComponentProgressEvent,
@@ -56,6 +59,8 @@ const BROWSER_AGENT_ACTIVITY_CHANNEL: typeof BrowserAgentActivityChannel =
 const TURN_NOTIFICATION_CLICK_CHANNEL: typeof TurnNotificationClickChannel =
   "litecode:turn-notification-click";
 const SESSIONS_ACTIVE_CHANNEL: typeof SessionsActiveChannel = "litecode:sessions-active";
+const CLOSE_REQUEST_CHANNEL: typeof CloseRequestChannel = "litecode:close-request";
+const CLOSE_RESPONSE_CHANNEL: typeof CloseResponseChannel = "litecode:close-response";
 
 const bridge = {
   getAuthToken: (): string | undefined => {
@@ -224,6 +229,14 @@ const bridge = {
   },
   setSessionsActive: async (active: boolean): Promise<void> => {
     await ipcRenderer.invoke(SESSIONS_ACTIVE_CHANNEL, active);
+  },
+  onCloseRequest: (handler: () => void): (() => void) => {
+    const listener = () => handler();
+    ipcRenderer.on(CLOSE_REQUEST_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(CLOSE_REQUEST_CHANNEL, listener);
+  },
+  answerCloseRequest: async (answer: CloseAnswer): Promise<void> => {
+    await ipcRenderer.invoke(CLOSE_RESPONSE_CHANNEL, answer);
   },
   popoutSetAlwaysOnTop: async (dockId: string, onTop: boolean): Promise<boolean> => {
     return (await ipcRenderer.invoke("litecode:popout-set-always-on-top", dockId, onTop)) === true;

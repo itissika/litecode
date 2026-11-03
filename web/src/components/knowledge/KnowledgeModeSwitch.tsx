@@ -33,7 +33,7 @@ export function KnowledgeModeSwitch({
       <div
         role="group"
         aria-label={i18n.t("knowledge.modeAria")}
-        className={`absolute bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-0.5 rounded-full border border-(--_dk-line) p-0.5 shadow-(--_dk-composer-card-shadow) ${glassFill}`}
+        className={`absolute bottom-4 left-1/2 z-(--_dk-z-menu) flex -translate-x-1/2 items-center gap-0.5 rounded-full border border-(--_dk-line) p-0.5 shadow-(--_dk-composer-card-shadow) ${glassFill}`}
       >
         {MODES.map(({ id: next, labelKey, Icon }) => {
           const selected = mode === next;

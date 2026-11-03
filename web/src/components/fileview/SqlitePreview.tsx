@@ -65,7 +65,7 @@ export function SqlitePreview({
         <label className="flex items-center gap-2 text-xs text-(--_dk-text-muted)">
           Table
           <select
-            className="rounded border border-(--_dk-line) bg-(--_dk-bg) px-2 py-1 text-xs text-(--_dk-text)"
+            className="rounded border border-(--_dk-line) bg-(--_dk-editor) px-2 py-1 text-xs text-(--_dk-text-secondary)"
             value={activeTable}
             onChange={(event) => {
               setTable(event.target.value);
@@ -112,7 +112,7 @@ export function SqlitePreview({
       ) : (
         <div className="min-h-0 flex-1 overflow-auto">
           <table className="w-full border-collapse text-left text-xs">
-            <thead className="sticky top-0 bg-(--_dk-bg)">
+            <thead className="sticky top-0 bg-(--_dk-editor)">
               <tr>
                 {columns.map((column) => (
                   <th
@@ -130,7 +130,7 @@ export function SqlitePreview({
                   {row.map((cell, cellIndex) => (
                     <td
                       key={`${columns[cellIndex] ?? cellIndex}`}
-                      className="max-w-80 truncate border-b border-(--_dk-line-visible) px-2 py-1 text-(--_dk-text)"
+                      className="max-w-80 truncate border-b border-(--_dk-line-visible) px-2 py-1 text-(--_dk-text-secondary)"
                       title={cellText(cell)}
                     >
                       {cellText(cell)}

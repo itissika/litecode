@@ -21,6 +21,8 @@ interface HoverMediaPreviewProps {
   entry: MediaEntry;
   /** Viewport box of the tile this card belongs to. */
   anchor: DOMRect;
+  /** The document that owns the tile; a popout has its own body and view. */
+  hostDocument: Document;
   onPointerEnter: () => void;
   onPointerLeave: () => void;
 }
@@ -38,6 +40,7 @@ interface HoverMediaPreviewProps {
 export function HoverMediaPreview({
   entry,
   anchor,
+  hostDocument,
   onPointerEnter,
   onPointerLeave,
 }: HoverMediaPreviewProps) {
@@ -92,13 +95,14 @@ export function HoverMediaPreview({
   // Above the tile when there is room, otherwise below it; always inside the
   // viewport, because the card must not push a scrollbar into existence.
   const height = entry.kind === "audio" ? AUDIO_HEIGHT : CARD_HEIGHT;
-  const maxLeft = Math.max(MARGIN, window.innerWidth - CARD_WIDTH - MARGIN);
+  const view = hostDocument.defaultView ?? window;
+  const maxLeft = Math.max(MARGIN, view.innerWidth - CARD_WIDTH - MARGIN);
   const left = Math.min(
     Math.max(MARGIN, anchor.left + anchor.width / 2 - CARD_WIDTH / 2),
     maxLeft,
   );
   const above = anchor.top - height - GAP >= MARGIN;
-  const maxTop = Math.max(MARGIN, window.innerHeight - height - MARGIN);
+  const maxTop = Math.max(MARGIN, view.innerHeight - height - MARGIN);
   const top = Math.min(
     above ? anchor.top - height - GAP : anchor.bottom + GAP,
     maxTop,
@@ -168,6 +172,6 @@ export function HoverMediaPreview({
         ) : null}
       </div>
     </div>,
-    document.body,
+    hostDocument.body,
   );
 }

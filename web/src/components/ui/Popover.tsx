@@ -8,8 +8,12 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import { hostResizeObserver, viewOf } from "../../lib/domView";
+import { viewOf } from "../../lib/domView";
 import { dockPane, opensUpward, visibleBox, VIEWPORT_MARGIN } from "./dockPane";
+import {
+  type PanelPosition,
+  useAnchoredPanel,
+} from "./useAnchoredPanel";
 import { useFloatingLayer } from "./useFloatingLayer";
 
 interface PopoverApi {
@@ -62,26 +66,6 @@ const PANEL_MAX_H = 260;
  *  than render a sliver in a collapsed rail. */
 const MIN_PANE_SPAN = 48;
 
-/** Fixed-position style object for the portaled panel. */
-type PanelPos = {
-  top?: number;
-  bottom?: number;
-  left?: number;
-  width?: number;
-  maxHeight?: number;
-};
-
-function samePos(a: PanelPos | null, b: PanelPos): boolean {
-  if (!a) return false;
-  return (
-    a.top === b.top &&
-    a.bottom === b.bottom &&
-    a.left === b.left &&
-    a.width === b.width &&
-    a.maxHeight === b.maxHeight
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Single-open registry: at most one Popover panel may be open app-wide.
 // Opening an instance closes the previously open one; closing or unmounting
@@ -127,7 +111,6 @@ export function Popover({
   children,
 }: PopoverProps) {
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<PanelPos | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   /** The panel's own CSS max-height, measured once per open before the inline
@@ -151,10 +134,10 @@ export function Popover({
     }
   }, []);
 
-  const update = useCallback(() => {
-    const el = rootRef.current;
-    if (!el) return;
-    const view = viewOf(el);
+  const compute = (
+    el: HTMLElement,
+    view: Window,
+  ): PanelPosition | null => {
     const rect = el.getBoundingClientRect();
     const vw = view.innerWidth;
     const vh = view.innerHeight;
@@ -164,16 +147,14 @@ export function Popover({
     // The panel is clamped to its dock pane; once the trigger scrolls out of
     // that pane there is nothing left to anchor to.
     if (pane && (rect.bottom <= box.top || rect.top >= box.bottom)) {
-      setOpen(false);
-      return;
+      return null;
     }
 
     const boxW = box.right - box.left;
     const boxH = box.bottom - box.top;
     const minSpan = 2 * VIEWPORT_MARGIN + MIN_PANE_SPAN;
     if (boxW < minSpan || boxH < minSpan) {
-      setOpen(false);
-      return;
+      return null;
     }
 
     const available = Math.max(0, boxW - 2 * VIEWPORT_MARGIN);
@@ -201,7 +182,7 @@ export function Popover({
       (openUp ? above : below) - gap - VIEWPORT_MARGIN,
     );
 
-    const next: PanelPos = { width: w };
+    const next: PanelPosition = { width: w };
     if (openUp) next.bottom = vh - rect.top + gap;
     else next.top = rect.bottom + gap;
 
@@ -219,17 +200,16 @@ export function Popover({
       next.maxHeight = Math.min(room, styleCapRef.current);
     }
 
-    setPos((prev) => (samePos(prev, next) ? prev : next));
-  }, [placement, gap, width, estimatedHeight]);
+    return next;
+  };
 
-  useLayoutEffect(() => {
-    if (!open) {
-      setPos(null);
-      styleCapRef.current = null;
-      return;
-    }
-    update();
-  }, [open, update]);
+  const { pos, update } = useAnchoredPanel({
+    open,
+    rootRef,
+    compute,
+    deps: [placement, gap, width, estimatedHeight],
+    onUnavailable: close,
+  });
 
   // Measure the panel's own CSS max-height once per open, before writing the
   // pane cap inline (which would otherwise mask it). Then re-run the layout
@@ -248,19 +228,6 @@ export function Popover({
       raw.endsWith("px") && Number.isFinite(px) ? px : Number.POSITIVE_INFINITY;
     update();
   }, [open, pos, update]);
-
-  // "auto" width follows the dock pane when a splitter resizes it. Window
-  // resize already calls update(); dockview pane resizes do not.
-  useEffect(() => {
-    if (!open || width !== "auto") return;
-    const el = rootRef.current;
-    const observer = hostResizeObserver(el);
-    const pane = el ? dockPane(el) : null;
-    if (!observer || !pane) return;
-    const ro = new observer(() => update());
-    ro.observe(pane);
-    return () => ro.disconnect();
-  }, [open, width, update]);
 
   // Single-open: claim on open, release on close/unmount.
   useEffect(() => {
@@ -289,17 +256,6 @@ export function Popover({
     },
     onResize: update,
   });
-
-  // Re-clamp when the dock pane is resized; sash drags do not fire window
-  // resize. Same observer as Dropdown.
-  useEffect(() => {
-    if (!open) return;
-    const pane = rootRef.current ? dockPane(rootRef.current) : null;
-    if (!pane || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => update());
-    observer.observe(pane);
-    return () => observer.disconnect();
-  }, [open, update]);
 
   // Hover intent: entering the trigger or the panel cancels a pending close;
   // leaving both schedules one. The open side uses a delay so sweeping the
@@ -354,7 +310,7 @@ export function Popover({
             data-litecode-overlay="popover"
             onMouseEnter={hover ? onPointerEnter : undefined}
             onMouseLeave={hover ? onPointerLeave : undefined}
-            className={`fixed z-1000 border border-(--_dk-line-visible) bg-(--_dk-overlay) shadow-[0_6px_18px_rgba(0,0,0,0.18)] ${panelClassName}`}
+            className={`fixed z-(--_dk-z-popover) border border-(--_dk-line-visible) bg-(--_dk-overlay) shadow-(--_dk-shadow-popover) ${panelClassName}`}
             style={{
               ...pos,
               overflowY: pos.maxHeight != null ? "auto" : undefined,

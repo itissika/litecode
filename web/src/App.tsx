@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { AppShellDockview } from "./dockview/AppShellDockview";
 import { ClickShield } from "./components/ClickShield";
 import { ToastHost } from "./components/ToastHost";
+import { WindowCloseGuard } from "./components/WindowCloseGuard";
 import { installEmbedInstallWatcher } from "./dockview/panels/settings/engines/embedInstall";
 import { installDebugConsole } from "./lib/debugTrace";
 import {
@@ -57,6 +58,7 @@ export default function App() {
     <>
       <AppShellDockview />
       <ToastHost />
+      <WindowCloseGuard />
       <ClickShield />
     </>
   );

@@ -117,9 +117,6 @@ body{
   min-height:0;
 }
 :root{
-  --font-sans:system-ui,-apple-system,"Segoe UI",sans-serif;
-  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --radius-sm:0.375rem;
   /* Home layout: the list column is centered and only slightly wider than the
      icon+wordmark logo. --hub-text-w is the measured "LiteCode" width ratio
      (4.623em incl. 0.025em tracking, LexendDeca 600) so the list tracks the
@@ -180,7 +177,7 @@ h1{font-size:2rem;font-weight:var(--_dk-text-weight-semibold);margin:0 0 8px;col
 .hidden{display:none !important}
 button.btn-primary,button.btn,button.btn-ghost,button.btn-danger,button.btn-icon,button.btn-sm{
   display:inline-flex;align-items:center;justify-content:center;gap:0.375rem;
-  border-radius:var(--radius-sm);border:1px solid transparent;background:transparent;
+  border-radius:var(--_dk-radius-sm);border:1px solid transparent;background:transparent;
   color:var(--_dk-ix-fg);cursor:pointer;user-select:none;white-space:nowrap;font:inherit;
 }
 button.btn-primary,button.btn{padding:0.375rem 0.75rem;font-size:0.875rem;line-height:1.25rem}
@@ -207,7 +204,7 @@ button:disabled{opacity:0.5;cursor:not-allowed}
   padding:0 8px;
 }
 .row{
-  display:flex;align-items:center;gap:12px;padding:4px 4px;border-radius:var(--radius-sm);
+  display:flex;align-items:center;gap:12px;padding:4px 4px;border-radius:var(--_dk-radius-sm);
   transition:background-color 120ms ease, transform 120ms ease;
 }
 .row:hover{background:var(--_dk-ix-bg-hover);transform:scale(1.015)}
@@ -233,13 +230,13 @@ button:disabled{opacity:0.5;cursor:not-allowed}
 .empty{color:var(--_dk-text-disabled);padding:16px;font-size:var(--_dk-text-sm)}
 .panel{
   margin-top:20px;padding:16px;border:1px solid var(--_dk-line-visible);
-  border-radius:var(--radius-sm);background:var(--_dk-surface-raised);
+  border-radius:var(--_dk-radius-sm);background:var(--_dk-surface-raised);
 }
 .panel h2{margin:0 0 12px;font-size:var(--_dk-text-md);font-weight:var(--_dk-text-weight-medium)}
 .field{display:block;margin-bottom:12px;font-size:var(--_dk-text-sm);color:var(--_dk-text-muted)}
 .field input,.field select{
   display:block;width:100%;margin-top:4px;padding:0.4rem 0.6rem;
-  border-radius:var(--radius-sm);border:1px solid var(--_dk-line-visible);
+  border-radius:var(--_dk-radius-sm);border:1px solid var(--_dk-line-visible);
   background:var(--_dk-root);color:var(--_dk-text-primary);font:inherit;
 }
 .field input:focus,.field select:focus{outline:1px solid var(--_dk-accent-ring)}
@@ -250,7 +247,7 @@ button:disabled{opacity:0.5;cursor:not-allowed}
 .progress-bar{height:100%;width:0%;background:var(--_dk-accent-hover);transition:width 160ms ease}
 .progress-msg{margin-top:8px;font-size:var(--_dk-text-sm);color:var(--_dk-text-secondary)}
 .dir-bar{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
-.dir-list{border:1px solid var(--_dk-line);border-radius:var(--radius-sm);max-height:240px;overflow:auto}
+.dir-list{border:1px solid var(--_dk-line);border-radius:var(--_dk-radius-sm);max-height:240px;overflow:auto}
 .dir-item{
   display:block;width:100%;text-align:left;padding:8px 10px;border:0;border-bottom:1px solid var(--_dk-line);
   background:transparent;color:var(--_dk-text-primary);cursor:pointer;font:inherit;
@@ -259,7 +256,7 @@ button:disabled{opacity:0.5;cursor:not-allowed}
 .dir-item.selected{background:var(--_dk-ix-bg-selected);color:var(--_dk-ix-fg-selected)}
 .token-box{
   font-family:var(--_dk-font-code);font-size:var(--_dk-text-sm);padding:10px;
-  border:1px solid var(--_dk-line-visible);border-radius:var(--radius-sm);
+  border:1px solid var(--_dk-line-visible);border-radius:var(--_dk-radius-sm);
   background:var(--_dk-root);word-break:break-all;color:var(--_dk-text-primary);
 }
 .panel-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}

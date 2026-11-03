@@ -18,6 +18,7 @@ import { useSessionStore } from "../stores/sessionStore";
 import { sessionBusy } from "../lib/subagentUi";
 import { useDeletedChildIds } from "../lib/useDeletedChildIds";
 import { SubagentStatusIcon } from "./SubagentStatusIcon";
+import { useConfirmDialog } from "./ui/useConfirmDialog";
 import type { ToolStatus } from "./ToolIcon";
 import i18n from "../i18n";
 
@@ -256,6 +257,7 @@ function SubagentRosterItem({
   const label = entry.agent ?? "subagent";
   const stopSubagent = useSessionStore((s) => s.stopSubagent);
   const deleteSession = useSessionStore((s) => s.deleteSession);
+  const { confirm, dialog } = useConfirmDialog();
   const busy = entry.busy === true;
   return (
     <li className="flex min-w-0 items-center gap-0.5">
@@ -313,14 +315,22 @@ function SubagentRosterItem({
           title={i18n.t("common.delete")}
           data-testid="subagent-roster-delete"
           onClick={() => {
-            if (!window.confirm(i18n.t("session.deleteConfirm", { label }))) return;
-            deleteSession(entry.childId);
+            void confirm({
+              title: i18n.t("common.delete"),
+              body: i18n.t("session.deleteConfirm", { label }),
+              danger: true,
+              confirmLabel: i18n.t("common.delete"),
+              cancelLabel: i18n.t("common.cancel"),
+            }).then((ok) => {
+              if (ok) deleteSession(entry.childId);
+            });
           }}
           className={sessionIconButtonClass}
         >
           <Trash size={14} />
         </button>
       )}
+      {dialog}
     </li>
   );
 }

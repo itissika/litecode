@@ -166,7 +166,7 @@ function GlobHitRow({
         size={16}
         weight="regular"
         aria-hidden
-        className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
+        className="h-4 w-4 shrink-0 select-none text-(--_dk-text-muted)"
       />
       <span className="min-w-0 truncate">
         {entry.name}

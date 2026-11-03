@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { applyListSelection } from "../lib/listSelection";
 import { remapPathPrefix } from "../utils/path";
 
 type ExplorerClipboard = {
@@ -63,32 +64,13 @@ export const useExplorerStore = create<ExplorerStore>((set, get) => ({
   busy: new Set<string>(),
 
   select: (path, opts) => {
-    if (opts?.range && get().anchorPath && opts.visible) {
-      const vis = opts.visible;
-      const a = vis.indexOf(get().anchorPath!);
-      const b = vis.indexOf(path);
-      if (a >= 0 && b >= 0) {
-        const lo = Math.min(a, b);
-        const hi = Math.max(a, b);
-        set({
-          selected: new Set(vis.slice(lo, hi + 1)),
-          focusPath: path,
-        });
-        return;
-      }
-    }
-    if (opts?.additive) {
-      const next = cloneSet(get().selected);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      set({ selected: next, anchorPath: path, focusPath: path });
-      return;
-    }
-    set({
-      selected: new Set([path]),
-      anchorPath: path,
-      focusPath: path,
-    });
+    const { selected, anchor } = applyListSelection(
+      get().selected,
+      path,
+      get().anchorPath,
+      opts,
+    );
+    set({ selected, anchorPath: anchor, focusPath: path });
   },
 
   clearSelection: () =>

@@ -13,6 +13,7 @@ import {
   type GitFile,
   type GitStatus,
 } from "../api/workspace";
+import { applyListSelection } from "../lib/listSelection";
 import { attachSiblingStores } from "./connectionStore";
 import { useToastStore } from "./toastStore";
 
@@ -144,27 +145,13 @@ export const useGitStore = create<GitStore>((set, get) => ({
   },
 
   select: (id, opts) => {
-    if (opts?.range && get().anchorId && opts.visible) {
-      const vis = opts.visible;
-      const a = vis.indexOf(get().anchorId!);
-      const b = vis.indexOf(id);
-      if (a >= 0 && b >= 0) {
-        const lo = Math.min(a, b);
-        const hi = Math.max(a, b);
-        set({
-          selected: new Set(vis.slice(lo, hi + 1)),
-        });
-        return;
-      }
-    }
-    if (opts?.additive) {
-      const next = new Set(get().selected);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      set({ selected: next, anchorId: id });
-      return;
-    }
-    set({ selected: new Set([id]), anchorId: id });
+    const { selected, anchor } = applyListSelection(
+      get().selected,
+      id,
+      get().anchorId,
+      opts,
+    );
+    set({ selected, anchorId: anchor });
   },
 
   clearSelection: () => set({ selected: new Set(), anchorId: null }),

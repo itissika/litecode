@@ -9,8 +9,9 @@ overrides). Everything else derives from it:
 - **Components** consume tokens through Tailwind utilities exposed by the
   `@theme` block in `index.css`, or directly via `var(--_dk-*)`.
 - **JS consumers** (Monaco, Mermaid) read the live computed values at runtime
-  through `theme/tokens.ts` — there is **no hand-maintained copy** to keep in
-  sync.
+  through `theme/tokens.ts`. The only literal copy is its last-resort
+  `FALLBACKS` for non-DOM execution; it mirrors the dark theme and is not a
+  second theme source.
 
 If you change a value in `tokens.css`, it updates globally: utilities, components,
 and JS-rendered surfaces (Monaco / Mermaid) all follow automatically.
@@ -23,8 +24,8 @@ Four dimensions, all tokenized:
 |-----------|------------------|-------------------|
 | Color | `--_dk-text-primary/body/secondary/muted/disabled` | `text-(--_dk-text-*)` |
 | Weight | `--_dk-text-weight-regular/medium/semibold/bold` | overrides `--font-weight-*` → `font-normal/medium/semibold/bold` |
-| Font | `--_dk-font-ui` (`--font-sans`), `--_dk-font-code` (`--font-mono`) | `font-ui`, `font-code` |
-| Size | `--_dk-text-3xs/2xs/xs/sm/md` (9/10/11/12/13px) | `text-dk-3xs/2xs/xs/sm/md` |
+| Font | `--_dk-font-ui` (aliased as `--font-sans`), `--_dk-font-code` (`--font-mono`) | `font-ui`, `font-code` |
+| Size | `--_dk-text-3xs…4xl` (9px → 32px scale) | `text-dk-3xs…4xl` |
 
 Notes:
 - Weight utilities (`font-medium`, `font-semibold`, …) are overridden in
@@ -63,9 +64,16 @@ it legible; all values come from the tokens above.
 1. Define it in `tokens.css` under `:root` (and a light override in
    `:root[data-dv-theme="light"]` if it is theme-dependent).
 2. Expose it in `index.css` `@theme` using the correct namespace
-   (`--color-*`, `--font-weight-*`, `--font-*`, `--text-*`).
+   (`--color-*`, `--font-weight-*`, `--font-*`, `--text-*`,
+   `--shadow-*`). Structural tokens used by the desktop hub must live in
+   `tokens.css` itself, because that file is copied without `@theme`.
 3. Consume via the generated utility or `var(--_dk-*)`. Never hardcode the
    literal elsewhere.
+
+Overlay layers use the ordered `--_dk-z-*` ladder in `tokens.css`; do not
+invent a new z-index in a component. Component-local hooks
+(`--_dk-foldcard-frame`, `--_dk-knowledge-tone`, etc.) are deliberately
+supplied by their owner and are not global theme tokens.
 
 ## JS consumers (no dual source)
 
@@ -112,5 +120,14 @@ token values.
 
 - `--_dk-border-subtle` was referenced but never defined; usages now point to
   `--_dk-line-visible`.
+- `--_dk-fg-muted`, `--_dk-bg-sunken`, `--_dk-text`, and `--_dk-bg` were
+  referenced but never defined; consumers now use existing semantic tokens.
 - `DK_TOKENS_LIGHT` / `DK_TOKENS_DARK` static copies in `tokens.ts` were removed
   in favor of runtime derivation.
+
+## Phase 1 contract
+
+`web/src/theme/tokens.contract.test.ts` scans `web/src` and `desktop/src`,
+strips comments, and verifies that every `--_dk-*` reference resolves, that
+definitions stay in `tokens.css` (apart from explicit local hooks), that the
+light override set is complete, and that the JS bridge names are real.

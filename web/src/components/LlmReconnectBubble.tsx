@@ -44,7 +44,7 @@ export function LlmReconnectBubble({
           <button
             type="button"
             data-testid="llm-reconnect-retry"
-            className="cursor-pointer font-medium text-(--_dk-text) underline-offset-2 hover:underline"
+            className="cursor-pointer font-medium text-(--_dk-text-secondary) underline-offset-2 hover:underline"
             onClick={() => retry(sessionId)}
           >
             Retry

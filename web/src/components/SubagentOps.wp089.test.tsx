@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SessionInfo } from "../api/types";
@@ -149,15 +149,20 @@ describe("WP-089 T3 Workers 名单行操作", () => {
     expect(screen.getByTestId("subagent-roster-stop")).toBeTruthy();
     expect(screen.queryByTestId("subagent-roster-delete")).toBeNull();
   });
-  it("确认框取消不发 RPC，确认才发 session/delete；点行仍可跳转", () => {
+  it("确认框取消不发 RPC，确认才发 session/delete；点行仍可跳转", async () => {
     render(<SubagentRosterPanel sessionId={PARENT} />);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
     fireEvent.click(screen.getByTestId("subagent-roster-delete"));
+    const cancelled = await screen.findByRole("dialog");
+    fireEvent.click(within(cancelled).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(sendRpc).not.toHaveBeenCalledWith("session/delete", expect.anything());
-    confirm.mockReturnValueOnce(true);
+
     fireEvent.click(screen.getByTestId("subagent-roster-delete"));
-    expect(sendRpc).toHaveBeenCalledWith("session/delete", { id: CHILD });
-    confirm.mockRestore();
+    const confirmed = await screen.findByRole("dialog");
+    fireEvent.click(within(confirmed).getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(sendRpc).toHaveBeenCalledWith("session/delete", { id: CHILD }),
+    );
   });
   it("停止按钮发 agent/cancel{child}", () => {
     setChild({ status: "running", running: true });

@@ -7,6 +7,11 @@ export type GalleryMode = "all" | "folder" | "kind";
 /** How the panel paints entries: square thumbnails or compact rows. */
 export type GalleryView = "grid" | "list";
 
+/** Toolbar sort order. Every key is metadata the listing already carries. */
+export type GallerySort = "name" | "date" | "size" | "kind";
+export type GallerySortDirection = "asc" | "desc";
+export type MediaComparator = (a: MediaEntry, b: MediaEntry) => number;
+
 export type GalleryKind = MediaKind;
 
 export const MEDIA_KIND_ORDER: readonly MediaKind[] = [
@@ -39,6 +44,31 @@ function byName(a: { name: string }, b: { name: string }): number {
     numeric: true,
     sensitivity: "base",
   });
+}
+
+/** Stable sort used by the media library toolbar. */
+export function galleryComparator(
+  sort: GallerySort,
+  direction: GallerySortDirection,
+): MediaComparator {
+  return (a, b) => {
+    let order = 0;
+    if (sort === "date") order = a.mtime - b.mtime;
+    else if (sort === "size") order = a.size - b.size;
+    else if (sort === "kind") {
+      order = MEDIA_KIND_ORDER.indexOf(a.kind) - MEDIA_KIND_ORDER.indexOf(b.kind);
+    }
+    if (order === 0) order = byName(a, b);
+    return direction === "asc" ? order : -order;
+  };
+}
+
+export function sortEntries(
+  entries: readonly MediaEntry[],
+  sort: GallerySort,
+  direction: GallerySortDirection,
+): MediaEntry[] {
+  return [...entries].sort(galleryComparator(sort, direction));
 }
 
 /**
@@ -92,13 +122,17 @@ export function childFolders(
 export function folderEntries(
   entries: readonly MediaEntry[],
   folder: string,
+  compare: MediaComparator = byName,
 ): MediaEntry[] {
-  return entries.filter((entry) => entry.folder === folder).sort(byName);
+  return entries.filter((entry) => entry.folder === folder).sort(compare);
 }
 
-export function allSection(entries: readonly MediaEntry[]): GallerySection[] {
+export function allSection(
+  entries: readonly MediaEntry[],
+  compare: MediaComparator = byName,
+): GallerySection[] {
   if (entries.length === 0) return [];
-  const sorted = [...entries].sort(byName);
+  const sorted = [...entries].sort(compare);
   return [{ key: "all", entries: sorted, total: sorted.length }];
 }
 
@@ -106,12 +140,13 @@ export function allSection(entries: readonly MediaEntry[]): GallerySection[] {
 export function kindSections(
   entries: readonly MediaEntry[],
   label: (kind: MediaKind) => string,
+  compare: MediaComparator = byName,
 ): GallerySection[] {
   const sections: GallerySection[] = [];
   for (const kind of MEDIA_KIND_ORDER) {
     const items = entries.filter((entry) => entry.kind === kind);
     if (items.length === 0) continue;
-    items.sort(byName);
+    items.sort(compare);
     sections.push({
       key: kind,
       label: label(kind),

@@ -32,6 +32,16 @@ export const BROWSER_AGENT_ACTIVITY_CHANNEL = "litecode:browser-agent-activity";
 export const TURN_NOTIFICATION_CLICK_CHANNEL = "litecode:turn-notification-click";
 /** renderer -> main: a session in this workspace is running (close guard). */
 export const SESSIONS_ACTIVE_CHANNEL = "litecode:sessions-active";
+/** main -> renderer: the window was asked to close while a session runs. */
+export const CLOSE_REQUEST_CHANNEL = "litecode:close-request";
+/** renderer -> main: the answer to CLOSE_REQUEST_CHANNEL. */
+export const CLOSE_RESPONSE_CHANNEL = "litecode:close-response";
+
+/**
+ * `shown` means the question is on screen (the host stops waiting on the
+ * renderer and hands the timing to the human); `close`/`cancel` are the answer.
+ */
+export type CloseAnswer = "shown" | "close" | "cancel";
 
 /**
  * Remote session lost. main -> renderer, one-way.
@@ -226,6 +236,10 @@ export type LitecodeDesktopBridge = {
   windowClose(): Promise<void>;
   /** Any session running or cancelling: the host asks before it closes. */
   setSessionsActive(active: boolean): Promise<void>;
+  /** See CLOSE_REQUEST_CHANNEL. The renderer owns the dialog. */
+  onCloseRequest(handler: () => void): Unsubscribe;
+  /** Answer the close request. See CloseAnswer. */
+  answerCloseRequest(answer: CloseAnswer): Promise<void>;
   popoutSetAlwaysOnTop(dockId: string, onTop: boolean): Promise<boolean>;
   /** Window controls for one popout window, addressed by its dock id. */
   popoutWindowMinimize(dockId: string): Promise<void>;

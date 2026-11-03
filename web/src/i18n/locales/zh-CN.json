@@ -115,6 +115,20 @@
     "count": "{{count}} 项",
     "folders": "{{count}} 个文件夹",
     "refresh": "刷新媒体",
+    "search": "搜索媒体",
+    "searchClear": "清除搜索",
+    "sort": {
+      "label": "排序方式",
+      "name": "名称",
+      "date": "修改时间",
+      "size": "大小",
+      "kind": "类型",
+      "asc": "升序",
+      "desc": "降序"
+    },
+    "selected": "已选 {{count}} 项",
+    "noMatches": "没有匹配的媒体。",
+    "noMatchesHint": "换个名称或路径试试。",
     "loading": "正在扫描媒体…",
     "empty": "此工作区没有媒体文件。",
     "emptyHint": "资源管理器的排除规则（.gitignore、files.exclude）同样生效。",
@@ -458,7 +472,13 @@
     "serverLogs": "服务器日志",
     "waitingLogs": "等待日志事件…",
     "about": "关于",
-    "latestRelease": "最新发布"
+    "latestRelease": "最新发布",
+    "closeRunning": {
+      "title": "还有会话正在运行",
+      "body": "Litecode 还在这个工作区里干活。关闭窗口会中断正在跑的回合，以及它启动的工作。",
+      "confirm": "仍然关闭",
+      "cancel": "继续工作"
+    }
   },
   "session": {
     "noPreview": "无预览",
@@ -711,13 +731,6 @@
       },
       "bootFailed": {
         "title": "Litecode 启动失败"
-      },
-      "runningSession": {
-        "title": "还有会话正在运行",
-        "message": "Litecode 还在这个工作区里干活。",
-        "detail": "关闭窗口会中断正在跑的回合，以及它启动的工作。想让它跑完就先别关。",
-        "close": "仍然关闭",
-        "cancel": "继续工作"
       }
     },
     "progress": {

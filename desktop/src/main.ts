@@ -78,6 +78,7 @@ import { sidecarRoot } from "./paths";
 import {
   BROWSER_AGENT_ACTIVITY_CHANNEL,
   BROWSER_CLOSE_CHANNEL,
+  CLOSE_REQUEST_CHANNEL,
   COMPONENT_PROGRESS_CHANNEL,
   NATIVE_VIEW_GET_SNAPSHOT_CHANNEL,
   NATIVE_VIEW_SET_OCCLUDED_CHANNEL,
@@ -169,6 +170,8 @@ let sessionsActive = false;
 let closeConfirmed = false;
 /** One prompt at a time — a second close click must not stack dialogs. */
 let closePromptOpen = false;
+/** Fallback to the native prompt if the renderer never answers the close. */
+let closeRequestTimer: NodeJS.Timeout | null = null;
 let currentWorkspace: string | null = null;
 let trustContext: IpcTrustContext | null = null;
 
@@ -432,30 +435,41 @@ async function safeLoadURL(win: BrowserWindow, url: string): Promise<void> {
   await win.loadURL(url);
 }
 
+/** The renderer owns the close question; give up on it only if it cannot answer. */
+const CLOSE_REQUEST_TIMEOUT_MS = 3000;
+
 /**
- * Warn before a close kills work in progress, then close for real. The prompt is
- * native and modal on purpose: the renderer is what is about to go away, so it
- * cannot own the question.
+ * Last resort for a renderer that cannot answer (hung, crashed, or a stale
+ * bundle without the close guard): ask in a native dialog instead of leaving a
+ * window that refuses to close.
  */
 async function confirmCloseWhileRunning(win: BrowserWindow): Promise<void> {
   if (win.isDestroyed()) return;
   const options: MessageBoxOptions = {
     type: "warning",
     buttons: [
-      t("desktop.dialog.runningSession.close"),
-      t("desktop.dialog.runningSession.cancel"),
+      t("chrome.closeRunning.confirm"),
+      t("chrome.closeRunning.cancel"),
     ],
     defaultId: 1,
     cancelId: 1,
     noLink: true,
-    title: t("desktop.dialog.runningSession.title"),
-    message: t("desktop.dialog.runningSession.message"),
-    detail: t("desktop.dialog.runningSession.detail"),
+    title: t("chrome.closeRunning.title"),
+    message: t("chrome.closeRunning.body"),
   };
   const { response } = await dialog.showMessageBox(win, options);
   if (response !== 0 || win.isDestroyed()) return;
   closeConfirmed = true;
   win.close();
+}
+
+/** Drop a pending renderer question once the window is gone or closing for real. */
+function clearCloseRequest(): void {
+  closePromptOpen = false;
+  if (closeRequestTimer) {
+    clearTimeout(closeRequestTimer);
+    closeRequestTimer = null;
+  }
 }
 
 async function createWindow(content: BootContent): Promise<BrowserWindow> {
@@ -538,18 +552,23 @@ async function createWindow(content: BootContent): Promise<BrowserWindow> {
       quitting,
     });
     if (decision === "close") {
+      clearCloseRequest();
       disposeBrowserHost();
       return;
     }
     event.preventDefault();
     if (decision === "wait") return;
+    // The dialog is the app's own, drawn by the renderer that is about to go
+    // away; the native prompt only covers a renderer that never answers.
     closePromptOpen = true;
-    void confirmCloseWhileRunning(win)
-      .catch(() => undefined)
-      .finally(() => {
-        closePromptOpen = false;
-      });
+    win.webContents.send(CLOSE_REQUEST_CHANNEL);
+    closeRequestTimer = setTimeout(() => {
+      closeRequestTimer = null;
+      closePromptOpen = false;
+      void confirmCloseWhileRunning(win).catch(() => undefined);
+    }, CLOSE_REQUEST_TIMEOUT_MS);
   });
+  win.on("closed", clearCloseRequest);
 
   if (content.kind === "hub") {
     await loadHub(win);
@@ -2146,6 +2165,24 @@ function registerIpc(): void {
 
   handleTrusted("litecode:sessions-active", "workbench", (_event, active: unknown) => {
     sessionsActive = active === true;
+  });
+
+  handleTrusted("litecode:close-response", "workbench", (event, answer: unknown) => {
+    // No question is pending: the renderer answered late or on its own.
+    if (!closePromptOpen) return;
+    if (answer === "shown") {
+      // The dialog is on screen. The fallback exists for a renderer that cannot
+      // answer at all, not for a person taking their time deciding.
+      if (closeRequestTimer) {
+        clearTimeout(closeRequestTimer);
+        closeRequestTimer = null;
+      }
+      return;
+    }
+    clearCloseRequest();
+    if (answer !== "close") return;
+    closeConfirmed = true;
+    targetWindow(event)?.close();
   });
 
   const popoutChild = (dockId: unknown): BrowserWindow | null => {

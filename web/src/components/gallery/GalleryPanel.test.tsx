@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IDockviewPanelProps } from "dockview-react";
@@ -177,12 +178,25 @@ describe("GalleryPanel", () => {
     const openFile = vi.fn();
     useEditorStore.setState({ openFile } as never);
     renderPanel();
-    const tile = await screen.findByRole("button", { name: "one.png" });
+    const tile = await screen.findByRole("option", { name: "one.png" });
 
     fireEvent.doubleClick(tile);
 
     expect(openFile).toHaveBeenCalledWith("art/one.png");
     expect(openWithDefaultApp).not.toHaveBeenCalled();
+  });
+
+  it("opens the focused media with Enter or Space", async () => {
+    const openFile = vi.fn();
+    useEditorStore.setState({ openFile } as never);
+    renderPanel();
+    const tile = await screen.findByRole("option", { name: "one.png" });
+
+    fireEvent.keyDown(tile, { key: "Enter" });
+    fireEvent.keyDown(tile, { key: " " });
+
+    expect(openFile).toHaveBeenNthCalledWith(1, "art/one.png");
+    expect(openFile).toHaveBeenNthCalledWith(2, "art/one.png");
   });
 
   it("hands a container the panel cannot decode to the system player", async () => {
@@ -202,7 +216,7 @@ describe("GalleryPanel", () => {
     const openFile = vi.fn();
     useEditorStore.setState({ openFile } as never);
     renderPanel();
-    const tile = await screen.findByRole("button", { name: "reel.mkv" });
+    const tile = await screen.findByRole("option", { name: "reel.mkv" });
 
     fireEvent.doubleClick(tile);
 
@@ -225,7 +239,7 @@ describe("GalleryPanel", () => {
       truncated: false,
     });
     renderPanel();
-    const tile = await screen.findByRole("button", { name: "reel.mkv" });
+    const tile = await screen.findByRole("option", { name: "reel.mkv" });
 
     fireEvent.mouseEnter(tile);
 
@@ -235,14 +249,17 @@ describe("GalleryPanel", () => {
     expect(readBytes).not.toHaveBeenCalled();
   });
 
-  it("keeps the selection footer informational", async () => {
+  it("puts the standard actions in the selection footer", async () => {
     const { container } = renderPanel();
     await screen.findByText("one.png");
 
-    fireEvent.click(screen.getByRole("button", { name: "one.png" }));
+    fireEvent.click(screen.getByRole("option", { name: "one.png" }));
 
     expect(container.querySelector(".gallery-detail")).toBeTruthy();
-    expect(container.querySelectorAll(".gallery-detail button").length).toBe(0);
+    expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reveal in File Explorer" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Rename" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
   });
 
   it("loops a video in a hover card", async () => {
@@ -250,7 +267,7 @@ describe("GalleryPanel", () => {
       new Blob(["x"], { type: "video/mp4" }),
     );
     renderPanel();
-    const tile = await screen.findByRole("button", { name: "two.mp4" });
+    const tile = await screen.findByRole("option", { name: "two.mp4" });
 
     fireEvent.mouseEnter(tile);
 
@@ -277,7 +294,7 @@ describe("GalleryPanel", () => {
       new Blob(["x"], { type: "video/mp4" }),
     );
     renderPanel();
-    const tile = await screen.findByRole("button", { name: "two.mp4" });
+    const tile = await screen.findByRole("option", { name: "two.mp4" });
 
     fireEvent.mouseEnter(tile);
     await screen.findByTestId("gallery-hover", undefined, { timeout: 3000 });
@@ -305,19 +322,19 @@ describe("GalleryPanel", () => {
     const images = screen.getByRole("button", { name: /Images/ });
     expect(images.getAttribute("aria-expanded")).toBe("false");
     // Folded sections mount no tiles at all.
-    expect(screen.queryByRole("button", { name: "one.png" })).toBeNull();
+    expect(screen.queryByRole("option", { name: "one.png" })).toBeNull();
 
     fireEvent.click(images);
     expect(images.getAttribute("aria-expanded")).toBe("true");
-    expect(await screen.findByRole("button", { name: "one.png" })).toBeTruthy();
+    expect(await screen.findByRole("option", { name: "one.png" })).toBeTruthy();
 
     fireEvent.click(images);
-    expect(screen.queryByRole("button", { name: "one.png" })).toBeNull();
+    expect(screen.queryByRole("option", { name: "one.png" })).toBeNull();
   });
 
   it("offers reveal and trashing from a tile's context menu", async () => {
     renderPanel();
-    const tile = await screen.findByRole("button", { name: "one.png" });
+    const tile = await screen.findByRole("option", { name: "one.png" });
 
     fireEvent.contextMenu(tile);
     const reveal = await screen.findByRole("menuitem", {
@@ -331,16 +348,33 @@ describe("GalleryPanel", () => {
 
     fireEvent.contextMenu(tile);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
-    expect(deleteEntries).toHaveBeenCalledWith(["art/one.png"]);
+    expect(deleteEntries).toHaveBeenCalledWith(["art/one.png"], expect.any(Function));
     // The tile leaves at once instead of waiting for the listing round-trip.
     await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "one.png" })).toBeNull(),
+      expect(screen.queryByRole("option", { name: "one.png" })).toBeNull(),
+    );
+  });
+
+  it("applies a context-menu delete to the whole selection", async () => {
+    renderPanel();
+    const one = await screen.findByRole("option", { name: "one.png" });
+    const two = screen.getByRole("option", { name: "two.mp4" });
+
+    fireEvent.click(one);
+    fireEvent.click(two, { ctrlKey: true });
+    fireEvent.contextMenu(one);
+
+    expect(screen.queryByRole("menuitem", { name: "Rename" })).toBeNull();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    expect(deleteEntries).toHaveBeenCalledWith(
+      ["art/one.png", "clips/two.mp4"],
+      expect.any(Function),
     );
   });
 
   it("renames a tile in place from its context menu", async () => {
     renderPanel();
-    const tile = await screen.findByRole("button", { name: "one.png" });
+    const tile = await screen.findByRole("option", { name: "one.png" });
 
     fireEvent.contextMenu(tile);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
@@ -357,7 +391,7 @@ describe("GalleryPanel", () => {
     );
     // The editor closes and the caption follows the rename in the same beat.
     expect(screen.queryByDisplayValue("cover.png")).toBeNull();
-    expect(await screen.findByRole("button", { name: "cover.png" })).toBeTruthy();
+    expect(await screen.findByRole("option", { name: "cover.png" })).toBeTruthy();
   });
 
   it("switches the whole panel between thumbnails and list", async () => {
@@ -365,7 +399,7 @@ describe("GalleryPanel", () => {
     await screen.findByText("one.png");
     expect(container.querySelector(".gallery-grid")).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "one.png" }).className,
+      screen.getByRole("option", { name: "one.png" }).className,
     ).toContain("gallery-tile");
 
     fireEvent.click(screen.getByRole("button", { name: "List" }));
@@ -373,7 +407,7 @@ describe("GalleryPanel", () => {
     expect(container.querySelector(".gallery-list")).toBeTruthy();
     expect(container.querySelector(".gallery-grid")).toBeNull();
     expect(
-      screen.getByRole("button", { name: "one.png" }).className,
+      screen.getByRole("option", { name: "one.png" }).className,
     ).toContain("gallery-row");
     // The choice is remembered for the next panel mount.
     expect(localStorage.getItem("litecode.gallery.view")).toBe("list");
@@ -382,7 +416,7 @@ describe("GalleryPanel", () => {
 
     expect(container.querySelector(".gallery-grid")).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "one.png" }).className,
+      screen.getByRole("option", { name: "one.png" }).className,
     ).toContain("gallery-tile");
   });
 
@@ -396,7 +430,7 @@ describe("GalleryPanel", () => {
     expect(screen.getByText("1.2 KB")).toBeTruthy();
     expect(screen.getByText("2.1 KB")).toBeTruthy();
     // The compact stamp keeps the full timestamp in its tooltip.
-    const row = screen.getByRole("button", { name: "one.png" });
+    const row = screen.getByRole("option", { name: "one.png" });
     expect(row.querySelector(".gallery-row-time")?.getAttribute("title")).toBeTruthy();
   });
 
@@ -413,6 +447,113 @@ describe("GalleryPanel", () => {
 
     expect(screen.getByTitle("art").className).toContain("gallery-row");
     expect(screen.getByTitle("art").className).not.toContain("gallery-folder-tile");
+  });
+
+  it("selects a range and additive rows, then bulk-trash them", async () => {
+    renderPanel();
+    const one = await screen.findByRole("option", { name: "one.png" });
+    const two = screen.getByRole("option", { name: "two.mp4" });
+
+    fireEvent.click(one);
+    expect(one.getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(two, { ctrlKey: true });
+    expect(one.getAttribute("aria-selected")).toBe("true");
+    expect(two.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("2 selected")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(deleteEntries).toHaveBeenCalledWith(
+      ["art/one.png", "clips/two.mp4"],
+      expect.any(Function),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("option", { name: "one.png" })).toBeNull(),
+    );
+  });
+
+  it("extends a shift range from the anchor", async () => {
+    vi.mocked(fetchMedia).mockResolvedValue({
+      entries: [
+        entries[0],
+        { ...entries[1], path: "clips/three.mp4", name: "three.mp4" },
+        { ...entries[1], path: "clips/z.mp4", name: "z.mp4" },
+      ],
+      truncated: false,
+    });
+    renderPanel();
+    const one = await screen.findByRole("option", { name: "one.png" });
+    const last = screen.getByRole("option", { name: "z.mp4" });
+
+    fireEvent.click(one);
+    fireEvent.click(last, { shiftKey: true });
+
+    expect(
+      within(screen.getByRole("listbox", { name: "Gallery" }))
+        .getAllByRole("option")
+        .map((row) => row.getAttribute("aria-selected")),
+    ).toEqual(["true", "true", "true"]);
+  });
+
+  it("supports roving arrows, select-all, and Escape", async () => {
+    renderPanel();
+    const one = await screen.findByRole("option", { name: "one.png" });
+    const two = screen.getByRole("option", { name: "two.mp4" });
+
+    fireEvent.focus(one);
+    fireEvent.keyDown(one, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(two);
+    expect(two.getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.keyDown(two, { key: "a", ctrlKey: true });
+    expect(one.getAttribute("aria-selected")).toBe("true");
+    expect(two.getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.keyDown(two, { key: "d", ctrlKey: true });
+    expect(one.getAttribute("aria-selected")).toBe("false");
+    expect(two.getAttribute("aria-selected")).toBe("false");
+
+    fireEvent.keyDown(two, { key: "Escape" });
+    expect(one.getAttribute("aria-selected")).toBe("false");
+    expect(two.getAttribute("aria-selected")).toBe("false");
+  });
+
+  it("filters by name or path and shows a no-match state", async () => {
+    renderPanel();
+    await screen.findByRole("option", { name: "one.png" });
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search media" }), {
+      target: { value: "clips/" },
+    });
+    expect(screen.getByRole("option", { name: "two.mp4" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "one.png" })).toBeNull();
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search media" }), {
+      target: { value: "nothing" },
+    });
+    expect(screen.getByText("No media matches.")).toBeTruthy();
+  });
+
+  it("sorts by a chosen field and flips direction", async () => {
+    renderPanel();
+    await screen.findByRole("option", { name: "one.png" });
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Sort by" }), {
+      target: { value: "size" },
+    });
+    const listbox = screen.getByRole("listbox", { name: "Gallery" });
+    expect(
+      within(listbox)
+        .getAllByRole("option")
+        .map((row) => row.getAttribute("aria-label")),
+    ).toEqual(["one.png", "two.mp4"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ascending" }));
+    expect(
+      within(listbox)
+        .getAllByRole("option")
+        .map((row) => row.getAttribute("aria-label")),
+    ).toEqual(["two.mp4", "one.png"]);
   });
 
   it("explains an empty workspace", async () => {

@@ -115,6 +115,20 @@
     "count": "{{count}} items",
     "folders": "{{count}} folders",
     "refresh": "Refresh media",
+    "search": "Search media",
+    "searchClear": "Clear search",
+    "sort": {
+      "label": "Sort by",
+      "name": "Name",
+      "date": "Date modified",
+      "size": "Size",
+      "kind": "Type",
+      "asc": "Ascending",
+      "desc": "Descending"
+    },
+    "selected": "{{count}} selected",
+    "noMatches": "No media matches.",
+    "noMatchesHint": "Try a different name or path.",
     "loading": "Scanning media…",
     "empty": "No media files in this workspace.",
     "emptyHint": "Explorer excludes (.gitignore, files.exclude) also apply here.",
@@ -458,7 +472,13 @@
     "serverLogs": "Server logs",
     "waitingLogs": "Waiting for log events…",
     "about": "About",
-    "latestRelease": "Latest release"
+    "latestRelease": "Latest release",
+    "closeRunning": {
+      "title": "A session is still running",
+      "body": "Litecode is still working in this workspace. Closing the window stops the running turn and anything it started.",
+      "confirm": "Close anyway",
+      "cancel": "Keep working"
+    }
   },
   "session": {
     "noPreview": "No preview",
@@ -711,13 +731,6 @@
       },
       "bootFailed": {
         "title": "Litecode failed to start"
-      },
-      "runningSession": {
-        "title": "A session is still running",
-        "message": "Litecode is still working in this workspace.",
-        "detail": "Closing the window stops the running turn and anything it started. Keep the window open to let the agent finish.",
-        "close": "Close anyway",
-        "cancel": "Keep working"
       }
     },
     "progress": {

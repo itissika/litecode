@@ -4,6 +4,7 @@ import type { MediaEntry, MediaKind } from "../../api/workspace";
 import {
   allSection,
   buildFolderIndex,
+  galleryComparator,
   capSections,
   childFolders,
   folderEntries,
@@ -12,6 +13,7 @@ import {
   kindSections,
   parentFolder,
   sectionsHaveMore,
+  sortEntries,
 } from "./galleryGroups";
 
 function entry(path: string, kind: MediaKind = "image"): MediaEntry {
@@ -95,6 +97,51 @@ describe("galleryGroups", () => {
       "a/b/theme.mp3",
       "a/b/zz.png",
     ]);
+  });
+
+  it("sorts by name, date, size and kind with a stable name tie-break", () => {
+    const items = [
+      { ...entry("b.png"), size: 30, mtime: 2 },
+      { ...entry("a.mp4", "video"), size: 10, mtime: 3 },
+      { ...entry("c.png"), size: 20, mtime: 1 },
+    ];
+    expect(sortEntries(items, "name", "asc").map((item) => item.name)).toEqual([
+      "a.mp4",
+      "b.png",
+      "c.png",
+    ]);
+    expect(sortEntries(items, "date", "desc").map((item) => item.name)).toEqual([
+      "a.mp4",
+      "b.png",
+      "c.png",
+    ]);
+    expect(sortEntries(items, "size", "asc").map((item) => item.name)).toEqual([
+      "a.mp4",
+      "c.png",
+      "b.png",
+    ]);
+    expect(sortEntries(items, "kind", "asc").map((item) => item.name)).toEqual([
+      "b.png",
+      "c.png",
+      "a.mp4",
+    ]);
+    expect(galleryComparator("name", "desc")(items[0], items[1])).toBeLessThan(0);
+  });
+
+  it("preserves an explicit comparator in folder and kind groupings", () => {
+    const newestFirst = (a: MediaEntry, b: MediaEntry) => b.mtime - a.mtime;
+    const direct = folderEntries(entries, "a/b", newestFirst);
+    expect(direct.map((item) => item.name)).toEqual([
+      "reel.mp4",
+      "theme.mp3",
+      "zz.png",
+    ]);
+    expect(allSection(entries, newestFirst)[0].entries[0].path).toBe(
+      "root.png",
+    );
+    expect(
+      kindSections(entries, (kind) => kind, newestFirst)[0].entries[0].path,
+    ).toBe("root.png");
   });
 
   it("splits folder trails", () => {

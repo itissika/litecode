@@ -117,11 +117,16 @@ export async function renameEntry(
   });
 }
 
+export type ConfirmDelete = (message: string) => boolean | Promise<boolean>;
+
 /** Trash these paths after a confirm. False when the user backed out. */
-export async function deleteEntries(paths: string[]): Promise<boolean> {
+export async function deleteEntries(
+  paths: string[],
+  confirmDelete: ConfirmDelete,
+): Promise<boolean> {
   const unique = [...new Set(paths)].filter(Boolean);
   if (unique.length === 0) return false;
-  const ok = window.confirm(
+  const ok = await confirmDelete(
     unique.length === 1
       ? i18n.t("explorer.deleteOne", { name: unique[0] })
       : i18n.t("explorer.deleteMany", { count: unique.length }),

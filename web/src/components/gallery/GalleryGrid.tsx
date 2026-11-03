@@ -1,4 +1,5 @@
 import { CaretRight } from "@phosphor-icons/react";
+import type { KeyboardEvent } from "react";
 
 import type { MediaEntry } from "../../api/workspace";
 import { GalleryTile } from "./GalleryTile";
@@ -6,15 +7,24 @@ import type { GallerySection, GalleryView } from "./galleryGroups";
 
 interface GalleryGridProps {
   sections: readonly GallerySection[];
+  /** Accessible name for sections without their own label. */
+  ariaLabel: string;
   /** Thumbnail grid or compact rows; the same choice as the folder strip. */
   view: GalleryView;
   /** Section keys the user folded away; only labelled sections fold. */
   folded: ReadonlySet<string>;
   onToggle: (key: string) => void;
-  selected: string | null;
+  selected: ReadonlySet<string>;
+  /** Roving focus target; exactly one tile is tabbable. */
+  active: string | null;
   /** Path of the tile whose caption is an input right now. */
   renaming: string | null;
-  onSelect: (entry: MediaEntry) => void;
+  onSelect: (
+    entry: MediaEntry,
+    opts?: { additive?: boolean; range?: boolean },
+  ) => void;
+  onActivate: (entry: MediaEntry) => void;
+  onKeyDown: (entry: MediaEntry, event: KeyboardEvent<HTMLElement>) => void;
   onOpen: (entry: MediaEntry) => void;
   onMenu: (entry: MediaEntry, at: { x: number; y: number }) => void;
   onRename: (entry: MediaEntry, name: string) => void;
@@ -30,12 +40,16 @@ interface GalleryGridProps {
  */
 export function GalleryGrid({
   sections,
+  ariaLabel,
   view,
   folded,
   onToggle,
   selected,
+  active,
   renaming,
   onSelect,
+  onActivate,
+  onKeyDown,
   onOpen,
   onMenu,
   onRename,
@@ -67,6 +81,9 @@ export function GalleryGrid({
             <div
               className={view === "list" ? "gallery-list" : "gallery-grid"}
               id={"gallery-section-" + section.key}
+              role="listbox"
+              aria-label={section.label ?? ariaLabel}
+              aria-multiselectable="true"
             >
               {isFolded
                 ? null
@@ -75,9 +92,12 @@ export function GalleryGrid({
                       key={entry.path}
                       entry={entry}
                       view={view}
-                      selected={selected === entry.path}
+                      selected={selected.has(entry.path)}
+                      active={active === entry.path}
                       renaming={renaming === entry.path}
                       onSelect={onSelect}
+                      onActivate={onActivate}
+                      onKeyDown={onKeyDown}
                       onOpen={onOpen}
                       onMenu={onMenu}
                       onRename={onRename}

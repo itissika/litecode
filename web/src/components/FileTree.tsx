@@ -38,10 +38,8 @@ import { validateFileName } from "../lib/fileTreeNames";
 import { FileTreeSkeleton } from "./ui/Skeleton";
 import { InlineRename } from "./ui/InlineRename";
 import { ListRow } from "./ui/ListRow";
-import {
-  FileTreeContextMenu,
-  type FileTreeMenuItem,
-} from "./FileTreeContextMenu";
+import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
+import { useConfirmDialog } from "./ui/useConfirmDialog";
 import { FileTreeGlobHits, FileTreeGlobInput } from "./FileTreeGlob";
 import { fileNameFromPath } from "../utils/language";
 import { getFileIcon, FolderIcon } from "../utils/fileIcon";
@@ -158,7 +156,7 @@ function GhostRow({
         <FolderIcon
           size={16}
           weight="regular"
-          className="h-4 w-4 shrink-0 text-(--_dk-fg-muted)"
+          className="h-4 w-4 shrink-0 text-(--_dk-text-muted)"
         />
       ) : (
         (() => {
@@ -167,7 +165,7 @@ function GhostRow({
             <Glyph
               size={16}
               weight="regular"
-              className="h-4 w-4 shrink-0 text-(--_dk-fg-muted)"
+              className="h-4 w-4 shrink-0 text-(--_dk-text-muted)"
             />
           );
         })()
@@ -327,7 +325,7 @@ function TreeNode({
           weight="regular"
           aria-hidden
           className={`h-4 w-4 shrink-0 select-none ${
-            dirChanged ? CHANGED_DIR_CLASS : "text-(--_dk-fg-muted)"
+            dirChanged ? CHANGED_DIR_CLASS : "text-(--_dk-text-muted)"
           }`}
         />
       ) : (
@@ -338,7 +336,7 @@ function TreeNode({
               size={16}
               weight="regular"
               aria-hidden
-              className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
+              className="h-4 w-4 shrink-0 select-none text-(--_dk-text-muted)"
             />
           );
         })()
@@ -404,6 +402,15 @@ export function FileTree() {
   const setFocus = useExplorerStore((s) => s.setFocus);
   const clearSelection = useExplorerStore((s) => s.clearSelection);
   const activePath = useEditorStore((s) => s.activePath);
+  const { confirm, dialog } = useConfirmDialog();
+  const confirmDelete = (message: string) =>
+    confirm({
+      title: i18n.t("explorer.delete"),
+      body: message,
+      danger: true,
+      confirmLabel: i18n.t("common.delete"),
+      cancelLabel: i18n.t("common.cancel"),
+    });
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [globQuery, setGlobQuery] = useState("");
@@ -498,7 +505,7 @@ export function FileTree() {
     }
     if ((e.key === "Delete" || e.key === "Backspace") && paths.length) {
       e.preventDefault();
-      void deleteEntries(paths);
+      void deleteEntries(paths, confirmDelete);
       return;
     }
     if (mod && e.key.toLowerCase() === "c" && e.shiftKey) {
@@ -581,7 +588,7 @@ export function FileTree() {
     });
   };
 
-  const menuItems = (): FileTreeMenuItem[] => {
+  const menuItems = (): ContextMenuItem[] => {
     const path = menu?.path ?? null;
     const paths = operatePaths();
     const kind = path === null ? "dir" : entryKind(childrenMap, path);
@@ -606,7 +613,7 @@ export function FileTree() {
               id: "open",
               label: i18n.t("explorer.open"),
               onClick: () => void useEditorStore.getState().openFile(single),
-            } satisfies FileTreeMenuItem,
+            } satisfies ContextMenuItem,
           ]
         : []),
       {
@@ -623,7 +630,7 @@ export function FileTree() {
               id: "reveal",
               label: i18n.t("explorer.reveal"),
               onClick: () => revealInHost(path),
-            } satisfies FileTreeMenuItem,
+            } satisfies ContextMenuItem,
           ]
         : []),
       { id: "sep-2", separator: true },
@@ -676,12 +683,12 @@ export function FileTree() {
       },
       ...(path === null
         ? [
-            { id: "sep-collapse", separator: true } satisfies FileTreeMenuItem,
+            { id: "sep-collapse", separator: true } satisfies ContextMenuItem,
             {
               id: "collapse",
               label: i18n.t("explorer.collapseAll"),
               onClick: () => collapseAll(),
-            } satisfies FileTreeMenuItem,
+            } satisfies ContextMenuItem,
           ]
         : []),
       { id: "sep-4", separator: true },
@@ -691,7 +698,7 @@ export function FileTree() {
         shortcut: "Del",
         danger: true,
         disabled: paths.length === 0,
-        onClick: () => void deleteEntries(paths),
+        onClick: () => void deleteEntries(paths, confirmDelete),
       },
     ];
   };
@@ -805,13 +812,14 @@ export function FileTree() {
       )}
 
       {menu && (
-        <FileTreeContextMenu
+        <ContextMenu
           x={menu.x}
           y={menu.y}
           items={menuItems()}
           onClose={() => setMenu(null)}
         />
       )}
+      {dialog}
     </div>
   );
 }

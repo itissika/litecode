@@ -17,7 +17,7 @@ export function ClickShield() {
   return (
     <div
       data-litecode-overlay="click-shield"
-      className="fixed inset-0 z-[10001] cursor-default"
+      className="fixed inset-0 z-(--_dk-z-shield) cursor-default"
       aria-hidden
     />
   );

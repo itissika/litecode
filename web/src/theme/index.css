@@ -32,12 +32,15 @@
   --color-dk-overlay: var(--_dk-overlay);
 
   --color-dk-text-primary: var(--_dk-text-primary);
+  --color-dk-text-body: var(--_dk-text-body);
   --color-dk-text-secondary: var(--_dk-text-secondary);
   --color-dk-text-muted: var(--_dk-text-muted);
   --color-dk-text-disabled: var(--_dk-text-disabled);
 
   --color-dk-accent: var(--_dk-accent);
   --color-dk-accent-hover: var(--_dk-accent-hover);
+  --color-dk-accent-solid: var(--_dk-accent-solid);
+  --color-dk-accent-solid-text: var(--_dk-accent-solid-text);
   --color-dk-accent-glow: var(--_dk-accent-glow);
   --color-dk-accent-halo: var(--_dk-accent-halo);
   --color-dk-accent-ring: var(--_dk-accent-ring);
@@ -48,29 +51,20 @@
 
   --color-dk-line: var(--_dk-line);
   --color-dk-line-visible: var(--_dk-line-visible);
-  --color-dk-elevation: var(--_dk-elevation);
 
   --color-dk-surface-raised: var(--_dk-surface-raised);
   --color-dk-surface-header: var(--_dk-surface-header);
   --color-dk-border-visible: var(--_dk-border-visible);
+  --color-dk-border-strong: var(--_dk-border-strong);
 
-  --font-sans:
-    "Inter",
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    sans-serif;
-  --font-mono:
-    "JetBrains Mono",
-    ui-monospace,
-    "SF Mono",
-    "Cascadia Code",
-    monospace;
+  --shadow-dk-elevation: var(--_dk-elevation);
 
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.625rem;
+  --font-sans: var(--_dk-font-ui);
+  --font-mono: var(--_dk-font-code);
+
+  --radius-sm: var(--_dk-radius-sm);
+  --radius-md: var(--_dk-radius-md);
+  --radius-lg: var(--_dk-radius-lg);
 
   /* Typography — weight utilities become token-driven. Values match Tailwind
      defaults, so there is no visual change; this only centralizes them so a

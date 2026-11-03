@@ -26,6 +26,7 @@ import { FoldCard } from "./FoldCard";
 import { FOLDCARD_HEADER_TONE } from "./FoldCard";
 import { ListRow } from "./ui/ListRow";
 import { Popover } from "./ui/Popover";
+import { useConfirmDialog } from "./ui/useConfirmDialog";
 import { useEditorStore } from "../stores/editorStore";
 import {
   actionTargetPaths,
@@ -52,13 +53,6 @@ import { useVerticalSplit } from "../lib/useVerticalSplit";
 
 const SPLIT_KEY = "litecode-git-split";
 const SPLIT_DEFAULT = 0.55;
-
-function confirmDiscard(paths: string[]): boolean {
-  if (paths.length === 0) return false;
-  const preview = paths.slice(0, 8).join("\n");
-  const extra = paths.length > 8 ? `\n…and ${paths.length - 8} more` : "";
-  return window.confirm(`Discard changes to:\n${preview}${extra}`);
-}
 
 function IconBtn({
   title,
@@ -96,9 +90,24 @@ function FileActions({
   const stagePaths = useGitStore((s) => s.stagePaths);
   const unstagePaths = useGitStore((s) => s.unstagePaths);
   const restorePaths = useGitStore((s) => s.restorePaths);
+  const { confirm, dialog } = useConfirmDialog();
+
+  const confirmDiscard = async (): Promise<boolean> => {
+    if (paths.length === 0) return false;
+    const preview = paths.slice(0, 8).join("\n");
+    const extra = paths.length > 8 ? `\n…and ${paths.length - 8} more` : "";
+    return confirm({
+      title: "Discard changes",
+      body: `Discard changes to:\n${preview}${extra}`,
+      danger: true,
+      confirmLabel: "Discard",
+      cancelLabel: "Cancel",
+    });
+  };
 
   return (
-    <span className="hidden shrink-0 gap-0.5 group-hover:flex">
+    <>
+      <span className="hidden shrink-0 gap-0.5 group-hover:flex">
       {section === "changes" ? (
         <IconBtn
           title="Stage"
@@ -125,15 +134,17 @@ function FileActions({
       <IconBtn
         title="Discard"
         disabled={mutating || paths.length === 0}
-        onClick={(e) => {
+        onClick={async (e) => {
           e.stopPropagation();
-          if (!confirmDiscard(paths)) return;
+          if (!(await confirmDiscard())) return;
           void restorePaths(paths);
         }}
       >
         <ArrowCounterClockwise size={12} />
       </IconBtn>
-    </span>
+      </span>
+      {dialog}
+    </>
   );
 }
 

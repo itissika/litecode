@@ -13,8 +13,8 @@
 }
 
 .session-current-badge {
-  border: 1px solid var(--_dk-emerald-900\/20);
-  background: var(--_dk-emerald-900\/20);
+  border: 1px solid var(--_dk-tag-ok-border);
+  background: var(--_dk-tag-ok-bg);
   color: var(--_dk-emerald-500);
   border-radius: 999px;
   padding: 0.0625rem 0.375rem;

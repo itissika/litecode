@@ -160,10 +160,6 @@ describe("AgentsSection persist UX", () => {
   });
 
   it("deletes a non-protected agent after confirm", async () => {
-    vi.stubGlobal(
-      "confirm",
-      vi.fn(() => true),
-    );
     useSettingsStore.setState({
       agentIds: ["helper"],
       selectedAgentId: "helper",
@@ -171,6 +167,8 @@ describe("AgentsSection persist UX", () => {
     });
     render(<AgentsSection />);
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     await waitFor(() => {
       expect(removeAgent).toHaveBeenCalledWith("helper");
     });

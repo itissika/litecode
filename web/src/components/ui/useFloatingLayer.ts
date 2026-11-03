@@ -8,8 +8,10 @@ interface FloatingLayerOptions {
   rootRef: RefObject<HTMLElement | null>;
   /** The portaled panel; clicks inside it never dismiss. */
   panelRef: RefObject<HTMLElement | null>;
-  /** Dismiss (Escape, or mousedown outside root and panel). */
+  /** Dismiss on mousedown outside root and panel. */
   onDismiss: () => void;
+  /** Escape override; defaults to onDismiss. */
+  onEscape?: () => void;
   /** Any scroll (capture phase) while open. */
   onScroll: () => void;
   /** Window resize while open. */
@@ -28,11 +30,12 @@ export function useFloatingLayer({
   rootRef,
   panelRef,
   onDismiss,
+  onEscape,
   onScroll,
   onResize,
 }: FloatingLayerOptions): void {
-  const handlers = useRef({ onDismiss, onScroll, onResize });
-  handlers.current = { onDismiss, onScroll, onResize };
+  const handlers = useRef({ onDismiss, onEscape, onScroll, onResize });
+  handlers.current = { onDismiss, onEscape, onScroll, onResize };
 
   useEffect(() => {
     if (!open) return;
@@ -42,7 +45,8 @@ export function useFloatingLayer({
     const scroll = () => handlers.current.onScroll();
     const resize = () => handlers.current.onResize();
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") handlers.current.onDismiss();
+      if (e.key !== "Escape") return;
+      (handlers.current.onEscape ?? handlers.current.onDismiss)();
     };
     const down = (e: MouseEvent) => {
       const t = e.target as Node;

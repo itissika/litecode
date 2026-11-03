@@ -47,8 +47,14 @@
   --_dk-text-weight-semibold:  400;
   --_dk-text-weight-bold:      500;
 
-  --_dk-font-ui:   var(--font-sans);
-  --_dk-font-code: var(--font-mono);
+  --_dk-font-ui:   "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --_dk-font-code: "JetBrains Mono", ui-monospace, "SFMono-Regular", "SF Mono", "Cascadia Code", monospace;
+
+  /* Structural radii. Kept here (not only in Tailwind's @theme) because the
+     desktop hub consumes this file without the web @theme block. */
+  --_dk-radius-sm: 0.375rem;
+  --_dk-radius-md: 0.5rem;
+  --_dk-radius-lg: 0.625rem;
 
   /* ── Text size scale ──
      A deliberately tight scale: UI chrome stays 9–11px at the bottom, while the
@@ -73,8 +79,7 @@
      tokens — never a hardcoded pl- / px- utility — so a change here cascades
      everywhere and header/content/guide-line stay in a consistent relationship. */
   --_dk-indent-card-head: 0.5rem;    /* 8px  — FoldCard header (icon) inset */
-  --_dk-indent-card-body: 1.625rem;  
-  --_dk-indent-step:      0.75rem;   /* 12px — one nesting-depth step */
+  --_dk-indent-card-body: 1.625rem;
 
   /* Comfortable reading measure for prose. Keeps long paragraphs from
      stretching across ultra-wide panels; code/table/mermaid stay full width. */
@@ -95,10 +100,6 @@
   --_dk-red-500:          #ef4444;
   --_dk-amber-500:        #e9a71a;
   --_dk-emerald-500:      #10b981;
-  --_dk-red-900\/10:      rgba(127, 29, 29, 0.1);
-  --_dk-amber-900\/20:    rgba(120, 53, 15, 0.2);
-  --_dk-emerald-900\/20:  rgba(6, 78, 59, 0.2);
-
   /* ── Categorical (fixed-hue UI accents: tab-group chips, status dots) ──
      Theme-aware: tuned per theme so each hue reads cleanly on both surfaces.
      Single source for the dockview chip palette (see theme/dockview/adapter.css). */
@@ -136,7 +137,7 @@
 
   /* ── Status (tool-icon static states) ── */
   --_dk-status-ok:    #e8ecf0;   /* theme foreground: light-white in dark theme */
-  --_dk-status-fail:  #ef4444;   /* failure red */
+  --_dk-status-fail:  var(--_dk-red-500);
 
   /* ── Lines (4 levels, all 1px) ── */
   --_dk-line:           rgba(255, 255, 255, 0.05);   /* L1: subtle — internal dividers */
@@ -149,6 +150,19 @@
 
   /* ── Elevation ── */
   --_dk-elevation: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --_dk-shadow-popover: 0 6px 18px rgba(0, 0, 0, 0.18);
+  --_dk-shadow-menu: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+
+  /* ── Overlay stacking ──
+     One ordered scale for portaled layers. Keep the literal values stable:
+     the desktop host and existing portal trees rely on this order. */
+  --_dk-z-menu: 50;
+  --_dk-z-toast: 100;
+  --_dk-z-dockview: 999;
+  --_dk-z-popover: 1000;
+  --_dk-z-dialog: 9999;
+  --_dk-z-dropdown: 10000;
+  --_dk-z-shield: 10001;
 
   /* ── Composer card shadows (chat input + todo + latest) ──
      Dark theme: no dark drop layer (invisible on black) — only the subtle
@@ -215,9 +229,9 @@
 
   /* danger surface — destructive action (was btn-danger) */
   --_dk-ix-danger-bg:          transparent;
-  --_dk-ix-danger-bg-hover:    rgba(127, 29, 29, 0.1);
+  --_dk-ix-danger-bg-hover:    color-mix(in srgb, var(--_dk-red-500) 10%, transparent);
   --_dk-ix-danger-bg-pressed:  var(--_dk-danger-pressed);
-  --_dk-ix-danger-bg-selected: rgba(127, 29, 29, 0.1);
+  --_dk-ix-danger-bg-selected: color-mix(in srgb, var(--_dk-red-500) 10%, transparent);
   --_dk-ix-danger-bg-disabled: transparent;
   --_dk-ix-danger-fg:          var(--_dk-red-500);
   --_dk-ix-danger-fg-hover:    var(--_dk-red-500);
@@ -261,13 +275,9 @@
   --_dk-red-500:          #ff3d37;
   --_dk-amber-500:        #ffaa48;
   --_dk-emerald-500:      #00d459;
-  --_dk-red-900\/10:      rgba(127, 29, 29, 0.1);
-  --_dk-amber-900\/20:    rgba(120, 53, 15, 0.2);
-  --_dk-emerald-900\/20:  rgba(6, 78, 59, 0.2);
-
   /* ── Status (tool-icon static states) ── */
   --_dk-status-ok:    #2c2c2e;   /* theme foreground: deep-grey in light theme */
-  --_dk-status-fail:  #ef4444;   /* failure red */
+  --_dk-status-fail:  var(--_dk-red-500);
 
   /* ── Categorical (light-tuned for contrast on light surfaces) ── */
   --_dk-cat-blue:    #0066cc;
@@ -349,9 +359,9 @@
 
   /* danger surface */
   --_dk-ix-danger-bg:          transparent;
-  --_dk-ix-danger-bg-hover:    rgba(127, 29, 29, 0.1);
+  --_dk-ix-danger-bg-hover:    color-mix(in srgb, var(--_dk-red-500) 10%, transparent);
   --_dk-ix-danger-bg-pressed:  var(--_dk-danger-pressed);
-  --_dk-ix-danger-bg-selected: rgba(127, 29, 29, 0.1);
+  --_dk-ix-danger-bg-selected: color-mix(in srgb, var(--_dk-red-500) 10%, transparent);
   --_dk-ix-danger-bg-disabled: transparent;
   --_dk-ix-danger-fg:          var(--_dk-red-500);
   --_dk-ix-danger-fg-hover:    var(--_dk-red-500);

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import {
   ArrowClockwise,
@@ -6,7 +13,11 @@ import {
   FolderSimple,
   Images,
   ListBullets,
+  MagnifyingGlass,
+  SortAscending,
+  SortDescending,
   SquaresFour,
+  X,
 } from "@phosphor-icons/react";
 
 import {
@@ -26,7 +37,9 @@ import { useWorkspaceChangeStore } from "../../stores/workspaceChangeStore";
 import i18n from "../../i18n";
 import { deleteEntries, renameEntry } from "../../lib/fileTreeOps";
 import { validateFileName } from "../../lib/fileTreeNames";
-import { FileTreeContextMenu, type FileTreeMenuItem } from "../FileTreeContextMenu";
+import { applyListSelection } from "../../lib/listSelection";
+import { ContextMenu, type ContextMenuItem } from "../ui/ContextMenu";
+import { useConfirmDialog } from "../ui/useConfirmDialog";
 import { GalleryGrid } from "./GalleryGrid";
 import {
   MEDIA_KIND_ORDER,
@@ -37,10 +50,14 @@ import {
   folderEntries,
   folderLabel,
   folderTrail,
+  galleryComparator,
   kindSections,
   sectionsHaveMore,
+  sortEntries,
   type GalleryMode,
   type GallerySection,
+  type GallerySort,
+  type GallerySortDirection,
   type GalleryView,
 } from "./galleryGroups";
 
@@ -106,6 +123,18 @@ function kindLabel(kind: MediaKind): string {
  * system player.
  */
 export function GalleryPanel(_props: IDockviewPanelProps) {
+  const { confirm, dialog } = useConfirmDialog();
+  const confirmDelete = useCallback(
+    (message: string) =>
+      confirm({
+        title: i18n.t("common.delete"),
+        body: message,
+        danger: true,
+        confirmLabel: i18n.t("common.delete"),
+        cancelLabel: i18n.t("common.cancel"),
+      }),
+    [confirm],
+  );
   const [listing, setListing] = useState<MediaListing | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -114,7 +143,14 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
   const [mode, setMode] = useState<GalleryMode>("all");
   const [view, setView] = useState<GalleryView>(loadView);
   const [folder, setFolder] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<GallerySort>("name");
+  const [sortDir, setSortDir] = useState<GallerySortDirection>("asc");
+  const [selected, setSelected] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const [anchor, setAnchor] = useState<string | null>(null);
+  const [active, setActive] = useState<string | null>(null);
   const [limit, setLimit] = useState(PAGE);
   // Types view opens as an overview: every kind folded until it is asked for.
   const [foldedKinds, setFoldedKinds] = useState<ReadonlySet<string>>(
@@ -184,18 +220,45 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
   }, [connection]);
 
   const entries = listing?.entries ?? EMPTY_ENTRIES;
-  const folderIndex = useMemo(() => buildFolderIndex(entries), [entries]);
+  const entrySet = useMemo(
+    () => new Set(entries.map((entry) => entry.path)),
+    [entries],
+  );
+  const filteredEntries = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return entries;
+    return entries.filter(
+      (entry) =>
+        entry.name.toLowerCase().includes(needle) ||
+        entry.path.toLowerCase().includes(needle),
+    );
+  }, [entries, query]);
+  const compare = useMemo(
+    () => galleryComparator(sort, sortDir),
+    [sort, sortDir],
+  );
+  const sortedEntries = useMemo(
+    () => sortEntries(filteredEntries, sort, sortDir),
+    [filteredEntries, sort, sortDir],
+  );
+  // Folder counts follow the current search, but folder validity follows the
+  // workspace. A query must not reset the folder the user is standing in.
+  const allFolderIndex = useMemo(() => buildFolderIndex(entries), [entries]);
+  const folderIndex = useMemo(
+    () => buildFolderIndex(filteredEntries),
+    [filteredEntries],
+  );
   const folders = useMemo(
     () => childFolders(folderIndex, folder),
     [folderIndex, folder],
   );
 
   const sections = useMemo(() => {
-    if (mode === "all") return allSection(entries);
-    if (mode === "kind") return kindSections(entries, kindLabel);
-    const direct = folderEntries(entries, folder);
+    if (mode === "all") return allSection(sortedEntries, compare);
+    if (mode === "kind") return kindSections(sortedEntries, kindLabel, compare);
+    const direct = folderEntries(sortedEntries, folder, compare);
     return direct.length ? [{ key: "folder", entries: direct, total: direct.length }] : [];
-  }, [entries, folder, mode]);
+  }, [compare, folder, mode, sortedEntries]);
 
   const isFolded = useCallback(
     (section: GallerySection) =>
@@ -223,20 +286,60 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
     [limit, openSections],
   );
 
-  const selectedEntry = useMemo(
-    () => entries.find((entry) => entry.path === selected) ?? null,
+  const selectedEntries = useMemo(
+    () => entries.filter((entry) => selected.has(entry.path)),
     [entries, selected],
   );
+  const activeEntry = useMemo(() => {
+    const focused = entries.find((entry) => entry.path === active);
+    if (focused && selected.has(focused.path)) return focused;
+    return selectedEntries[0] ?? null;
+  }, [active, entries, selected, selectedEntries]);
+  const selectableEntries = useMemo(
+    () => visibleSections.flatMap((section) => section.entries),
+    [visibleSections],
+  );
 
-  // A reload may drop the drilled folder or the selected file.
+  // A reload may drop the drilled folder or the selected file. Keep a stale
+  // selection from operating on paths that no longer exist.
   useEffect(() => {
-    if (folder && !folderIndex.has(folder)) setFolder("");
-  }, [folder, folderIndex]);
+    if (folder && !allFolderIndex.has(folder)) setFolder("");
+  }, [allFolderIndex, folder]);
   useEffect(() => {
-    if (selected && !entries.some((entry) => entry.path === selected)) {
-      setSelected(null);
+    setSelected((current) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const path of current) {
+        if (entrySet.has(path)) next.add(path);
+        else changed = true;
+      }
+      return changed ? next : current;
+    });
+    setAnchor((current) =>
+      current && entrySet.has(current) ? current : null,
+    );
+    setActive((current) =>
+      current && entrySet.has(current) ? current : null,
+    );
+  }, [entrySet]);
+
+  // Searching is a new scope; don't leave bulk actions pointing at rows the
+  // user can no longer see.
+  useEffect(() => {
+    setSelected(new Set<string>());
+    setAnchor(null);
+  }, [query]);
+
+  // Roving focus: exactly one tile is tabbable, and it follows the visible list.
+  useEffect(() => {
+    if (selectableEntries.length === 0) {
+      if (active) setActive(null);
+      return;
     }
-  }, [entries, selected]);
+    if (!active || !selectableEntries.some((entry) => entry.path === active)) {
+      setActive(selectableEntries[0].path);
+    }
+  }, [active, selectableEntries]);
 
   // New scope: restart paging at the top.
   useEffect(() => {
@@ -283,7 +386,42 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
 
   const enterFolder = useCallback((path: string) => {
     setFolder(path);
-    setSelected(null);
+    setSelected(new Set<string>());
+    setAnchor(null);
+    setActive(null);
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelected(new Set<string>());
+    setAnchor(null);
+  }, []);
+
+  const selectEntry = useCallback(
+    (entry: MediaEntry, opts?: { additive?: boolean; range?: boolean }) => {
+      const result = applyListSelection(selected, entry.path, anchor, {
+        ...opts,
+        visible: selectableEntries.map((item) => item.path),
+      });
+      setSelected(result.selected);
+      setAnchor(result.anchor);
+      setActive(entry.path);
+    },
+    [anchor, selectableEntries, selected],
+  );
+
+  const activateEntry = useCallback((entry: MediaEntry) => {
+    setActive(entry.path);
+  }, []);
+
+  const focusEntry = useCallback((path: string) => {
+    const root = scrollRef.current;
+    if (!root) return;
+    const node = Array.from(
+      root.querySelectorAll<HTMLElement>("[data-gallery-path]"),
+    ).find((candidate) => candidate.dataset.galleryPath === path);
+    if (!node) return;
+    node.focus({ preventScroll: true });
+    node.scrollIntoView?.({ block: "nearest" });
   }, []);
 
   const revealInHost = useCallback((path: string) => {
@@ -299,7 +437,7 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
 
   // The tile menu mirrors the explorer's wording and its recycle semantics: on
   // Windows the delete goes to the Recycle Bin, elsewhere it is a plain unlink.
-  const menuItems = (): FileTreeMenuItem[] => {
+  const menuItems = (): ContextMenuItem[] => {
     if (!menu) return [];
     const entry = menu.entry;
     return [
@@ -314,21 +452,26 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
               id: "reveal",
               label: i18n.t("explorer.reveal"),
               onClick: () => revealInHost(entry.path),
-            } satisfies FileTreeMenuItem,
+            } satisfies ContextMenuItem,
           ]
         : []),
       { id: "sep-1", separator: true },
-      {
-        id: "rename",
-        label: i18n.t("explorer.rename"),
-        onClick: () => setRenamingPath(entry.path),
-      },
-      { id: "sep-2", separator: true },
+      ...(selected.size <= 1
+        ? [
+            {
+              id: "rename",
+              label: i18n.t("explorer.rename"),
+              onClick: () => setRenamingPath(entry.path),
+            } satisfies ContextMenuItem,
+            { id: "sep-2", separator: true } satisfies ContextMenuItem,
+          ]
+        : []),
       {
         id: "delete",
         label: i18n.t("explorer.delete"),
         danger: true,
-        onClick: () => trashEntry(entry),
+        onClick: () =>
+          selected.size > 1 ? trashSelected() : trashEntry(entry),
       },
     ];
   };
@@ -343,7 +486,7 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
   // Trash the file, then drop the tile right away: the server patches its
   // snapshot rather than re-walking, so nothing else has to catch up.
   const trashEntry = useCallback((entry: MediaEntry) => {
-    void deleteEntries([entry.path]).then((removed) => {
+    void deleteEntries([entry.path], confirmDelete).then((removed) => {
       if (!removed) return;
       setListing((current) =>
         current
@@ -353,9 +496,156 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
             }
           : current,
       );
-      setSelected((current) => (current === entry.path ? null : current));
+      setSelected((current) => {
+        if (!current.has(entry.path)) return current;
+        const next = new Set(current);
+        next.delete(entry.path);
+        return next;
+      });
+      setAnchor((current) => (current === entry.path ? null : current));
+      setActive((current) => (current === entry.path ? null : current));
     });
-  }, []);
+  }, [confirmDelete]);
+
+  const trashSelected = useCallback(() => {
+    const paths = selectedEntries.map((entry) => entry.path);
+    if (paths.length === 0) return;
+    const gone = new Set(paths);
+    void deleteEntries(paths, confirmDelete).then((removed) => {
+      if (!removed) return;
+      setListing((current) =>
+        current
+          ? {
+              ...current,
+              entries: current.entries.filter((item) => !gone.has(item.path)),
+            }
+          : current,
+      );
+      setSelected(new Set<string>());
+      setAnchor(null);
+      setActive(null);
+    });
+  }, [confirmDelete, selectedEntries]);
+
+  const handleGalleryKeyDown = useCallback(
+    (entry: MediaEntry, event: KeyboardEvent<HTMLElement>) => {
+      const key = event.key;
+      const mod = event.ctrlKey || event.metaKey;
+      const paths = selectableEntries.map((item) => item.path);
+      const index = selectableEntries.findIndex(
+        (item) => item.path === entry.path,
+      );
+
+      if (mod && key.toLowerCase() === "a") {
+        event.preventDefault();
+        setSelected(new Set(paths));
+        setAnchor(active ?? paths[0] ?? null);
+        return;
+      }
+      if (mod && key.toLowerCase() === "d") {
+        event.preventDefault();
+        clearSelection();
+        return;
+      }
+      if (key === "Escape") {
+        if (selected.size > 0) event.preventDefault();
+        clearSelection();
+        return;
+      }
+      if (key === "Delete") {
+        if (selected.size > 0) {
+          event.preventDefault();
+          trashSelected();
+        }
+        return;
+      }
+      if (key.toLowerCase() === "x") {
+        event.preventDefault();
+        const result = applyListSelection(selected, entry.path, anchor, {
+          additive: true,
+          visible: paths,
+        });
+        setSelected(result.selected);
+        setAnchor(result.anchor);
+        setActive(entry.path);
+        return;
+      }
+
+      const moveTo = (nextIndex: number, extend: boolean) => {
+        event.preventDefault();
+        const next = selectableEntries[nextIndex];
+        if (!next) return;
+        if (extend) {
+          const base = anchor ?? entry.path;
+          const result = applyListSelection(selected, next.path, base, {
+            range: true,
+            visible: paths,
+          });
+          setSelected(result.selected);
+          setAnchor(result.anchor);
+        } else if (!mod) {
+          const result = applyListSelection(selected, next.path, anchor, {
+            visible: paths,
+          });
+          setSelected(result.selected);
+          setAnchor(result.anchor);
+        }
+        setActive(next.path);
+        focusEntry(next.path);
+      };
+
+      if (key === "Home") {
+        moveTo(0, event.shiftKey);
+        return;
+      }
+      if (key === "End") {
+        moveTo(selectableEntries.length - 1, event.shiftKey);
+        return;
+      }
+      if (key === "ArrowLeft") {
+        moveTo(index - 1, event.shiftKey);
+        return;
+      }
+      if (key === "ArrowRight") {
+        moveTo(index + 1, event.shiftKey);
+        return;
+      }
+      if (key === "ArrowUp" || key === "ArrowDown") {
+        if (view === "list") {
+          moveTo(index + (key === "ArrowUp" ? -1 : 1), event.shiftKey);
+          return;
+        }
+        const node = Array.from(
+          scrollRef.current?.querySelectorAll<HTMLElement>(
+            "[data-gallery-path]",
+          ) ?? [],
+        ).find((candidate) => candidate.dataset.galleryPath === entry.path);
+        const grid = node?.closest(".gallery-grid");
+        const columns = grid
+          ? Math.max(
+              1,
+              getComputedStyle(grid)
+                .gridTemplateColumns.split(" ")
+                .filter(Boolean).length,
+            )
+          : 1;
+        moveTo(
+          index + (key === "ArrowUp" ? -columns : columns),
+          event.shiftKey,
+        );
+      }
+    },
+    [
+      active,
+      anchor,
+      clearSelection,
+      focusEntry,
+      selected,
+      selectableEntries,
+      trashSelected,
+      view,
+    ],
+  );
 
   const submitRename = useCallback((entry: MediaEntry, nextName: string) => {
     setRenamingPath(null);
@@ -382,7 +672,15 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
             : current,
         );
         // Keep the footer on the file the user just renamed.
-        setSelected((current) => (current === entry.path ? next : current));
+        setSelected((current) => {
+          if (!current.has(entry.path)) return current;
+          const updated = new Set(current);
+          updated.delete(entry.path);
+          updated.add(next);
+          return updated;
+        });
+        setAnchor((current) => (current === entry.path ? next : current));
+        setActive((current) => (current === entry.path ? next : current));
       })
       .catch((reason: unknown) => {
         useToastStore.getState().showToast(
@@ -393,6 +691,14 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
         );
       });
   }, []);
+
+  const changeMode = useCallback(
+    (value: GalleryMode) => {
+      setMode(value);
+      clearSelection();
+    },
+    [clearSelection],
+  );
 
   const toggleSection = useCallback((key: string) => {
     setFoldedKinds((current) => {
@@ -405,11 +711,29 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
 
   const scopeCount = folder
     ? (folderIndex.get(folder)?.count ?? 0)
-    : entries.length;
+    : filteredEntries.length;
   const trail = folderTrail(folder);
   const emptyWorkspace = !loading && !error && entries.length === 0;
+  const emptySearch =
+    !loading && !error && entries.length > 0 && filteredEntries.length === 0;
   const emptyFolder =
-    mode === "folder" && folders.length === 0 && sections.length === 0;
+    !emptySearch &&
+    mode === "folder" &&
+    folders.length === 0 &&
+    sections.length === 0;
+  const selectedBytes = selectedEntries.reduce(
+    (total, entry) => total + entry.size,
+    0,
+  );
+  const openActive = useCallback(() => {
+    if (activeEntry) openEntry(activeEntry);
+  }, [activeEntry, openEntry]);
+  const renameActive = useCallback(() => {
+    if (activeEntry) setRenamingPath(activeEntry.path);
+  }, [activeEntry]);
+  const revealActive = useCallback(() => {
+    if (activeEntry) revealInHost(activeEntry.path);
+  }, [activeEntry, revealInHost]);
 
   return (
     <div className="gallery-panel">
@@ -422,7 +746,7 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
               role="tab"
               aria-selected={mode === value}
               className={`gallery-mode${mode === value ? " is-active" : ""}`}
-              onClick={() => setMode(value)}
+              onClick={() => changeMode(value)}
             >
               {i18n.t(MODE_LABEL[value])}
             </button>
@@ -466,6 +790,67 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
               size={14}
               className={loading ? "gallery-spin" : undefined}
             />
+          </button>
+        </div>
+      </div>
+
+      <div className="gallery-filters">
+        <label className="gallery-search">
+          <MagnifyingGlass size={12} />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={i18n.t("gallery.search")}
+            aria-label={i18n.t("gallery.search")}
+            spellCheck={false}
+          />
+          {query ? (
+            <button
+              type="button"
+              className="gallery-search-clear"
+              title={i18n.t("gallery.searchClear")}
+              aria-label={i18n.t("gallery.searchClear")}
+              onClick={() => setQuery("")}
+            >
+              <X size={10} />
+            </button>
+          ) : null}
+        </label>
+        <div className="gallery-sort">
+          <select
+            value={sort}
+            aria-label={i18n.t("gallery.sort.label")}
+            title={i18n.t("gallery.sort.label")}
+            onChange={(event) => setSort(event.target.value as GallerySort)}
+          >
+            <option value="name">{i18n.t("gallery.sort.name")}</option>
+            <option value="date">{i18n.t("gallery.sort.date")}</option>
+            <option value="size">{i18n.t("gallery.sort.size")}</option>
+            <option value="kind">{i18n.t("gallery.sort.kind")}</option>
+          </select>
+          <button
+            type="button"
+            className="gallery-sort-dir"
+            title={
+              sortDir === "asc"
+                ? i18n.t("gallery.sort.asc")
+                : i18n.t("gallery.sort.desc")
+            }
+            aria-label={
+              sortDir === "asc"
+                ? i18n.t("gallery.sort.asc")
+                : i18n.t("gallery.sort.desc")
+            }
+            onClick={() =>
+              setSortDir((current) => (current === "asc" ? "desc" : "asc"))
+            }
+          >
+            {sortDir === "asc" ? (
+              <SortAscending size={13} />
+            ) : (
+              <SortDescending size={13} />
+            )}
           </button>
         </div>
       </div>
@@ -571,9 +956,13 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
             view={view}
             folded={foldedKinds}
             onToggle={toggleSection}
+            ariaLabel={i18n.t("gallery.title")}
             selected={selected}
+            active={active}
             renaming={renamingPath}
-            onSelect={(entry) => setSelected(entry.path)}
+            onSelect={selectEntry}
+            onActivate={activateEntry}
+            onKeyDown={handleGalleryKeyDown}
             onOpen={openEntry}
             onMenu={openMenu}
             onRename={submitRename}
@@ -591,6 +980,15 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
           </div>
         ) : null}
 
+        {!loading && !emptyWorkspace && emptySearch ? (
+          <div className="gallery-placeholder">
+            <span>{i18n.t("gallery.noMatches")}</span>
+            <span className="gallery-placeholder-hint">
+              {i18n.t("gallery.noMatchesHint")}
+            </span>
+          </div>
+        ) : null}
+
         {!loading && !emptyWorkspace && emptyFolder ? (
           <div className="gallery-placeholder">
             <span>{i18n.t("gallery.emptyFolder")}</span>
@@ -600,29 +998,74 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
         {hasMore ? <div className="gallery-sentinel" ref={sentinelRef} /> : null}
       </div>
 
-      {selectedEntry ? (
+      {selectedEntries.length > 0 && activeEntry ? (
         <footer className="gallery-detail">
           <div className="gallery-detail-text">
-            <div className="gallery-detail-name" title={selectedEntry.path}>
-              {selectedEntry.name}
+            <div className="gallery-detail-name" title={activeEntry.path}>
+              {selectedEntries.length > 1
+                ? i18n.t("gallery.selected", { count: selectedEntries.length })
+                : activeEntry.name}
             </div>
             <div className="gallery-detail-meta">
-              <span>{kindLabel(selectedEntry.kind)}</span>
-              <span>{formatBytes(selectedEntry.size)}</span>
-              {selectedEntry.folder ? <span>{selectedEntry.folder}</span> : null}
+              {selectedEntries.length > 1 ? (
+                <span>{formatBytes(selectedBytes)}</span>
+              ) : (
+                <>
+                  <span>{kindLabel(activeEntry.kind)}</span>
+                  <span>{formatBytes(activeEntry.size)}</span>
+                  {activeEntry.folder ? (
+                    <span>{activeEntry.folder}</span>
+                  ) : null}
+                </>
+              )}
             </div>
+          </div>
+          <div className="gallery-detail-actions">
+            <button
+              type="button"
+              className="gallery-detail-action"
+              onClick={openActive}
+            >
+              {i18n.t("explorer.open")}
+            </button>
+            {hostOs === "windows" ? (
+              <button
+                type="button"
+                className="gallery-detail-action"
+                onClick={revealActive}
+              >
+                {i18n.t("explorer.reveal")}
+              </button>
+            ) : null}
+            {selectedEntries.length === 1 ? (
+              <button
+                type="button"
+                className="gallery-detail-action"
+                onClick={renameActive}
+              >
+                {i18n.t("explorer.rename")}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="gallery-detail-action is-danger"
+              onClick={trashSelected}
+            >
+              {i18n.t("explorer.delete")}
+            </button>
           </div>
         </footer>
       ) : null}
 
       {menu ? (
-        <FileTreeContextMenu
+        <ContextMenu
           x={menu.x}
           y={menu.y}
           items={menuItems()}
           onClose={() => setMenu(null)}
         />
       ) : null}
+      {dialog}
     </div>
   );
 }

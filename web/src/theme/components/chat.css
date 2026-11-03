@@ -80,14 +80,14 @@
 }
 
 .agent-connection-connected {
-  border: 1px solid var(--_dk-emerald-900\/20);
-  background: var(--_dk-emerald-900\/20);
+  border: 1px solid var(--_dk-tag-ok-border);
+  background: var(--_dk-tag-ok-bg);
   color: var(--_dk-emerald-500);
 }
 
 .agent-connection-pending {
-  border: 1px solid var(--_dk-amber-900\/20);
-  background: var(--_dk-amber-900\/20);
+  border: 1px solid var(--_dk-tag-warn-border);
+  background: var(--_dk-tag-warn-bg);
   color: var(--_dk-amber-500);
 }
 

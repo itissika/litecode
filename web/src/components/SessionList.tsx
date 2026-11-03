@@ -21,7 +21,8 @@ import { SessionItem } from "./SessionItem";
 import { SessionFolderHeader } from "./SessionFolderHeader";
 import { parseSessionDrag, SESSION_DRAG_MIME } from "./dnd/sessionDnd";
 import { useDropTarget } from "./dnd/useDropTarget";
-import { FileTreeContextMenu, type FileTreeMenuItem } from "./FileTreeContextMenu";
+import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
+import { useConfirmDialog } from "./ui/useConfirmDialog";
 import { InlineRename } from "./ui/InlineRename";
 import { ListRow } from "./ui/ListRow";
 import { Popover } from "./ui/Popover";
@@ -136,6 +137,7 @@ export function SessionList() {
   const deleteFolder = useSessionStore((s) => s.deleteFolder);
   const reorderFolders = useSessionStore((s) => s.reorderFolders);
   const connState = useConnectionStore((s) => s.state);
+  const { confirm, dialog } = useConfirmDialog();
 
   // The server also lists subagent CHILD sessions (the roster needs them to
   // label a child that was never subscribed), so filter the sidebar to roots.
@@ -285,7 +287,7 @@ export function SessionList() {
     />
   );
 
-  const menuItems = useMemo<FileTreeMenuItem[]>(() => {
+  const menuItems = useMemo<ContextMenuItem[]>(() => {
     if (!menu) return [];
     if (menu.kind === "folder") {
       const folder = folders.find((item) => item.id === menu.id);
@@ -306,19 +308,21 @@ export function SessionList() {
           label: i18n.t("session.deleteFolder"),
           danger: true,
           onClick: () => {
-            if (
-              window.confirm(
-                i18n.t("session.deleteFolderConfirm", { name: folder.name }),
-              )
-            ) {
-              deleteFolder(folder.id);
-            }
+            void confirm({
+              title: i18n.t("session.deleteFolder"),
+              body: i18n.t("session.deleteFolderConfirm", { name: folder.name }),
+              danger: true,
+              confirmLabel: i18n.t("common.delete"),
+              cancelLabel: i18n.t("common.cancel"),
+            }).then((ok) => {
+              if (ok) deleteFolder(folder.id);
+            });
           },
         },
       ];
     }
     const session = sessions.find((item) => item.id === menu.id);
-    const items: FileTreeMenuItem[] = [
+    const items: ContextMenuItem[] = [
       {
         id: "rename-session",
         label: i18n.t("session.renameSession"),
@@ -555,13 +559,14 @@ export function SessionList() {
 
       <div className="flex-1 overflow-y-auto">{renderBody()}</div>
       {menu && menuItems.length > 0 && (
-        <FileTreeContextMenu
+        <ContextMenu
           x={menu.x}
           y={menu.y}
           items={menuItems}
           onClose={() => setMenu(null)}
         />
       )}
+      {dialog}
     </div>
   );
 }

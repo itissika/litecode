@@ -78,7 +78,7 @@ export function ImageThumb({
   }, [mediaRef]);
 
   return (
-    <span className="relative inline-flex max-h-[120px] max-w-[160px] items-center justify-center overflow-hidden rounded-md border border-(--_dk-line) bg-(--_dk-bg-sunken)">
+    <span className="relative inline-flex max-h-[120px] max-w-[160px] items-center justify-center overflow-hidden rounded-md border border-(--_dk-line) bg-(--_dk-root)">
       {failed || !url ? (
         <span
           aria-label={failed ? "Image unavailable" : "Loading image"}

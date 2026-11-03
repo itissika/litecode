@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { FilmSlate, ImageBroken, MusicNotes } from "@phosphor-icons/react";
 
 import type { MediaEntry } from "../../api/workspace";
@@ -6,6 +6,7 @@ import i18n from "../../i18n";
 import { formatBytes } from "../../lib/bytes";
 import { formatFileTime, formatFileTimeFull } from "../../lib/fileTime";
 import { fileKindFromPath } from "../../lib/fileKind";
+import { viewOf } from "../../lib/domView";
 import { HoverMediaPreview } from "./HoverMediaPreview";
 import { InlineRename } from "../ui/InlineRename";
 import type { GalleryView } from "./galleryGroups";
@@ -21,9 +22,16 @@ interface GalleryTileProps {
   /** Thumbnail grid or compact row. */
   view: GalleryView;
   selected: boolean;
+  /** Roving focus target; the panel moves this with the arrow keys. */
+  active: boolean;
   /** In-place rename: the caption turns into an input on this tile. */
   renaming: boolean;
-  onSelect: (entry: MediaEntry) => void;
+  onSelect: (
+    entry: MediaEntry,
+    opts?: { additive?: boolean; range?: boolean },
+  ) => void;
+  onActivate: (entry: MediaEntry) => void;
+  onKeyDown: (entry: MediaEntry, event: KeyboardEvent<HTMLElement>) => void;
   onOpen: (entry: MediaEntry) => void;
   /** Context menu request, at viewport coordinates. */
   onMenu: (entry: MediaEntry, at: { x: number; y: number }) => void;
@@ -46,8 +54,11 @@ export const GalleryTile = memo(function GalleryTile({
   entry,
   view,
   selected,
+  active,
   renaming,
   onSelect,
+  onActivate,
+  onKeyDown,
   onOpen,
   onMenu,
   onRename,
@@ -73,24 +84,26 @@ export const GalleryTile = memo(function GalleryTile({
     if (!anchor) return;
     const onScroll = (event: Event) => {
       const node = tileRef.current;
-      const target = event.target;
-      if (node && target instanceof Node && target.contains(node)) {
+      const target = event.target as Node | null;
+      if (node && target && target.contains(node)) {
         setAnchor(null);
       }
     };
     const onResize = () => setAnchor(null);
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
+    const view = viewOf(tileRef.current);
+    view.addEventListener("scroll", onScroll, true);
+    view.addEventListener("resize", onResize);
     return () => {
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onResize);
+      view.removeEventListener("scroll", onScroll, true);
+      view.removeEventListener("resize", onResize);
     };
   }, [anchor]);
 
   useEffect(() => {
     return () => {
-      if (openTimer.current !== null) window.clearTimeout(openTimer.current);
-      if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+      const view = viewOf(tileRef.current);
+      if (openTimer.current !== null) view.clearTimeout(openTimer.current);
+      if (closeTimer.current !== null) view.clearTimeout(closeTimer.current);
     };
   }, []);
 
@@ -101,22 +114,25 @@ export const GalleryTile = memo(function GalleryTile({
 
   const scheduleOpen = () => {
     if (!playable || renaming) return;
-    if (openTimer.current !== null) window.clearTimeout(openTimer.current);
-    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
-    openTimer.current = window.setTimeout(() => {
+    const view = viewOf(tileRef.current);
+    if (openTimer.current !== null) view.clearTimeout(openTimer.current);
+    if (closeTimer.current !== null) view.clearTimeout(closeTimer.current);
+    openTimer.current = view.setTimeout(() => {
       const node = tileRef.current;
       if (node) setAnchor(node.getBoundingClientRect());
     }, HOVER_OPEN_MS);
   };
 
   const scheduleClose = () => {
-    if (openTimer.current !== null) window.clearTimeout(openTimer.current);
-    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
-    closeTimer.current = window.setTimeout(() => setAnchor(null), HOVER_CLOSE_MS);
+    const view = viewOf(tileRef.current);
+    if (openTimer.current !== null) view.clearTimeout(openTimer.current);
+    if (closeTimer.current !== null) view.clearTimeout(closeTimer.current);
+    closeTimer.current = view.setTimeout(() => setAnchor(null), HOVER_CLOSE_MS);
   };
 
   const holdOpen = () => {
-    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    const view = viewOf(tileRef.current);
+    if (closeTimer.current !== null) view.clearTimeout(closeTimer.current);
   };
 
   const frame = (
@@ -171,7 +187,8 @@ export const GalleryTile = memo(function GalleryTile({
         className={
           (isList ? "gallery-row" : "gallery-tile") +
           " is-renaming" +
-          (selected ? " is-selected" : "")
+          (selected ? " is-selected" : "") +
+          (active ? " is-active" : "")
         }
         title={entry.path}
       >
@@ -188,12 +205,22 @@ export const GalleryTile = memo(function GalleryTile({
         type="button"
         className={
           (isList ? "gallery-row" : "gallery-tile") +
-          (selected ? " is-selected" : "")
+          (selected ? " is-selected" : "") +
+          (active ? " is-active" : "")
         }
         title={entry.path}
+        data-gallery-path={entry.path}
         aria-label={entry.name}
-        aria-pressed={selected}
-        onClick={() => onSelect(entry)}
+        aria-selected={selected}
+        role="option"
+        tabIndex={active ? 0 : -1}
+        onFocus={() => onActivate(entry)}
+        onClick={(event) =>
+          onSelect(entry, {
+            additive: event.ctrlKey || event.metaKey,
+            range: event.shiftKey,
+          })
+        }
         onDoubleClick={() => {
           setAnchor(null);
           onOpen(entry);
@@ -204,11 +231,13 @@ export const GalleryTile = memo(function GalleryTile({
           event.preventDefault();
           event.stopPropagation();
           setAnchor(null);
-          onSelect(entry);
+          if (!selected) onSelect(entry);
           onMenu(entry, { x: event.clientX, y: event.clientY });
         }}
         onKeyDown={(event) => {
-          if (event.key === "Enter") {
+          onKeyDown(entry, event);
+          if (event.defaultPrevented) return;
+          if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
             setAnchor(null);
             onOpen(entry);
@@ -220,7 +249,7 @@ export const GalleryTile = memo(function GalleryTile({
             const node = tileRef.current;
             if (!node) return;
             const rect = node.getBoundingClientRect();
-            onSelect(entry);
+            if (!selected) onSelect(entry);
             onMenu(entry, { x: rect.left + 8, y: rect.top + 8 });
           }
         }}
@@ -253,6 +282,7 @@ export const GalleryTile = memo(function GalleryTile({
           key={entry.path + ":" + entry.mtime}
           entry={entry}
           anchor={anchor}
+          hostDocument={tileRef.current?.ownerDocument ?? document}
           onPointerEnter={holdOpen}
           onPointerLeave={scheduleClose}
         />

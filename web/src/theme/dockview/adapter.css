@@ -87,7 +87,7 @@
   --dv-tabs-container-scrollbar-color:   var(--_dk-text-disabled);
 
   /* ═══ MISC ═══ */
-  --dv-overlay-z-index:                   999;
+  --dv-overlay-z-index:                   var(--_dk-z-dockview);
   --dv-transition-duration:               120ms;
   --dv-active-sash-transition-duration:   200ms;
   --dv-active-sash-transition-delay:      0ms;
