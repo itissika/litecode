@@ -209,11 +209,33 @@ impl SessionSearchTool {
         } else {
             Some(execution.session_id.as_str())
         };
+        let own_session = input["own_session"].as_bool().unwrap_or(false);
+        let session_scope = if own_session {
+            if session_id.is_some() {
+                return ToolCallResult::error_with_kind(
+                    ToolErrorKind::InvalidInput,
+                    "own_session searches the calling session; drop session_id".to_string(),
+                    false,
+                )
+                .with_error_code("invalid_input");
+            }
+            let Some(active) = active else {
+                return ToolCallResult::error_with_kind(
+                    ToolErrorKind::InvalidInput,
+                    "own_session needs an active session".to_string(),
+                    false,
+                )
+                .with_error_code("invalid_input");
+            };
+            Some(active.to_string())
+        } else {
+            session_id.map(str::to_string)
+        };
         self.search_in_workspace(
             &execution.workspace_root,
             reader,
             query.trim(),
-            session_id,
+            session_scope.as_deref(),
             active,
             limit,
             limit_note,
@@ -515,5 +537,100 @@ mod tests {
             result.data
         );
         let _ = id;
+    }
+
+    #[test]
+    fn own_session_searches_the_calling_session_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let mine = data
+            .create_session(root.to_str().unwrap(), "default", None)
+            .unwrap();
+        data.insert_items(
+            &mine,
+            &[
+                user_text("OWN_ARCHIVED_MARKER in my own past"),
+                user_text("filler"),
+                user_text("live tail"),
+            ],
+        )
+        .unwrap();
+        data.compact_from(&mine, "[summary] mine", Some(2), 10)
+            .unwrap();
+        let other = data
+            .create_session(root.to_str().unwrap(), "default", None)
+            .unwrap();
+        data.insert_items(
+            &other,
+            &[
+                user_text("OTHER_ARCHIVED_MARKER elsewhere"),
+                user_text("other live tail"),
+            ],
+        )
+        .unwrap();
+        data.compact_from(&other, "[summary] other", Some(1), 20)
+            .unwrap();
+
+        let tool = warmed_tool(root);
+        let scoped = call_ok(
+            &tool,
+            root,
+            serde_json::json!({ "query": "ARCHIVED_MARKER", "own_session": true }),
+            &mine,
+        );
+        let rows = hits(&scoped);
+        assert!(
+            rows.iter().any(|row| row["summary"]
+                .as_str()
+                .unwrap()
+                .contains("OWN_ARCHIVED_MARKER")),
+            "own past should be searchable: {:?}",
+            scoped.data
+        );
+        assert!(
+            rows.iter().all(|row| !row["summary"]
+                .as_str()
+                .unwrap()
+                .contains("OTHER_ARCHIVED_MARKER")),
+            "other sessions must stay out: {:?}",
+            scoped.data
+        );
+    }
+
+    #[test]
+    fn own_session_rejects_session_id_and_requires_an_active_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let sid = seed_session(root, "SCOPE_TOKEN");
+        let tool = warmed_tool(root);
+        let both = call(
+            &tool,
+            root,
+            serde_json::json!({
+                "query": "SCOPE_TOKEN",
+                "own_session": true,
+                "session_id": sid,
+            }),
+            &sid,
+        );
+        assert!(both.data.is_none(), "{:?}", both.data);
+        assert!(both.content.contains("own_session"), "{}", both.content);
+
+        let no_active = call(
+            &tool,
+            root,
+            serde_json::json!({ "query": "SCOPE_TOKEN", "own_session": true }),
+            "",
+        );
+        assert!(no_active.data.is_none(), "{:?}", no_active.data);
+        assert!(
+            no_active.content.contains("active session"),
+            "{}",
+            no_active.content
+        );
     }
 }

@@ -579,6 +579,8 @@ type SessionSearchInput = {
   query: string;
   /** Optional session scope: full id, unique prefix, or the handle from a result. */
   session_id?: string;
+  /** Search only this session's transcript: the turns already folded out of the live context window. Cannot be combined with session_id. */
+  own_session?: boolean;
   /** Maximum rows. 1–50. @default 20 */
   limit?: Integer;
 };

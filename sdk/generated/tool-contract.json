@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "f322241aebb2ef256a1e09f0cd76c0cd6fcd697b6eee7b61d109e4934fe9c25c",
+  "sdk_hash": "dadf06c6e427d62503bb2b64b0664f7f6f6cec57795a5325ecda9421857236c0",
   "tools": {
     "apply_edits": {
       "path": [
@@ -671,6 +671,10 @@
           "session_id": {
             "type": "string",
             "description": "Optional session scope: full id, unique prefix, or the handle from a result."
+          },
+          "own_session": {
+            "type": "boolean",
+            "description": "Search only this session's transcript: the turns already folded out of the live context window. Cannot be combined with session_id."
           },
           "limit": {
             "type": "integer",
