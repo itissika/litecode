@@ -1,7 +1,6 @@
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
@@ -108,9 +107,10 @@ pub async fn listen(
 ) -> anyhow::Result<()> {
     let engine_manager = state.engine_manager.clone();
     let workspace_engines = state.workspace_engines.clone();
-    let sessions = state.sessions.clone();
+    let writer_sessions = state.sessions.clone();
+    let service = state.service.clone();
     let mcp_pool = state.runtime.read().expect("runtime lock").mcp_pool.clone();
-    let session_gc = sessions.clone();
+    let session_gc = service.clone();
     restart_watcher(&state.watcher, state.workspace.clone()).await?;
     // Resident knowledge index: builds in the background (never blocks the
     // first turn) and follows the same change bus as the engines below.
@@ -178,7 +178,7 @@ pub async fn listen(
     {
         let engines = state.workspace_engines.clone();
         let turn_guard = state.turn_guard.clone();
-        let settled = state.sessions.clone();
+        let settled = state.service.clone();
         tokio::spawn(async move {
             // WP-166 (P2): start the maintenance cadence only after the first
             // session/list or session/new reply. The loop body is unchanged.
@@ -257,7 +257,7 @@ pub async fn listen(
     // background right after bind. Both hold workspace_snapshot_lock.
     drop(spawn_snapshot_upkeep(&snapshot_upkeep_state));
     let (monitor_stop_tx, monitor_stop_rx) = tokio::sync::watch::channel(false);
-    let monitor = super::writer_monitor::spawn(Arc::clone(&sessions), monitor_stop_rx);
+    let monitor = super::writer_monitor::spawn(writer_sessions, monitor_stop_rx);
     let shutdown_monitor = monitor_stop_tx.clone();
     let local_addr = listener.local_addr()?;
     let ready_line = format!("LITECODE_READY http://{local_addr}/");
@@ -267,7 +267,7 @@ pub async fn listen(
     let serve_result = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown::wait_for_shutdown(shutdown_watch).await;
-            sessions.shutdown_cleanup().await;
+            service.shutdown_cleanup().await;
             mcp_pool.stop_all().await;
             engine_manager.stop_all();
             workspace_engines.stop_all();
@@ -293,7 +293,7 @@ pub(crate) fn spawn_snapshot_upkeep(state: &ServeState) -> tokio::task::JoinHand
             runtime.workspace.paths.snapshots_dir.clone(),
         )
     };
-    let sessions = state.sessions.clone();
+    let service = state.service.clone();
     tokio::task::spawn_blocking(move || {
         if let Err(e) =
             crate::session::snapshot::warm_snapshot_repo(&workspace_root, &snapshots_dir)
@@ -301,10 +301,7 @@ pub(crate) fn spawn_snapshot_upkeep(state: &ServeState) -> tokio::task::JoinHand
             tracing::warn!(error = %e, "snapshot warm failed");
         }
         match crate::session::snapshot::maintain_snapshots(&workspace_root, &snapshots_dir, || {
-            sessions
-                .data()
-                .list_session_ids_blocking()
-                .unwrap_or_default()
+            service.list_session_ids().unwrap_or_default()
         }) {
             Ok(report) if report.orphans_removed > 0 || report.stale_removed > 0 => {
                 tracing::info!(
@@ -323,7 +320,7 @@ pub(crate) fn spawn_snapshot_upkeep(state: &ServeState) -> tokio::task::JoinHand
 /// pass waits until the first session/list or session/new reply has gone out;
 /// cadence and TTL are unchanged.
 pub(crate) fn spawn_empty_session_gc(
-    session_gc: std::sync::Arc<crate::session::manager::SessionManager>,
+    session_gc: std::sync::Arc<crate::session::SessionService>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         session_gc.wait_startup_settled().await;

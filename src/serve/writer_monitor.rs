@@ -55,6 +55,7 @@ macro_rules! log_snapshot {
     };
 }
 
+/// Raw writer telemetry is infrastructure, not a session business operation.
 pub(crate) fn spawn(sessions: Arc<SessionManager>, stop: watch::Receiver<bool>) -> JoinHandle<()> {
     tokio::spawn(run(sessions, stop))
 }

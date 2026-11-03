@@ -1,8 +1,8 @@
 //! Layering guard: session stays a mechanical turn runtime; the hub is a
 //! client of the same facts a UI reads (live stream + durable `turn/end`).
 //!
-//! - Tools may `reserve_turn` / `spawn_turn` / `start_turn` / `cancel_turn_sync`
-//!   / `open_child_session` / `remove_session` (launch rollback only).
+//! - UI/subagent production paths use `SessionService` business operations;
+//!   support plumbing is isolated in `session::service::support`.
 //! - Tools must not `finish_turn`, take the turn join handle, or keep a child
 //!   concurrency cap.
 //! - `src/session/` must not depend on `tools::subagent` or grow a second
@@ -45,6 +45,10 @@ fn read_combined(dirs: &[&str]) -> String {
     combined
 }
 
+fn production_part(source: &str) -> &str {
+    source.split("#[cfg(test)]").next().unwrap_or(source)
+}
+
 fn assert_absent(haystack: &str, needle: &str, where_: &str) {
     assert!(
         !haystack.contains(needle),
@@ -75,27 +79,23 @@ fn tool_layer_does_not_finish_or_join_turns() {
     assert_absent(&tools, "handle.take()", "tools/subagent");
     assert_absent(&tools, "TurnHandle.handle", "tools/subagent");
     assert!(
-        tools.contains("reserve_turn") && tools.contains("spawn_turn"),
-        "tools/subagent must call the human reserve+spawn sequence"
+        tools.contains("start_turn("),
+        "tools/subagent must call the SessionService turn operation"
     );
     assert_absent(&tools, "MAX_SUBAGENTS_PER_PARENT", "tools/subagent");
     assert_absent(&tools, "at_capacity", "tools/subagent");
 }
 
 #[test]
-fn tool_turn_helper_uses_human_reserve_then_spawn() {
+fn tool_turn_helper_uses_session_business_start() {
     let src = fs::read_to_string(src_root().join("tools/subagent/turn.rs")).unwrap();
-    let reserve = src.find("reserve_turn").expect("tool helper reserves");
-    let spawn = src.find("spawn_turn(").expect("tool helper spawns");
-    let start = src.find(".start_turn(").expect("tool helper starts");
     assert!(
-        reserve < spawn && spawn < start,
-        "tools must reserve, then spawn_turn, then start_turn"
+        src.contains(".start_turn("),
+        "tool helper must call the SessionService turn operation"
     );
-    assert!(
-        src.contains("release_turn_reservation"),
-        "tool helper must release a reservation on spawn/start failure"
-    );
+    assert_absent(&src, "reserve_turn", "tools/subagent/turn.rs");
+    assert_absent(&src, "spawn_turn", "tools/subagent/turn.rs");
+    assert_absent(&src, "release_turn_reservation", "tools/subagent/turn.rs");
 }
 
 #[test]
@@ -108,6 +108,82 @@ fn runtime_and_protocol_do_not_open_child_sessions() {
     ] {
         assert_absent(src, "open_child_session", name);
     }
+}
+
+#[test]
+fn session_service_business_and_support_surfaces_are_separate() {
+    let service = src_root().join("session/service");
+    for module in ["lifecycle", "conversation", "permissions", "observation"] {
+        assert!(
+            service.join(format!("{module}.rs")).is_file(),
+            "missing business module `{module}`"
+        );
+    }
+    assert!(
+        service.join("support.rs").is_file(),
+        "missing internal support module"
+    );
+
+    let mut business = String::new();
+    for module in ["lifecycle", "conversation", "permissions", "observation"] {
+        business.push_str(&fs::read_to_string(service.join(format!("{module}.rs"))).unwrap());
+        business.push('\n');
+    }
+    for support_only in [
+        "fn build_runtime",
+        "fn spawn_compaction_worker",
+        "fn gc_stale_empty_sessions",
+        "fn shutdown_cleanup",
+        "fn permission_route",
+        "fn entry_load_events_range",
+        "fn mark_startup_settled",
+    ] {
+        assert_absent(&business, support_only, "SessionService business modules");
+    }
+
+    let support = fs::read_to_string(service.join("support.rs")).unwrap();
+    for required in [
+        "fn build_runtime",
+        "fn spawn_compaction_worker",
+        "fn gc_stale_empty_sessions",
+        "fn shutdown_cleanup",
+        "fn permission_route",
+        "fn entry_load_events_range",
+        "fn mark_startup_settled",
+    ] {
+        assert!(
+            support.contains(required),
+            "support surface must own `{required}`"
+        );
+    }
+}
+
+#[test]
+fn production_ui_and_subagent_entrypoints_use_the_service() {
+    let connection = fs::read_to_string(src_root().join("client_protocol/connection.rs")).unwrap();
+    assert_absent(
+        production_part(&connection),
+        "SessionManager",
+        "client_protocol/connection.rs",
+    );
+
+    for path in [
+        "tools/subagent/turn.rs",
+        "tools/subagent/launch.rs",
+        "tools/subagent/send.rs",
+        "tools/subagent/stop.rs",
+        "runtime/subagent_auto_turn.rs",
+    ] {
+        let source = fs::read_to_string(src_root().join(path)).unwrap();
+        assert_absent(production_part(&source), "SessionManager", path);
+    }
+
+    let cli = fs::read_to_string(src_root().join("cli/cli.rs")).unwrap();
+    assert_absent(&cli, "with_turn_guard", "cli/cli.rs");
+    assert!(
+        cli.contains("with_service"),
+        "CLI must enter through the service"
+    );
 }
 
 #[test]

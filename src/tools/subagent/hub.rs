@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast;
 
+use crate::session::SessionService;
 use crate::session::live::LifecycleEvent;
-use crate::session::manager::SessionManager;
 
 use super::jobs::{CompletionInbox, CompletionRef, NoticeInbox, ParentNotice};
 
@@ -16,7 +16,7 @@ pub struct SubagentHub {
     pub completions: Arc<CompletionInbox>,
     /// WP-090 K5: non-waking parent notices (separate from completions).
     notices: Arc<NoticeInbox>,
-    sessions: Mutex<Option<Arc<SessionManager>>>,
+    service: Mutex<Option<Arc<SessionService>>>,
     exit_handler: Arc<Mutex<Option<ExitHandler>>>,
 }
 
@@ -31,21 +31,21 @@ impl SubagentHub {
         Self {
             completions: Arc::new(CompletionInbox::default()),
             notices: Arc::new(NoticeInbox::default()),
-            sessions: Mutex::new(None),
+            service: Mutex::new(None),
             exit_handler: Arc::new(Mutex::new(None)),
         }
     }
 
-    pub fn attach_sessions(&self, sessions: Arc<SessionManager>) {
-        let mut slot = self.sessions.lock().expect("hub sessions lock");
+    pub fn attach_service(&self, service: Arc<SessionService>) {
+        let mut slot = self.service.lock().expect("hub service lock");
         let first = slot.is_none();
-        *slot = Some(Arc::clone(&sessions));
+        *slot = Some(Arc::clone(&service));
         drop(slot);
         if first {
             spawn_completion_router(Router::new(
                 Arc::clone(&self.completions),
                 Arc::clone(&self.notices),
-                sessions,
+                service,
                 Arc::clone(&self.exit_handler),
             ));
         }
@@ -109,7 +109,7 @@ impl SubagentHub {
 struct Router {
     completions: Arc<CompletionInbox>,
     notices: Arc<NoticeInbox>,
-    sessions: Arc<SessionManager>,
+    service: Arc<SessionService>,
     exit_handler: Arc<Mutex<Option<ExitHandler>>>,
     delivered: HashMap<String, String>,
 }
@@ -118,13 +118,13 @@ impl Router {
     fn new(
         completions: Arc<CompletionInbox>,
         notices: Arc<NoticeInbox>,
-        sessions: Arc<SessionManager>,
+        service: Arc<SessionService>,
         exit_handler: Arc<Mutex<Option<ExitHandler>>>,
     ) -> Self {
         Self {
             completions,
             notices,
-            sessions,
+            service,
             exit_handler,
             delivered: HashMap::new(),
         }
@@ -156,7 +156,7 @@ impl Router {
                 reason,
                 cancelled_by,
             }) => {
-                let Ok(meta) = self.sessions.reader().meta_blocking(&session_id) else {
+                let Ok(meta) = self.service.meta(&session_id) else {
                     return true;
                 };
                 let Some(parent_session_id) = meta.parent_session_id else {
@@ -190,11 +190,10 @@ impl Router {
     /// whose turn id differs from the last routed one. CompletionInbox dedups
     /// (child, turn), and `delivered` prevents repeat wakes.
     fn rescan(&mut self) {
-        let mut children = self.sessions.idle_child_session_ids();
+        let mut children = self.service.idle_child_session_ids();
         children.sort();
         for (child, parent) in children {
-            let Ok(Some((turn_id, reason, cancelled_by))) =
-                self.sessions.data().latest_turn_end_blocking(&child)
+            let Ok(Some((turn_id, reason, cancelled_by))) = self.service.latest_turn_end(&child)
             else {
                 continue;
             };
@@ -213,7 +212,7 @@ impl Router {
 }
 
 fn spawn_completion_router(mut router: Router) {
-    let mut rx = router.sessions.subscribe_lifecycle();
+    let mut rx = router.service.subscribe_lifecycle();
     if let Err(error) = std::thread::Builder::new()
         .name("subagent-completion-router".into())
         .spawn(move || while router.handle(rx.blocking_recv()) {})
@@ -226,6 +225,7 @@ fn spawn_completion_router(mut router: Router) {
 mod tests {
     use super::*;
     use crate::config::TurnGuard;
+    use crate::session::SessionManager;
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -244,7 +244,7 @@ mod tests {
         (dir, sessions, parent, child)
     }
 
-    fn counting_router(sessions: &Arc<SessionManager>) -> (Router, Arc<AtomicUsize>) {
+    fn counting_router(service: Arc<SessionService>) -> (Router, Arc<AtomicUsize>) {
         let wakes = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&wakes);
         let handler: ExitHandler = Arc::new(move |_| {
@@ -253,7 +253,7 @@ mod tests {
         let router = Router::new(
             Arc::new(CompletionInbox::default()),
             Arc::new(NoticeInbox::default()),
-            Arc::clone(sessions),
+            service,
             Arc::new(Mutex::new(Some(handler))),
         );
         (router, wakes)
@@ -279,7 +279,8 @@ mod tests {
     #[test]
     fn hub_lagged_rescan_dedups_per_child() {
         let (_dir, sessions, parent, child) = fixture();
-        let (mut router, wakes) = counting_router(&sessions);
+        let (mut router, wakes) =
+            counting_router(Arc::new(SessionService::new(Arc::clone(&sessions))));
         append_turn_end(&sessions, &child, "t1");
         assert!(router.handle(Err(broadcast::error::RecvError::Lagged(1))));
         // Simulate a restart that lost `delivered` while the result is unread.

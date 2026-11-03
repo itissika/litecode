@@ -126,8 +126,7 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
         return;
     }
     let workspace_runtime = runtime.clone();
-    let sessions = state.sessions.clone();
-    let mut session = match SessionController::with_turn_guard(runtime, None, sessions.clone()) {
+    let mut session = match SessionController::with_service(runtime, state.service.clone()) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("session init failed: {}", e);
@@ -313,8 +312,8 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
 
     // G0: forward session lifecycle events to this connection.
     let lifecycle_tx = response_tx.clone();
-    let mut lifecycle_rx = state.sessions.subscribe_lifecycle();
-    let lifecycle_sessions = state.sessions.clone();
+    let mut lifecycle_rx = state.service.subscribe_lifecycle();
+    let lifecycle_sessions = state.service.clone();
     tokio::spawn(async move {
         // WP-091 R8: raw status on turn events; status_changed comes from
         // the serve-level TurnStatusHook as SessionStatusChanged.
@@ -498,13 +497,13 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
             // this path only reads. On failure the request falls back to the
             // loop's SESSION_LIST branch so the error frames stay identical.
             if rpc.method == methods::SESSION_LIST {
-                let sessions = state.sessions.clone();
+                let service = state.service.clone();
                 let resolved = state.runtime.read().expect("runtime lock").resolved.clone();
                 let list_tx = response_tx.clone();
                 let fallback_tx = request_tx.clone();
                 tokio::spawn(async move {
                     match crate::client_protocol::controller::build_session_list(
-                        &sessions, &resolved,
+                        &service, &resolved,
                     )
                     .await
                     {
@@ -520,7 +519,7 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                                 ))
                                 .unwrap(),
                             );
-                            sessions.mark_startup_settled();
+                            service.mark_startup_settled();
                         }
                         Err(error) => {
                             tracing::debug!(%error, "session/list fast path failed; using session loop");

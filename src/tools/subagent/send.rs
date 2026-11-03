@@ -86,7 +86,7 @@ impl SubagentSendTool {
             .project(&child_id)
             .unwrap_or_else(|| self.service.project(&parent).unwrap_or_default());
         // Identity only — model / tier / context mode come from the child's own
-        // session row inside `spawn_turn`.
+        // session row inside the session turn operation.
         let opts = TurnOptions::child(agent_id.clone());
         let retry_message = message.clone();
         let turn_id = match start_turn_like_human(

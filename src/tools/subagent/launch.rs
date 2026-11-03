@@ -35,8 +35,8 @@ pub struct LaunchSpec {
     pub prompt: String,
 }
 
-/// Open a child session and start its first turn the same way a human turn
-/// starts: reserve → spawn_turn → start_turn.
+/// Open a child session and start its first turn through the same session
+/// business operation a human turn uses.
 pub async fn spawn_child_job(
     deps: &SpawnDeps,
     parent_session_id: &str,

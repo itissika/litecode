@@ -19,6 +19,7 @@ use crate::permission::PermissionSink;
 use crate::runtime::RuntimeHandle;
 use crate::runtime::observer::InternalEnvelope;
 use crate::runtime::observer::TurnPhase;
+use crate::session::SessionService;
 use crate::session::manager::SessionManager;
 use crate::session::snapshot;
 use crate::types::LitecodeError;
@@ -64,11 +65,11 @@ pub struct MaterializedRange {
 /// its own `Projection` with independent turn view, buffer tracking, and
 /// outgoing queue.
 ///
-/// Does NOT hold its own SQLite connection — persistence is owned by
-/// `SessionManager.entries` and accessed via delegation.
+/// Does NOT hold its own SQLite connection or session writer. It refreshes
+/// from `SessionService` and only projects what the service returns.
 pub struct Projection {
     pub session_id: String,
-    pub sessions: Arc<SessionManager>,
+    pub(crate) service: Arc<SessionService>,
     pub buffer_revision: u64,
     /// Wire cursor high-water: the last persisted `next_seq` this projection has
     /// delivered up to. New rows are fetched from `[next_seq, <fresh next_seq>)`.
@@ -122,13 +123,13 @@ pub struct Projection {
 
 impl Projection {
     fn seq_cursor(&self) -> (i64, u64) {
-        self.sessions.entry_wire_seq_cursor(&self.session_id)
+        self.service.entry_wire_seq_cursor(&self.session_id)
     }
 
     fn child_session_id_for_encoded(&self, encoded: Option<&crate::types::Item>) -> Option<String> {
         match encoded {
             Some(crate::types::Item::FunctionCall(fc)) if fc.name == "subagent_launch" => self
-                .sessions
+                .service
                 .child_session_id_for_call(&self.session_id, &fc.call_id),
             _ => None,
         }
@@ -149,9 +150,9 @@ impl Projection {
     /// Current-envelope restamp for already-allocated seqs. Order is caller-defined.
     /// Idempotent: the durable row is re-projected as-is.
     fn restamp_changed_seqs(&mut self, seqs: &[crate::session::event::Seq]) {
-        let data_root = self.sessions.data_root_path();
+        let data_root = self.service.data_root_path();
         for seq in seqs {
-            let events = match self.sessions.entry_load_events_range(
+            let events = match self.service.entry_load_events_range(
                 &self.session_id,
                 *seq,
                 seq.saturating_add(1),
@@ -203,14 +204,15 @@ impl Projection {
             .context_envelope
             .clone()
             .with_output_reserve(output_reserve);
-        crate::context_pipeline::measure_persisted_context(
-            &self.sessions,
-            &self.session_id,
-            &envelope,
-            model,
-            &self.sessions.data_root_path(),
-        )
-        .ok()
+        self.service
+            .measure_persisted_context_with_breakdown(
+                &self.session_id,
+                &envelope,
+                model,
+                &self.service.data_root_path(),
+            )
+            .ok()
+            .map(|(meter, _)| meter)
     }
 
     /// Whether the last `refresh_context_estimate` extended the held fold
@@ -227,19 +229,19 @@ impl Projection {
             .context_envelope
             .clone()
             .with_output_reserve(self.context_envelope.output_reserve);
-        let sessions = Arc::clone(&self.sessions);
-        let data_root = sessions.data_root_path();
+        let service = Arc::clone(&self.service);
+        let data_root = service.data_root_path();
         let session_id = self.session_id.clone();
 
         // Rows for the meter come from the fold this projection already holds,
         // extended with whatever the log gained. Any doubt rebuilds it from the
         // log — the same read this replaced, so the worst case is the old cost.
-        let max_seq = sessions.entry_wire_seq_cursor(&session_id).0;
-        let epoch = sessions.entry_truncate_epoch(&session_id);
+        let max_seq = service.entry_wire_seq_cursor(&session_id).0;
+        let epoch = service.entry_truncate_epoch(&session_id);
         let mut extended = None;
         if let Some(view) = self.view.as_mut()
             && view.extend(epoch, max_seq, |from, to| {
-                sessions.entry_load_events_range(&session_id, from, to)
+                service.entry_load_events_range(&session_id, from, to)
             })
         {
             extended = view.rows().ok();
@@ -251,7 +253,7 @@ impl Projection {
                 // Drop the stale fold before any fallible step: a failed rebuild
                 // must leave nothing behind that a later extend could accept.
                 self.view = None;
-                let Ok(events) = sessions.data().events_blocking(&session_id) else {
+                let Ok(events) = service.entry_events(&session_id) else {
                     return;
                 };
                 let Ok(mut view) = crate::session::view::WorkingView::from_events(&events) else {
@@ -266,8 +268,7 @@ impl Projection {
             }
         };
 
-        let Ok((meter, breakdown)) = crate::context_pipeline::measure_working_rows_with_breakdown(
-            &sessions,
+        let Ok((meter, breakdown)) = service.measure_working_rows_with_breakdown(
             &session_id,
             &envelope,
             &model,
@@ -320,6 +321,7 @@ impl Projection {
 }
 
 impl Projection {
+    /// Compatibility/test constructor; production uses [`Self::new_with_service`].
     pub fn new(session_id: String, sessions: Arc<SessionManager>, context_window: usize) -> Self {
         Self::new_with_model(session_id, sessions, context_window, None)
     }
@@ -330,33 +332,38 @@ impl Projection {
         context_window: usize,
         request_model: Option<Arc<crate::provider_catalog::ResolvedModel>>,
     ) -> Self {
-        let (_, next_seq) = sessions.entry_wire_seq_cursor(&session_id);
-        let context_envelope =
-            crate::context_pipeline::latest_persisted_envelope(&sessions, &session_id)
-                .unwrap_or_else(|| crate::context_pipeline::ContextEnvelope::cold(0));
+        let service = Arc::new(SessionService::new(sessions));
+        Self::new_with_service(session_id, service, context_window, request_model)
+    }
+
+    pub fn new_with_service(
+        session_id: String,
+        service: Arc<SessionService>,
+        context_window: usize,
+        request_model: Option<Arc<crate::provider_catalog::ResolvedModel>>,
+    ) -> Self {
+        let (_, next_seq) = service.entry_wire_seq_cursor(&session_id);
+        let context_envelope = service
+            .latest_persisted_envelope(&session_id)
+            .unwrap_or_else(|| crate::context_pipeline::ContextEnvelope::cold(0));
         let (context_meter, context_token_breakdown) = match request_model.as_ref() {
-            Some(model) => crate::context_pipeline::measure_persisted_context_with_breakdown(
-                &sessions,
-                &session_id,
-                &context_envelope,
-                model,
-                &sessions.data_root_path(),
-            )
-            .unwrap_or_default(),
+            Some(model) => service
+                .measure_persisted_context_with_breakdown(
+                    &session_id,
+                    &context_envelope,
+                    model,
+                    &service.data_root_path(),
+                )
+                .unwrap_or_default(),
             None => (
                 crate::context_pipeline::ContextMeter::default(),
                 crate::session::estimate::ItemTokenBreakdown::default(),
             ),
         };
         let context_tokens_estimate = context_meter.used_tokens;
-        let meter = sessions
-            .data()
-            .meter_blocking(&session_id)
-            .unwrap_or_default();
-        let rollup = sessions
-            .provider_usage_rollup(&session_id)
-            .unwrap_or_default();
-        let meta = sessions.data().meta_blocking(&session_id).ok();
+        let meter = service.meter(&session_id).unwrap_or_default();
+        let rollup = service.provider_usage_rollup(&session_id).unwrap_or_default();
+        let meta = service.meta(&session_id).ok();
         let compacted_seq = meta.as_ref().and_then(|meta| meta.compacted_seq);
         let surface_rewrite_seq = meta.as_ref().map_or(0, |meta| meta.surface_rewrite_seq);
         // A bill newer than the last compact/surface rewrite is the occupancy
@@ -390,7 +397,7 @@ impl Projection {
         });
         Self {
             session_id,
-            sessions,
+            service,
             buffer_revision: 0,
             next_seq,
             turn_committed_next_seq: 0,
@@ -481,7 +488,7 @@ impl Projection {
             &meter,
             &envelope,
             project::compaction_state_wire(
-                &self.sessions.compaction_state_blocking(&self.session_id),
+                &self.service.compaction_state(&self.session_id),
             ),
         );
         snap.context_token_breakdown = self.context_token_breakdown.clone();
@@ -494,16 +501,16 @@ impl Projection {
         }
         snap.max_file_revert_seq = self.max_file_revert_seq;
         let task_state = self
-            .sessions
-            .with_entry_task_state(&self.session_id, |state| Ok(state.clone()))
+            .service
+            .entry_task_state(&self.session_id)
             .unwrap_or_default();
         snap.todos = task_state.todos;
         snap.active_plan_path = task_state.active_plan.map(|plan| plan.relative_path);
         // Memory-only queue, but still part of the snapshot: a rebuilt panel
         // (subscribed while idle after a cancel) must see it.
-        snap.pending_messages = self.sessions.pending_messages_snapshot(&self.session_id);
+        snap.pending_messages = self.service.pending_messages_snapshot(&self.session_id);
         // WP-186: always present list (may be empty). Authority for FE cards.
-        let pending = self.sessions.pending_permissions_snapshot(&self.session_id);
+        let pending = self.service.pending_permissions_snapshot(&self.session_id);
         snap.pending_permissions = project::pending_records_to_wire(&pending);
         if let Some(turn) = snap.turn.as_mut() {
             turn.awaiting_permission = !snap.pending_permissions.is_empty();
@@ -511,8 +518,8 @@ impl Projection {
         if let Some(live) = snap.live.as_mut() {
             live.awaiting_permission = !snap.pending_permissions.is_empty();
         }
-        snap.llm_reconnect = self.sessions.llm_reconnect(&self.session_id);
-        if let Ok(meta) = self.sessions.data().meta_blocking(&self.session_id) {
+        snap.llm_reconnect = self.service.llm_reconnect(&self.session_id);
+        if let Ok(meta) = self.service.meta(&self.session_id) {
             snap.meta = crate::client_protocol::protocol::SessionMetaWire {
                 id: meta.id,
                 project: meta.project,
@@ -538,10 +545,10 @@ impl Projection {
 
     fn turn_snapshot(&self) -> Option<TurnSnapshot> {
         // Whether a turn is present is owned by SessionManager, not projection cache.
-        if !self.sessions.is_turn_running_blocking(&self.session_id) {
+        if !self.service.is_turn_running_blocking(&self.session_id) {
             return None;
         }
-        if let Some(progress) = self.sessions.get_cached_progress(&self.session_id) {
+        if let Some(progress) = self.service.cached_progress(&self.session_id) {
             return Some(project::turn_progress_to_snapshot(&progress));
         }
         self.turn_id.as_ref().map(|turn_id| TurnSnapshot {
@@ -628,7 +635,7 @@ impl Projection {
             child_session_id,
         } = &ev
             && let Some(event) = self
-                .sessions
+                .service
                 .find_function_call_event(&self.session_id, call_id)
         {
             self.push_outgoing(project::buffer_log_row(
@@ -690,11 +697,11 @@ impl Projection {
         self.refresh_context_estimate();
         if self.next_seq > old_next {
             match self
-                .sessions
+                .service
                 .entry_load_events_range(&self.session_id, old_next, self.next_seq)
             {
                 Ok(events) => {
-                    let data_root = self.sessions.data_root_path();
+                    let data_root = self.service.data_root_path();
                     for event in events {
                         let encoded = crate::session::event::item_from_event(&event)
                             .ok()
@@ -729,217 +736,26 @@ impl Projection {
         );
     }
 
-    // ── revert ──
+    // ── revert refresh ──
 
-    /// Wire-facing revert: truncates the transcript at a user row's `seq`.
-    pub fn revert_to_user_anchor(
-        &mut self,
-        seq: u64,
-        project: &str,
-        binding: &SessionBindingProjection,
-    ) -> anyhow::Result<()> {
-        let lease = match self.sessions.try_begin_revert(&self.session_id) {
-            Ok(lease) => lease,
-            Err(LitecodeError::AgentAlreadyRunning) => {
-                self.push_operation_error(
-                    OperationKind::RevertToUserAnchor,
-                    ErrorCode::AgentAlreadyRunning,
-                    "session is busy".into(),
-                    project,
-                    binding,
-                );
-                return Ok(());
-            }
-            Err(e) => return Err(e.into()),
-        };
-        let anchor = match i64::try_from(seq) {
-            Ok(anchor) => anchor,
-            Err(_) => {
-                self.push_operation_error(
-                    OperationKind::RevertToUserAnchor,
-                    ErrorCode::InvalidRevertAnchor,
-                    format!("seq={seq}"),
-                    project,
-                    binding,
-                );
-                return Ok(());
-            }
-        };
-        match self
-            .sessions
-            .entry_revert_to_user_anchor(&self.session_id, anchor)
-        {
-            Ok(()) => {
-                // The log is back at this user row: messages still queued for the
-                // next seam belong to the state the user just discarded, so they
-                // must not be delivered afterwards. Done under the same lease —
-                // no turn can start and no end-of-turn flush can claim them in
-                // between, and a failed revert never reaches this branch.
-                if let Some(lease) = lease.as_ref() {
-                    self.sessions.discard_pending_messages_for_revert(
-                        &self.session_id,
-                        lease.operation_id(),
-                    );
-                }
-                self.bump_buffer_revision(project, binding);
-                // Re-read after the bump: `last_seq` is the new (dropped) active
-                // tail while `next_seq` is the persisted high-water that did not
-                // move back.
-                let (last_seq, next_seq) = self.seq_cursor();
-                self.push_outgoing(serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "buffer/reverted",
-                    "params": {
-                        "session_id": self.session_id,
-                        "last_seq": last_seq,
-                        "next_seq": next_seq,
-                    },
-                }));
-                self.push_operation_ok(OperationKind::RevertToUserAnchor, project, binding);
-                Ok(())
-            }
-            Err(LitecodeError::InvalidRevertAnchor(msg)) => {
-                self.push_operation_error(
-                    OperationKind::RevertToUserAnchor,
-                    ErrorCode::InvalidRevertAnchor,
-                    msg,
-                    project,
-                    binding,
-                );
-                Ok(())
-            }
-            Err(e) => {
-                self.push_operation_error(
-                    OperationKind::RevertToUserAnchor,
-                    ErrorCode::Internal,
-                    e.to_string(),
-                    project,
-                    binding,
-                );
-                Ok(())
-            }
-        }
-    }
-
-    pub fn revert_files(
-        &mut self,
-        seq: u64,
-        project: &str,
-        binding: &SessionBindingProjection,
-        workspace_root: &str,
-        snapshots_dir: &std::path::Path,
-    ) -> anyhow::Result<()> {
-        let _lease = match self.sessions.try_begin_operation(
-            &self.session_id,
-            crate::session::manager::SessionOperationKind::Revert,
-        ) {
-            Ok(lease) => lease,
-            Err(LitecodeError::AgentAlreadyRunning) => {
-                self.push_operation_error(
-                    OperationKind::RevertFiles,
-                    ErrorCode::AgentAlreadyRunning,
-                    "session is busy".into(),
-                    project,
-                    binding,
-                );
-                return Ok(());
-            }
-            Err(e) => return Err(e.into()),
-        };
-        let anchor = match i64::try_from(seq) {
-            Ok(anchor) => anchor,
-            Err(_) => {
-                self.push_operation_error(
-                    OperationKind::RevertFiles,
-                    ErrorCode::InvalidRevertAnchor,
-                    format!("seq={seq}"),
-                    project,
-                    binding,
-                );
-                return Ok(());
-            }
-        };
-        let stem = match self
-            .sessions
-            .entry_snapshot_stem_for_user_seq(&self.session_id, anchor)
-        {
-            Ok(stem) => stem,
-            Err(LitecodeError::InvalidRevertAnchor(msg)) => {
-                self.push_operation_error(
-                    OperationKind::RevertFiles,
-                    ErrorCode::InvalidRevertAnchor,
-                    msg,
-                    project,
-                    binding,
-                );
-                return Ok(());
-            }
-            Err(e) => return Err(e.into()),
-        };
-        let workspace = std::path::PathBuf::from(workspace_root);
-        let snaps = snapshots_dir.to_path_buf();
-        let sid = self.session_id.clone();
-        let restore_result = run_snapshot_restore_off_async(workspace, snaps, sid, stem);
-        match restore_result {
-            Ok(snapshot::RestoreOutcome::Restored { .. }) => {
-                self.push_operation_ok(OperationKind::RevertFiles, project, binding);
-                Ok(())
-            }
-            Ok(snapshot::RestoreOutcome::NothingToRevert) => {
-                self.push_operation_error(
-                    OperationKind::RevertFiles,
-                    ErrorCode::NothingToRevert,
-                    "no file changes to revert".into(),
-                    project,
-                    binding,
-                );
-                Ok(())
-            }
-            Ok(snapshot::RestoreOutcome::Unavailable {
-                reason: snapshot::RestoreUnavailable::MissingTrackRef,
-            }) => {
-                self.push_operation_error(
-                    OperationKind::RevertFiles,
-                    ErrorCode::SnapshotUnavailable,
-                    "no file snapshot for this anchor (track may have failed)".into(),
-                    project,
-                    binding,
-                );
-                Ok(())
-            }
-            Ok(snapshot::RestoreOutcome::Unavailable {
-                reason: snapshot::RestoreUnavailable::TrackFailed,
-            }) => {
-                self.push_operation_error(
-                    OperationKind::RevertFiles,
-                    ErrorCode::SnapshotUnavailable,
-                    "file snapshot unavailable (track failed this turn)".into(),
-                    project,
-                    binding,
-                );
-                Ok(())
-            }
-            Err(LitecodeError::InvalidRevertAnchor(msg)) => {
-                self.push_operation_error(
-                    OperationKind::RevertFiles,
-                    ErrorCode::InvalidRevertAnchor,
-                    msg,
-                    project,
-                    binding,
-                );
-                Ok(())
-            }
-            Err(e) => {
-                self.push_operation_error(
-                    OperationKind::RevertFiles,
-                    ErrorCode::Internal,
-                    e.to_string(),
-                    project,
-                    binding,
-                );
-                Ok(())
-            }
-        }
+    /// Refresh a projection after the controller completed the session
+    /// revert. This only re-reads cursor/buffer state and emits frames; the
+    /// command itself belongs to SessionService.
+    pub fn apply_reverted(&mut self, project: &str, binding: &SessionBindingProjection) {
+        self.bump_buffer_revision(project, binding);
+        // Re-read after the bump: `last_seq` is the new (dropped) active tail
+        // while `next_seq` is the persisted high-water that did not move back.
+        let (last_seq, next_seq) = self.seq_cursor();
+        self.push_outgoing(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "buffer/reverted",
+            "params": {
+                "session_id": self.session_id,
+                "last_seq": last_seq,
+                "next_seq": next_seq,
+            },
+        }));
+        self.push_operation_ok(OperationKind::RevertToUserAnchor, project, binding);
     }
 
     // ── materialize ──
@@ -950,9 +766,9 @@ impl Projection {
         to_seq: crate::session::event::Seq,
     ) -> anyhow::Result<MaterializedRange> {
         let events = self
-            .sessions
+            .service
             .entry_load_events_range(&self.session_id, from_seq, to_seq)?;
-        let data_root = self.sessions.data_root_path();
+        let data_root = self.service.data_root_path();
         let mut out = Vec::with_capacity(events.len());
         for event in events {
             let encoded = crate::session::event::item_from_event(&event)
@@ -1168,7 +984,7 @@ impl Projection {
 pub struct SessionController {
     pub runtime: RuntimeHandle,
     pub project: String,
-    pub sessions: Arc<SessionManager>,
+    pub service: Arc<SessionService>,
     pub projections: HashMap<String, Projection>,
     /// Sender for the merged event channel. Each `subscribe` spawns a task
     /// that forwards broadcast events as `(session_id, InternalEnvelope)` pairs.
@@ -1196,10 +1012,19 @@ impl SessionController {
         Self::with_turn_guard(runtime, session_id, sessions)
     }
 
+    /// Compatibility/test constructor. Production wires the process-level
+    /// service through [`Self::with_service`].
     pub fn with_turn_guard(
         runtime: RuntimeHandle,
         _session_id: Option<String>,
         sessions: Arc<SessionManager>,
+    ) -> anyhow::Result<Self> {
+        Self::with_service(runtime, Arc::new(SessionService::new(sessions)))
+    }
+
+    pub fn with_service(
+        runtime: RuntimeHandle,
+        service: Arc<SessionService>,
     ) -> anyhow::Result<Self> {
         let project = runtime
             .workspace
@@ -1212,7 +1037,7 @@ impl SessionController {
         let ctrl = Self {
             runtime,
             project,
-            sessions,
+            service,
             projections: HashMap::new(),
             merged_tx,
             merged_rx,
@@ -1232,23 +1057,23 @@ impl SessionController {
     /// Creates a `Projection` with a fresh `broadcast_rx` and spawns a
     /// forwarding task that relays events to `merged_tx`.
     ///
-    /// Persistence is owned by `SessionManager.entries` — Projection does NOT
-    /// open its own SQLite connection.
+    /// Persistence is owned by `SessionService` — Projection does NOT open its
+    /// own SQLite connection.
     pub async fn subscribe_checked(&mut self, session_id: &str) -> anyhow::Result<()> {
         if self.projections.contains_key(session_id) {
             return Ok(());
         }
 
         // Ensure the SessionRecord exists in SessionManager (resume from SQLite if needed).
-        self.sessions.ensure_entry(session_id).await?;
+        self.service.ensure_entry(session_id).await?;
 
-        // Ensure the session runtime exists in SessionManager (attach).
-        let cached = self.sessions.attach(session_id);
+        // Ensure the session runtime exists (attach).
+        let cached = self.service.attach(session_id);
 
-        let envelope_rx = match self.sessions.subscribe(session_id) {
+        let envelope_rx = match self.service.subscribe(session_id) {
             Some(rx) => rx,
             None => {
-                self.sessions.detach(session_id);
+                self.service.detach(session_id);
                 return Err(anyhow::anyhow!(
                     "session {session_id} has no event receiver"
                 ));
@@ -1258,11 +1083,10 @@ impl SessionController {
         let binding = self.session_binding(session_id);
         let context_window = binding.context_window;
 
-        let sessions = self.sessions.clone();
         let request_model = self.resolved_model_for_binding(&binding);
-        let mut proj = Projection::new_with_model(
+        let mut proj = Projection::new_with_service(
             session_id.to_string(),
-            sessions.clone(),
+            Arc::clone(&self.service),
             context_window,
             request_model,
         );
@@ -1272,15 +1096,16 @@ impl SessionController {
         // Cold subscribe with no persisted request header: seed the full
         // server-owned envelope from the same main-turn shape a real request
         // would use. The browser never reconstructs instructions/tools/output.
-        let has_persisted_envelope =
-            crate::context_pipeline::latest_persisted_envelope(&sessions, session_id).is_some();
+        let has_persisted_envelope = self
+            .service
+            .latest_persisted_envelope(session_id)
+            .is_some();
         let mut cold_seed_unknown = false;
         if !has_persisted_envelope {
             let agent_id = binding.agent_id.clone();
             let depth = self
-                .sessions
-                .data()
-                .meta_blocking(session_id)
+                .service
+                .meta(session_id)
                 .map(|meta| meta.subagent_depth)
                 .unwrap_or(0);
             match self
@@ -1310,7 +1135,7 @@ impl SessionController {
 
         // R7: if a turn is already running for this session, restore state.
         if let Some(progress) = cached
-            && self.sessions.is_turn_running_blocking(session_id)
+            && self.service.is_turn_running_blocking(session_id)
         {
             let snapshot = project::turn_progress_to_snapshot(&progress);
             proj.turn_id = Some(snapshot.turn_id.clone());
@@ -1319,7 +1144,7 @@ impl SessionController {
             proj.step_max = snapshot.step_max;
             proj.started_at_ms = snapshot.started_at_ms;
 
-            let events = self.sessions.event_buffer_snapshot(session_id);
+            let events = self.service.event_buffer_snapshot(session_id);
             let project_str = self.project.clone();
             for envelope in events {
                 proj.on_internal(envelope, &project_str, &binding);
@@ -1331,9 +1156,9 @@ impl SessionController {
         let mut snapshot = proj.snapshot(&project_str, &binding);
         // (Re)subscribe is the client's sync point for transient bash state.
         snapshot.bash = Some(self.runtime.ide.terminal.jobs.wire_snapshot(session_id));
-        snapshot.pending_messages = self.sessions.pending_messages_snapshot(session_id);
+        snapshot.pending_messages = self.service.pending_messages_snapshot(session_id);
         // WP-186: re-assert after bash overlay (snapshot() already filled; keep explicit).
-        let pending = self.sessions.pending_permissions_snapshot(session_id);
+        let pending = self.service.pending_permissions_snapshot(session_id);
         snapshot.pending_permissions = project::pending_records_to_wire(&pending);
         if let Some(turn) = snapshot.turn.as_mut() {
             turn.awaiting_permission = !snapshot.pending_permissions.is_empty();
@@ -1414,7 +1239,7 @@ impl SessionController {
         {
             handle.abort();
         }
-        self.sessions.detach(session_id);
+        self.service.detach(session_id);
     }
 
     // ── accessors ──
@@ -1515,7 +1340,7 @@ impl SessionController {
         &self,
         parent_session_id: &str,
     ) -> std::collections::HashMap<String, String> {
-        self.sessions.child_bindings_for_parent(parent_session_id)
+        self.service.child_bindings_for_parent(parent_session_id)
     }
 
     /// WP-091 R7 / P6: live bindings plus tombstones of deleted children.
@@ -1528,7 +1353,7 @@ impl SessionController {
         std::collections::HashMap<String, crate::client_protocol::protocol::SubagentBindingState>,
     ) {
         use crate::client_protocol::protocol::SubagentBindingState;
-        let mut bindings = self.sessions.child_bindings_for_parent(parent_session_id);
+        let mut bindings = self.service.child_bindings_for_parent(parent_session_id);
         let mut states: std::collections::HashMap<String, SubagentBindingState> = bindings
             .iter()
             .map(|(call, child)| {
@@ -1542,7 +1367,7 @@ impl SessionController {
             })
             .collect();
         for (call, child) in self
-            .sessions
+            .service
             .deleted_child_bindings_for_parent(parent_session_id)
         {
             if states.contains_key(&call) {
@@ -1564,7 +1389,7 @@ impl SessionController {
 
     pub fn session_binding(&self, session_id: &str) -> SessionBindingProjection {
         project::binding_projection(
-            &self.sessions,
+            &self.service,
             session_id,
             &self.runtime.resolved,
             self.runtime.desired_primary_agent(),
@@ -1591,9 +1416,9 @@ impl SessionController {
         depth: u32,
     ) -> anyhow::Result<crate::llm::CompactionRequestContext> {
         self.runtime.sync_workspace_tool_readiness();
-        let mut runtime = self.runtime.build_runtime(
+        let mut runtime = self.service.build_runtime(
+            &self.runtime,
             session_id.to_string(),
-            Arc::clone(&self.sessions),
             agent_id,
             depth,
             crate::permission::deny_permission_sink(),
@@ -1605,7 +1430,7 @@ impl SessionController {
 
     pub(super) fn runtime_step_max(&self, session_id: &str) -> u32 {
         let primary = self
-            .sessions
+            .service
             .agent_id(session_id)
             .unwrap_or_else(|| self.runtime.desired_primary_agent().to_string());
         crate::config::bridge::agent_config_for(&self.runtime.resolved, &primary)
@@ -1621,13 +1446,13 @@ impl SessionController {
         session_id: &str,
         perm_tx: &mpsc::UnboundedSender<PendingPermission>,
     ) {
-        self.sessions
+        self.service
             .permission_route(session_id)
             .bind(&self.permission_route_owner, perm_tx.clone());
     }
 
     pub(crate) fn unbind_permission_route(&self, session_id: &str) {
-        if let Some(route) = self.sessions.existing_permission_route(session_id) {
+        if let Some(route) = self.service.existing_permission_route(session_id) {
             route.unbind(&self.permission_route_owner);
         }
     }
@@ -1650,7 +1475,7 @@ impl SessionController {
     ) -> Arc<dyn PermissionSink> {
         // 2.14: the caller generates the turn_id BEFORE the sink, so permission
         // wire frames carry a real turn_id (never the old "no-turn" fallback).
-        let route = self.sessions.permission_route(session_id);
+        let route = self.service.permission_route(session_id);
         route.bind(&self.permission_route_owner, perm_tx.clone());
         permission_bridge::ws_permission_sink(session_id, turn_id, &self.runtime.agent_name, route)
     }
@@ -1669,21 +1494,21 @@ impl SessionController {
         }
     }
 
-    /// Whether any subscribed session has a running turn (SessionManager).
+    /// Whether any subscribed session has a running turn.
     pub fn is_turn_running(&self) -> bool {
         self.projections
             .keys()
-            .any(|id| self.sessions.is_turn_running_blocking(id))
+            .any(|id| self.service.is_turn_running_blocking(id))
     }
 
-    /// Whether a turn is running for a specific session (SessionManager only).
+    /// Whether a turn is running for a specific session.
     pub fn is_turn_running_for(&self, session_id: &str) -> bool {
-        self.sessions.is_turn_running_blocking(session_id)
+        self.service.is_turn_running_blocking(session_id)
     }
 
     /// Whether a turn or an exclusive standalone operation owns this session.
     pub fn is_session_busy_for(&self, session_id: &str) -> bool {
-        self.sessions.is_session_busy_blocking(session_id)
+        self.service.is_session_busy_blocking(session_id)
     }
 }
 
@@ -1700,7 +1525,7 @@ impl Drop for SessionController {
             {
                 handle.abort();
             }
-            self.sessions.detach(&sid);
+            self.service.detach(&sid);
         }
     }
 }
@@ -2091,7 +1916,10 @@ mod compact_item_wire_tests {
 
         // Revert at user seq 6 → keeps seqs 0..5 (active MAX 5); the
         // allocator high-water stays at 9 because a truncate never rewinds it.
-        proj.revert_to_user_anchor(6, "/p", &binding()).unwrap();
+        sessions
+            .entry_revert_to_user_anchor(&sid, 6)
+            .expect("revert");
+        proj.apply_reverted("/p", &binding());
         let out = proj.take_outgoing();
         let reverted = out
             .iter()

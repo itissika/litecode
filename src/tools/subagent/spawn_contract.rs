@@ -161,7 +161,9 @@ async fn spawn_env(explore_model: &str) -> SpawnEnv {
         Arc::clone(&revision),
         db_path,
     );
-    runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
+    runtime
+        .subagent_hub
+        .attach_service(Arc::new(SessionService::new(Arc::clone(&sessions))));
 
     let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
     SpawnEnv {

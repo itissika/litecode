@@ -1,9 +1,8 @@
 //! Subagent tool series: launch / send / wait / stop / list.
 //!
-//! Tools call the same `SessionService` facade humans use (`reserve_turn` →
-//! `spawn_turn` → `start_turn` / `cancel_turn`). The hub only routes
-//! completion references to a safe parent injection point and stays on the
-//! process-owned `SessionManager`.
+//! Tools call the same `SessionService` facade humans use (`start_turn` /
+//! `cancel_turn`). The hub only routes completion references to a safe parent
+//! injection point and consumes the same service.
 
 /// Product lock: subagent tools bind only on primary turns (`depth == 0`).
 /// Children cannot nest another subagent series.

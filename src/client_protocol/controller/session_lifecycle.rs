@@ -4,14 +4,8 @@ use crate::client_protocol::project;
 use crate::client_protocol::protocol::{
     ErrorCode, OperationKind, SessionBindingProjection, SessionFolder, SessionInfo, SessionList,
 };
-use crate::context_pipeline::{
-    BudgetPolicy, CompactPolicy, ContextEnvelope, ProviderPromptBaseline,
-    measure_persisted_context_with_breakdown,
-};
 use crate::permission::PermissionSink;
-use crate::runtime::exec::spawn_compaction_worker;
-use crate::runtime::observer::{CompactionFailKind, CompactionTrigger};
-use crate::runtime::{TurnOptions, spawn_turn};
+use crate::runtime::TurnOptions;
 use crate::types::{LitecodeError, UserInput};
 
 use super::{SessionController, StartTurnError};
@@ -92,7 +86,7 @@ impl SessionController {
         self.ensure_projection_for_turn(session_id).await?;
 
         // Ensure the SessionRecord exists.
-        self.sessions
+        self.service
             .ensure_entry(session_id)
             .await
             .map_err(|e| StartTurnError::Runtime(anyhow::anyhow!("{e}")))?;
@@ -101,7 +95,7 @@ impl SessionController {
         // sink is created) so the wire carries a real id end-to-end.
         let turn_id = turn_id.to_string();
         let sink = permission_sink;
-        self.sessions
+        self.service
             .set_last_permission_sink(session_id, Arc::clone(&sink));
         self.runtime
             .apply_non_engine()
@@ -113,7 +107,7 @@ impl SessionController {
 
         let default_primary = self.runtime.desired_primary_agent();
         let primary_agent = self
-            .sessions
+            .service
             .resolve_primary_agent(session_id, default_primary, &self.runtime.resolved)
             .map_err(|e| StartTurnError::Runtime(anyhow::anyhow!("{e}")))?;
 
@@ -121,40 +115,25 @@ impl SessionController {
         // never set (agent had none) or that can no longer run (model dropped from
         // the catalog, provider key removed) is replaced in place. sessions.db
         // writes are not turn-guarded, so this holds even while another session runs.
-        crate::runtime::ensure_session_model(
-            &self.runtime.resolved,
-            &self.sessions,
-            session_id,
-            &primary_agent,
-        );
+        self.service
+            .ensure_session_model(&self.runtime.resolved, session_id, &primary_agent);
 
         let binding = self.session_binding(session_id);
         if let Some(proj) = self.projection_mut(session_id) {
             proj.context_window = binding.context_window;
         }
 
-        // Reserve before spawning the runtime. This closes the old check/spawn/
-        // register race with revert and standalone compaction.
+        // Reserve, spawn, attach, and register the turn as one service operation.
+        // The service performs plan-execution persistence after reservation so
+        // the revert/compaction race window stays closed.
         let step_max = self.runtime_step_max(session_id);
-        self.sessions
-            .reserve_turn(
-                session_id,
-                turn_id.clone(),
-                step_max,
-                &primary_agent,
-                &self.project,
-            )
-            .map_err(|e| match e {
-                crate::types::LitecodeError::AgentAlreadyRunning => {
-                    StartTurnError::AgentAlreadyRunning
-                }
-                other => StartTurnError::Runtime(anyhow::anyhow!("{other}")),
-            })?;
-
-        let turn_input = match launch {
-            TurnLaunch::Wake => crate::runtime::TurnInput::Wake {
-                anchor_user_seq: None,
-            },
+        let (turn_input, plan_execution) = match launch {
+            TurnLaunch::Wake => (
+                crate::runtime::TurnInput::Wake {
+                    anchor_user_seq: None,
+                },
+                false,
+            ),
             TurnLaunch::User {
                 input,
                 plan_execution,
@@ -165,67 +144,34 @@ impl SessionController {
                 } else {
                     input
                 };
-
-                // The plan-execution message is issued on the human's behalf, so it
-                // carries its own kind (`plan/execute`) instead of `item/user`.
-                // Persist it first, then wake the turn. A write failure falls back to
-                // an ordinary user message appended by the runtime.
-                if plan_execution {
-                    match self
-                        .sessions
-                        .append_plan_execute(session_id, &crate::types::user_text(&input.text))
-                    {
-                        Ok(()) => crate::runtime::TurnInput::Wake {
-                            anchor_user_seq: None,
-                        },
-                        Err(error) => {
-                            tracing::warn!(
-                                session_id,
-                                error = %error,
-                                "failed to persist plan-execution message; continuing as a user message"
-                            );
-                            crate::runtime::TurnInput::User(input)
-                        }
-                    }
-                } else {
-                    crate::runtime::TurnInput::User(input)
-                }
+                (crate::runtime::TurnInput::User(input), plan_execution)
             }
         };
-
-        let handle = match spawn_turn(
-            &self.runtime,
-            session_id.to_string(),
-            self.sessions.clone(),
-            turn_input,
-            sink,
-            turn_id.clone(),
-            TurnOptions::default(),
-        ) {
-            Ok(handle) => handle,
-            Err(error) => {
-                self.sessions.release_turn_reservation(session_id, &turn_id);
-                return Err(StartTurnError::Runtime(error));
-            }
-        };
-
-        // Subscribe this connection to the per-session event broadcast.
-        let _ = self.sessions.attach(session_id);
-
-        let project = self.project.clone();
-        if let Err(e) = self
-            .sessions
+        if let Err(error) = self
+            .service
             .start_turn(
+                &self.runtime,
                 session_id,
-                handle,
+                turn_input,
+                plan_execution,
+                true,
+                sink,
+                &turn_id,
                 &primary_agent,
-                &project,
-                self.sessions.clone(),
+                &self.project,
+                step_max,
+                TurnOptions::default(),
             )
             .await
         {
-            self.sessions.release_turn_reservation(session_id, &turn_id);
-            return Err(StartTurnError::Runtime(anyhow::anyhow!("{e}")));
+            return Err(match error {
+                crate::session::service::TurnStartError::AgentAlreadyRunning => {
+                    StartTurnError::AgentAlreadyRunning
+                }
+                crate::session::service::TurnStartError::Runtime(error) => {
+                    StartTurnError::Runtime(error)
+                }
+            });
         }
 
         let project_str = self.project.clone();
@@ -250,150 +196,29 @@ impl SessionController {
         self.subscribe_checked(session_id)
             .await
             .map_err(LitecodeError::Anyhow)?;
-        self.sessions.ensure_entry(session_id).await?;
+        self.service.ensure_entry(session_id).await?;
 
-        // Claim before any expensive runtime build. Manual is just another
-        // trigger: it does not take the turn's activity lease and may run while
-        // a turn is appending its tail.
-        let mut lease = self
-            .sessions
-            .try_begin_compaction_episode(session_id, CompactionTrigger::Manual)?;
-        let operation_id = lease.id().to_string();
-
-        // Every precheck failure below must finish the episode with a terminal;
-        // the worker is not started until all immutable inputs are available.
-        let prepared: Result<
-            (
-                crate::llm::CompactionRequestContext,
-                BudgetPolicy,
-                std::path::PathBuf,
-            ),
-            LitecodeError,
-        > = async {
-            self.runtime.apply_non_engine()?;
-            // Match the main turn's pre-request tool view: disk is the source of
-            // truth for workspace MCP / custom-tool readiness.
-            self.runtime.sync_workspace_tool_readiness();
-
-            // Manual compaction is a call mode of this session's main model. Build
-            // the same runtime shape a turn would use so provider/model,
-            // instructions, and active tool schemas are frozen together.
-            let default_primary = self.runtime.desired_primary_agent();
-            let agent_id = self.sessions.resolve_primary_agent(
-                session_id,
-                default_primary,
-                &self.runtime.resolved,
-            )?;
-            // Turn parity: a sticky model that was never set or can no longer run
-            // is repaired before manual compaction freezes the request shape.
-            crate::runtime::ensure_session_model(
-                &self.runtime.resolved,
-                &self.sessions,
-                session_id,
-                &agent_id,
-            );
-            let depth = self
-                .sessions
-                .data()
-                .meta_blocking(session_id)?
-                .subagent_depth;
-            let mut compaction_runtime = self.runtime.build_runtime(
-                session_id.to_string(),
-                Arc::clone(&self.sessions),
-                &agent_id,
-                depth,
-                crate::permission::deny_permission_sink(),
-                Arc::new(crate::runtime::observer::NoopObserver),
-            )?;
-            compaction_runtime.ensure_tooling_initialized().await?;
-            let compaction_request = compaction_runtime.compaction_request_context()?;
-            if compaction_request.context_window == 0 {
-                return Err(LitecodeError::Config(
-                    "no context window configured for this session".into(),
-                ));
-            }
-
-            let budget = BudgetPolicy::new(compaction_request.context_window);
-            let envelope = ContextEnvelope::from_compaction_request(&compaction_request);
-            let data_root = self.sessions.data_root_path();
-            let state = self
-                .sessions
-                .data()
-                .working_set_state_blocking(session_id)?;
-            // The meter shown to the UI is the full persisted context. The
-            // manual gate itself is sealed-only; an in-progress tail must not
-            // make manual compaction look eligible.
-            let (meter, breakdown) = measure_persisted_context_with_breakdown(
-                &self.sessions,
-                session_id,
-                &envelope,
-                &compaction_request.target,
-                &data_root,
-            )?;
-            let sealed_meter = CompactPolicy::measure_sealed_meter(
-                &self.sessions,
-                session_id,
-                &compaction_request,
-                &ProviderPromptBaseline::default(),
-                &data_root,
-            );
-            let manual_eligible =
-                sealed_meter.as_ref().is_some_and(|meter| meter.manual_eligible());
-            // Publish the exact server meter+buckets before returning either gate
-            // result so a refreshed UI sees the same projection the decision used.
-            if let Some(proj) = self.projection_mut(session_id) {
-                proj.context_window = compaction_request.context_window;
-                proj.context_envelope = envelope.clone();
-                proj.context_meter = meter.clone();
-                proj.context_tokens_estimate = meter.used_tokens;
-                proj.context_token_breakdown = breakdown;
-            }
-            if !manual_eligible {
-                return Err(LitecodeError::NothingToCompact);
-            }
-            if !CompactPolicy::can_compact_sealed(&state.rows, &state.in_progress, &budget) {
-                // A manual trigger may still prune when there is no summary cut.
-                // The worker makes the final decision; this is a fast-fail only.
-                let protected =
-                    crate::context_pipeline::protected_conversation_tokens_for_request(
-                        &compaction_request,
-                    );
-                if !CompactPolicy::can_prune_sealed(&state.rows, &state.in_progress, protected) {
-                    return Err(LitecodeError::NothingToCompact);
+        let service = Arc::clone(&self.service);
+        let projections = &mut self.projections;
+        let sid = session_id.to_string();
+        let start = service
+            .start_manual_compaction(&self.runtime, session_id, |preview| {
+                if let Some(proj) = projections.get_mut(&sid) {
+                    proj.context_window = preview.context_window;
+                    proj.context_envelope = preview.envelope.clone();
+                    proj.context_meter = preview.meter.clone();
+                    proj.context_tokens_estimate = preview.meter.used_tokens;
+                    proj.context_token_breakdown = preview.breakdown.clone();
                 }
+            })
+            .await;
+        match start {
+            Ok(start) => Ok(start.operation_id),
+            Err(crate::session::service::ManualCompactionError::NothingToCompact) => {
+                Err(LitecodeError::NothingToCompact)
             }
-            Ok((compaction_request, budget, data_root))
+            Err(crate::session::service::ManualCompactionError::Runtime(error)) => Err(error),
         }
-        .await;
-
-        let (compaction_request, budget, data_root) = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                let kind = if matches!(error, LitecodeError::NothingToCompact) {
-                    CompactionFailKind::NothingToCompact
-                } else {
-                    CompactionFailKind::Failed
-                };
-                lease.finish(crate::session::manager::EpisodeOutcome::Failed {
-                    kind,
-                    message: error.to_string(),
-                    action: crate::session::manager::CompactionFailureAction::Continue,
-                });
-                return Err(error);
-            }
-        };
-
-        spawn_compaction_worker(
-            lease,
-            budget,
-            Arc::clone(&self.sessions),
-            session_id.to_string(),
-            compaction_request,
-            CompactionTrigger::Manual,
-            data_root,
-            None,
-        );
-        Ok(operation_id)
     }
 
     pub async fn new_session(&mut self) -> anyhow::Result<String> {
@@ -402,18 +227,17 @@ impl SessionController {
         // model the user can run — a new session is never born unrunnable.
         let model_id = crate::runtime::seed_model_ref(&self.runtime.resolved, &agent_id);
         let sid = self
-            .sessions
+            .service
             .open_session(&self.project, &agent_id, model_id.as_deref())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let binding = self.session_binding(&sid);
         let project = self.project.clone();
-        let (last_seq, next_seq) = self.sessions.entry_wire_seq_cursor(&sid);
+        let (last_seq, next_seq) = self.service.entry_wire_seq_cursor(&sid);
         let depth = self
-            .sessions
-            .data()
-            .meta_blocking(&sid)
+            .service
+            .meta(&sid)
             .map(|meta| meta.subagent_depth)
             .unwrap_or(0);
         let seeded = match self
@@ -423,15 +247,16 @@ impl SessionController {
             Ok(request) => {
                 let envelope =
                     crate::context_pipeline::ContextEnvelope::from_compaction_request(&request);
-                let meter = measure_persisted_context_with_breakdown(
-                    &self.sessions,
-                    &sid,
-                    &envelope,
-                    &request.target,
-                    &self.sessions.data_root_path(),
-                )
-                .ok()
-                .map(|(meter, _)| (envelope, meter));
+                let meter = self
+                    .service
+                    .measure_persisted_context_with_breakdown(
+                        &sid,
+                        &envelope,
+                        &request.target,
+                        &self.service.data_root_path(),
+                    )
+                    .ok()
+                    .map(|(meter, _)| (envelope, meter));
                 if meter.is_none() {
                     tracing::warn!(
                         session_id = %sid,
@@ -491,12 +316,10 @@ impl SessionController {
     pub async fn delete_session(&mut self, id: &str) -> anyhow::Result<()> {
         // WP-091 K4/R6: shared delete entry (precheck descendant_running,
         // lease, remove_session, purge/forget every removed id).
-        let deleted = crate::session::delete::delete_session_tree(
-            &self.sessions,
-            &self.runtime.subagent_hub,
-            id,
-        )
-        .await?;
+        let deleted = self
+            .service
+            .delete_session_tree(&self.runtime.subagent_hub, id)
+            .await?;
         // K5: user deleted a child → note the surviving parent, never wake it.
         if let Some(parent) = deleted.parent_session_id.as_deref() {
             self.runtime.subagent_hub.notify_parent_no_wake(
@@ -540,7 +363,7 @@ impl SessionController {
     }
 
     pub async fn list_sessions(&mut self) -> anyhow::Result<SessionList> {
-        build_session_list(&self.sessions, &self.runtime.resolved).await
+        build_session_list(&self.service, &self.runtime.resolved).await
     }
 
     /// Build one `session/list` payload and fan it out to every projection and
@@ -561,9 +384,8 @@ impl SessionController {
         session_id: &str,
         title: Option<String>,
     ) -> anyhow::Result<()> {
-        self.sessions
-            .data()
-            .set_session_title_blocking(session_id, title.as_deref())?;
+        self.service
+            .set_session_title(session_id, title.as_deref())?;
         self.push_session_list().await?;
         Ok(())
     }
@@ -574,29 +396,26 @@ impl SessionController {
         session_id: &str,
         folder_id: Option<String>,
     ) -> anyhow::Result<()> {
-        self.sessions
-            .data()
-            .set_session_folder_blocking(session_id, folder_id.as_deref())?;
+        self.service
+            .set_session_folder(session_id, folder_id.as_deref())?;
         self.push_session_list().await?;
         Ok(())
     }
 
     pub async fn create_session_folder(&mut self, name: &str) -> anyhow::Result<String> {
-        let folder_id = self.sessions.data().create_session_folder_blocking(name)?;
+        let folder_id = self.service.create_session_folder(name)?;
         self.push_session_list().await?;
         Ok(folder_id)
     }
 
     pub async fn rename_session_folder(&mut self, id: &str, name: &str) -> anyhow::Result<()> {
-        self.sessions
-            .data()
-            .rename_session_folder_blocking(id, name)?;
+        self.service.rename_session_folder(id, name)?;
         self.push_session_list().await?;
         Ok(())
     }
 
     pub async fn delete_session_folder(&mut self, id: &str) -> anyhow::Result<()> {
-        self.sessions.data().delete_session_folder_blocking(id)?;
+        self.service.delete_session_folder(id)?;
         self.push_session_list().await?;
         Ok(())
     }
@@ -604,9 +423,7 @@ impl SessionController {
     /// Rewrite sidebar folder order. Unknown ids are ignored; unlisted folders
     /// keep their relative order at the end.
     pub async fn reorder_session_folders(&mut self, ids: Vec<String>) -> anyhow::Result<()> {
-        self.sessions
-            .data()
-            .reorder_session_folders_blocking(&ids)?;
+        self.service.reorder_session_folders(&ids)?;
         self.push_session_list().await?;
         Ok(())
     }
@@ -616,10 +433,53 @@ impl SessionController {
     pub fn revert_to_user_anchor(&mut self, session_id: &str, seq: u64) -> anyhow::Result<()> {
         let project = self.project.clone();
         let binding = self.session_binding(session_id);
-        let Some(proj) = self.projection_mut(session_id) else {
+        if self.projection(session_id).is_none() {
             return Err(anyhow::anyhow!("no session bound"));
+        }
+        let outcome = self.service.revert_to_user_anchor(session_id, seq);
+        let Some(proj) = self.projection_mut(session_id) else {
+            unreachable!("projection checked above");
         };
-        proj.revert_to_user_anchor(seq, &project, &binding)
+        match outcome {
+            Ok(guard) => {
+                proj.apply_reverted(&project, &binding);
+                // Keep the exclusive revert lease through the projection
+                // refresh and its emitted frames; release only afterwards.
+                drop(guard);
+                Ok(())
+            }
+            Err(crate::session::service::RevertError::Busy) => {
+                proj.push_operation_error(
+                    OperationKind::RevertToUserAnchor,
+                    ErrorCode::AgentAlreadyRunning,
+                    "session is busy".into(),
+                    &project,
+                    &binding,
+                );
+                Ok(())
+            }
+            Err(crate::session::service::RevertError::InvalidAnchor(msg)) => {
+                proj.push_operation_error(
+                    OperationKind::RevertToUserAnchor,
+                    ErrorCode::InvalidRevertAnchor,
+                    msg,
+                    &project,
+                    &binding,
+                );
+                Ok(())
+            }
+            Err(crate::session::service::RevertError::Internal(msg)) => {
+                proj.push_operation_error(
+                    OperationKind::RevertToUserAnchor,
+                    ErrorCode::Internal,
+                    msg,
+                    &project,
+                    &binding,
+                );
+                Ok(())
+            }
+            Err(crate::session::service::RevertError::Fatal(error)) => Err(error.into()),
+        }
     }
 
     pub fn revert_files(&mut self, session_id: &str, seq: u64) -> anyhow::Result<()> {
@@ -627,10 +487,118 @@ impl SessionController {
         let binding = self.session_binding(session_id);
         let workspace_root = self.project.clone();
         let snapshots_dir = self.runtime.workspace.paths.snapshots_dir.clone();
-        let Some(proj) = self.projection_mut(session_id) else {
+        if self.projection(session_id).is_none() {
             return Err(anyhow::anyhow!("no session bound"));
+        }
+        let plan_result = self.service.begin_file_revert(session_id, seq);
+        let Some(proj) = self.projection_mut(session_id) else {
+            unreachable!("projection checked above");
         };
-        proj.revert_files(seq, &project, &binding, &workspace_root, &snapshots_dir)
+        let plan = match plan_result {
+            Ok(plan) => plan,
+            Err(crate::session::service::RevertError::Busy) => {
+                proj.push_operation_error(
+                    OperationKind::RevertFiles,
+                    ErrorCode::AgentAlreadyRunning,
+                    "session is busy".into(),
+                    &project,
+                    &binding,
+                );
+                return Ok(());
+            }
+            Err(crate::session::service::RevertError::InvalidAnchor(msg)) => {
+                proj.push_operation_error(
+                    OperationKind::RevertFiles,
+                    ErrorCode::InvalidRevertAnchor,
+                    msg,
+                    &project,
+                    &binding,
+                );
+                return Ok(());
+            }
+            Err(crate::session::service::RevertError::Internal(msg)) => {
+                proj.push_operation_error(
+                    OperationKind::RevertFiles,
+                    ErrorCode::Internal,
+                    msg,
+                    &project,
+                    &binding,
+                );
+                return Ok(());
+            }
+            Err(crate::session::service::RevertError::Fatal(error)) => {
+                return Err(error.into());
+            }
+        };
+        let stem = plan.stem();
+        let workspace = std::path::PathBuf::from(workspace_root);
+        let snaps = snapshots_dir.to_path_buf();
+        let sid = session_id.to_string();
+        let restore_result = super::run_snapshot_restore_off_async(workspace, snaps, sid, stem);
+        // Keep the exclusive file-revert lease through the workspace restore
+        // and the projection frames that publish its result.
+        let result = match restore_result {
+            Ok(crate::session::snapshot::RestoreOutcome::Restored { .. }) => {
+                proj.push_operation_ok(OperationKind::RevertFiles, &project, &binding);
+                Ok(())
+            }
+            Ok(crate::session::snapshot::RestoreOutcome::NothingToRevert) => {
+                proj.push_operation_error(
+                    OperationKind::RevertFiles,
+                    ErrorCode::NothingToRevert,
+                    "no file changes to revert".into(),
+                    &project,
+                    &binding,
+                );
+                Ok(())
+            }
+            Ok(crate::session::snapshot::RestoreOutcome::Unavailable {
+                reason: crate::session::snapshot::RestoreUnavailable::MissingTrackRef,
+            }) => {
+                proj.push_operation_error(
+                    OperationKind::RevertFiles,
+                    ErrorCode::SnapshotUnavailable,
+                    "no file snapshot for this anchor (track may have failed)".into(),
+                    &project,
+                    &binding,
+                );
+                Ok(())
+            }
+            Ok(crate::session::snapshot::RestoreOutcome::Unavailable {
+                reason: crate::session::snapshot::RestoreUnavailable::TrackFailed,
+            }) => {
+                proj.push_operation_error(
+                    OperationKind::RevertFiles,
+                    ErrorCode::SnapshotUnavailable,
+                    "file snapshot unavailable (track failed this turn)".into(),
+                    &project,
+                    &binding,
+                );
+                Ok(())
+            }
+            Err(LitecodeError::InvalidRevertAnchor(msg)) => {
+                proj.push_operation_error(
+                    OperationKind::RevertFiles,
+                    ErrorCode::InvalidRevertAnchor,
+                    msg,
+                    &project,
+                    &binding,
+                );
+                Ok(())
+            }
+            Err(error) => {
+                proj.push_operation_error(
+                    OperationKind::RevertFiles,
+                    ErrorCode::Internal,
+                    error.to_string(),
+                    &project,
+                    &binding,
+                );
+                Ok(())
+            }
+        };
+        drop(plan);
+        result
     }
 
     pub fn set_active_primary(&mut self, session_id: &str, agent_id: &str) -> anyhow::Result<()> {
@@ -653,7 +621,7 @@ impl SessionController {
         // subagents (the profile name seeds the row at launch). Config stays
         // editable — model / thinking tier / context mode are session-owned and
         // work identically to a primary session.
-        if self.sessions.is_child_session(session_id) {
+        if self.service.is_child_session(session_id) {
             let binding = self.session_binding(session_id);
             if let Some(proj) = self.projection_mut(session_id) {
                 proj.push_operation_error(
@@ -672,7 +640,7 @@ impl SessionController {
             agent_id,
         ) {
             Ok(()) => {
-                self.sessions
+                self.service
                     .set_agent_id(session_id, agent_id.to_string())
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 // Only agent_id — do not touch model_id (decoupled sticky).
@@ -741,7 +709,7 @@ impl SessionController {
             return Ok(());
         }
         let previous = self
-            .sessions
+            .service
             .session_model_id(session_id)
             .unwrap_or_default();
         if previous == model_id {
@@ -756,27 +724,26 @@ impl SessionController {
         // Port the current view before committing the switch: the user sees
         // what the new target will drop, and a target that cannot serve this
         // session is rejected here instead of on the next turn.
-        let preview = match crate::runtime::llm_resolve::preview_session_model(
-            &self.runtime.resolved,
-            &self.sessions,
-            session_id,
-            model_id,
-        ) {
-            Ok(preview) => preview,
-            Err(error) => {
-                let binding = self.session_binding(session_id);
-                if let Some(proj) = self.projection_mut(session_id) {
-                    proj.push_operation_error(
-                        OperationKind::SetModel,
-                        ErrorCode::InvalidRequest,
-                        error.to_string(),
-                        &project,
-                        &binding,
-                    );
+        let preview =
+            match self
+                .service
+                .preview_session_model(&self.runtime.resolved, session_id, model_id)
+            {
+                Ok(preview) => preview,
+                Err(error) => {
+                    let binding = self.session_binding(session_id);
+                    if let Some(proj) = self.projection_mut(session_id) {
+                        proj.push_operation_error(
+                            OperationKind::SetModel,
+                            ErrorCode::InvalidRequest,
+                            error.to_string(),
+                            &project,
+                            &binding,
+                        );
+                    }
+                    return Ok(());
                 }
-                return Ok(());
-            }
-        };
+            };
         if let Some(block) = preview.report.blocked {
             let binding = self.session_binding(session_id);
             if let Some(proj) = self.projection_mut(session_id) {
@@ -810,7 +777,7 @@ impl SessionController {
             }
         });
         let change_seq = self
-            .sessions
+            .service
             .set_session_model_with_change(session_id, Some(model_id.to_string()), &record)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         tracing::info!(
@@ -857,7 +824,7 @@ impl SessionController {
             }
             return Ok(());
         }
-        self.sessions
+        self.service
             .set_thinking_tier(session_id, parsed)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let binding = self.session_binding(session_id);
@@ -885,7 +852,7 @@ impl SessionController {
             }
             return Ok(());
         }
-        self.sessions
+        self.service
             .set_context_mode(session_id, parsed)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let binding = self.session_binding(session_id);
@@ -904,7 +871,7 @@ impl SessionController {
         before: i64,
         after: i64,
     ) -> anyhow::Result<crate::session::data::command::UserAnchorWindow> {
-        self.sessions
+        self.service
             .entry_user_anchor_window(session_id, anchor_seq, before, after)
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
@@ -936,12 +903,11 @@ impl crate::session::delete::RemovedSessionCleanup for crate::tools::subagent::S
 /// [`SessionController::list_sessions`] delegates here, so both paths return
 /// the same rows.
 pub(crate) async fn build_session_list(
-    sessions_mgr: &crate::session::manager::SessionManager,
+    service: &crate::session::SessionService,
     resolved: &crate::config::ResolvedConfig,
 ) -> anyhow::Result<SessionList> {
-    let folders = sessions_mgr
-        .data()
-        .list_folders_blocking()?
+    let folders = service
+        .list_folders()?
         .into_iter()
         .map(|folder| SessionFolder {
             id: folder.id,
@@ -949,7 +915,7 @@ pub(crate) async fn build_session_list(
             sort_order: folder.sort_order,
         })
         .collect();
-    let db_sessions = sessions_mgr.data().list_sessions_blocking()?;
+    let db_sessions = service.list_sessions()?;
     let mut result = Vec::with_capacity(db_sessions.len());
     for row in db_sessions {
         // WP-091 R8 / P8: empty child sessions stay listed (a just-bound
@@ -957,9 +923,9 @@ pub(crate) async fn build_session_list(
         // the sidebar can show something: a user title / folder, preview
         // text, a live turn, or a real conversation row. Control rows such as
         // `model/changed` are not content — see `SessionListRow::is_listed`.
-        let running = sessions_mgr.is_turn_running(&row.id).await;
-        let status = sessions_mgr
-            .session_status(&row.id)
+        let running = service.is_turn_running(&row.id).await;
+        let status = service
+            .status(&row.id)
             .unwrap_or(crate::session::manager::SessionStatus::Idle)
             .as_str()
             .to_string();
@@ -969,22 +935,20 @@ pub(crate) async fn build_session_list(
         let has_conversation = if row.is_listed_by_projection(running, busy) {
             false
         } else {
-            sessions_mgr
-                .data()
-                .has_conversation_rows_blocking(&row.id)?
+            service.has_conversation_rows(&row.id)?
         };
         if !row.is_listed(running, busy, has_conversation) {
             continue;
         }
         let turn = if running {
-            sessions_mgr
-                .get_cached_progress(&row.id)
+            service
+                .cached_progress(&row.id)
                 .map(|p| project::turn_progress_to_snapshot(&p))
         } else {
             None
         };
         let binding = project::list_binding_projection(
-            &sessions_mgr,
+            service,
             &row.id,
             resolved,
             row.agent_id,
@@ -992,16 +956,15 @@ pub(crate) async fn build_session_list(
         );
         // WP-099 P1: reason and cancelled_by come from the same durable
         // turn/end record, under the same visibility rule.
-        let (last_turn_reason, last_turn_cancelled_by) = if running
-            || row.parent_session_id.is_none()
-        {
-            (String::new(), None)
-        } else {
-            match crate::client_protocol::status_track::latest_turn_end(&sessions_mgr, &row.id) {
-                Some(end) => (end.reason, end.cancelled_by),
-                None => (String::new(), None),
-            }
-        };
+        let (last_turn_reason, last_turn_cancelled_by) =
+            if running || row.parent_session_id.is_none() {
+                (String::new(), None)
+            } else {
+                match crate::client_protocol::status_track::latest_turn_end(service, &row.id) {
+                    Some(end) => (end.reason, end.cancelled_by),
+                    None => (String::new(), None),
+                }
+            };
         result.push(SessionInfo {
             id: row.id,
             project: row.project,

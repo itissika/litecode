@@ -83,9 +83,11 @@ fn launch_tool_with_hub(
         resolved.workspace_root().join(".litecode/global.db"),
     )
     .with_test_llm_override(Arc::from(provider));
-    runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
-    let hub = Arc::clone(&runtime.subagent_hub);
     let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
+    runtime
+        .subagent_hub
+        .attach_service(Arc::clone(&service));
+    let hub = Arc::clone(&runtime.subagent_hub);
     let tool = SubagentLaunchTool::new(
         runtime,
         "default",

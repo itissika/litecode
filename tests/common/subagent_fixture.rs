@@ -108,7 +108,7 @@ impl SubagentHarness {
             workspace.paths.sessions_db.with_file_name("global.db"),
         )
         .with_test_llm_override(provider);
-        runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
+        runtime.subagent_hub.attach_service(Arc::clone(&service));
 
         Self {
             dir,

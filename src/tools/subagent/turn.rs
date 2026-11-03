@@ -1,6 +1,6 @@
-//! Start a turn the same way the human controller does: reserve, then spawn,
-//! then `SessionService::start_turn`. Kept as subagent orchestration, not a
-//! SessionManager API.
+//! Start a child turn through the same SessionService business operation as
+//! the human controller. Runtime preparation stays in the subagent orchestration;
+//! reservation, spawn, and registration are one service call.
 
 use crate::permission::deny_permission_sink;
 use crate::runtime::{RuntimeHandle, TurnOptions};
@@ -26,28 +26,28 @@ pub(crate) async fn start_turn_like_human(
     let step_max = crate::config::bridge::agent_config_for(&runtime.resolved, agent_id)
         .map(|agent| agent.max_steps)
         .unwrap_or(50);
-    service.reserve_turn(session_id, turn_id.clone(), step_max, agent_id, project)?;
-
-    let handle = match service.spawn_turn(
-        &runtime,
-        session_id.to_string(),
-        input,
-        deny_permission_sink(),
-        turn_id.clone(),
-        opts,
-    ) {
-        Ok(handle) => handle,
-        Err(error) => {
-            service.release_turn_reservation(session_id, &turn_id);
-            return Err(LitecodeError::ToolExecution(error.to_string()));
-        }
-    };
-    if let Err(error) = service
-        .start_turn(session_id, handle, agent_id, project)
+    match service
+        .start_turn(
+            &runtime,
+            session_id,
+            input,
+            false,
+            false,
+            deny_permission_sink(),
+            &turn_id,
+            agent_id,
+            project,
+            step_max,
+            opts,
+        )
         .await
     {
-        service.release_turn_reservation(session_id, &turn_id);
-        return Err(error);
+        Ok(()) => Ok(turn_id),
+        Err(crate::session::service::TurnStartError::AgentAlreadyRunning) => {
+            Err(LitecodeError::AgentAlreadyRunning)
+        }
+        Err(crate::session::service::TurnStartError::Runtime(error)) => {
+            Err(LitecodeError::ToolExecution(error.to_string()))
+        }
     }
-    Ok(turn_id)
 }

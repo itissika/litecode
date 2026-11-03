@@ -188,7 +188,10 @@ fn compact_then_revert_before_checkpoint_drops_compact_and_resets_pointers() {
     let _ = proj.take_outgoing();
     assert_cursors_agree(&proj, &sessions, &sid);
 
-    proj.revert_to_user_anchor(1, "/p", &binding()).unwrap();
+    sessions
+        .entry_revert_to_user_anchor(&sid, 1)
+        .expect("revert");
+    proj.apply_reverted("/p", &binding());
     let out = proj.take_outgoing();
     let reverted = out
         .iter()
@@ -212,7 +215,10 @@ fn compact_then_revert_before_checkpoint_drops_compact_and_resets_pointers() {
 #[test]
 fn revert_then_append_does_not_reuse_deleted_seq() {
     let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
-    proj.revert_to_user_anchor(1, "/p", &binding()).unwrap();
+    sessions
+        .entry_revert_to_user_anchor(&sid, 1)
+        .expect("revert");
+    proj.apply_reverted("/p", &binding());
     let _ = proj.take_outgoing();
     // Active tail is 0, but the high-water stays at 3: the deleted seqs 1..2 are
     // never handed out again.

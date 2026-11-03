@@ -51,7 +51,7 @@ async fn post_media(State(state): State<ServeState>, body: Bytes) -> Response {
         return error(StatusCode::BAD_REQUEST, "unsupported image");
     };
     let (width, height) = image_dimensions(&body, mime).unwrap_or((0, 0));
-    let data_root = state.sessions.data_root_path();
+    let data_root = state.service.data_root_path();
     match write_user_media(&data_root, &body, ext) {
         Ok(name) => (
             StatusCode::CREATED,
@@ -72,7 +72,7 @@ async fn get_media(State(state): State<ServeState>, Path(name): Path<String>) ->
     if !valid_media_name(&name) {
         return error(StatusCode::BAD_REQUEST, "invalid image name");
     }
-    let data_root = state.sessions.data_root_path();
+    let data_root = state.service.data_root_path();
     match read_user_media(&data_root, &name) {
         Ok(bytes) => {
             let mime = mime_for_name(&name).unwrap_or("application/octet-stream");

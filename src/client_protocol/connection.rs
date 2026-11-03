@@ -90,7 +90,7 @@ fn reject_child_turn_start(
     id: &serde_json::Value,
     sid: &str,
 ) -> bool {
-    if !session.sessions.is_child_session(sid) {
+    if !session.service.is_child_session(sid) {
         return false;
     }
     emit(
@@ -243,7 +243,7 @@ pub async fn handle_jsonrpc(
             // WP-166 §9: a client that runs turns without ever sending
             // session/list or session/new (e.g. `?session=` hint) still
             // releases P2 startup work on its first agent/run.
-            session.sessions.mark_startup_settled();
+            session.service.mark_startup_settled();
             #[derive(serde::Deserialize)]
             struct Params {
                 #[serde(default)]
@@ -309,7 +309,7 @@ pub async fn handle_jsonrpc(
             if reject_child_turn_start(session, sink, &id, &sid) {
                 return false;
             }
-            if session.sessions.is_turn_running(&sid).await {
+            if session.service.is_turn_running(&sid).await {
                 emit(
                     sink,
                     operation_error(
@@ -403,10 +403,10 @@ pub async fn handle_jsonrpc(
             if reject_child_turn_start(session, sink, &id, &sid) {
                 return false;
             }
-            if session.sessions.is_turn_running(&sid).await
-                || !session.sessions.llm_reconnect_retryable(&sid)
+            if session.service.is_turn_running(&sid).await
+                || !session.service.llm_reconnect_retryable(&sid)
             {
-                let message = if session.sessions.is_turn_running(&sid).await {
+                let message = if session.service.is_turn_running(&sid).await {
                     "agent already running"
                 } else {
                     "nothing to retry"
@@ -454,15 +454,14 @@ pub async fn handle_jsonrpc(
             let sid = resolve_sid(session, &params.session_id);
             // B: Stop invalidates this session's asks immediately; no card may
             // survive a turn that is being cancelled.
-            session.sessions.clear_pending_permissions(&sid);
             // WP-091 R1 / P2: report truthfully; children are allowed.
             let outcome = session
-                .sessions
-                .cancel_turn(&sid, crate::types::StopOrigin::User)
+                .service
+                .stop_turn_async(&sid, crate::types::StopOrigin::User)
                 .await;
             // K5 / Q5: only a real stop of a child notes its parent (no wake).
             if outcome.cancelled()
-                && let Some(parent) = session.sessions.parent_session_id_of(&sid)
+                && let Some(parent) = session.service.parent_session_id_of(&sid)
             {
                 session.runtime.subagent_hub.notify_parent_no_wake(
                     &parent,
@@ -553,7 +552,7 @@ pub async fn handle_jsonrpc(
                 return false;
             }
             let sid = resolve_sid(session, &params.session_id);
-            if let Err(e) = session.sessions.ensure_entry(&sid).await {
+            if let Err(e) = session.service.ensure_entry(&sid).await {
                 let msg = e.to_string();
                 emit(
                     sink,
@@ -578,14 +577,14 @@ pub async fn handle_jsonrpc(
                 return false;
             }
             match session
-                .sessions
+                .service
                 .enqueue_user_input(&sid, crate::types::UserInput { text, images })
             {
                 Ok(_) => {
                     // Idle race: the turn ended between the composer's last state
                     // and this RPC. Send the queue as a fresh turn instead of
                     // waiting for a TurnFinished that will never come.
-                    if let Some(claimed) = session.sessions.claim_pending_if_idle(&sid)
+                    if let Some(claimed) = session.service.claim_pending_if_idle(&sid)
                         && !claimed.is_empty()
                     {
                         let merged = crate::session::manager::merge_pending(&claimed);
@@ -595,7 +594,7 @@ pub async fn handle_jsonrpc(
                             .start_turn(&sid, merged, permission_sink, &turn_id, false)
                             .await
                         {
-                            session.sessions.restore_pending_messages(&sid, claimed);
+                            session.service.restore_pending_messages(&sid, claimed);
                             let msg = error.to_string();
                             emit(
                                 sink,
@@ -625,7 +624,7 @@ pub async fn handle_jsonrpc(
                             serde_json::json!({
                                 "queued": true,
                                 "pending_messages":
-                                    session.sessions.pending_messages_snapshot(&sid),
+                                    session.service.pending_messages_snapshot(&sid),
                             }),
                         ))
                         .unwrap(),
@@ -675,14 +674,14 @@ pub async fn handle_jsonrpc(
                 }
             };
             let sid = resolve_sid(session, &params.session_id);
-            let removed = session.sessions.remove_pending_message(&sid, &params.id);
+            let removed = session.service.remove_pending_message(&sid, &params.id);
             emit(
                 sink,
                 serde_json::to_value(ok_response(
                     id,
                     serde_json::json!({
                         "removed": removed,
-                        "pending_messages": session.sessions.pending_messages_snapshot(&sid),
+                        "pending_messages": session.service.pending_messages_snapshot(&sid),
                     }),
                 ))
                 .unwrap(),
@@ -725,7 +724,7 @@ pub async fn handle_jsonrpc(
                 }
             }
             // WP-166: the first list/new reply releases P2 startup work.
-            session.sessions.mark_startup_settled();
+            session.service.mark_startup_settled();
         }
 
         methods::SESSION_SUBSCRIBE => {
@@ -945,7 +944,7 @@ pub async fn handle_jsonrpc(
                 }
             }
             // WP-166: the first list/new reply releases P2 startup work.
-            session.sessions.mark_startup_settled();
+            session.service.mark_startup_settled();
         }
 
         methods::SESSION_RENAME => {
@@ -1214,7 +1213,7 @@ pub async fn handle_jsonrpc(
                 return false;
             };
             snapshot.bash = Some(terminal_hub.jobs.wire_snapshot(&sid));
-            snapshot.pending_messages = session.sessions.pending_messages_snapshot(&sid);
+            snapshot.pending_messages = session.service.pending_messages_snapshot(&sid);
             for msg in session.take_all_outgoing() {
                 emit(sink, msg);
             }
@@ -1233,7 +1232,7 @@ pub async fn handle_jsonrpc(
             );
         }
 
-        methods::WORKSPACE_USAGE => match session.sessions.workspace_usage() {
+        methods::WORKSPACE_USAGE => match session.service.workspace_usage() {
             Ok(usage) => {
                 let payload = crate::client_protocol::protocol::WorkspaceUsageReport {
                     days: usage.days,
@@ -1284,7 +1283,7 @@ pub async fn handle_jsonrpc(
             };
             let sid = resolve_sid(session, &params.session_id);
             let limit = params.limit.unwrap_or(200);
-            match session.sessions.provider_usage_series(&sid, limit) {
+            match session.service.provider_usage_series(&sid, limit) {
                 Ok(series) => {
                     let payload = crate::client_protocol::protocol::SessionUsageSeries {
                         session_id: sid,
@@ -1932,7 +1931,7 @@ fn retain_and_clear_pending(
     let mut cleared: Vec<String> = Vec::new();
     for (session_id, _) in &listed {
         if !cleared.contains(session_id) {
-            session.sessions.clear_pending_permissions(session_id);
+            session.service.clear_pending_permissions(session_id);
             cleared.push(session_id.clone());
         }
     }
@@ -2046,13 +2045,11 @@ pub async fn run_session_loop(
 
             Some(perm) = perm_rx.recv() => {
                 // Link transcript call_id when the FunctionCall is already logged.
-                let linked_call_id = session
-                    .sessions
-                    .latest_unanswered_call_id_for_tool(&perm.session_id, &perm.tool);
+                let linked_call_id = session.service.latest_unanswered_call_id_for_tool(&perm.session_id, &perm.tool);
                 // B: register only while the owning turn is live. A process
                 // restart or a turn that already ended must not show a card:
                 // nobody is waiting on the oneshot any more.
-                let registered = session.sessions.upsert_pending_permission(
+                let registered = session.service.upsert_pending_permission(
                     crate::session::pending::PendingPermissionRecord {
                         session_id: perm.session_id.clone(),
                         turn_id: perm.turn_id.clone(),
@@ -2141,9 +2138,7 @@ pub async fn run_session_loop(
                         selected,
                         answers,
                     ));
-                    session
-                        .sessions
-                        .remove_pending_permission(&sid, &request_id);
+                    session.service.remove_pending_permission(&sid, &request_id);
                     emit_permission_resolved(
                         session,
                         &response_tx,
@@ -2173,22 +2168,21 @@ pub async fn run_session_loop(
                         let _ = retain_and_clear_pending(session, &mut pending_asks);
                         let sids: Vec<String> = session.projections.keys().cloned().collect();
                         for sid in &sids {
-                            let _ = session.sessions.cancel_turn(sid, crate::types::StopOrigin::User).await;
+                            let _ = session.service.cancel_turn_async(sid, crate::types::StopOrigin::User).await;
                         }
                         break;
                     }
                     Some(SessionRequest::Cancel) => {
                         // WP-186: user Stop → Aborted + clear durable pending.
                         for (sid, tool) in abort_all_pending_asks(&mut pending_asks) {
-                            session.sessions.clear_pending_permissions(&sid);
+                            session.service.clear_pending_permissions(&sid);
                             emit_permission_resolved(
                                 session, &response_tx, &sid, &tool, false, false,
                             );
                         }
                         let sids: Vec<String> = session.projections.keys().cloned().collect();
                         for sid in &sids {
-                            session.sessions.clear_pending_permissions(sid);
-                            let _ = session.sessions.cancel_turn(sid, crate::types::StopOrigin::User).await;
+                            let _ = session.service.stop_turn_async(sid, crate::types::StopOrigin::User).await;
                         }
                         for msg in session.take_all_outgoing() {
                             emit(&response_tx, msg);
@@ -2237,7 +2231,7 @@ pub async fn run_session_loop(
                                     always,
                                     "grant_permission received"
                                 );
-                                session.sessions.remove_pending_permission(
+                                session.service.remove_pending_permission(
                                     &session_id,
                                     &request_id_for_sidecar,
                                 );
@@ -2262,9 +2256,7 @@ pub async fn run_session_loop(
                                 // B: a request owned by a dead turn can never be
                                 // answered. Drop the stale row and resolve the
                                 // card; otherwise the next snapshot re-adds it.
-                                if let Some(stale_sid) = session
-                                    .sessions
-                                    .clear_pending_permission_if_turn_dead(&request_id)
+                                if let Some(stale_sid) = session.service.clear_pending_permission_if_turn_dead(&request_id)
                                 {
                                     tracing::warn!(
                                         request_id = %request_id,
@@ -2334,15 +2326,13 @@ pub async fn run_session_loop(
                 match req {
                     SessionRequest::Quit => {
                         let _ = retain_and_clear_pending(session, &mut pending_asks);
-                        let _ = session
-                            .sessions
-                            .cancel_turn(&sid, crate::types::StopOrigin::User)
+                        let _ = session.service.cancel_turn_async(&sid, crate::types::StopOrigin::User)
                             .await;
                         return;
                     }
                     SessionRequest::Cancel => {
                         for (rej_sid, tool) in abort_all_pending_asks(&mut pending_asks) {
-                            session.sessions.clear_pending_permissions(&rej_sid);
+                            session.service.clear_pending_permissions(&rej_sid);
                             emit_permission_resolved(
                                 session,
                                 &response_tx,
@@ -2352,11 +2342,7 @@ pub async fn run_session_loop(
                                 false,
                             );
                         }
-                        session.sessions.clear_pending_permissions(&sid);
-                        let _ = session
-                            .sessions
-                            .cancel_turn(&sid, crate::types::StopOrigin::User)
-                            .await;
+                        let _ = session.service.stop_turn_async(&sid, crate::types::StopOrigin::User).await;
                         if let Some(proj) = session.projection_mut(&sid) {
                             for msg in proj.take_outgoing() {
                                 emit(&response_tx, msg);
@@ -2401,7 +2387,7 @@ pub async fn run_session_loop(
                 }
                 SessionRequest::Cancel => {
                     for (sid, tool) in abort_all_pending_asks(&mut pending_asks) {
-                        session.sessions.clear_pending_permissions(&sid);
+                        session.service.clear_pending_permissions(&sid);
                         emit_permission_resolved(session, &response_tx, &sid, &tool, false, false);
                     }
                 }

@@ -542,13 +542,13 @@ impl CliConversation {
         runtime
             .workspace_engines
             .set_session_reader(sessions.reader());
+        let service = std::sync::Arc::new(crate::session::SessionService::new(sessions));
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .worker_threads(2)
             .build()?;
-        let session_id = rt.block_on(sessions.open_session(project, agent_id, model_id))?;
-        let mut controller =
-            SessionController::with_turn_guard(runtime, Some(session_id.clone()), sessions)?;
+        let session_id = rt.block_on(service.open_session(project, agent_id, model_id))?;
+        let mut controller = SessionController::with_service(runtime, service)?;
         let conn = rt.block_on(async {
             controller.subscribe(&session_id).await;
             ConnectionHandle::spawn(controller)

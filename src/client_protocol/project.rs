@@ -5,7 +5,7 @@ use crate::runtime::observer::{
     TurnPhase,
 };
 use crate::session::live::{LifecycleEvent, TurnProgress};
-use crate::session::manager::SessionManager;
+use crate::session::SessionService;
 
 use serde_json::{Value, json};
 
@@ -45,7 +45,7 @@ pub fn buffer_log_row(
 
 /// Project sticky session binding + catalog effective fields for wire.
 pub fn binding_projection(
-    sessions: &SessionManager,
+    sessions: &SessionService,
     session_id: &str,
     resolved: &ResolvedConfig,
     default_primary: &str,
@@ -93,7 +93,7 @@ pub fn binding_projection(
 
 /// List-row binding: live sticky ids when the session is loaded, else SQL.
 pub fn list_binding_projection(
-    sessions: &SessionManager,
+    sessions: &SessionService,
     session_id: &str,
     resolved: &ResolvedConfig,
     fallback_agent: String,
@@ -960,7 +960,7 @@ pub fn session_lifecycle_turn_updated(session_id: &str, turn: &TurnSnapshot) -> 
 
 /// Notify a freshly-(re)subscribed connection of a running turn's cached state.
 ///
-/// Sent immediately after `attach` when the `SessionManager` reports a live
+/// Sent immediately after `attach` when the session service reports a live
 /// [`TurnSnapshot`] (R7 reconnect): lets the late-joining viewer render the
 /// in-progress turn instead of appearing idle.
 pub fn turn_progress_to_snapshot(p: &TurnProgress) -> TurnSnapshot {

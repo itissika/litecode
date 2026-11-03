@@ -225,10 +225,12 @@ async fn session_list_fastlane_matches_controller_list() {
     let (reply, _) = until_reply(&mut ws, 1).await;
 
     let resolved = env.state.runtime.read().unwrap().resolved.clone();
-    let direct =
-        crate::client_protocol::controller::build_session_list(&env.state.sessions, &resolved)
-            .await
-            .expect("direct list");
+    let direct = crate::client_protocol::controller::build_session_list(
+        &env.state.service,
+        &resolved,
+    )
+    .await
+    .expect("direct list");
     assert_eq!(
         reply.pointer("/result/sessions").cloned().unwrap(),
         serde_json::to_value(&direct.sessions).unwrap(),
@@ -467,7 +469,7 @@ async fn gc_stale_empty_sessions_deferred_until_settled() {
         0,
     );
 
-    let gc = crate::serve::router::spawn_empty_session_gc(env.state.sessions.clone());
+    let gc = crate::serve::router::spawn_empty_session_gc(env.state.service.clone());
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
         data.meta_blocking(&stale_empty).is_ok(),

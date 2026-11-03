@@ -83,8 +83,8 @@ fn launch_tool_on_sessions(
         db_path,
     )
     .with_test_llm_override(Arc::new(provider));
-    runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
     let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
+    runtime.subagent_hub.attach_service(Arc::clone(&service));
     SubagentLaunchTool::new(
         runtime,
         "default",
@@ -454,16 +454,15 @@ async fn child_exit_triggers_parent_auto_turn_reminder() {
         cwd.join("global.db"),
     )
     .with_test_llm_override(Arc::new(ScriptedProvider::with_text("done")));
-    runtime.subagent_hub.attach_sessions(Arc::clone(&sessions));
+    let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
+    runtime.subagent_hub.attach_service(Arc::clone(&service));
     let hub = Arc::clone(&runtime.subagent_hub);
     install_subagent_auto_turn(
         hub,
         Arc::new(RwLock::new(runtime.clone())),
-        Arc::clone(&sessions),
+        Arc::clone(&service),
         cwd.to_path_buf(),
     );
-
-    let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
     let tool = SubagentLaunchTool::new(
         runtime,
         "default",

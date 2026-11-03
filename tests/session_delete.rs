@@ -11,8 +11,9 @@ use litecode::config::{ConfigManager, SettingsWriter, TurnGuard, WorkspaceState}
 use litecode::engines::WorkspaceEngines;
 use litecode::optional::EngineManager;
 use litecode::runtime::RuntimeHandle;
+use litecode::session::event::EventType;
 use litecode::session::manager::SessionManager;
-use litecode::types::user_text;
+use litecode::types::{UserInput, user_text};
 
 fn controller(
     sessions: Arc<SessionManager>,
@@ -78,4 +79,40 @@ async fn delete_listed_idle_session_after_cold_start_without_subscribe() {
         "deleted session must leave the list"
     );
     assert!(sessions.data().meta_blocking(&sid).is_err());
+}
+
+#[tokio::test]
+async fn ui_revert_goes_through_controller_and_service() {
+    let fixture = SessionDataFixture::new();
+    let sid = fixture.create("/proj", "default", None);
+    fixture.insert_items(&sid, &[user_text("first"), user_text("second")]);
+    let sessions = Arc::new(fixture.manager());
+    let anchor = sessions
+        .data()
+        .events_blocking(&sid)
+        .expect("events")
+        .into_iter()
+        .find(|event| event.event_type == EventType::ItemUser)
+        .expect("user anchor")
+        .seq as u64;
+
+    let mut ctrl = controller(Arc::clone(&sessions), fixture.dir.path());
+    ctrl.subscribe(&sid).await;
+    sessions
+        .enqueue_user_input(&sid, UserInput::text("queued"))
+        .expect("pending message");
+    ctrl.revert_to_user_anchor(&sid, anchor)
+        .expect("controller revert");
+
+    assert!(sessions.pending_messages_snapshot(&sid).is_empty());
+    let out = ctrl.take_outgoing_for(&sid);
+    assert!(
+        out.iter().any(|frame| frame["method"] == "buffer/reverted"),
+        "UI revert must emit buffer/reverted after the service operation"
+    );
+    assert!(
+        out.iter()
+            .any(|frame| frame["method"] == "agent/operation_result"),
+        "UI revert must emit its operation result after refresh"
+    );
 }

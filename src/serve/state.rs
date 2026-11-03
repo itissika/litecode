@@ -10,7 +10,7 @@ use crate::engines::WorkspaceEngines;
 use crate::ide_base::IdeBaseHandle;
 use crate::optional::EngineManager;
 use crate::runtime::RuntimeHandle;
-use crate::session::{SessionManager, WorkspaceWriteLease};
+use crate::session::{SessionManager, SessionService, WorkspaceWriteLease};
 use crate::terminal::{TerminalHub, install_hub};
 use crate::workspace::{WorkspaceService, WorkspaceWatcher};
 
@@ -28,7 +28,9 @@ pub struct ServeState {
     pub workspace: Arc<WorkspaceService>,
     pub apps: Arc<AppService>,
     pub turn_guard: Arc<TurnGuard>,
-    pub sessions: Arc<SessionManager>,
+    /// Writer/reader infrastructure only; UI session operations use `service`.
+    pub(crate) sessions: Arc<SessionManager>,
+    pub service: Arc<SessionService>,
     pub settings_writer: Arc<SettingsWriter>,
     pub watcher: Arc<Mutex<Option<Arc<WorkspaceWatcher>>>>,
     /// Cross-process exclusive write lease held for the lifetime of this serve process.
@@ -129,10 +131,11 @@ impl ServeState {
         let runtime = Arc::new(RwLock::new(runtime));
         settings_writer.set_runtime(Arc::clone(&runtime));
         let sessions = Arc::new(SessionManager::from_data(turn_guard.clone(), session_data));
+        let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
         // WP-091 R8: parent status_changed via Runtime's TurnStatusHook.
-        crate::client_protocol::status_track::install_parent_status_hook(&sessions);
+        crate::client_protocol::status_track::install_parent_status_hook(&service);
         workspace_engines.set_session_reader(sessions.reader());
-        subagent_hub.attach_sessions(Arc::clone(&sessions));
+        subagent_hub.attach_service(Arc::clone(&service));
         crate::runtime::bash_auto_turn::install_idle_auto_turn(
             Arc::clone(&terminal_hub),
             Arc::clone(&runtime),
@@ -142,7 +145,7 @@ impl ServeState {
         crate::runtime::subagent_auto_turn::install_subagent_auto_turn(
             Arc::clone(&subagent_hub),
             Arc::clone(&runtime),
-            Arc::clone(&sessions),
+            Arc::clone(&service),
             project.clone(),
         );
         let custom_tool_hub = {
@@ -161,13 +164,13 @@ impl ServeState {
             project.clone(),
         );
         {
-            let sessions = Arc::clone(&sessions);
+            let service = Arc::clone(&service);
             let hub = Arc::clone(&terminal_hub);
             terminal_hub
                 .jobs
                 .set_jobs_changed_handler(Arc::new(move |session_id: String| {
                     let snapshot = hub.jobs.wire_snapshot(&session_id);
-                    let _ = sessions.publish_internal(
+                    let _ = service.publish_internal(
                         &session_id,
                         crate::runtime::observer::InternalEvent::BashJobs { snapshot },
                     );
@@ -185,6 +188,7 @@ impl ServeState {
             apps,
             turn_guard: turn_guard.clone(),
             sessions,
+            service,
             settings_writer,
             watcher: Arc::new(Mutex::new(None)),
             workspace_lock: Arc::new(std::sync::Mutex::new(workspace_lock)),
