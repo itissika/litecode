@@ -1,4 +1,4 @@
-//! Session persistence owner: one writer actor, bounded read pool, blob store.
+//! Session persistence owner: one writer actor, read-only executor, blob store.
 
 mod blob;
 pub mod command;

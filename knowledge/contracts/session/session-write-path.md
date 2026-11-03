@@ -1,6 +1,6 @@
 ```node
 node : session-write-path
-status : pending
+status : enabled
 summary : 会话写入守门：一个入口、一次事务、重试不重做、旧版本不覆盖。
 x : 5094
 y : 2844
@@ -38,4 +38,3 @@ domain : harness-core
 - 禁止旁路开库：[@ file="tests/session_data_sql_death_list.rs"]
 
 父节点：[@ key="session-model"]。
-
