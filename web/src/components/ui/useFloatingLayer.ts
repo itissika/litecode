@@ -12,8 +12,9 @@ interface FloatingLayerOptions {
   onDismiss: () => void;
   /** Escape override; defaults to onDismiss. */
   onEscape?: () => void;
-  /** Any scroll (capture phase) while open. */
-  onScroll: () => void;
+  /** Any scroll (capture phase) while open. The event lets a caller decide
+   *  whether the scrolled element actually contains its anchor. */
+  onScroll: (event: Event) => void;
   /** Window resize while open. */
   onResize: () => void;
 }
@@ -42,7 +43,7 @@ export function useFloatingLayer({
     const root = rootRef.current;
     const view = viewOf(root);
     const doc = root?.ownerDocument ?? document;
-    const scroll = () => handlers.current.onScroll();
+    const scroll = (event: Event) => handlers.current.onScroll(event);
     const resize = () => handlers.current.onResize();
     const key = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;

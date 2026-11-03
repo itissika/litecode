@@ -44,6 +44,10 @@ export function ContextMenu({
   closeRef.current = onClose;
   const restoreFocusRef = useRef(true);
   const activeElementRef = useRef<HTMLElement | null>(null);
+  /** Element under the cursor before the portal paints. A scroll in its
+   *  ancestor scroller moves the menu's anchor; unrelated scrollers (the
+   *  streaming transcript) must leave the menu alone. */
+  const sourceNodeRef = useRef<Node | null>(null);
   const focusedOnceRef = useRef(false);
   const [pos, setPos] = useState<{
     left: number;
@@ -54,9 +58,20 @@ export function ContextMenu({
 
   useLayoutEffect(() => {
     const anchor = anchorRef.current;
-    const active = anchor?.ownerDocument.activeElement;
-    activeElementRef.current = active instanceof HTMLElement ? active : null;
-  }, [anchorRef]);
+    const doc = anchor?.ownerDocument ?? document;
+    const active = doc.activeElement;
+    activeElementRef.current =
+      active && typeof (active as HTMLElement).focus === "function"
+        ? (active as HTMLElement)
+        : null;
+    if (!sourceNodeRef.current) {
+      const at =
+        typeof doc.elementFromPoint === "function"
+          ? doc.elementFromPoint(x, y)
+          : null;
+      sourceNodeRef.current = at ?? activeElementRef.current;
+    }
+  }, [anchorRef, x, y]);
 
   useLayoutEffect(() => {
     if (!target) return;
@@ -118,7 +133,23 @@ export function ContextMenu({
     panelRef,
     onDismiss: closeWithoutRestore,
     onEscape: closeWithRestore,
-    onScroll: closeWithoutRestore,
+    // A streaming transcript scrolls its own scroller while the menu is open.
+    // Close only when the scrolled element actually owns this menu's anchor;
+    // unrelated scrollers must not dismiss it.
+    onScroll: (event) => {
+      const anchor = anchorRef.current;
+      const target = event.target as Node | null;
+      const source = sourceNodeRef.current;
+      if (!anchor || !target) return;
+      if (typeof target.contains !== "function") return;
+      if (
+        target === anchor.ownerDocument ||
+        (source && target.contains(source)) ||
+        target.contains(anchor)
+      ) {
+        closeWithoutRestore();
+      }
+    },
     onResize: closeWithoutRestore,
   });
 

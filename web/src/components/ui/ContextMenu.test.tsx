@@ -41,6 +41,29 @@ function openMenu() {
   return trigger;
 }
 
+function ScrollHarness() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <div data-testid="pane">
+        <button type="button" onClick={() => setOpen(true)}>
+          Trigger
+        </button>
+        {open ? (
+          <ContextMenu
+            x={10}
+            y={20}
+            items={items()}
+            onClose={() => setOpen(false)}
+            ariaLabel="Test menu"
+          />
+        ) : null}
+      </div>
+      <div data-testid="transcript" />
+    </>
+  );
+}
+
 describe("ContextMenu", () => {
   it("focuses the first enabled item and roves with arrows", async () => {
     openMenu();
@@ -86,6 +109,18 @@ describe("ContextMenu", () => {
     await screen.findByRole("menuitem", { name: "Rename" });
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("ignores unrelated scrollers but closes when its own pane scrolls", async () => {
+    render(<ScrollHarness />);
+    fireEvent.click(screen.getByRole("button", { name: "Trigger" }));
+    await screen.findByRole("menuitem", { name: "Rename" });
+
+    fireEvent.scroll(screen.getByTestId("transcript"));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    fireEvent.scroll(screen.getByTestId("pane"));
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   });
 
   it("renders separators and disabled items", async () => {
