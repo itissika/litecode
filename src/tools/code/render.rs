@@ -173,8 +173,82 @@ fn log_line(level: &str, message: &str) -> String {
     format!("[{level}] {message}")
 }
 
-/// Successful run: keep whole leading log lines within `budget` tokens, then
-/// one `... N lines omitted (token budget)` line for the rest.
+/// Least tokens one entry must get before fair sharing is worth it; below this
+/// a truncated entry is almost all marker.
+const MIN_LOG_ENTRY_TOKENS: usize = 64;
+
+/// Per-entry token allowances covering the whole section: entries at or under
+/// the current share keep everything, the rest split the leftover evenly
+/// (water-filling). None when not every entry can get MIN_LOG_ENTRY_TOKENS;
+/// that many entries are better served by the head prefix plus one omission
+/// marker.
+fn water_fill_allowances(costs: &[usize], budget: usize) -> Option<Vec<usize>> {
+    if costs.is_empty() || budget == 0 {
+        return None;
+    }
+    let mut share = budget / costs.len();
+    if share < MIN_LOG_ENTRY_TOKENS {
+        return None;
+    }
+    let mut fixed = vec![false; costs.len()];
+    loop {
+        let mut used = 0usize;
+        let mut pending = 0usize;
+        for (index, cost) in costs.iter().enumerate() {
+            if fixed[index] {
+                used += cost;
+            } else if *cost <= share {
+                fixed[index] = true;
+                used += cost;
+            } else {
+                pending += 1;
+            }
+        }
+        if pending == 0 {
+            return Some(costs.to_vec());
+        }
+        let next = budget.saturating_sub(used) / pending;
+        if next < MIN_LOG_ENTRY_TOKENS {
+            return None;
+        }
+        if next == share {
+            let mut allowances = costs.to_vec();
+            for (index, allowance) in allowances.iter_mut().enumerate() {
+                if !fixed[index] {
+                    *allowance = share;
+                }
+            }
+            return Some(allowances);
+        }
+        share = next;
+    }
+}
+
+/// Render every entry within its allowance, cutting only the ones that are
+/// over it (head + tail + middle marker).
+fn render_allocated_logs(lines: &[String], allowances: &[usize]) -> String {
+    let mut body = String::from("logs:");
+    for (line, allowance) in lines.iter().zip(allowances) {
+        body.push('\n');
+        let total = count_tokens(line);
+        if total <= *allowance {
+            body.push_str(line);
+            continue;
+        }
+        let truncated = truncate_string_result(line, *allowance, "", total);
+        if truncated.is_empty() {
+            body.push_str(token_prefix(line, *allowance));
+        } else {
+            body.push_str(&truncated);
+        }
+    }
+    body
+}
+
+/// Successful run: short entries stay whole; when the section is over budget
+/// the oversized ones split the leftover evenly (water-filling) and are cut
+/// head + tail. Too many entries for a meaningful share fall back to the head
+/// prefix plus one `... N lines omitted (token budget)` line.
 fn render_success_logs(logs: &[(String, String)], budget: usize) -> Option<String> {
     if logs.is_empty() || budget == 0 {
         return None;
@@ -202,6 +276,18 @@ fn render_success_logs(logs: &[(String, String)], budget: usize) -> Option<Strin
     if full.len() <= budget || count_tokens(&full) <= budget {
         return Some(full);
     }
+    // Fair split when every entry can still get a meaningful share: short
+    // entries stay whole and the oversized ones split the leftover evenly
+    // (water-filling), instead of dropping everything after the first entry
+    // that does not fit. Too many entries fall back to the head prefix below.
+    let costs: Vec<usize> = lines.iter().map(|line| count_tokens(line)).collect();
+    let inner = budget.saturating_sub(count_tokens("logs:") + 16);
+    if let Some(allowances) = water_fill_allowances(&costs, inner) {
+        let body = render_allocated_logs(&lines, &allowances);
+        if fits(&body, budget) {
+            return Some(body);
+        }
+    }
     let (mut lo, mut hi) = (0usize, lines.len());
     while lo < hi {
         let mid = (lo + hi + 1) / 2;
@@ -209,6 +295,26 @@ fn render_success_logs(logs: &[(String, String)], budget: usize) -> Option<Strin
             lo = mid;
         } else {
             hi = mid - 1;
+        }
+    }
+    if lo == 0 {
+        // Even the first entry alone is over budget. Truncate it the same way a
+        // long string result is truncated (head + tail + middle-cut marker), so
+        // one oversized console.log cannot blank the whole log section.
+        let omitted = lines.len() - 1;
+        let rest = if omitted > 0 {
+            format!("\n… {omitted} lines omitted (token budget)")
+        } else {
+            String::new()
+        };
+        let overhead = count_tokens("logs:\n") + count_tokens(&rest) + 8;
+        let total = count_tokens(&lines[0]);
+        let entry = truncate_string_result(&lines[0], budget.saturating_sub(overhead), "", total);
+        if !entry.is_empty() {
+            let body = format!("logs:\n{entry}{rest}");
+            if fits(&body, budget) {
+                return Some(body);
+            }
         }
     }
     let rendered = build(lo, true);
@@ -419,6 +525,11 @@ fn budget_value(value: &Value, budget: usize) -> String {
 }
 
 fn truncate_string_result(body: &str, budget: usize, notice: &str, total: usize) -> String {
+    let prefix = if notice.is_empty() {
+        String::new()
+    } else {
+        format!("{notice}\n")
+    };
     let mut content_budget = budget
         .saturating_sub(count_tokens(notice))
         .saturating_sub(32);
@@ -438,9 +549,9 @@ fn truncate_string_result(body: &str, budget: usize, notice: &str, total: usize)
             "\n… [truncated by token budget: {kept_tokens} of {total} tok kept; {omitted_tokens} tok omitted from the middle] …\n"
         );
         let rendered = if tail.is_empty() {
-            format!("{notice}\n{head}{marker}")
+            format!("{prefix}{head}{marker}")
         } else {
-            format!("{notice}\n{head}{marker}{tail}")
+            format!("{prefix}{head}{marker}{tail}")
         };
         if count_tokens(&rendered) <= budget {
             return rendered;
@@ -451,7 +562,7 @@ fn truncate_string_result(body: &str, budget: usize, notice: &str, total: usize)
         let over = count_tokens(&rendered).saturating_sub(budget).max(16);
         content_budget = content_budget.saturating_sub(over);
     }
-    let compact = format!("{notice}\n… [truncated by token budget: 0 of {total} tok kept]");
+    let compact = format!("{prefix}… [truncated by token budget: 0 of {total} tok kept]");
     if fits(&compact, budget) {
         compact
     } else {
@@ -1978,6 +2089,70 @@ mod tests {
             crate::session::estimate::count_text_tokens(&whole) <= SUCCESS_LOGS_TOKEN_BUDGET,
             "{}",
             crate::session::estimate::count_text_tokens(&whole)
+        );
+    }
+
+    #[test]
+    fn one_oversized_log_entry_keeps_its_head_and_tail() {
+        let mut report = report();
+        let unit = "let value = compute();\n";
+        report.logs = vec![(
+            "log".to_string(),
+            format!(
+                "HEAD_SENTINEL {}TAIL_SENTINEL {}",
+                text_until_tokens(1_800, unit),
+                text_until_tokens(1_800, unit)
+            ),
+        )];
+        report.value = Some(Value::Null);
+        let text = render_model_view(&report);
+        let logs = text
+            .split_once("\n\nlogs:")
+            .expect("log section")
+            .1
+            .split("\n\nresult:")
+            .next()
+            .unwrap();
+        assert!(logs.contains("HEAD_SENTINEL"), "{logs}");
+        assert!(logs.contains("TAIL_SENTINEL"), "{logs}");
+        assert!(logs.contains("truncated by token budget"), "{logs}");
+        assert!(
+            crate::session::estimate::count_text_tokens(&format!("logs:{logs}"))
+                <= SUCCESS_LOGS_TOKEN_BUDGET,
+            "{}",
+            crate::session::estimate::count_text_tokens(&format!("logs:{logs}"))
+        );
+    }
+
+    #[test]
+    fn oversized_log_entry_does_not_starve_the_small_ones() {
+        let mut report = report();
+        report.logs = vec![
+            (
+                "log".to_string(),
+                text_until_tokens(4_000, "let value = compute();\n"),
+            ),
+            ("log".to_string(), "SECOND_SENTINEL".to_string()),
+            ("log".to_string(), "THIRD_SENTINEL".to_string()),
+        ];
+        report.value = Some(Value::Null);
+        let text = render_model_view(&report);
+        assert!(text.contains("SECOND_SENTINEL"), "{text}");
+        assert!(text.contains("THIRD_SENTINEL"), "{text}");
+        assert!(text.contains("truncated by token budget"), "{text}");
+        assert!(!text.contains("lines omitted"), "{text}");
+        let logs = text
+            .split_once("\n\nlogs:")
+            .expect("log section")
+            .1
+            .split("\n\nresult:")
+            .next()
+            .unwrap();
+        assert!(
+            crate::session::estimate::count_text_tokens(&format!("logs:{logs}"))
+                <= SUCCESS_LOGS_TOKEN_BUDGET,
+            "{}",
+            crate::session::estimate::count_text_tokens(&format!("logs:{logs}"))
         );
     }
 

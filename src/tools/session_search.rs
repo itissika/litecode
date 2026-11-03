@@ -12,6 +12,7 @@ use crate::types::{ToolCallResult, ToolErrorKind};
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 50;
+const VIRTUAL_TRANSCRIPT_NOTE: &str = "Hits are lines in the read-only virtual transcript `.litecode/sessions/<session>.md` (not a file on disk); read it with `read` at `start_line=line`, or `grep` the same path.";
 
 pub struct SessionSearchTool {
     engines: WorkspaceEngines,
@@ -96,6 +97,9 @@ impl SessionSearchTool {
         let sync = crate::tools::sync_pct_for_workspace(&self.engines, Some(workspace_root));
         let truncated = table.total > table.hits.len();
         let mut notes = Vec::new();
+        if !table.hits.is_empty() {
+            notes.push(VIRTUAL_TRANSCRIPT_NOTE.to_string());
+        }
         if !semantic_ready {
             // Honest degradation: never look like a full lexical+semantic fusion.
             notes.push("semantic: unavailable (lexical only)".to_string());
@@ -359,6 +363,14 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("Showing 5 of 25")
+        );
+        assert!(
+            data["message"]
+                .as_str()
+                .unwrap()
+                .contains("virtual transcript"),
+            "must point at the virtual transcript path: {:?}",
+            data["message"]
         );
     }
 
