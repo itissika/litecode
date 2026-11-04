@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod apps;
 pub mod authority;
+pub mod bot;
 pub mod cli;
 pub mod client_protocol;
 pub mod config;

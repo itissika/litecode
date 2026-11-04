@@ -6,17 +6,23 @@ import i18n from "../i18n";
 import { useDragSource } from "./dnd/useDragSource";
 import { useDropTarget } from "./dnd/useDropTarget";
 import {
+  BOT_DRAG_MIME,
+  parseBotDrag,
   parseSessionDrag,
   parseSessionFolderDrag,
   SESSION_DRAG_MIME,
   SESSION_FOLDER_DRAG_MIME,
+  type BotDragPayload,
   type SessionDragPayload,
   type SessionFolderDragPayload,
 } from "./dnd/sessionDnd";
 import { InlineRename } from "./ui/InlineRename";
 import { ListRow } from "./ui/ListRow";
 
-type FolderDropPayload = SessionDragPayload | SessionFolderDragPayload;
+type FolderDropPayload =
+  | SessionDragPayload
+  | BotDragPayload
+  | SessionFolderDragPayload;
 
 interface SessionFolderHeaderProps {
   folder: SessionFolder;
@@ -28,6 +34,7 @@ interface SessionFolderHeaderProps {
   onRename: (name: string) => void;
   onRenameCancel: () => void;
   onDropSession: (sessionId: string) => void;
+  onDropBot: (botId: string) => void;
   onReorderFolder: (
     sourceId: string,
     targetId: string,
@@ -47,6 +54,7 @@ export function SessionFolderHeader({
   onRename,
   onRenameCancel,
   onDropSession,
+  onDropBot,
   onReorderFolder,
   onMoveFolder,
 }: SessionFolderHeaderProps) {
@@ -64,6 +72,13 @@ export function SessionFolderHeader({
       parse: parseSessionDrag,
       onDrop: (payload) => {
         if (payload.kind === "session") onDropSession(payload.id);
+      },
+    },
+    {
+      mime: BOT_DRAG_MIME,
+      parse: parseBotDrag,
+      onDrop: (payload) => {
+        if (payload.kind === "bot") onDropBot(payload.id);
       },
     },
     {

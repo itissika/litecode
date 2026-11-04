@@ -621,6 +621,7 @@ function menuItems(
         id: "delete",
         label: "Delete Node",
         danger: true,
+        restoreFocus: false,
         onClick: actions.remove,
       },
     ];
@@ -630,11 +631,13 @@ function menuItems(
     {
       id: "folder",
       label: "New Folder",
+      restoreFocus: false,
       onClick: () => actions.create("folder", parentId),
     },
     {
       id: "node",
       label: "New Node",
+      restoreFocus: false,
       onClick: () => actions.create("node", parentId),
     },
   ];
@@ -645,6 +648,7 @@ function menuItems(
         id: "delete",
         label: "Delete Folder",
         danger: true,
+        restoreFocus: false,
         onClick: actions.remove,
       },
     );

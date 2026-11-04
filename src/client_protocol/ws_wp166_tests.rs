@@ -141,6 +141,15 @@ async fn until_reply(ws: &mut Socket, id: u64) -> (Value, Vec<Value>) {
     }
 }
 
+async fn until_method(ws: &mut Socket, method: &str) -> Value {
+    loop {
+        let frame = next_frame(ws).await;
+        if frame.get("method").and_then(Value::as_str) == Some(method) {
+            return frame;
+        }
+    }
+}
+
 fn reply_id(frame: &Value) -> Option<u64> {
     if frame.get("method").is_some() {
         return None;
@@ -531,5 +540,232 @@ async fn startup_settled_fires_without_list_or_new() {
     assert!(
         env.state.sessions.is_startup_settled(),
         "first retrieval search settles startup"
+    );
+}
+
+/// Bot product RPCs: create persists identity, list projects it, and open
+/// returns the bot's ordinary default session instead of minting a new one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bot_create_list_and_open_round_trip() {
+    let env = env().await;
+    let mut ws = connect(&env.url).await;
+    // A second connection proves bot/changed reaches the UI without a refresh.
+    let mut events = connect(&env.url).await;
+    let _ = until_method(&mut events, "server/hello").await;
+
+    send(
+        &mut ws,
+        1,
+        "bot/create",
+        json!({
+            "name": "Researcher",
+            "description": "finds papers",
+            "agent_id": "default"
+        }),
+    )
+    .await;
+    let (created, _) = until_reply(&mut ws, 1).await;
+    assert!(created.get("error").is_none(), "create ok: {created}");
+    let bot_id = created
+        .pointer("/result/bot/id")
+        .and_then(Value::as_str)
+        .expect("bot id")
+        .to_string();
+    let session_id = created
+        .pointer("/result/bot/default_session_id")
+        .and_then(Value::as_str)
+        .expect("default session")
+        .to_string();
+    let profile_id = created
+        .pointer("/result/bot/profile_id")
+        .and_then(Value::as_str)
+        .expect("owned profile")
+        .to_string();
+    assert!(
+        crate::bot::is_bot_profile_id(&profile_id),
+        "profile id is bot-owned: {profile_id}"
+    );
+    let changed = until_method(&mut events, "bot/changed").await;
+    assert_eq!(
+        changed.get("params").and_then(|p| p.get("event")).and_then(Value::as_str),
+        Some("created")
+    );
+    assert_eq!(
+        changed
+            .pointer("/params/bot/id")
+            .and_then(Value::as_str),
+        Some(bot_id.as_str())
+    );
+    assert_eq!(
+        created.pointer("/result/bot/depth").and_then(Value::as_u64),
+        Some(0)
+    );
+    assert!(
+        env.state
+            .service
+            .status(&session_id)
+            .is_some(),
+        "bot default session is a real session"
+    );
+
+    send(&mut ws, 2, "bot/list", json!({})).await;
+    let (listed, _) = until_reply(&mut ws, 2).await;
+    let bots = listed
+        .pointer("/result/bots")
+        .and_then(Value::as_array)
+        .expect("bots");
+    assert_eq!(bots.len(), 1);
+    assert_eq!(bots[0].get("id").and_then(Value::as_str), Some(bot_id.as_str()));
+    assert_eq!(
+        bots[0].get("default_session_id").and_then(Value::as_str),
+        Some(session_id.as_str())
+    );
+    assert_eq!(
+        bots[0].get("profile_id").and_then(Value::as_str),
+        Some(profile_id.as_str())
+    );
+
+    // The owned profile exists but never appears in the normal Agents list.
+    assert!(
+        env.state
+            .settings_writer
+            .load_settings()
+            .expect("settings")
+            .agents
+            .contains_key(&profile_id)
+    );
+    let agents_url = env
+        .url
+        .replace("ws://", "http://")
+        .replace("/ws?token=", "/api/settings/agents?token=");
+    let agents: Value = reqwest::Client::new()
+        .get(&agents_url)
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .expect("agents http")
+        .json()
+        .await
+        .expect("agents json");
+    assert!(
+        agents["agents"]
+            .as_array()
+            .expect("agents")
+            .iter()
+            .all(|agent| agent.get("id").and_then(Value::as_str) != Some(profile_id.as_str())),
+        "bot profile must be hidden from Settings -> Agents"
+    );
+    let mut hello_ws = connect(&env.url).await;
+    let hello = until_method(&mut hello_ws, "server/hello").await;
+    assert!(
+        hello["params"]["primary_agents"]
+            .as_array()
+            .expect("primary agents")
+            .iter()
+            .all(|agent| agent.get("id").and_then(Value::as_str) != Some(profile_id.as_str())),
+        "bot profile must be hidden from the primary agent picker"
+    );
+
+    send(&mut ws, 3, "bot/open", json!({ "id": bot_id })).await;
+    let (opened, _) = until_reply(&mut ws, 3).await;
+    assert!(opened.get("error").is_none(), "open ok: {opened}");
+    assert_eq!(
+        opened.pointer("/result/session_id").and_then(Value::as_str),
+        Some(session_id.as_str())
+    );
+
+    let registry = env
+        .state
+        .runtime
+        .read()
+        .unwrap()
+        .workspace
+        .paths
+        .sessions_db
+        .parent()
+        .unwrap()
+        .join("bots.json");
+    assert!(registry.exists(), "bot registry must be written next to sessions.db");
+
+    let mut profile = env
+        .state
+        .settings_writer
+        .load_settings()
+        .expect("settings")
+        .agents[&profile_id]
+        .clone();
+    profile.system_prompt = "updated by the bot editor".into();
+    send(
+        &mut ws,
+        4,
+        "bot/update",
+        json!({
+            "id": bot_id,
+            "name": "Renamed",
+            "description": "edited",
+            "profile": profile,
+        }),
+    )
+    .await;
+    let (updated, _) = until_reply(&mut ws, 4).await;
+    assert!(updated.get("error").is_none(), "update ok: {updated}");
+    assert_eq!(
+        updated.pointer("/result/bot/name").and_then(Value::as_str),
+        Some("Renamed")
+    );
+    let changed = until_method(&mut events, "bot/changed").await;
+    assert_eq!(
+        changed
+            .get("params")
+            .and_then(|params| params.get("event"))
+            .and_then(Value::as_str),
+        Some("updated")
+    );
+    assert_eq!(
+        env.state
+            .settings_writer
+            .load_settings()
+            .expect("settings")
+            .agents[&profile_id]
+            .system_prompt,
+        "updated by the bot editor"
+    );
+
+    send(&mut ws, 5, "bot/list", json!({})).await;
+    let (listed, _) = until_reply(&mut ws, 5).await;
+    assert_eq!(
+        listed.pointer("/result/bots/0/name").and_then(Value::as_str),
+        Some("Renamed")
+    );
+
+    send(&mut ws, 6, "bot/delete", json!({ "id": bot_id })).await;
+    let (deleted, _) = until_reply(&mut ws, 6).await;
+    assert!(deleted.get("error").is_none(), "delete ok: {deleted}");
+    let changed = until_method(&mut events, "bot/changed").await;
+    assert_eq!(
+        changed
+            .get("params")
+            .and_then(|params| params.get("event"))
+            .and_then(Value::as_str),
+        Some("deleted")
+    );
+
+    send(&mut ws, 7, "bot/list", json!({})).await;
+    let (listed, _) = until_reply(&mut ws, 7).await;
+    assert_eq!(
+        listed
+            .pointer("/result/bots")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0)
+    );
+    assert!(env.state.service.status(&session_id).is_none());
+    assert!(
+        !env.state
+            .settings_writer
+            .load_settings()
+            .expect("settings")
+            .agents
+            .contains_key(&profile_id)
     );
 }

@@ -164,7 +164,7 @@ pub fn try_begin_pending_flush(
     }
 }
 
-fn spawn_prepared_pending_flush(
+pub(crate) fn spawn_prepared_pending_flush(
     runtime: &RuntimeHandle,
     service: &Arc<SessionService>,
     decision: PendingFlush,

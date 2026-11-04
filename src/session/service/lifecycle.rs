@@ -32,6 +32,17 @@ impl SessionService {
         self.sessions.session_model_id(session_id)
     }
 
+    /// Persist the sticky session model without appending a control event.
+    /// Bot capability edits use this to keep the bot's default session on the
+    /// model the owned profile now declares.
+    pub(crate) fn set_session_model_id(
+        &self,
+        session_id: &str,
+        model_id: Option<String>,
+    ) -> Result<()> {
+        self.sessions.set_session_model_id(session_id, model_id)
+    }
+
     pub(crate) fn set_session_model_with_change(
         &self,
         session_id: &str,

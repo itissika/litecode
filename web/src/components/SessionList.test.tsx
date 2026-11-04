@@ -6,7 +6,8 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { SessionInfo } from "../api/types";
+import type { BotInfo, SessionInfo } from "../api/types";
+import { useBotStore } from "../stores/botStore";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useUnreadStore } from "../stores/unreadStore";
@@ -35,6 +36,7 @@ beforeEach(() => {
     sessionsLoading: false,
     sessionListError: null,
   } as never);
+  useBotStore.setState({ bots: [], botsLoading: false, botsError: null });
 });
 
 afterEach(() => {
@@ -46,6 +48,7 @@ afterEach(() => {
     sessionsLoading: false,
     sessionListError: null,
   } as never);
+  useBotStore.setState({ bots: [], botsLoading: false, botsError: null });
   useConnectionStore.setState({ state: "disconnected" } as never);
   vi.restoreAllMocks();
 });
@@ -147,10 +150,12 @@ describe("SessionList — folders and titles", () => {
     const header = await screen.findByRole("button", {
       name: "Collapse folder: Work",
     });
+    header.focus();
     fireEvent.contextMenu(header);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Rename folder" }));
 
     const input = screen.getByRole("textbox", { name: "Folder name" });
+    expect(document.activeElement).toBe(input);
     fireEvent.change(input, { target: { value: "Plan" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -214,10 +219,14 @@ describe("SessionList — folders and titles", () => {
     useConnectionStore.setState({ state: "connected", sendRpc } as never);
 
     render(<SessionList />);
+    // A composer or another control may own focus when the menu opens; Rename
+    // must hand focus to its inline editor, not restore it to that control.
+    screen.getByRole("button", { name: "New folder" }).focus();
     fireEvent.contextMenu(await screen.findByText("auto preview"));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Rename session" }));
 
     const input = screen.getByRole("textbox", { name: "Session title" });
+    expect(document.activeElement).toBe(input);
     fireEvent.change(input, { target: { value: "Renamed" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -226,6 +235,50 @@ describe("SessionList — folders and titles", () => {
       title: "Renamed",
     });
     expect(await screen.findByText("Renamed")).toBeTruthy();
+  });
+});
+
+describe("SessionList — bots share the sidebar tree", () => {
+  it("renders a bot row in its folder without duplicating its default session", async () => {
+    const botSession = session("bot-s", { preview: "hidden bot preview" });
+    const normal = session("s1", { preview: "normal work" });
+    const bot: BotInfo = {
+      id: "b1",
+      name: "Researcher",
+      description: "finds papers",
+      profile_id: "bot_b1",
+      owner_bot_id: null,
+      depth: 0,
+      created_at: 1,
+      default_session_id: "bot-s",
+      folder_id: "f1",
+      sort_order: 1,
+    };
+    useBotStore.setState({ bots: [bot], botsLoading: false, botsError: null });
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method === "session/list") {
+        return {
+          sessions: [botSession, normal],
+          folders: [{ id: "f1", name: "Work", sort_order: 0 }],
+        };
+      }
+      if (method === "bot/list") return { bots: [bot] };
+      return {};
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+
+    render(<SessionList />);
+    expect(await screen.findByText("Researcher")).toBeTruthy();
+    expect(screen.queryByText("hidden bot preview")).toBeNull();
+    expect(screen.getByText("normal work")).toBeTruthy();
+
+    fireEvent.contextMenu(screen.getByText("Researcher"));
+    expect(
+      await screen.findByRole("menuitem", { name: "Edit bot…" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("menuitem", { name: "Delete bot" }),
+    ).toBeTruthy();
   });
 });
 

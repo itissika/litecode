@@ -1286,6 +1286,7 @@ impl SessionController {
         let primary_agents: Vec<crate::client_protocol::protocol::PrimaryAgentInfo> =
             crate::config::bridge::primary_agent_infos(&self.runtime.resolved)
                 .into_iter()
+                .filter(|(id, _)| !crate::bot::is_bot_profile_id(id))
                 .map(
                     |(id, description)| crate::client_protocol::protocol::PrimaryAgentInfo {
                         id,

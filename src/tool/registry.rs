@@ -497,7 +497,39 @@ pub async fn build_tool_list(
 
     // One projection from this caller's visible set. A missing host cannot
     // publish run_code or drop the code tools.
-    Ok(assemble_projected_tools(tools, code_host))
+    let mut tools = assemble_projected_tools(tools, code_host);
+
+    // Bot tools are a product-layer capability, not part of the configurable
+    // catalog: they exist only for a session that a bot owns. Appending after
+    // projection keeps them out of Settings and out of every normal session.
+    if let Some(bots) = runtime.bots()
+        && let Some(bot) = bots.bot_for_session(parent_session_id)
+    {
+        // A depth-1 bot cannot create further bots, so do not even publish the
+        // capability; the service still rejects the call as a second guard.
+        let may_create = bot.depth < crate::bot::MAX_BOT_DEPTH;
+        for tool in crate::tools::bot::bot_tools(Arc::clone(bots)) {
+            if !may_create && tool.name() == crate::tools::bot::BOT_CREATE_TOOL {
+                continue;
+            }
+            if let Some(index) = tools
+                .iter()
+                .position(|existing| existing.name() == tool.name())
+            {
+                // Bot capability is product-owned inside a bot session; a
+                // same-named custom tool must not shadow the real one.
+                tracing::warn!(
+                    tool = tool.name(),
+                    "bot tool name is already bound; replacing the duplicate"
+                );
+                tools[index] = tool;
+                continue;
+            }
+            tools.push(tool);
+        }
+    }
+
+    Ok(tools)
 }
 
 fn assemble_projected_tools(
@@ -733,6 +765,95 @@ mod tests {
             host,
         ))
         .expect("build tool list")
+    }
+
+    #[test]
+    fn bot_tools_are_injected_only_for_a_bot_session() {
+        let resolved = test_resolved(default_bindings());
+        let sessions = dummy_sessions();
+        let service = Arc::new(crate::session::SessionService::new(Arc::clone(&sessions)));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = Arc::new(crate::config::SettingsWriter::with_path(
+            dir.path().join("settings.db"),
+            Arc::new(crate::config::TurnGuard::new()),
+        ));
+        settings
+            .write_agent(
+                "default",
+                crate::config::schema::AgentProfile {
+                    role: crate::config::schema::AgentRole::Primary,
+                    ..crate::config::schema::AgentProfile::default()
+                },
+            )
+            .expect("template");
+        let bots = Arc::new(
+            crate::bot::BotService::new(
+                Arc::clone(&service),
+                Arc::clone(&settings),
+                None,
+                "/tmp",
+                dir.path().join("bots.json"),
+            )
+            .expect("bot service"),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let bot = rt
+            .block_on(bots.create_user_bot("Helper", "", "default"))
+            .expect("bot");
+
+        let engines = WorkspaceEngines::new();
+        let ide = IdeBaseHandle::open(resolved.workspace_root(), Arc::new(engines.clone()))
+            .expect("ide base");
+        let runtime = RuntimeHandle::new(
+            resolved.clone(),
+            "default".into(),
+            WorkspaceState::new(resolved.workspace_root()),
+            Arc::new(EngineManager::new()),
+            Arc::new(engines),
+            ide,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            std::path::PathBuf::from("/tmp/litecode-test-global.db"),
+        );
+        runtime.set_bots(Arc::clone(&bots));
+
+        let bot_tools = rt
+            .block_on(build_tool_list(
+                &runtime,
+                "default",
+                0,
+                tokio_util::sync::CancellationToken::new(),
+                &bot.default_session_id,
+                Arc::clone(&sessions),
+                None,
+            ))
+            .expect("bot tool list");
+        for name in ["bot_create", "bot_list", "bot_send"] {
+            assert!(
+                bot_tools.iter().any(|tool| tool.name() == name),
+                "bot session is missing {name}"
+            );
+        }
+
+        let normal_tools = rt
+            .block_on(build_tool_list(
+                &runtime,
+                "default",
+                0,
+                tokio_util::sync::CancellationToken::new(),
+                "normal-session",
+                sessions,
+                None,
+            ))
+            .expect("normal tool list");
+        assert!(
+            normal_tools
+                .iter()
+                .all(|tool| !tool.name().starts_with("bot_")),
+            "normal session received a bot tool"
+        );
     }
 
     #[test]

@@ -310,6 +310,24 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
         }
     });
 
+    // Bot directory changes are product-layer events, separate from the
+    // session lifecycle bus. Tool-created bots must appear without a refresh.
+    let bot_tx = response_tx.clone();
+    let mut bot_rx = state.bots.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match bot_rx.recv().await {
+                Ok(event) => {
+                    if bot_tx.send(project::bot_changed(&event)).is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
     // G0: forward session lifecycle events to this connection.
     let lifecycle_tx = response_tx.clone();
     let mut lifecycle_rx = state.service.subscribe_lifecycle();

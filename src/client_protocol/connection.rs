@@ -727,6 +727,311 @@ pub async fn handle_jsonrpc(
             session.service.mark_startup_settled();
         }
 
+        methods::BOT_LIST => {
+            let Some(bots) = session.runtime.bots().cloned() else {
+                emit(
+                    sink,
+                    serde_json::to_value(err_response(
+                        id,
+                        -32000,
+                        "bot service is unavailable".to_string(),
+                    ))
+                    .unwrap(),
+                );
+                return false;
+            };
+            let bots: Vec<crate::client_protocol::protocol::BotInfo> =
+                bots.list().into_iter().map(Into::into).collect();
+            emit(
+                sink,
+                serde_json::to_value(ok_response(id, serde_json::json!({ "bots": bots }))).unwrap(),
+            );
+        }
+
+        methods::BOT_CREATE => {
+            // Creating a bot creates an ordinary session; release the same
+            // startup gate as session/new.
+            session.service.mark_startup_settled();
+            #[derive(serde::Deserialize)]
+            struct Params {
+                name: String,
+                #[serde(default)]
+                description: String,
+                #[serde(default)]
+                agent_id: String,
+            }
+            let params: Params = match serde_json::from_value::<Params>(rpc.params.clone()) {
+                Ok(params) => params,
+                Err(error) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {error}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            let Some(bots) = session.runtime.bots().cloned() else {
+                emit(
+                    sink,
+                    serde_json::to_value(err_response(
+                        id,
+                        -32000,
+                        "bot service is unavailable".to_string(),
+                    ))
+                    .unwrap(),
+                );
+                return false;
+            };
+            let agent_id = if params.agent_id.trim().is_empty() {
+                session.runtime.desired_primary_agent().to_string()
+            } else {
+                params.agent_id.trim().to_string()
+            };
+            let valid_agent = session
+                .runtime
+                .resolved
+                .agents()
+                .get(&agent_id)
+                .is_some_and(|profile| profile.role == crate::config::schema::AgentRole::Primary);
+            if !valid_agent {
+                emit(
+                    sink,
+                    serde_json::to_value(err_response(
+                        id,
+                        -32602,
+                        format!("unknown primary agent '{agent_id}'"),
+                    ))
+                    .unwrap(),
+                );
+                return false;
+            }
+            match bots
+                .create_user_bot(&params.name, &params.description, &agent_id)
+                .await
+            {
+                Ok(bot) => {
+                    let bot = crate::client_protocol::protocol::BotInfo::from(bot);
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(id, serde_json::json!({ "bot": bot })))
+                            .unwrap(),
+                    );
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, message)).unwrap(),
+                    );
+                }
+            }
+        }
+
+        methods::BOT_UPDATE => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                id: String,
+                #[serde(default)]
+                name: Option<String>,
+                #[serde(default)]
+                description: Option<String>,
+                #[serde(default)]
+                profile: Option<crate::config::schema::AgentProfile>,
+                #[serde(default)]
+                folder_id: Option<String>,
+                #[serde(default)]
+                clear_folder: bool,
+                #[serde(default)]
+                sort_order: Option<i64>,
+            }
+            let params: Params = match serde_json::from_value::<Params>(rpc.params.clone()) {
+                Ok(params) => params,
+                Err(error) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {error}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            let Some(bots) = session.runtime.bots().cloned() else {
+                emit(
+                    sink,
+                    serde_json::to_value(err_response(
+                        id,
+                        -32000,
+                        "bot service is unavailable".to_string(),
+                    ))
+                    .unwrap(),
+                );
+                return false;
+            };
+            if let Some(profile) = params.profile.as_ref() {
+                let model_ref = profile.model_ref.trim();
+                if !model_ref.is_empty()
+                    && session
+                        .runtime
+                        .resolved
+                        .model_for_agent_ref(model_ref)
+                        .is_none()
+                {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("model '{model_ref}' is not selectable"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            }
+            let update = crate::bot::BotUpdate {
+                name: params.name,
+                description: params.description,
+                profile: params.profile,
+                folder_id: params.folder_id,
+                clear_folder: params.clear_folder,
+                sort_order: params.sort_order,
+            };
+            match bots.update(&params.id, update).await {
+                Ok(bot) => {
+                    let bot = crate::client_protocol::protocol::BotInfo::from(bot);
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(id, serde_json::json!({ "bot": bot })))
+                            .unwrap(),
+                    );
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, message)).unwrap(),
+                    );
+                }
+            }
+        }
+
+        methods::BOT_DELETE => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                id: String,
+            }
+            let params: Params = match serde_json::from_value::<Params>(rpc.params.clone()) {
+                Ok(params) => params,
+                Err(error) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {error}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            let Some(bots) = session.runtime.bots().cloned() else {
+                emit(
+                    sink,
+                    serde_json::to_value(err_response(
+                        id,
+                        -32000,
+                        "bot service is unavailable".to_string(),
+                    ))
+                    .unwrap(),
+                );
+                return false;
+            };
+            match bots.delete(&params.id).await {
+                Ok(bot) => {
+                    let bot = crate::client_protocol::protocol::BotInfo::from(bot);
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(id, serde_json::json!({ "bot": bot })))
+                            .unwrap(),
+                    );
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, message)).unwrap(),
+                    );
+                }
+            }
+        }
+
+        methods::BOT_OPEN => {
+            // Open may recreate a deleted default session.
+            session.service.mark_startup_settled();
+            #[derive(serde::Deserialize)]
+            struct Params {
+                id: String,
+            }
+            let params: Params = match serde_json::from_value::<Params>(rpc.params.clone()) {
+                Ok(params) => params,
+                Err(error) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {error}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            let Some(bots) = session.runtime.bots().cloned() else {
+                emit(
+                    sink,
+                    serde_json::to_value(err_response(
+                        id,
+                        -32000,
+                        "bot service is unavailable".to_string(),
+                    ))
+                    .unwrap(),
+                );
+                return false;
+            };
+            match bots.ensure_default_session(&params.id).await {
+                Ok(bot) => {
+                    let session_id = bot.default_session_id.clone();
+                    let bot = crate::client_protocol::protocol::BotInfo::from(bot);
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(
+                            id,
+                            serde_json::json!({ "session_id": session_id, "bot": bot }),
+                        ))
+                        .unwrap(),
+                    );
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, message)).unwrap(),
+                    );
+                }
+            }
+        }
+
         methods::SESSION_SUBSCRIBE => {
             #[derive(serde::Deserialize)]
             struct Params {

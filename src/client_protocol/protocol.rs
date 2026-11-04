@@ -25,6 +25,15 @@ pub mod methods {
     pub const AGENT_SUBAGENT_BOUND: &str = "agent/subagent_bound";
     pub const SESSION_NEW: &str = "session/new";
     pub const SESSION_DELETE: &str = "session/delete";
+    /// Workspace bot directory. Bots are a product layer above sessions.
+    pub const BOT_LIST: &str = "bot/list";
+    pub const BOT_CREATE: &str = "bot/create";
+    /// Open a bot's default session, recreating it if the user deleted it.
+    pub const BOT_OPEN: &str = "bot/open";
+    pub const BOT_UPDATE: &str = "bot/update";
+    pub const BOT_DELETE: &str = "bot/delete";
+    /// Lifecycle notification: event = created | updated | deleted.
+    pub const BOT_CHANGED: &str = "bot/changed";
     pub const SESSION_LIST: &str = "session/list";
     /// Display-only sidebar layout. These never touch the transcript.
     pub const SESSION_RENAME: &str = "session/rename";
@@ -197,6 +206,45 @@ pub struct LogLine {
     pub level: String,
     pub target: String,
     pub message: String,
+}
+
+/// Wire projection of one workspace bot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// The bot-owned AgentProfile. Never shared with another bot or a normal
+    /// primary agent.
+    pub profile_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_bot_id: Option<String>,
+    #[serde(default)]
+    pub depth: u32,
+    pub created_at: i64,
+    pub default_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+    #[serde(default)]
+    pub sort_order: i64,
+}
+
+impl From<crate::bot::BotRecord> for BotInfo {
+    fn from(bot: crate::bot::BotRecord) -> Self {
+        Self {
+            id: bot.id,
+            name: bot.name,
+            description: bot.description,
+            profile_id: bot.profile_id,
+            owner_bot_id: bot.owner_bot_id,
+            depth: bot.depth,
+            created_at: bot.created_at,
+            default_session_id: bot.default_session_id,
+            folder_id: bot.folder_id,
+            sort_order: bot.sort_order,
+        }
+    }
 }
 
 /// Element of SessionList.sessions

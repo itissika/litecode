@@ -414,6 +414,30 @@ export type SessionStatus =
   | "stopping"
   | "running_with_subagent";
 
+/** One workspace bot. The default session is an ordinary session. */
+export interface BotInfo {
+  id: string;
+  name: string;
+  description?: string;
+  /** Bot-owned AgentProfile; never shared with another bot or a normal agent. */
+  profile_id: string;
+  owner_bot_id?: string | null;
+  depth: number;
+  created_at: number;
+  default_session_id: string;
+  /** Shared session folder; absent means ungrouped. */
+  folder_id?: string | null;
+  sort_order: number;
+}
+
+/** Product-layer bot directory change, pushed as `bot/changed`. */
+export interface BotChanged {
+  event: "created" | "updated" | "deleted";
+  bot?: BotInfo;
+  bot_id?: string;
+  default_session_id?: string | null;
+}
+
 export interface SessionInfo {
   id: string;
   project: string;
@@ -468,7 +492,7 @@ type SessionLifecycleEvent =
   /** WP-086: aggregate status change (e.g. parent ↔ running_with_subagent). */
   | "status_changed";
 
-type TurnStepKind = "reasoning" | "toolcall" | "text";
+export type TurnStepKind = "reasoning" | "toolcall" | "text";
 
 export interface SessionLifecycle {
   session_id: string;

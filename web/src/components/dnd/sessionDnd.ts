@@ -1,9 +1,15 @@
 export const SESSION_DRAG_MIME = "application/x-litecode-session-id";
+export const BOT_DRAG_MIME = "application/x-litecode-bot-id";
 export const SESSION_FOLDER_DRAG_MIME =
   "application/x-litecode-session-folder-id";
 
 export interface SessionDragPayload {
   kind: "session";
+  id: string;
+}
+
+export interface BotDragPayload {
+  kind: "bot";
   id: string;
 }
 
@@ -35,6 +41,10 @@ function parsePayload<T extends { kind: string; id: string }>(
 
 export function parseSessionDrag(raw: string): SessionDragPayload | null {
   return parsePayload<SessionDragPayload>(raw, "session");
+}
+
+export function parseBotDrag(raw: string): BotDragPayload | null {
+  return parsePayload<BotDragPayload>(raw, "bot");
 }
 
 export function parseSessionFolderDrag(

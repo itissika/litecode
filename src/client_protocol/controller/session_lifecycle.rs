@@ -416,6 +416,10 @@ impl SessionController {
 
     pub async fn delete_session_folder(&mut self, id: &str) -> anyhow::Result<()> {
         self.service.delete_session_folder(id)?;
+        // Folders are shared with bot rows; never leave a dangling bot folder.
+        if let Some(bots) = self.runtime.bots() {
+            bots.clear_folder(id);
+        }
         self.push_session_list().await?;
         Ok(())
     }

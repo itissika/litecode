@@ -76,6 +76,8 @@ pub struct RuntimeHandle {
     global_db_path: PathBuf,
     settings_revision: Arc<AtomicU64>,
     loaded_revision: Arc<AtomicU64>,
+    /// Bot product layer; absent in CLI-only runtimes and tests.
+    bots: Arc<OnceLock<Arc<crate::bot::BotService>>>,
     /// Test-only: when set, `build_runtime` uses this provider instead of registry resolution.
     test_llm_override: Option<Arc<dyn LlmProvider>>,
 }
@@ -112,6 +114,7 @@ impl RuntimeHandle {
             global_db_path: global_db_path.into(),
             settings_revision,
             loaded_revision: Arc::new(AtomicU64::new(loaded)),
+            bots: Arc::new(OnceLock::new()),
             test_llm_override: None,
         }
     }
@@ -130,6 +133,16 @@ impl RuntimeHandle {
     /// Returns None in CLI-only runtimes, which have no app service.
     pub fn apps(&self) -> Option<&Arc<AppService>> {
         self.apps.get()
+    }
+
+    /// Attach the workspace bot product layer once serve state has built it.
+    pub fn set_bots(&self, bots: Arc<crate::bot::BotService>) {
+        let _ = self.bots.set(bots);
+    }
+
+    /// Returns None in CLI-only runtimes and tests.
+    pub fn bots(&self) -> Option<&Arc<crate::bot::BotService>> {
+        self.bots.get()
     }
 
     pub fn settings_revision(&self) -> u64 {
@@ -302,6 +315,7 @@ impl Clone for RuntimeHandle {
             // Per-clone: each clone re-reads the global DB on its first apply
             // so it never serves a stale `resolved` snapshot.
             loaded_revision: Arc::new(AtomicU64::new(0)),
+            bots: Arc::clone(&self.bots),
             test_llm_override: self.test_llm_override.clone(),
         }
     }

@@ -461,6 +461,7 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
             {
               id: "rename",
               label: i18n.t("explorer.rename"),
+              restoreFocus: false,
               onClick: () => setRenamingPath(entry.path),
             } satisfies ContextMenuItem,
             { id: "sep-2", separator: true } satisfies ContextMenuItem,
@@ -470,6 +471,7 @@ export function GalleryPanel(_props: IDockviewPanelProps) {
         id: "delete",
         label: i18n.t("explorer.delete"),
         danger: true,
+        restoreFocus: false,
         onClick: () =>
           selected.size > 1 ? trashSelected() : trashEntry(entry),
       },

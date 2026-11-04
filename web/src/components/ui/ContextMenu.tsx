@@ -13,6 +13,9 @@ export interface ContextMenuItem {
   disabled?: boolean;
   danger?: boolean;
   separator?: boolean;
+  /** Return focus to the trigger after the action. Defaults to true; an
+   *  action that opens an inline editor or dialog owns focus itself. */
+  restoreFocus?: boolean;
   onClick?: () => void;
 }
 
@@ -230,8 +233,10 @@ export function ContextMenu({
                     }`}
                     onClick={() => {
                       if (item.disabled) return;
+                      const restore = item.restoreFocus ?? true;
                       item.onClick?.();
-                      closeWithRestore();
+                      if (restore) closeWithRestore();
+                      else closeWithoutRestore();
                     }}
                   >
                     <span>{item.label}</span>

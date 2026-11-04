@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -39,6 +39,37 @@ function openMenu() {
   trigger.focus();
   fireEvent.click(trigger);
   return trigger;
+}
+
+function EditorHarness() {
+  const [open, setOpen] = useState(false);
+  const editorRef = useRef<HTMLButtonElement>(null);
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        Trigger
+      </button>
+      <button ref={editorRef} type="button">
+        Editor
+      </button>
+      {open ? (
+        <ContextMenu
+          x={10}
+          y={20}
+          items={[
+            {
+              id: "rename",
+              label: "Rename",
+              restoreFocus: false,
+              onClick: () => editorRef.current?.focus(),
+            },
+          ]}
+          onClose={() => setOpen(false)}
+          ariaLabel="Test menu"
+        />
+      ) : null}
+    </>
+  );
 }
 
 function ScrollHarness() {
@@ -109,6 +140,16 @@ describe("ContextMenu", () => {
     await screen.findByRole("menuitem", { name: "Rename" });
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("leaves focus with an action that opens an editor", async () => {
+    render(<EditorHarness />);
+    fireEvent.click(screen.getByRole("button", { name: "Trigger" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Editor" }),
+    );
   });
 
   it("ignores unrelated scrollers but closes when its own pane scrolls", async () => {

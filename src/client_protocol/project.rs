@@ -850,6 +850,38 @@ pub fn session_lifecycle_deleted(session_id: &str, parent_session_id: Option<&st
     )
 }
 
+/// Product-layer bot directory change. Kept outside session/lifecycle so a
+/// bot identity can change without inventing a session kind.
+pub fn bot_changed(event: &crate::bot::BotEvent) -> Value {
+    match event {
+        crate::bot::BotEvent::Created(bot) => notification(
+            super::protocol::methods::BOT_CHANGED,
+            json!({
+                "event": "created",
+                "bot": super::protocol::BotInfo::from(bot.clone()),
+            }),
+        ),
+        crate::bot::BotEvent::Updated(bot) => notification(
+            super::protocol::methods::BOT_CHANGED,
+            json!({
+                "event": "updated",
+                "bot": super::protocol::BotInfo::from(bot.clone()),
+            }),
+        ),
+        crate::bot::BotEvent::Removed {
+            bot_id,
+            default_session_id,
+        } => notification(
+            super::protocol::methods::BOT_CHANGED,
+            json!({
+                "event": "deleted",
+                "bot_id": bot_id,
+                "default_session_id": default_session_id,
+            }),
+        ),
+    }
+}
+
 /// G0: lifecycle event — a turn started.
 pub fn session_lifecycle_turn_started(session_id: &str, turn: &TurnSnapshot) -> Value {
     notification(

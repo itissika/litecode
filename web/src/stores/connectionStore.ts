@@ -17,6 +17,7 @@ import type {
   SubagentBound,
   SessionList,
   SessionLifecycle,
+  BotChanged,
   OperationResult,
   PermissionRequest,
   TurnStarted,
@@ -47,6 +48,7 @@ interface StoreLike {
 }
 interface SiblingStores {
   session?: StoreLike;
+  bot?: StoreLike;
   turn?: StoreLike;
   message?: StoreLike;
   editor?: StoreLike;
@@ -319,6 +321,12 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
             const payload = params as unknown as SessionList;
             session?.onSessionList(payload.sessions, payload.folders ?? []);
             noteSessionListSettled();
+            return;
+          }
+
+          case "bot/changed": {
+            const payload = params as unknown as BotChanged;
+            siblingStores.bot?.getState().applyBotEvent(payload);
             return;
           }
 

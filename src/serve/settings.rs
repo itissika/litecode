@@ -271,6 +271,7 @@ async fn list_agents(State(state): State<ServeState>) -> Response {
             let mut agents: Vec<AgentListItem> = settings
                 .agents
                 .iter()
+                .filter(|(id, _)| !crate::bot::is_bot_profile_id(id))
                 .map(|(id, profile)| AgentListItem {
                     id: id.clone(),
                     role: profile.role,
@@ -314,6 +315,11 @@ async fn put_agent(
     Path(id): Path<String>,
     Json(body): Json<AgentBody>,
 ) -> Response {
+    if crate::bot::is_bot_profile_id(&id) {
+        return validation_error(LitecodeError::Config(
+            "bot-owned agent profiles are edited through the bot editor".into(),
+        ));
+    }
     let resolved = state.runtime.read().expect("runtime lock").resolved.clone();
     // An agent must point at a model that exists and whose provider has a key.
     // This is the strict half of the rule: a turn would hard-fail anyway, so the
@@ -344,6 +350,11 @@ async fn apply_agent_tool_preset(
     Path(id): Path<String>,
     Json(body): Json<ApplyPresetBody>,
 ) -> Response {
+    if crate::bot::is_bot_profile_id(&id) {
+        return validation_error(LitecodeError::Config(
+            "bot-owned agent profiles are edited through the bot editor".into(),
+        ));
+    }
     let workspace = state
         .runtime
         .read()
@@ -363,6 +374,11 @@ async fn apply_agent_tool_preset(
 }
 
 async fn delete_agent(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
+    if crate::bot::is_bot_profile_id(&id) {
+        return validation_error(LitecodeError::Config(
+            "bot-owned agent profiles are deleted through the bot editor".into(),
+        ));
+    }
     match state.settings_writer.delete_agent(&id) {
         Ok(ack) => {
             let mut runtime = state.runtime.write().expect("runtime lock");

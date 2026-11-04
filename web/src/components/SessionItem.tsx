@@ -1,14 +1,11 @@
 import { memo, useEffect, useState } from "react";
-import { Trash } from "@phosphor-icons/react";
+
 import type { SessionInfo } from "../api/types";
 import { isWaitingForUserPhase } from "../api/types";
 import { useTurnStore } from "../stores/turnStore";
 import { sessionTitle } from "../lib/sessionDisplay";
-import { LivePreview } from "./LivePreview";
-import { InlineRename } from "./ui/InlineRename";
-import { ListRow } from "./ui/ListRow";
+import { SidebarRow } from "./SidebarRow";
 import {
-  SessionStatusDot,
   isAwaitingPermission,
   type SessionStatus,
 } from "./SessionStatusDot";
@@ -28,11 +25,11 @@ const DEBUG_CYCLE = false;
 const DEBUG_CYCLE_MS = 6000;
 /**
  * Compact "time since last update" relative to `now`, at minute granularity.
- * Rolls up as minutes → hours → days → weeks → months → years, rendered as a
- * bare `number + unit` token (m/h/d/w/mo/y). The first minute shows "1m"
+ * Rolls up as minutes -> hours -> days -> weeks -> months -> years, rendered as
+ * a bare `number + unit` token (m/h/d/w/mo/y). The first minute shows "1m"
  * (driven by a shared 1min ticker in the parent, so no per-item intervals).
  */
-function formatRelative(updatedAt: number, now: number): string {
+export function formatRelative(updatedAt: number, now: number): string {
   const diffSec = Math.max(0, Math.floor((now - (updatedAt || now)) / 1000));
   const min = Math.max(1, Math.floor(diffSec / 60));
   if (min < 60) return `${min}m`;
@@ -50,7 +47,7 @@ function formatRelative(updatedAt: number, now: number): string {
 
 interface SessionItemProps {
   session: SessionInfo;
-  /** Shared wall-clock tick (ms) from the parent's 1s timer. */
+  /** Shared wall-clock tick (ms) from the parent's 1min timer. */
   now: number;
   /**
    * Left padding of the row in px. Rows grouped under a folder header pass a
@@ -76,7 +73,7 @@ interface SessionItemProps {
 
 /**
  * Pure presentational row for a single session. Single-line layout:
- *   [status dot] [conversation summary] [live summary] [unread · time ⇄ delete]
+ *   [status dot] [conversation summary] [live summary] [unread · time <-> delete]
  * Owns no store subscriptions — `session` + `now` are supplied by the parent.
  * The `pending` status (WP-184 / WP-186): WireTurnPhase `waiting_for_user`
  * (legacy object key `awaiting_permission`), else trust BE
@@ -97,7 +94,6 @@ export const SessionItem = memo(function SessionItem({
   onRename,
   onRenameCancel,
 }: SessionItemProps) {
-  // WP-184 Phase B: phase object OR bool / local queue derivation.
   const pendingCount = useTurnStore(
     (s) => s.byId.get(session.id)?.permissionQueue.length ?? 0,
   );
@@ -116,8 +112,6 @@ export const SessionItem = memo(function SessionItem({
       ? "running"
       : "idle";
 
-  // DEBUG: when on, alternate the shown status so the glow animations can be
-  // eyeballed. Lifted here so the vertical bar and the glow share one state.
   const [toggled, setToggled] = useState(false);
   useEffect(() => {
     if (!DEBUG_CYCLE) return;
@@ -141,103 +135,36 @@ export const SessionItem = memo(function SessionItem({
   });
 
   return (
-    <div
-      className="group relative h-9"
-      data-session-active={focused ? "true" : undefined}
-      data-session-unread={unread ? "true" : undefined}
-    >
-      <ListRow
-        size="session"
-        inset={indentPx}
-        className={`cursor-pointer text-(--_dk-ix-fg) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) active:bg-(--_dk-ix-bg-pressed) focus-visible:shadow-[0_0_0_2px_var(--_dk-ix-ring)] ${
-          focused
-            ? "bg-(--_dk-ix-bg-selected) shadow-[inset_1px_0_0_var(--_dk-accent-ring)]"
-            : ""
-        }`}
-        {...drag}
-        onContextMenu={onContextMenu}
-        onClick={(event) => {
-          // A double-click starts renaming; do not re-open on its second click.
-          if (!renaming && event.detail < 2) onOpen(session.id);
-        }}
-      >
-        {/* Middle group: status bar + glow (rendered by SessionStatusDot, anchored
-            to this content) followed by the conversation preview and the live
-            summary glyph. The glow is pinned to the content's right edge so it can
-            never overrun into the live-summary glyphs. */}
-        <SessionStatusDot status={shown}>
-          {/* Conversation summary — adapts to content width, capped + truncated.
-              `min-w-0` lets it shrink below content as the row narrows. */}
-          {renaming ? (
-            <InlineRename
-              key={session.title ?? ""}
-              initialValue={session.title ?? ""}
-              ariaLabel={i18n.t("session.sessionTitle")}
-              maxLength={200}
-              allowEmpty
-              onCommit={(value) => onRename?.(value || null)}
-              onCancel={() => onRenameCancel?.()}
-              className="w-28 min-w-0 rounded border border-(--_dk-ix-ring) bg-(--_dk-editor) px-1 py-0.5 text-[11px] text-(--_dk-text-secondary) outline-none"
-            />
-          ) : (
-            <span
-              className={`max-w-32 min-w-0 ${
-                focused
-                  ? "text-(--_dk-text-primary)"
-                  : "text-(--_dk-text-secondary)"
-              }`}
-              title={label || undefined}
-              onDoubleClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onStartRename?.();
-              }}
-            >
-              <span className="block truncate text-[11px]">
-                {label || (
-                  <span className="text-(--_dk-text-disabled)">
-                    {i18n.t("session.noPreview")}
-                  </span>
-                )}
-              </span>
-            </span>
-          )}
-          {/* Live summary — real-time step label when active, else a triggered emoji. */}
-          <LivePreview
-            stepKinds={session.step_kinds ?? []}
-            running={session.running}
-            updatedAt={session.updated_at}
-            now={now}
-          />
-        </SessionStatusDot>
-      </ListRow>
-      {/* Time while idle; the unread dot sits beside it and the delete square
-          takes the slot on hover. */}
-      <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1.5 pr-3 text-[10px] text-(--_dk-text-muted) transition-opacity group-hover:opacity-0">
-        {unread && (
-          <span
-            aria-hidden
-            className="h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-emerald-500)"
-          />
-        )}
-        {relative}
-      </span>
-      {/* Row-height square delete target, flush to the row's right edge. It is a
-          sibling of the clickable row, so hovering it never paints the row —
-          only its own borderless danger wash shows. */}
-      <button
-        type="button"
-        disabled={deleteBlocked}
-        onClick={(e) => {
-          e.stopPropagation();
-          if (!deleteBlocked) onDelete(session.id);
-        }}
-        aria-label={deleteLabel}
-        className="btn-danger btn-icon pointer-events-none absolute right-0 top-0 h-9 w-9 p-0 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-0 disabled:group-hover:opacity-40"
-        title={deleteLabel}
-      >
-        <Trash size={14} aria-hidden />
-      </button>
-    </div>
+    <SidebarRow
+      label={label}
+      title={label}
+      status={shown}
+      unread={unread}
+      focused={focused}
+      relative={relative}
+      stepKinds={session.step_kinds ?? []}
+      running={session.running}
+      updatedAt={session.updated_at}
+      now={now}
+      indentPx={indentPx}
+      drag={drag}
+      dataAttrs={{
+        "data-session-active": focused ? "true" : undefined,
+        "data-session-unread": unread ? "true" : undefined,
+      }}
+      onOpen={() => onOpen(session.id)}
+      onDelete={() => onDelete(session.id)}
+      deleteBlocked={deleteBlocked}
+      deleteLabel={deleteLabel}
+      onContextMenu={onContextMenu}
+      renaming={renaming}
+      renameInitialValue={session.title ?? ""}
+      renameAriaLabel={i18n.t("session.sessionTitle")}
+      renameMaxLength={200}
+      renameAllowEmpty
+      onStartRename={onStartRename}
+      onRename={(value) => onRename?.(value || null)}
+      onRenameCancel={() => onRenameCancel?.()}
+    />
   );
 });

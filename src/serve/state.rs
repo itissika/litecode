@@ -32,6 +32,9 @@ pub struct ServeState {
     pub(crate) sessions: Arc<SessionManager>,
     pub service: Arc<SessionService>,
     pub settings_writer: Arc<SettingsWriter>,
+    /// Workspace bot directory. The runtime also holds a handle for tool
+    /// injection; this field is the websocket/event and RPC entry point.
+    pub bots: Arc<crate::bot::BotService>,
     pub watcher: Arc<Mutex<Option<Arc<WorkspaceWatcher>>>>,
     /// Cross-process exclusive write lease held for the lifetime of this serve process.
     pub workspace_lock: Arc<std::sync::Mutex<WorkspaceWriteLease>>,
@@ -132,6 +135,52 @@ impl ServeState {
         settings_writer.set_runtime(Arc::clone(&runtime));
         let sessions = Arc::new(SessionManager::from_data(turn_guard.clone(), session_data));
         let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
+        // Bot identities are a workspace-local product layer above the session
+        // service. The registry lives next to sessions.db; the runtime only
+        // receives a handle for tool injection and turn delivery.
+        let bot_registry_path = sessions_db_path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| project.join(".litecode"))
+            .join("bots.json");
+        let bots = Arc::new(crate::bot::BotService::new(
+            Arc::clone(&service),
+            Arc::clone(&settings_writer),
+            Some(Arc::downgrade(&runtime)),
+            project.to_string_lossy().to_string(),
+            bot_registry_path,
+        )?);
+        runtime
+            .write()
+            .expect("runtime lock")
+            .set_bots(Arc::clone(&bots));
+        {
+            // Both handles are weak on purpose. RuntimeHandle owns BotService,
+            // and BotService owns this runner; a strong handle to either one
+            // would keep the whole workspace graph alive after ServeState drops.
+            let weak_runtime = Arc::downgrade(&runtime);
+            let weak_bots = Arc::downgrade(&bots);
+            let runner_root = project.clone();
+            bots.set_turn_runner(Arc::new(move |session_id: &str| {
+                let Some(runtime) = weak_runtime.upgrade() else {
+                    return;
+                };
+                let Some(bots) = weak_bots.upgrade() else {
+                    return;
+                };
+                let snapshot = runtime.read().expect("runtime lock").clone();
+                let service = Arc::clone(bots.service());
+                let decision = crate::runtime::pending_auto_turn::try_begin_pending_flush(
+                    &snapshot,
+                    &service,
+                    &runner_root,
+                    session_id,
+                );
+                crate::runtime::pending_auto_turn::spawn_prepared_pending_flush(
+                    &snapshot, &service, decision,
+                );
+            }));
+        }
         // WP-091 R8: parent status_changed via Runtime's TurnStatusHook.
         crate::client_protocol::status_track::install_parent_status_hook(&service);
         workspace_engines.set_session_reader(sessions.reader());
@@ -190,6 +239,7 @@ impl ServeState {
             sessions,
             service,
             settings_writer,
+            bots,
             watcher: Arc::new(Mutex::new(None)),
             workspace_lock: Arc::new(std::sync::Mutex::new(workspace_lock)),
         })

@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useEffect,
   useMemo,
   useState,
@@ -9,17 +10,28 @@ import {
   CaretRight,
   FolderPlus,
   Info,
+  Robot,
   StackSimple,
 } from "@phosphor-icons/react";
 
-import type { SessionInfo } from "../api/types";
+import type { BotInfo, SessionInfo } from "../api/types";
 import { useConnectionStore } from "../stores/connectionStore";
+import { useBotStore } from "../stores/botStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useToastStore } from "../stores/toastStore";
 import { useUnreadStore } from "../stores/unreadStore";
+import { BotDialog, type BotDialogMode } from "./BotDialog";
+import { BotItem } from "./BotItem";
 import { SessionItem } from "./SessionItem";
 import { SessionFolderHeader } from "./SessionFolderHeader";
-import { parseSessionDrag, SESSION_DRAG_MIME } from "./dnd/sessionDnd";
+import {
+  BOT_DRAG_MIME,
+  parseBotDrag,
+  parseSessionDrag,
+  SESSION_DRAG_MIME,
+  type BotDragPayload,
+  type SessionDragPayload,
+} from "./dnd/sessionDnd";
 import { useDropTarget } from "./dnd/useDropTarget";
 import { ContextMenu, type ContextMenuItem } from "./ui/ContextMenu";
 import { useConfirmDialog } from "./ui/useConfirmDialog";
@@ -49,7 +61,12 @@ const GROUPED_ROW_INDENT_PX = FOLDER_LABEL_INSET_PX - SESSION_ROW_LEADING_PX;
 
 type MenuState =
   | { kind: "session"; id: string; x: number; y: number }
+  | { kind: "bot"; id: string; x: number; y: number }
   | { kind: "folder"; id: string; x: number; y: number };
+
+type SidebarEntry =
+  | { kind: "session"; session: SessionInfo }
+  | { kind: "bot"; bot: BotInfo; session?: SessionInfo };
 
 function loadCollapsed(): Record<string, boolean> {
   try {
@@ -69,17 +86,26 @@ function UngroupedHeader({
   collapsed,
   onToggle,
   onDropSession,
+  onDropBot,
 }: {
   count: number;
   collapsed: boolean;
   onToggle: () => void;
   onDropSession: (sessionId: string) => void;
+  onDropBot: (botId: string) => void;
 }) {
-  const drop = useDropTarget({
-    mime: SESSION_DRAG_MIME,
-    parse: parseSessionDrag,
-    onDrop: (payload) => onDropSession(payload.id),
-  });
+  const drop = useDropTarget<SessionDragPayload | BotDragPayload>([
+    {
+      mime: SESSION_DRAG_MIME,
+      parse: parseSessionDrag,
+      onDrop: (payload) => onDropSession(payload.id),
+    },
+    {
+      mime: BOT_DRAG_MIME,
+      parse: parseBotDrag,
+      onDrop: (payload) => onDropBot(payload.id),
+    },
+  ]);
 
   return (
     <ListRow
@@ -125,6 +151,8 @@ function UngroupedHeader({
 export function SessionList() {
   const sessions = useSessionStore((s) => s.sessions);
   const folders = useSessionStore((s) => s.folders);
+  const bots = useBotStore((s) => s.bots);
+  const botsError = useBotStore((s) => s.botsError);
   const loading = useSessionStore((s) => s.sessionsLoading);
   const error = useSessionStore((s) => s.sessionListError);
   const deleteSession = useSessionStore((s) => s.deleteSession);
@@ -132,6 +160,11 @@ export function SessionList() {
   const listSessions = useSessionStore((s) => s.listSessions);
   const renameSession = useSessionStore((s) => s.renameSession);
   const moveSession = useSessionStore((s) => s.moveSession);
+  const listBots = useBotStore((s) => s.listBots);
+  const openBot = useBotStore((s) => s.openBot);
+  const updateBot = useBotStore((s) => s.updateBot);
+  const deleteBot = useBotStore((s) => s.deleteBot);
+  const moveBot = useBotStore((s) => s.moveBot);
   const createFolder = useSessionStore((s) => s.createFolder);
   const renameFolder = useSessionStore((s) => s.renameFolder);
   const deleteFolder = useSessionStore((s) => s.deleteFolder);
@@ -144,27 +177,64 @@ export function SessionList() {
   // That is the only rule here: emptiness / visibility is decided by the
   // server's list projection (`SessionListRow::is_listed`), never re-derived
   // in the sidebar.
-  const roots = useMemo(
-    () => sessions.filter((s) => !s.parent_session_id),
+  // A bot's default session is an ordinary session on the server, but the
+  // sidebar gives the bot one identity row instead of two entries.
+  const sessionsById = useMemo(
+    () => new Map(sessions.map((session) => [session.id, session])),
     [sessions],
+  );
+  const orderedBots = useMemo(
+    () =>
+      [...bots].sort(
+        (left, right) =>
+          (left.sort_order ?? 0) - (right.sort_order ?? 0) ||
+          left.created_at - right.created_at ||
+          left.name.localeCompare(right.name),
+      ),
+    [bots],
+  );
+  const botSessionIds = useMemo(
+    () => new Set(bots.map((bot) => bot.default_session_id)),
+    [bots],
+  );
+  const roots = useMemo(
+    () =>
+      sessions.filter(
+        (session) =>
+          !session.parent_session_id && !botSessionIds.has(session.id),
+      ),
+    [sessions, botSessionIds],
   );
   const orderedFolders = useMemo(
     () => [...folders].sort((a, b) => a.sort_order - b.sort_order),
     [folders],
   );
   const { byFolder, ungrouped } = useMemo(() => {
-    const map = new Map<string, SessionInfo[]>();
+    const map = new Map<string, SidebarEntry[]>();
     for (const folder of orderedFolders) map.set(folder.id, []);
-    const loose: SessionInfo[] = [];
+    const loose: SidebarEntry[] = [];
+    // Bots lead each bucket; a divider separates them from sessions. Both use
+    // the same session folder ids.
+    for (const bot of orderedBots) {
+      const entry: SidebarEntry = {
+        kind: "bot",
+        bot,
+        session: sessionsById.get(bot.default_session_id),
+      };
+      const bucket = bot.folder_id ? map.get(bot.folder_id) : undefined;
+      if (bucket) bucket.push(entry);
+      else loose.push(entry);
+    }
     for (const session of roots) {
+      const entry: SidebarEntry = { kind: "session", session };
       const bucket = session.folder_id
         ? map.get(session.folder_id)
         : undefined;
-      if (bucket) bucket.push(session);
-      else loose.push(session);
+      if (bucket) bucket.push(entry);
+      else loose.push(entry);
     }
     return { byFolder: map, ungrouped: loose };
-  }, [roots, orderedFolders]);
+  }, [roots, orderedBots, orderedFolders, sessionsById]);
 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(loadCollapsed);
   // Sessions currently shown by the agent-area groups. Tracked from the
@@ -172,8 +242,10 @@ export function SessionList() {
   const [activeSessionIds, setActiveSessionIds] = useState<readonly string[]>([]);
   const unread = useUnreadStore((s) => s.unread);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [renamingBotId, setRenamingBotId] = useState<string | null>(null);
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const [botDialog, setBotDialog] = useState<BotDialogMode | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
 
   useEffect(() => {
@@ -205,8 +277,9 @@ export function SessionList() {
   useEffect(() => {
     if (connState === "connected") {
       listSessions();
+      listBots();
     }
-  }, [connState, listSessions]);
+  }, [connState, listSessions, listBots]);
 
   const connecting = connState === "connecting" || connState === "reconnecting";
 
@@ -254,6 +327,49 @@ export function SessionList() {
     if (next) reorderFolders(next);
   };
 
+  const botSession = (bot: BotInfo) =>
+    sessionsById.get(bot.default_session_id);
+  const botBusy = (bot: BotInfo) => {
+    const session = botSession(bot);
+    return Boolean(
+      session?.running ||
+        session?.status === "running_with_subagent" ||
+        session?.status === "stopping",
+    );
+  };
+  const openBotById = async (id: string) => {
+    const sessionId = await openBot(id);
+    if (sessionId) openSessionPanel(sessionId);
+  };
+  const startBotRename = (id: string) => {
+    setRenamingSessionId(null);
+    setRenamingFolderId(null);
+    setRenamingBotId(id);
+  };
+  const commitBotRename = async (bot: BotInfo, name: string) => {
+    setRenamingBotId(null);
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === bot.name) return;
+    await updateBot(bot.id, { name: trimmed });
+  };
+  const requestDeleteBot = (bot: BotInfo) => {
+    if (botBusy(bot)) {
+      useToastStore
+        .getState()
+        .showToast(i18n.t("bot.cannotDeleteBusy"), "info");
+      return;
+    }
+    void confirm({
+      title: i18n.t("bot.deleteTitle"),
+      body: i18n.t("bot.deleteConfirm", { name: bot.name }),
+      danger: true,
+      confirmLabel: i18n.t("common.delete"),
+      cancelLabel: i18n.t("common.cancel"),
+    }).then((ok) => {
+      if (ok) void deleteBot(bot.id);
+    });
+  };
+
   const renderSession = (session: SessionInfo, grouped = false) => (
     <SessionItem
       key={session.id}
@@ -277,6 +393,7 @@ export function SessionList() {
       renaming={renamingSessionId === session.id}
       onStartRename={() => {
         setRenamingFolderId(null);
+        setRenamingBotId(null);
         setRenamingSessionId(session.id);
       }}
       onRename={(title) => {
@@ -287,6 +404,56 @@ export function SessionList() {
     />
   );
 
+  const renderBot = (bot: BotInfo, grouped = false) => (
+    <BotItem
+      key={bot.id}
+      bot={bot}
+      session={botSession(bot)}
+      now={now}
+      indentPx={grouped ? GROUPED_ROW_INDENT_PX : undefined}
+      focused={activeSessionIds.includes(bot.default_session_id)}
+      unread={unread[bot.default_session_id] === true}
+      onOpen={(id) => void openBotById(id)}
+      onDelete={requestDeleteBot}
+      onContextMenu={(event: MouseEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setMenu({
+          kind: "bot",
+          id: bot.id,
+          x: event.clientX,
+          y: event.clientY,
+        });
+      }}
+      renaming={renamingBotId === bot.id}
+      onStartRename={() => startBotRename(bot.id)}
+      onRename={(name) => void commitBotRename(bot, name)}
+      onRenameCancel={() => setRenamingBotId(null)}
+    />
+  );
+
+  const renderEntry = (entry: SidebarEntry, grouped = false) =>
+    entry.kind === "session"
+      ? renderSession(entry.session, grouped)
+      : renderBot(entry.bot, grouped);
+
+  const renderEntries = (entries: SidebarEntry[], grouped = false) => {
+    const firstSession = entries.findIndex((entry) => entry.kind === "session");
+    return entries.map((entry, index) => (
+      <Fragment
+        key={entry.kind === "session" ? entry.session.id : entry.bot.id}
+      >
+        {index === firstSession && firstSession > 0 ? (
+          <div
+            aria-hidden
+            className="mx-3 my-1 border-t border-(--_dk-line)"
+          />
+        ) : null}
+        {renderEntry(entry, grouped)}
+      </Fragment>
+    ));
+  };
+
   const menuItems = useMemo<ContextMenuItem[]>(() => {
     if (!menu) return [];
     if (menu.kind === "folder") {
@@ -296,6 +463,7 @@ export function SessionList() {
         {
           id: "rename-folder",
           label: i18n.t("session.renameFolder"),
+          restoreFocus: false,
           onClick: () => {
             setCollapsed((current) => ({ ...current, [folder.id]: false }));
             setRenamingSessionId(null);
@@ -307,6 +475,7 @@ export function SessionList() {
           id: "delete-folder",
           label: i18n.t("session.deleteFolder"),
           danger: true,
+          restoreFocus: false,
           onClick: () => {
             void confirm({
               title: i18n.t("session.deleteFolder"),
@@ -321,11 +490,57 @@ export function SessionList() {
         },
       ];
     }
+    if (menu.kind === "bot") {
+      const bot = bots.find((item) => item.id === menu.id);
+      if (!bot) return [];
+      const items: ContextMenuItem[] = [
+        {
+          id: "edit-bot",
+          label: i18n.t("bot.edit"),
+          restoreFocus: false,
+          onClick: () => setBotDialog({ kind: "edit", bot }),
+        },
+        {
+          id: "rename-bot",
+          label: i18n.t("bot.rename"),
+          restoreFocus: false,
+          onClick: () => startBotRename(bot.id),
+        },
+      ];
+      if (orderedFolders.length > 0) {
+        items.push({ id: "bot-separator", separator: true });
+        for (const folder of orderedFolders) {
+          items.push({
+            id: `move-bot-${folder.id}`,
+            label: i18n.t("session.moveToFolderName", { name: folder.name }),
+            disabled: bot.folder_id === folder.id,
+            onClick: () => void moveBot(bot.id, folder.id),
+          });
+        }
+        if (bot.folder_id) {
+          items.push({
+            id: "move-bot-ungrouped",
+            label: i18n.t("session.removeFromFolder"),
+            onClick: () => void moveBot(bot.id, null),
+          });
+        }
+      }
+      items.push({ id: "bot-danger-separator", separator: true });
+      items.push({
+        id: "delete-bot",
+        label: i18n.t("bot.delete"),
+        danger: true,
+        disabled: botBusy(bot),
+        onClick: () => requestDeleteBot(bot),
+      });
+      return items;
+    }
     const session = sessions.find((item) => item.id === menu.id);
     const items: ContextMenuItem[] = [
       {
         id: "rename-session",
         label: i18n.t("session.renameSession"),
+        restoreFocus: false,
         onClick: () => {
           setRenamingFolderId(null);
           setRenamingSessionId(menu.id);
@@ -356,15 +571,19 @@ export function SessionList() {
     folders,
     orderedFolders,
     sessions,
+    bots,
     deleteFolder,
     moveSession,
     renameSession,
+    moveBot,
+    requestDeleteBot,
   ]);
 
   const renderBody = () => {
     if (
       roots.length === 0 &&
       orderedFolders.length === 0 &&
+      bots.length === 0 &&
       !creatingFolder
     ) {
       // While the socket is establishing or recovering, show a connecting
@@ -423,13 +642,13 @@ export function SessionList() {
           </div>
         )}
         {orderedFolders.map((folder) => {
-          const folderSessions = byFolder.get(folder.id) ?? [];
+          const folderEntries = byFolder.get(folder.id) ?? [];
           const isCollapsed = Boolean(collapsed[folder.id]);
           return (
             <div key={folder.id}>
               <SessionFolderHeader
                 folder={folder}
-                count={folderSessions.length}
+                count={folderEntries.length}
                 collapsed={isCollapsed}
                 renaming={renamingFolderId === folder.id}
                 onToggle={() => toggle(folder.id)}
@@ -454,12 +673,13 @@ export function SessionList() {
                     moveSession(sessionId, folder.id);
                   }
                 }}
+                onDropBot={(botId) => void moveBot(botId, folder.id)}
                 onReorderFolder={reorderFolder}
                 onMoveFolder={moveFolder}
               />
               {!isCollapsed &&
-                (folderSessions.length > 0 ? (
-                  folderSessions.map((session) => renderSession(session, true))
+                (folderEntries.length > 0 ? (
+                  renderEntries(folderEntries, true)
                 ) : (
                   <p
                     className="py-1 pr-2 text-[10px] text-(--_dk-text-disabled)"
@@ -482,13 +702,12 @@ export function SessionList() {
                   moveSession(sessionId, null);
                 }
               }}
+              onDropBot={(botId) => void moveBot(botId, null)}
             />
-            {!collapsed[UNGROUPED_KEY] &&
-              ungrouped.map((session) => renderSession(session, true))}
+            {!collapsed[UNGROUPED_KEY] && renderEntries(ungrouped, true)}
           </div>
         )}
-        {orderedFolders.length === 0 &&
-          roots.map((session) => renderSession(session))}
+        {orderedFolders.length === 0 && renderEntries(ungrouped)}
       </div>
     );
   };
@@ -499,6 +718,15 @@ export function SessionList() {
         <div className="flex items-center gap-1">
           <button type="button" onClick={newSession} className="btn-ghost btn-sm">
             {i18n.t("common.new")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setBotDialog({ kind: "create" })}
+            aria-label={i18n.t("bot.new")}
+            title={i18n.t("bot.new")}
+            className="flex h-6 w-6 items-center justify-center rounded-md text-(--_dk-text-secondary) transition-colors hover:bg-(--_dk-ix-bg-hover)"
+          >
+            <Robot size={13} />
           </button>
           <button
             type="button"
@@ -557,7 +785,19 @@ export function SessionList() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">{renderBody()}</div>
+      <div className="flex-1 overflow-y-auto">
+        {botsError && bots.length === 0 && (
+          <button
+            type="button"
+            onClick={listBots}
+            title={botsError}
+            className="block w-full px-3 py-2 text-left text-[10px] text-(--_dk-ix-danger-fg)"
+          >
+            {i18n.t("bot.loadFailed")} · {i18n.t("bot.retry")}
+          </button>
+        )}
+        {renderBody()}
+      </div>
       {menu && menuItems.length > 0 && (
         <ContextMenu
           x={menu.x}
@@ -567,6 +807,13 @@ export function SessionList() {
         />
       )}
       {dialog}
+      {botDialog && (
+        <BotDialog
+          mode={botDialog}
+          onClose={() => setBotDialog(null)}
+          onCreated={(bot) => void openBotById(bot.id)}
+        />
+      )}
     </div>
   );
 }
