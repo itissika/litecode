@@ -115,6 +115,10 @@ struct RuntimeState {
 struct RunMarker {
     workspace: String,
     pid: u32,
+    /// Port the app listens on. Markers written before this field existed read
+    /// back as 0, which callers treat as "unknown".
+    #[serde(default)]
+    port: u16,
 }
 
 impl RuntimeState {
@@ -295,7 +299,7 @@ impl AppRuntime {
         // the spawning thread, and this call runs on a retirable blocking
         // worker, so binding it here would kill a healthy app. Graceful
         // shutdown and the Windows Job Object cover the supported paths.
-        let marker = claim_run_marker(app, &self.registry, std::process::id())?;
+        let marker = claim_run_marker(app, &self.registry, std::process::id(), port)?;
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(err) => {
@@ -312,7 +316,7 @@ impl AppRuntime {
         }
         crate::proc_lifetime::bind_child_to_parent(pid);
         if let Some(path) = marker.as_deref() {
-            if let Err(err) = write_run_marker(path, &self.registry, pid) {
+            if let Err(err) = write_run_marker(path, &self.registry, pid, port) {
                 crate::terminal::kill_process_tree(pid);
                 let _ = child.wait();
                 remove_run_marker(marker.as_deref());
@@ -477,7 +481,7 @@ impl AppRuntime {
                 .fallback_service(ServeDir::new(&app_dir))
                 .layer(middleware::from_fn_with_state(auth, static_auth))
         };
-        let marker = claim_run_marker(app, &self.registry, std::process::id())?;
+        let marker = claim_run_marker(app, &self.registry, std::process::id(), port)?;
         let (tx, rx) = oneshot::channel();
         let task = tokio::spawn(async move {
             let server = axum::serve(listener, app_router).with_graceful_shutdown(async {
@@ -517,13 +521,47 @@ impl AppRuntime {
 /// Run marker directory, keyed by app and workspace. LiteCode owns this, not
 /// the app: it lives under the global data root, never in an install dir.
 fn run_marker_dir(registry: &AppRegistry, app_id: &str) -> PathBuf {
-    registry.global_data.join("app-runtime").join(app_id)
+    global_run_marker_dir(&registry.global_data, app_id)
+}
+
+/// Same directory, reached without an `AppRegistry` so the `app-mcp` bridge
+/// can find a running app by id alone.
+pub(crate) fn global_run_marker_dir(global_data: &Path, app_id: &str) -> PathBuf {
+    global_data.join("app-runtime").join(app_id)
+}
+
+/// Marker of a live app process with a known port, or `None`.
+fn read_live_marker(path: &Path) -> Option<RunMarker> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let marker: RunMarker = serde_json::from_str(&text).ok()?;
+    if marker.port == 0 || !crate::serve::shutdown::is_process_alive(marker.pid) {
+        return None;
+    }
+    Some(marker)
+}
+
+/// Port of this workspace's live instance of `app_id`.
+pub(crate) fn live_run_port(global_data: &Path, app_id: &str, workspace: &str) -> Option<u16> {
+    let path = global_run_marker_dir(global_data, app_id).join(format!("{workspace}.json"));
+    read_live_marker(&path).map(|marker| marker.port)
+}
+
+/// Port of any live instance of `app_id`. Used when the caller cannot name a
+/// workspace: single-instance apps have exactly one live marker.
+pub(crate) fn any_live_run_port(global_data: &Path, app_id: &str) -> Option<u16> {
+    let entries = std::fs::read_dir(global_run_marker_dir(global_data, app_id)).ok()?;
+    entries
+        .flatten()
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .find_map(|entry| read_live_marker(&entry.path()))
+        .map(|marker| marker.port)
 }
 
 fn claim_run_marker(
     app: &RegisteredApp,
     registry: &AppRegistry,
     pid: u32,
+    port: u16,
 ) -> Result<Option<PathBuf>, String> {
     let dir = run_marker_dir(registry, &app.id);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create app run dir: {e}"))?;
@@ -556,7 +594,7 @@ fn claim_run_marker(
     }
     // Every running app leaves a marker, not only single-instance ones: it is
     // how another workspace knows a shared runtime is still serving pages.
-    write_run_marker(&own, registry, pid)?;
+    write_run_marker(&own, registry, pid, port)?;
     Ok(Some(own))
 }
 
@@ -590,10 +628,16 @@ pub fn has_live_run_marker(registry: &AppRegistry, app_id: &str) -> bool {
     live
 }
 
-fn write_run_marker(path: &Path, registry: &AppRegistry, pid: u32) -> Result<(), String> {
+fn write_run_marker(
+    path: &Path,
+    registry: &AppRegistry,
+    pid: u32,
+    port: u16,
+) -> Result<(), String> {
     let marker = RunMarker {
         workspace: registry.workspace_hash().to_string(),
         pid,
+        port,
     };
     let text = serde_json::to_vec(&marker).map_err(|e| format!("serialize run marker: {e}"))?;
     std::fs::write(path, text).map_err(|e| format!("write run marker: {e}"))

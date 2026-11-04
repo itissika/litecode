@@ -11,7 +11,12 @@ import {
 } from "./SessionStatusDot";
 import i18n from "../i18n";
 import { useDragSource } from "./dnd/useDragSource";
-import { BOT_DRAG_MIME, type BotDragPayload } from "./dnd/sessionDnd";
+import { useDropTarget } from "./dnd/useDropTarget";
+import {
+  BOT_DRAG_MIME,
+  parseBotDrag,
+  type BotDragPayload,
+} from "./dnd/sessionDnd";
 
 export interface BotItemProps {
   bot: BotInfo;
@@ -23,6 +28,8 @@ export interface BotItemProps {
   unread?: boolean;
   onOpen: (id: string) => void;
   onDelete: (bot: BotInfo) => void;
+  /** A bot was dropped onto this row. */
+  onDropBot?: (sourceId: string) => void;
   onContextMenu?: (event: React.MouseEvent) => void;
   renaming?: boolean;
   onStartRename?: () => void;
@@ -40,6 +47,7 @@ export function BotItem({
   unread = false,
   onOpen,
   onDelete,
+  onDropBot,
   onContextMenu,
   renaming = false,
   onStartRename,
@@ -75,6 +83,11 @@ export function BotItem({
     effect: "move",
     text: (payload) => payload.id,
   });
+  const drop = useDropTarget<BotDragPayload>({
+    mime: BOT_DRAG_MIME,
+    parse: parseBotDrag,
+    onDrop: (payload) => onDropBot?.(payload.id),
+  });
 
   return (
     <SidebarRow
@@ -91,6 +104,8 @@ export function BotItem({
       indentPx={indentPx}
       icon={<Robot size={13} className="shrink-0 text-(--_dk-text-secondary)" />}
       drag={drag}
+      dropHandlers={drop.handlers}
+      dropPosition={drop.position}
       dataAttrs={{
         "data-bot-active": focused ? "true" : undefined,
         "data-bot-unread": unread ? "true" : undefined,

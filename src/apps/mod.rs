@@ -4,6 +4,7 @@ pub mod builtin;
 pub mod catalog;
 pub mod exec;
 pub mod install;
+pub mod mcp_bridge;
 pub mod recommend;
 pub mod registry;
 pub mod routes;

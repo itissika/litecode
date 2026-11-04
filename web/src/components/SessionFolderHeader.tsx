@@ -3,8 +3,9 @@ import { CaretDown, CaretRight, FolderSimple } from "@phosphor-icons/react";
 
 import type { SessionFolder } from "../api/types";
 import i18n from "../i18n";
+import { folderScope } from "../lib/botFolders";
 import { useDragSource } from "./dnd/useDragSource";
-import { useDropTarget } from "./dnd/useDropTarget";
+import { useDropTarget, type DropSpec } from "./dnd/useDropTarget";
 import {
   BOT_DRAG_MIME,
   parseBotDrag,
@@ -43,7 +44,7 @@ interface SessionFolderHeaderProps {
   onMoveFolder: (id: string, delta: -1 | 1) => void;
 }
 
-/** Folder row: collapse, inline rename, session drop, and folder reorder. */
+/** Folder row: collapse, inline rename, same-domain row drop, and folder reorder. */
 export function SessionFolderHeader({
   folder,
   count,
@@ -66,34 +67,34 @@ export function SessionFolderHeader({
     text: (payload) => payload.id,
   });
 
-  const drop = useDropTarget<FolderDropPayload>([
-    {
-      mime: SESSION_DRAG_MIME,
-      parse: parseSessionDrag,
-      onDrop: (payload) => {
-        if (payload.kind === "session") onDropSession(payload.id);
-      },
-    },
-    {
-      mime: BOT_DRAG_MIME,
-      parse: parseBotDrag,
-      onDrop: (payload) => {
-        if (payload.kind === "bot") onDropBot(payload.id);
-      },
-    },
+  const scope = folderScope(folder.id);
+  const specs: DropSpec<FolderDropPayload>[] = [
+    scope === "bot"
+      ? {
+          mime: BOT_DRAG_MIME,
+          parse: parseBotDrag,
+          onDrop: (payload) => onDropBot(payload.id),
+        }
+      : {
+          mime: SESSION_DRAG_MIME,
+          parse: parseSessionDrag,
+          onDrop: (payload) => onDropSession(payload.id),
+        },
     {
       mime: SESSION_FOLDER_DRAG_MIME,
       parse: parseSessionFolderDrag,
       resolve: (event, rect) =>
         event.clientY < rect.top + rect.height / 2 ? "before" : "after",
-      canDrop: (payload) => payload.id !== folder.id,
+      canDrop: (payload) =>
+        payload.id !== folder.id && folderScope(payload.id) === scope,
       onDrop: (payload, position) => {
         if (payload.kind === "session-folder" && position !== "inside") {
           onReorderFolder(payload.id, folder.id, position);
         }
       },
     },
-  ]);
+  ];
+  const drop = useDropTarget<FolderDropPayload>(specs);
 
   return (
     <ListRow

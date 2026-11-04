@@ -3,7 +3,15 @@
  * needs them to label a never-subscribed child), so the sidebar must show roots
  * only — otherwise every launched worker appears as a session of its own.
  */
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { BotInfo, SessionInfo } from "../api/types";
@@ -12,6 +20,7 @@ import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useUnreadStore } from "../stores/unreadStore";
 import { bindDockview } from "../dockview/workbench/host";
+import { SESSION_DRAG_MIME } from "./dnd/sessionDnd";
 import { SessionList } from "./SessionList";
 
 function session(id: string, patch: Partial<SessionInfo> = {}): SessionInfo {
@@ -77,7 +86,7 @@ describe("SessionList — folders and titles", () => {
     expect(screen.getByText("Archive")).toBeTruthy();
     expect(screen.getByText("filed work")).toBeTruthy();
     expect(screen.getByText("loose work")).toBeTruthy();
-    expect(screen.getByText("Ungrouped")).toBeTruthy();
+    expect(screen.getByText("Sessions")).toBeTruthy();
     expect(screen.getByText("Empty")).toBeTruthy();
   });
 
@@ -169,45 +178,84 @@ describe("SessionList — folders and titles", () => {
     expect(renamed.getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("creates a folder from the inline editor with a trimmed name", async () => {
+  it("starts a group from a row and moves that row into it", async () => {
+    const target = session("s1", { preview: "auto preview" });
     const sendRpc = vi.fn(async (method: string) => {
-      if (method === "session/list") return { sessions: [], folders: [] };
+      if (method === "session/list") {
+        return { sessions: [target], folders: [] };
+      }
+      if (method === "session/folder/create") return { folder_id: "f9" };
       return {};
     });
     useConnectionStore.setState({ state: "connected", sendRpc } as never);
 
     render(<SessionList />);
-    fireEvent.click(await screen.findByRole("button", { name: "New folder" }));
-
-    const input = screen.getByRole("textbox", { name: "Folder name" });
-    fireEvent.change(input, { target: { value: "  Plan  " } });
-    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.contextMenu(await screen.findByText("auto preview"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "New group" }));
 
     expect(sendRpc).toHaveBeenCalledWith("session/folder/create", {
-      name: "Plan",
+      name: "New group",
+      scope: "session",
     });
-    expect(screen.queryByRole("textbox", { name: "Folder name" })).toBeNull();
+    await waitFor(() =>
+      expect(sendRpc).toHaveBeenCalledWith("session/move", {
+        id: "s1",
+        folder_id: "f9",
+      }),
+    );
+    const input = await screen.findByRole("textbox", { name: "Folder name" });
+    expect((input as HTMLInputElement).value).toBe("New group");
   });
 
-  it("closes the new-folder editor without creating on an empty draft", async () => {
+  it("groups two sessions when one row is dropped on another", async () => {
+    const first = session("s1", { preview: "first work" });
+    const second = session("s2", { preview: "second work" });
     const sendRpc = vi.fn(async (method: string) => {
-      if (method === "session/list") return { sessions: [], folders: [] };
+      if (method === "session/list") {
+        return { sessions: [first, second], folders: [] };
+      }
+      if (method === "session/folder/create") return { folder_id: "f9" };
       return {};
     });
     useConnectionStore.setState({ state: "connected", sendRpc } as never);
 
     render(<SessionList />);
-    fireEvent.click(await screen.findByRole("button", { name: "New folder" }));
+    fireEvent.drop(await screen.findByText("second work"), {
+      dataTransfer: {
+        types: [SESSION_DRAG_MIME],
+        getData: () => JSON.stringify({ kind: "session", id: "s1" }),
+      },
+    });
 
-    const input = screen.getByRole("textbox", { name: "Folder name" });
-    fireEvent.change(input, { target: { value: "   " } });
-    fireEvent.keyDown(input, { key: "Enter" });
-
-    expect(sendRpc).not.toHaveBeenCalledWith(
-      "session/folder/create",
-      expect.anything(),
+    await waitFor(() =>
+      expect(sendRpc).toHaveBeenCalledWith("session/folder/create", {
+        name: "New group",
+        scope: "session",
+      }),
     );
-    expect(screen.queryByRole("textbox", { name: "Folder name" })).toBeNull();
+    expect(sendRpc).toHaveBeenCalledWith("session/move", {
+      id: "s1",
+      folder_id: "f9",
+    });
+    expect(sendRpc).toHaveBeenCalledWith("session/move", {
+      id: "s2",
+      folder_id: "f9",
+    });
+  });
+
+  it("opens the bot creator from the bot icon button", async () => {
+    useConnectionStore.setState({
+      state: "connected",
+      sendRpc: vi.fn(async () => ({ sessions: [], folders: [] })),
+    } as never);
+
+    render(<SessionList />);
+    fireEvent.click(screen.getByRole("button", { name: "New bot" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: "Create bot" }),
+    ).toBeTruthy();
   });
 
   it("renames a session from the context menu", async () => {
@@ -221,7 +269,7 @@ describe("SessionList — folders and titles", () => {
     render(<SessionList />);
     // A composer or another control may own focus when the menu opens; Rename
     // must hand focus to its inline editor, not restore it to that control.
-    screen.getByRole("button", { name: "New folder" }).focus();
+    screen.getByRole("button", { name: "New" }).focus();
     fireEvent.contextMenu(await screen.findByText("auto preview"));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Rename session" }));
 
@@ -241,7 +289,10 @@ describe("SessionList — folders and titles", () => {
 describe("SessionList — bots share the sidebar tree", () => {
   it("renders a bot row in its folder without duplicating its default session", async () => {
     const botSession = session("bot-s", { preview: "hidden bot preview" });
-    const normal = session("s1", { preview: "normal work" });
+    const normal = session("s1", {
+      preview: "normal work",
+      folder_id: "f1",
+    });
     const bot: BotInfo = {
       id: "b1",
       name: "Researcher",
@@ -251,7 +302,7 @@ describe("SessionList — bots share the sidebar tree", () => {
       depth: 0,
       created_at: 1,
       default_session_id: "bot-s",
-      folder_id: "f1",
+      folder_id: "bot-folder-f1",
       sort_order: 1,
     };
     useBotStore.setState({ bots: [bot], botsLoading: false, botsError: null });
@@ -259,7 +310,10 @@ describe("SessionList — bots share the sidebar tree", () => {
       if (method === "session/list") {
         return {
           sessions: [botSession, normal],
-          folders: [{ id: "f1", name: "Work", sort_order: 0 }],
+          folders: [
+            { id: "bot-folder-f1", name: "Bot work", sort_order: 0 },
+            { id: "f1", name: "Work", sort_order: 1 },
+          ],
         };
       }
       if (method === "bot/list") return { bots: [bot] };
@@ -271,6 +325,10 @@ describe("SessionList — bots share the sidebar tree", () => {
     expect(await screen.findByText("Researcher")).toBeTruthy();
     expect(screen.queryByText("hidden bot preview")).toBeNull();
     expect(screen.getByText("normal work")).toBeTruthy();
+    expect(screen.getByText("Bots")).toBeTruthy();
+    expect(screen.getByText("Sessions")).toBeTruthy();
+    expect(screen.getByText("Bot work")).toBeTruthy();
+    expect(screen.getByText("Work")).toBeTruthy();
 
     fireEvent.contextMenu(screen.getByText("Researcher"));
     expect(
@@ -279,6 +337,95 @@ describe("SessionList — bots share the sidebar tree", () => {
     expect(
       screen.getByRole("menuitem", { name: "Delete bot" }),
     ).toBeTruthy();
+  });
+
+  it("starts a bot group with bot scope", async () => {
+    const bot: BotInfo = {
+      id: "b1",
+      name: "Researcher",
+      description: "finds papers",
+      profile_id: "bot_b1",
+      owner_bot_id: null,
+      depth: 0,
+      created_at: 1,
+      default_session_id: "bot-s",
+      folder_id: null,
+      sort_order: 1,
+    };
+    const botSession = session("bot-s", { preview: "hidden bot preview" });
+    useBotStore.setState({ bots: [bot], botsLoading: false, botsError: null });
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method === "session/list") {
+        return { sessions: [botSession], folders: [] };
+      }
+      if (method === "bot/list") return { bots: [bot] };
+      if (method === "session/folder/create") {
+        return { folder_id: "bot-folder-f9" };
+      }
+      if (method === "bot/update") {
+        return { bot: { ...bot, folder_id: "bot-folder-f9" } };
+      }
+      return {};
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+
+    render(<SessionList />);
+    fireEvent.contextMenu(await screen.findByText("Researcher"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "New group" }));
+
+    expect(sendRpc).toHaveBeenCalledWith("session/folder/create", {
+      name: "New group",
+      scope: "bot",
+    });
+    await waitFor(() =>
+      expect(sendRpc).toHaveBeenCalledWith("bot/update", {
+        id: "b1",
+        folder_id: "bot-folder-f9",
+      }),
+    );
+  });
+
+  it("does not group a session onto a bot row", async () => {
+    const bot: BotInfo = {
+      id: "b1",
+      name: "Researcher",
+      description: "finds papers",
+      profile_id: "bot_b1",
+      owner_bot_id: null,
+      depth: 0,
+      created_at: 1,
+      default_session_id: "bot-s",
+      folder_id: null,
+      sort_order: 1,
+    };
+    const botSession = session("bot-s", { preview: "hidden bot preview" });
+    const normal = session("s1", { preview: "normal work" });
+    useBotStore.setState({ bots: [bot], botsLoading: false, botsError: null });
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method === "session/list") {
+        return { sessions: [botSession, normal], folders: [] };
+      }
+      if (method === "bot/list") return { bots: [bot] };
+      return {};
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+
+    render(<SessionList />);
+    fireEvent.drop(await screen.findByText("Researcher"), {
+      dataTransfer: {
+        types: [SESSION_DRAG_MIME],
+        getData: () => JSON.stringify({ kind: "session", id: "s1" }),
+      },
+    });
+
+    expect(sendRpc).not.toHaveBeenCalledWith(
+      "session/folder/create",
+      expect.anything(),
+    );
+    expect(sendRpc).not.toHaveBeenCalledWith(
+      "session/move",
+      expect.anything(),
+    );
   });
 });
 

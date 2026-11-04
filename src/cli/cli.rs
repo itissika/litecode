@@ -73,6 +73,26 @@ enum Commands {
         #[arg(long, env = "LITECODE_SHUTDOWN_ON_STDIN_EOF")]
         shutdown_on_stdin_eof: bool,
     },
+    /// Bridge a running app's own MCP endpoint to stdio.
+    ///
+    /// The app picks a new port on every start, so a client definition that
+    /// names `127.0.0.1:<port>` goes stale. This command resolves the live
+    /// port per request, which keeps one client definition valid across
+    /// restarts. Nothing runs it unless a client definition asks for it.
+    #[command(name = "app-mcp")]
+    AppMcp {
+        /// App id from the Apps catalog, e.g. `nocodb`.
+        app_id: String,
+        /// Path appended to the app base URL, e.g. `/mcp/<endpoint>`.
+        #[arg(long)]
+        path: String,
+        /// Extra HTTP header as 'name: value'. Repeatable.
+        #[arg(long = "header")]
+        headers: Vec<String>,
+        /// Per-request timeout in seconds.
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+    },
     /// Configuration management
     Config {
         #[command(subcommand)]
@@ -622,6 +642,17 @@ pub fn run() -> anyhow::Result<()> {
         return crate::cli::code_search_worker::run();
     }
 
+    if let Some(Commands::AppMcp {
+        app_id,
+        path,
+        headers,
+        timeout,
+    }) = &cli.command
+    {
+        let workspace = cli.workspace.as_deref().map(Path::new);
+        return crate::apps::mcp_bridge::run(app_id, path, headers, *timeout, workspace);
+    }
+
     if let Some(Commands::Config { command }) = &cli.command {
         match command {
             ConfigCommands::Set { key, value } => {
@@ -764,4 +795,39 @@ pub fn run() -> anyhow::Result<()> {
     run_interactive(&mut cli_session)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_mcp_takes_the_shape_a_client_definition_writes() {
+        let cli = Cli::try_parse_from([
+            "litecode",
+            "app-mcp",
+            "nocodb",
+            "--path",
+            "/mcp/abc",
+            "--header",
+            "xc-mcp-token: secret",
+            "--timeout",
+            "30",
+        ])
+        .expect("parse");
+        match cli.command {
+            Some(Commands::AppMcp {
+                app_id,
+                path,
+                headers,
+                timeout,
+            }) => {
+                assert_eq!(app_id, "nocodb");
+                assert_eq!(path, "/mcp/abc");
+                assert_eq!(headers, vec!["xc-mcp-token: secret".to_string()]);
+                assert_eq!(timeout, 30);
+            }
+            _ => panic!("expected app-mcp"),
+        }
+    }
 }

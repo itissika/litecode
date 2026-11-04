@@ -24,6 +24,7 @@ import { useToastStore } from "./toastStore";
 import { useTurnStore } from "./turnStore";
 import { noteSessionFinished, useUnreadStore } from "./unreadStore";
 import { useMessageStore } from "./messageStore";
+import type { FolderScope } from "../lib/botFolders";
 import { openSessionPanel } from "../lib/sessionPanelNav";
 import { deleteRejectedMessage, rpcErrorCode } from "../lib/sessionErrors";
 import { noteSessionListSettled } from "../lib/centreSettle";
@@ -175,7 +176,10 @@ interface SessionStore extends SessionState {
   // Display-only sidebar layout
   renameSession: (id: string, title: string | null) => void;
   moveSession: (id: string, folderId: string | null) => void;
-  createFolder: (name: string) => void;
+  createFolder: (
+    name: string,
+    scope: FolderScope,
+  ) => Promise<string | null>;
   renameFolder: (id: string, name: string) => void;
   deleteFolder: (id: string) => void;
   /** Rewrite folder order optimistically; unknown ids are ignored. */
@@ -884,39 +888,43 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         });
     },
 
-    createFolder: (name) => {
+    createFolder: async (name, scope) => {
       const trimmed = name.trim();
-      if (!trimmed) return;
-      useConnectionStore
-        .getState()
-        .sendRpc<{ folder_id: string }>("session/folder/create", { name: trimmed })
-        .then((result) => {
-          // The server pushes a fresh list before this reply, so this is only a
-          // fallback for an older/partial reply shape.
-          set((state) => {
-            if (
-              !result?.folder_id ||
-              state.folders.some((folder) => folder.id === result.folder_id)
-            ) {
-              return {};
-            }
-            return {
-              folders: [
-                ...state.folders,
-                {
-                  id: result.folder_id,
-                  name: trimmed,
-                  sort_order: state.folders.length,
-                },
-              ],
-            };
+      if (!trimmed) return null;
+      try {
+        const result = await useConnectionStore
+          .getState()
+          .sendRpc<{ folder_id: string }>("session/folder/create", {
+            name: trimmed,
+            scope,
           });
-        })
-        .catch(() => {
-          useToastStore
-            .getState()
-            .showToast(i18n.t("session.createFolderFailed"), "error");
+        // The server pushes a fresh list before this reply, so this is only a
+        // fallback for an older/partial reply shape.
+        set((state) => {
+          if (
+            !result?.folder_id ||
+            state.folders.some((folder) => folder.id === result.folder_id)
+          ) {
+            return {};
+          }
+          return {
+            folders: [
+              ...state.folders,
+              {
+                id: result.folder_id,
+                name: trimmed,
+                sort_order: state.folders.length,
+              },
+            ],
+          };
         });
+        return result?.folder_id ?? null;
+      } catch {
+        useToastStore
+          .getState()
+          .showToast(i18n.t("session.createFolderFailed"), "error");
+        return null;
+      }
     },
 
     renameFolder: (id, name) => {

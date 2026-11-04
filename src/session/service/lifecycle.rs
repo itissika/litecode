@@ -109,8 +109,15 @@ impl SessionService {
             .set_session_folder_blocking(session_id, folder_id)
     }
 
-    pub(crate) fn create_session_folder(&self, name: &str) -> Result<String> {
-        self.sessions.data().create_session_folder_blocking(name)
+    pub(crate) fn create_session_folder(&self, name: &str, bot: bool) -> Result<String> {
+        let prefix = if bot {
+            crate::bot::BOT_FOLDER_PREFIX
+        } else {
+            ""
+        };
+        self.sessions
+            .data()
+            .create_session_folder_blocking(name, prefix)
     }
 
     pub(crate) fn rename_session_folder(&self, id: &str, name: &str) -> Result<()> {

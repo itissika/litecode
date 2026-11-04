@@ -1338,6 +1338,8 @@ pub async fn handle_jsonrpc(
             #[derive(serde::Deserialize)]
             struct Params {
                 name: String,
+                #[serde(default)]
+                scope: Option<String>,
             }
             let params: Params = match serde_json::from_value(rpc.params.clone()) {
                 Ok(params) => params,
@@ -1354,7 +1356,23 @@ pub async fn handle_jsonrpc(
                     return false;
                 }
             };
-            match session.create_session_folder(&params.name).await {
+            let bot = match params.scope.as_deref() {
+                None | Some("session") => false,
+                Some("bot") => true,
+                Some(other) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid folder scope: {other}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            match session.create_session_folder(&params.name, bot).await {
                 Ok(folder_id) => {
                     for msg in session.take_all_outgoing() {
                         emit(sink, msg);
@@ -3672,6 +3690,38 @@ mod ask_loop_tests {
             row.get("folder_id").is_none(),
             "deleting the folder must ungroup the session: {row}"
         );
+
+        let bot_folder = wp091_rpc(
+            &mut c,
+            "session/folder/create",
+            serde_json::json!({"name": "Bot work", "scope": "bot"}),
+        )
+        .await;
+        assert!(bot_folder.get("error").is_none(), "{bot_folder}");
+        let bot_folder_id = bot_folder["result"]["folder_id"]
+            .as_str()
+            .expect("bot folder id")
+            .to_string();
+        assert!(crate::bot::is_bot_folder_id(&bot_folder_id));
+
+        let rejected = wp091_rpc(
+            &mut c,
+            "session/move",
+            serde_json::json!({"id": parent, "folder_id": bot_folder_id}),
+        )
+        .await;
+        assert!(
+            rejected.get("error").is_some(),
+            "sessions must not enter a bot folder: {rejected}"
+        );
+
+        let deleted = wp091_rpc(
+            &mut c,
+            "session/folder/delete",
+            serde_json::json!({"id": bot_folder_id}),
+        )
+        .await;
+        assert!(deleted.get("error").is_none(), "{deleted}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

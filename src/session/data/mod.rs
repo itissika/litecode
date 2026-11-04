@@ -565,8 +565,8 @@ impl SessionData {
         Ok(())
     }
 
-    pub fn create_session_folder_blocking(&self, name: &str) -> Result<String> {
-        let id = ulid::Ulid::new().to_string();
+    pub fn create_session_folder_blocking(&self, name: &str, id_prefix: &str) -> Result<String> {
+        let id = format!("{id_prefix}{}", ulid::Ulid::new());
         self.mutate_blocking(SessionMutation::CreateFolder {
             id: id.clone(),
             name: name.to_string(),

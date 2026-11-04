@@ -57,6 +57,9 @@ export const useBotStore = create<BotState>((set, get) => ({
   botsError: null,
 
   listBots: () => {
+    // The session list and every open chat composer can ask for the directory.
+    // One in-flight read is enough; the next mount re-checks after it settles.
+    if (get().botsLoading) return;
     const generation = ++botListGeneration;
     set({ botsLoading: true });
     useConnectionStore

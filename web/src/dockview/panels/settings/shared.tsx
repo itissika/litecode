@@ -12,40 +12,10 @@ import type {
 } from "../../../stores/settingsDocuments";
 import { turnMapIsBusy, useTurnStore } from "../../../stores/turnStore";
 
+export { FieldLabel, TextArea, TextInput } from "../../../components/ui/FormField";
+
 export function useSettingsSaveBlocked(): boolean {
   return useTurnStore((s) => turnMapIsBusy(s.byId));
-}
-
-export function FieldLabel({
-  children,
-  required,
-}: {
-  children: ReactNode;
-  required?: boolean;
-}) {
-  return (
-    <label className="mb-0.5 block text-xs font-medium text-(--_dk-text-muted)">
-      {children}
-      {required ? <span className="text-(--_dk-red-500)"> *</span> : null}
-    </label>
-  );
-}
-
-export function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <input {...props} className={`settings-input ${props.className ?? ""}`} />
-  );
-}
-
-export function TextArea(
-  props: React.TextareaHTMLAttributes<HTMLTextAreaElement>,
-) {
-  return (
-    <textarea
-      {...props}
-      className={`settings-input ${props.className ?? ""}`}
-    />
-  );
 }
 
 function persistLabel(status: PersistStatus): string | null {

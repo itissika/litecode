@@ -11,7 +11,9 @@ import {
 } from "./SessionStatusDot";
 import i18n from "../i18n";
 import { useDragSource } from "./dnd/useDragSource";
+import { useDropTarget } from "./dnd/useDropTarget";
 import {
+  parseSessionDrag,
   SESSION_DRAG_MIME,
   type SessionDragPayload,
 } from "./dnd/sessionDnd";
@@ -61,6 +63,8 @@ interface SessionItemProps {
   unread?: boolean;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
+  /** A session was dropped onto this row. */
+  onDropSession?: (sourceId: string) => void;
   onContextMenu?: (event: React.MouseEvent) => void;
   /** Inline title editor is open for this row. */
   renaming?: boolean;
@@ -88,6 +92,7 @@ export const SessionItem = memo(function SessionItem({
   unread = false,
   onOpen,
   onDelete,
+  onDropSession,
   onContextMenu,
   renaming = false,
   onStartRename,
@@ -133,6 +138,11 @@ export const SessionItem = memo(function SessionItem({
     effect: "move",
     text: (payload) => payload.id,
   });
+  const drop = useDropTarget<SessionDragPayload>({
+    mime: SESSION_DRAG_MIME,
+    parse: parseSessionDrag,
+    onDrop: (payload) => onDropSession?.(payload.id),
+  });
 
   return (
     <SidebarRow
@@ -148,6 +158,8 @@ export const SessionItem = memo(function SessionItem({
       now={now}
       indentPx={indentPx}
       drag={drag}
+      dropHandlers={drop.handlers}
+      dropPosition={drop.position}
       dataAttrs={{
         "data-session-active": focused ? "true" : undefined,
         "data-session-unread": unread ? "true" : undefined,

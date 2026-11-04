@@ -1,7 +1,17 @@
-import { cleanup, act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { AgentProfile } from "../api/settings";
 import { uploadMedia } from "../api/media";
+import { useBotStore } from "../stores/botStore";
 import { useConnectionStore } from "../stores/connectionStore";
 import { appendComposerText } from "../stores/composerDraft";
 import { useMessageStore } from "../stores/messageStore";
@@ -31,7 +41,30 @@ vi.mock("../api/media", () => ({
   uploadMedia: vi.fn(),
 }));
 
+vi.mock("../api/settings", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/settings")>();
+  return {
+    ...actual,
+    getAgent: vi.fn(),
+    getAvailableTools: vi.fn(),
+    getMcpServers: vi.fn(),
+  };
+});
+
+import { getAgent, getAvailableTools, getMcpServers } from "../api/settings";
+
 const MEDIA_REF = `litecode-media:${"a".repeat(64)}.jpg`;
+
+const botProfile: AgentProfile = {
+  role: "primary",
+  model_ref: "openai/model-1",
+  system_prompt: "",
+  temperature: 0.7,
+  max_steps: 20,
+  description: "",
+  tools: {},
+  allowed_subagents: [],
+};
 
 function seedSession(sessionId: string) {
   useSessionStore.setState({
@@ -69,10 +102,17 @@ beforeEach(() => {
   useTurnStore.setState({ byId: new Map() });
   useMessageStore.setState({ bySession: new Map() });
   useToastStore.setState({ toasts: [] });
+  useBotStore.setState({ bots: [], botsLoading: false, botsError: null });
   useConnectionStore.setState({
     state: "connected",
     sendRpc: vi.fn(async () => ({ started: true })),
   } as never);
+  vi.mocked(getAgent).mockReset();
+  vi.mocked(getAgent).mockResolvedValue(botProfile);
+  vi.mocked(getAvailableTools).mockReset();
+  vi.mocked(getAvailableTools).mockResolvedValue([]);
+  vi.mocked(getMcpServers).mockReset();
+  vi.mocked(getMcpServers).mockResolvedValue({ global: [], workspace: [] });
   seedSession("session-1");
 });
 
@@ -86,6 +126,7 @@ afterEach(() => {
     primaryAgents: [],
     availableModels: [],
   } as never);
+  useBotStore.setState({ bots: [], botsLoading: false, botsError: null });
 });
 
 describe("AgentChatInput silent send", () => {
@@ -351,6 +392,47 @@ describe("AgentChatInput silent send", () => {
     pressComposerKey(COMPOSER, "Enter", true);
     expect(useConnectionStore.getState().sendRpc).not.toHaveBeenCalled();
     expect(composerText(COMPOSER)).toBe("hello\n");
+  });
+});
+
+describe("AgentPicker bots", () => {
+  const researcher = {
+    id: "b1",
+    name: "Researcher",
+    description: "finds papers",
+    profile_id: "bot_b1",
+    owner_bot_id: null,
+    depth: 0,
+    created_at: 1,
+    default_session_id: "s1",
+    folder_id: null,
+    sort_order: 1,
+  };
+
+  it("keeps a bot session's identity fixed and opens the bot editor", async () => {
+    const byId = new Map(useSessionStore.getState().byId);
+    byId.set("session-1", {
+      ...(byId.get("session-1") as object),
+      activePrimary: "bot_b1",
+    } as never);
+    useSessionStore.setState({
+      byId,
+      primaryAgents: [{ id: "default", description: "" }],
+    } as never);
+    useBotStore.setState({ bots: [researcher] });
+
+    render(<AgentChatInput sessionId="session-1" />);
+
+    // The bot's name is the control label; there is no normal agent switcher
+    // and no raw bot profile id.
+    const trigger = screen.getByRole("button", { name: "Researcher" });
+    expect(trigger.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(screen.queryByTitle("default")).toBeNull();
+    expect(screen.queryByText("bot_b1")).toBeNull();
+
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Edit bot")).toBeTruthy();
   });
 });
 

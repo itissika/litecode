@@ -162,7 +162,7 @@ describe("session layout store", () => {
 
   it("createFolder adds the reply id only when the list push missed it", async () => {
     sendRpc.mockResolvedValueOnce({ folder_id: "f9" });
-    useSessionStore.getState().createFolder("New");
+    useSessionStore.getState().createFolder("New", "session");
     await flush();
     expect(useSessionStore.getState().folders.map((f) => f.id)).toEqual(["f9"]);
   });

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::bot::BotService;
+use crate::bot::{BotRecord, BotService};
 use crate::context_pipeline::Context;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::{DirectToolSpec, Tool};
@@ -122,26 +122,10 @@ impl Tool for BotListTool {
     ) -> Pin<Box<dyn Future<Output = ToolCallResult> + Send + '_>> {
         let bots = Arc::clone(&self.bots);
         Box::pin(async move {
-            if bots.bot_for_session(&execution.session_id).is_none() {
+            let Some(caller) = bots.bot_for_session(&execution.session_id) else {
                 return ToolCallResult::error("bot_list is only available to bot sessions");
-            }
-            let bots = bots.list();
-            if bots.is_empty() {
-                return ToolCallResult::ok("No bots in this workspace.");
-            }
-            let mut out = format!("Bots in this workspace ({}):", bots.len());
-            for bot in bots {
-                out.push_str(&format!("\n- {}", bot.name));
-                out.push_str(&format!(" — id {}", bot.id));
-                out.push_str(&format!(" — profile {}", bot.profile_id));
-                if bot.depth > 0 {
-                    out.push_str(&format!(" — depth {}", bot.depth));
-                }
-                if !bot.description.is_empty() {
-                    out.push_str(&format!(" — {}", bot.description));
-                }
-            }
-            ToolCallResult::ok(out)
+            };
+            ToolCallResult::ok(bot_list_text(&bots.list(), &caller.id))
         })
     }
 
@@ -235,10 +219,66 @@ pub fn bot_tools(bots: Arc<BotService>) -> Vec<Arc<dyn Tool>> {
     ]
 }
 
+/// Text projection shared by the tool and its unit test. The caller's row is
+/// marked `(self)` right after its id, so a bot reading the list can tell which
+/// identity is its own.
+fn bot_list_text(bots: &[BotRecord], caller_id: &str) -> String {
+    if bots.is_empty() {
+        return "No bots in this workspace.".to_string();
+    }
+    let mut out = format!("Bots in this workspace ({}):", bots.len());
+    if bots.iter().any(|bot| bot.id.as_str() == caller_id) {
+        out.push_str("\nThe entry marked (self) is the calling bot.");
+    }
+    for bot in bots {
+        out.push_str(&format!("\n- {}", bot.name));
+        out.push_str(&format!(" — id {}", bot.id));
+        if bot.id.as_str() == caller_id {
+            out.push_str(" (self)");
+        }
+        out.push_str(&format!(" — profile {}", bot.profile_id));
+        if bot.depth > 0 {
+            out.push_str(&format!(" — depth {}", bot.depth));
+        }
+        if !bot.description.is_empty() {
+            out.push_str(&format!(" — {}", bot.description));
+        }
+    }
+    out
+}
+
 fn required_str<'a>(input: &'a Value, key: &str) -> Result<&'a str, ToolCallResult> {
     input
         .get(key)
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| ToolCallResult::error(format!("missing required parameter `{key}`")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bot(id: &str, name: &str) -> BotRecord {
+        BotRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: String::new(),
+            profile_id: format!("bot_{id}"),
+            owner_bot_id: None,
+            depth: 0,
+            created_at: 1,
+            default_session_id: format!("s-{id}"),
+            folder_id: None,
+            sort_order: 0,
+        }
+    }
+
+    #[test]
+    fn list_marks_the_calling_bot_after_its_id() {
+        let text = bot_list_text(&[bot("b1", "Researcher"), bot("b2", "Writer")], "b1");
+        assert!(text.contains("The entry marked (self) is the calling bot."));
+        assert!(text.contains("id b1 (self)"));
+        assert!(!text.contains("id b2 (self)"));
+    }
 }

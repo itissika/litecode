@@ -33,12 +33,20 @@ pub const MAX_BOT_DEPTH: u32 = 1;
 /// pickers and Settings -> Agents filter the prefix out; `get_agent` still
 /// resolves the profile by id for the bot editor.
 pub const BOT_PROFILE_PREFIX: &str = "bot_";
+/// Bot folders are session-folder rows with this reserved id prefix. Sessions
+/// never move into one; bots never move into an unprefixed folder.
+pub const BOT_FOLDER_PREFIX: &str = "bot-folder-";
 const MAX_BOT_NAME_CHARS: usize = 48;
 const MAX_BOT_DESCRIPTION_CHARS: usize = 280;
 
 /// A profile id owned by a bot rather than exposed as a user primary agent.
 pub fn is_bot_profile_id(id: &str) -> bool {
     id.starts_with(BOT_PROFILE_PREFIX)
+}
+
+/// A folder owned by the bot domain rather than the session domain.
+pub fn is_bot_folder_id(id: &str) -> bool {
+    id.starts_with(BOT_FOLDER_PREFIX)
 }
 
 /// Failure of one bot product operation.
@@ -76,6 +84,8 @@ pub enum BotError {
     Busy,
     #[error("session folder not found: {0}")]
     FolderNotFound(String),
+    #[error("folder is not owned by the bot domain: {0}")]
+    FolderScope(String),
     #[error("bot settings: {0}")]
     Settings(String),
     #[error("bot does not own its agent profile")]
@@ -110,8 +120,8 @@ pub struct BotRecord {
     /// is being reserved in-process.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub default_session_id: String,
-    /// Shared sidebar folder id. Folders are session folders; bots do not own a
-    /// second folder tree.
+    /// Bot-scoped sidebar folder id (`bot-folder-...`). Bot folders share the
+    /// `session_folders` table but never mix with session folders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder_id: Option<String>,
     /// Manual order inside the bot group. New bots get max + 1.
@@ -193,6 +203,16 @@ impl BotService {
             .cloned()
             .collect();
         for bot in &mut bots {
+            // Folders created before bot folders existed are session folders.
+            // Ungroup those bots instead of leaving a cross-domain placement.
+            if bot
+                .folder_id
+                .as_deref()
+                .is_some_and(|folder| !is_bot_folder_id(folder))
+            {
+                bot.folder_id = None;
+                changed = true;
+            }
             if bot.profile_id.is_empty() {
                 continue;
             }
@@ -519,6 +539,9 @@ impl BotService {
                 .any(|folder| folder.id == folder_id)
             {
                 return Err(BotError::FolderNotFound(folder_id));
+            }
+            if !is_bot_folder_id(&folder_id) {
+                return Err(BotError::FolderScope(folder_id));
             }
             next.folder_id = Some(folder_id);
         }
@@ -1293,8 +1316,9 @@ mod tests {
         let folder_id = f
             .bots
             .service()
-            .create_session_folder("Work")
-            .expect("folder");
+            .create_session_folder("Work", true)
+            .expect("bot folder");
+        assert!(is_bot_folder_id(&folder_id));
         let updated = f
             .bots
             .update(
@@ -1311,6 +1335,33 @@ mod tests {
         f.bots.clear_folder(&folder_id);
         let moved = f.bots.find(&bot.id).expect("bot");
         assert!(moved.folder_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_rejects_a_session_folder() {
+        let f = fixture();
+        let bot = f
+            .bots
+            .create_user_bot("Scoped bot", "", "default")
+            .await
+            .expect("create");
+        let session_folder = f
+            .bots
+            .service()
+            .create_session_folder("Sessions", false)
+            .expect("session folder");
+        let error = f
+            .bots
+            .update(
+                &bot.id,
+                BotUpdate {
+                    folder_id: Some(session_folder),
+                    ..BotUpdate::default()
+                },
+            )
+            .await
+            .expect_err("session folder must be rejected");
+        assert!(matches!(error, BotError::FolderScope(_)));
     }
 
     #[tokio::test]

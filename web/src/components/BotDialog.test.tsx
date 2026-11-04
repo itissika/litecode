@@ -14,10 +14,11 @@ vi.mock("../api/settings", async (importOriginal) => {
     ...actual,
     getAgent: vi.fn(),
     getAvailableTools: vi.fn(),
+    getMcpServers: vi.fn(),
   };
 });
 
-import { getAgent, getAvailableTools } from "../api/settings";
+import { getAgent, getAvailableTools, getMcpServers } from "../api/settings";
 
 function bot(patch: Partial<BotInfo> = {}): BotInfo {
   return {
@@ -67,6 +68,8 @@ beforeEach(() => {
   } as never);
   vi.mocked(getAgent).mockReset();
   vi.mocked(getAvailableTools).mockReset();
+  vi.mocked(getMcpServers).mockReset();
+  vi.mocked(getMcpServers).mockResolvedValue({ global: [], workspace: [] });
 });
 
 afterEach(() => {
@@ -122,6 +125,11 @@ describe("BotDialog", () => {
     render(<BotDialog mode={{ kind: "edit", bot: bot() }} onClose={onClose} />);
     await screen.findByRole("dialog");
     const prompt = await screen.findByLabelText("System prompt");
+    // The bot editor reuses the Settings → Agents form styles and tool cards.
+    expect(prompt.className).toContain("settings-input");
+    expect(
+      screen.getByRole("button", { name: /read tool binding, disabled/i }),
+    ).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Bot name"), {
       target: { value: "Renamed" },
     });

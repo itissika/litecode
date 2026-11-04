@@ -11,16 +11,25 @@ import { createPortal } from "react-dom";
 
 import type { BotInfo } from "../api/types";
 import {
+  applyToolEnabled,
   getAgent,
   getAvailableTools,
+  getMcpServers,
+  presetToolIds,
   settingsToolSwitches,
   type AgentProfile,
+  type AgentToolBinding,
   type AvailableTool,
-  type ToolPreset,
+  type McpServerItem,
 } from "../api/settings";
 import { useSessionStore } from "../stores/sessionStore";
 import { useBotStore } from "../stores/botStore";
 import { usePortalTarget } from "./ui/usePortalTarget";
+import { ModelSwitcher } from "./ModelSwitcher";
+import { Select } from "./ui/Select";
+import { AgentProfileFields } from "./agent/AgentProfileFields";
+import { AgentToolsGrid, bindingFor } from "./agent/AgentToolsGrid";
+import { FieldLabel, TextInput } from "./ui/FormField";
 import i18n from "../i18n";
 
 export type BotDialogMode =
@@ -45,6 +54,9 @@ function isBusy(bot: BotInfo, sessions: ReturnType<typeof useSessionStore.getSta
 /** Create/edit form for a bot identity and its owned capability profile. */
 export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
   const titleId = useId();
+  const nameId = useId();
+  const descriptionId = useId();
+  const templateFieldId = useId();
   const { anchorRef, target } = usePortalTarget<HTMLSpanElement>();
   const panelRef = useRef<HTMLDivElement>(null);
   const primaryAgents = useSessionStore((s) => s.primaryAgents);
@@ -59,6 +71,7 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
   const [templateId, setTemplateId] = useState(activePrimary);
   const [profile, setProfile] = useState<AgentProfile | null>(null);
   const [tools, setTools] = useState<AvailableTool[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpServerItem[]>([]);
   const [loading, setLoading] = useState(mode.kind === "edit");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,17 +85,27 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
     ? templateId
     : (agents[0]?.id ?? "");
   const bindableTools = useMemo(() => settingsToolSwitches(tools), [tools]);
+  const presetIds = useMemo(() => presetToolIds(bindableTools), [bindableTools]);
 
   useEffect(() => {
     if (!editing) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
-    Promise.all([getAgent(editing.profile_id), getAvailableTools()])
-      .then(([loadedProfile, loadedTools]) => {
+    Promise.all([
+      getAgent(editing.profile_id),
+      getAvailableTools(),
+      // MCP discovery only feeds the per-server tool picker. A failure here
+      // must not hide the rest of the profile editor.
+      getMcpServers().catch(() => null),
+    ])
+      .then(([loadedProfile, loadedTools, loadedMcp]) => {
         if (cancelled) return;
         setProfile(loadedProfile);
         setTools(loadedTools);
+        setMcpServers(
+          loadedMcp ? [...loadedMcp.global, ...loadedMcp.workspace] : [],
+        );
         setLoading(false);
       })
       .catch((reason: unknown) => {
@@ -102,8 +125,7 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
   useEffect(() => {
     const panel = panelRef.current;
     if (!target || !panel) return;
-    const first = panel.querySelector<HTMLElement>("[data-bot-autofocus]");
-    first?.focus();
+    panel.querySelector<HTMLElement>("input, textarea, select")?.focus();
   }, [target, loading]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -133,6 +155,10 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    // The dialog can be mounted inside another form (the chat composer). A
+    // portal keeps the DOM outside it, but React events still bubble through
+    // the owner tree, so stop the submit before it reaches the composer.
+    event.stopPropagation();
     const trimmed = name.trim();
     if (!trimmed || saving) return;
     setSaving(true);
@@ -173,26 +199,26 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
     onClose();
   };
 
-  const toggleTool = (tool: AvailableTool, enabled: boolean) => {
+  const updateBinding = (toolId: string, patch: Partial<AgentToolBinding>) => {
     if (!profile) return;
-    const current = profile.tools[tool.id];
+    if (patch.enabled !== undefined) {
+      setProfile({
+        ...profile,
+        tools: applyToolEnabled(
+          profile.tools,
+          toolId,
+          patch.enabled,
+          presetIds,
+        ),
+      });
+      return;
+    }
+    const current = bindingFor(profile.tools, toolId);
     setProfile({
       ...profile,
       tools: {
         ...profile.tools,
-        [tool.id]: { ...current, enabled },
-      },
-    });
-  };
-
-  const setToolPreset = (tool: AvailableTool, preset: ToolPreset | null) => {
-    if (!profile) return;
-    const current = profile.tools[tool.id];
-    setProfile({
-      ...profile,
-      tools: {
-        ...profile.tools,
-        [tool.id]: { ...current, enabled: true, preset },
+        [toolId]: { ...current, ...patch },
       },
     });
   };
@@ -218,10 +244,10 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
             aria-modal="true"
             aria-labelledby={titleId}
             onKeyDown={onKeyDown}
-            className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-lg border border-(--_dk-line-visible) bg-(--_dk-overlay) text-(--_dk-text-secondary) shadow-(--_dk-elevation)"
+            className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-lg border border-(--_dk-line-visible) bg-(--_dk-overlay) text-(--_dk-text-secondary) shadow-(--_dk-elevation)"
           >
-            <div className="flex items-center justify-between border-b border-(--_dk-line) px-4 py-3">
-              <h2 id={titleId} className="text-sm font-medium text-(--_dk-text-primary)">
+            <div className="flex items-center justify-between border-b border-(--_dk-line) px-6 py-3.5">
+              <h2 id={titleId} className="settings-section-title">
                 {editing ? i18n.t("bot.editTitle") : i18n.t("bot.createTitle")}
               </h2>
               <button
@@ -235,7 +261,7 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
             </div>
 
             <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+              <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 py-5">
                 {error && (
                   <p className="rounded-md border border-(--_dk-ix-danger-border) bg-(--_dk-ix-danger-bg) px-3 py-2 text-xs text-(--_dk-ix-danger-fg)">
                     {error}
@@ -243,70 +269,71 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
                 )}
 
                 <section className="space-y-2">
-                  <h3 className="settings-section-title">{i18n.t("bot.identity")}</h3>
-                  <label className="block space-y-1">
-                    <span className="text-[11px] text-(--_dk-text-muted)">
-                      {i18n.t("bot.name")}
-                    </span>
-                    <input
-                      data-bot-autofocus
-                      value={name}
-                      maxLength={48}
-                      onChange={(event) => setName(event.target.value)}
-                      placeholder={i18n.t("bot.namePlaceholder")}
-                      className="w-full rounded-md border border-(--_dk-line) bg-(--_dk-editor) px-2 py-1.5 text-xs text-(--_dk-text-primary) outline-none focus:border-(--_dk-accent-hover)"
-                    />
-                  </label>
-                  <label className="block space-y-1">
-                    <span className="text-[11px] text-(--_dk-text-muted)">
-                      {i18n.t("bot.description")}
-                    </span>
-                    <textarea
-                      value={description}
-                      maxLength={280}
-                      rows={2}
-                      onChange={(event) => setDescription(event.target.value)}
-                      placeholder={i18n.t("bot.descriptionPlaceholder")}
-                      className="w-full rounded-md border border-(--_dk-line) bg-(--_dk-editor) px-2 py-1.5 text-xs text-(--_dk-text-primary) outline-none focus:border-(--_dk-accent-hover)"
-                    />
-                  </label>
-                  {!editing && (
-                    <label className="block space-y-1">
-                      <span className="text-[11px] text-(--_dk-text-muted)">
-                        {i18n.t("bot.template")}
-                      </span>
-                      <select
-                        value={selectedTemplate}
-                        onChange={(event) => setTemplateId(event.target.value)}
-                        className="w-full rounded-md border border-(--_dk-line) bg-(--_dk-side) px-2 py-1.5 text-xs text-(--_dk-text-primary) outline-none focus:border-(--_dk-accent-hover)"
-                      >
-                        {agents.map((agent) => (
-                          <option key={agent.id} value={agent.id}>
-                            {agent.id}
-                            {agent.description ? ` — ${agent.description}` : ""}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-[11px] text-(--_dk-text-muted)">
-                        {i18n.t("bot.inheritHint")}
-                      </p>
-                    </label>
-                  )}
-                  {editing && (
-                    <div className="flex items-center justify-between rounded-md border border-(--_dk-line) px-3 py-2 text-xs">
-                      <div>
-                        <span className="text-(--_dk-text-muted)">
-                          {i18n.t("bot.type")}
-                        </span>
-                        <span className="ml-2 text-(--_dk-text-primary)">
-                          {i18n.t("bot.typeBot")}
-                        </span>
-                      </div>
-                      <span className="text-[11px] text-(--_dk-text-disabled)">
-                        {i18n.t("bot.typeHint")}
-                      </span>
+                  <h3 className="settings-section-title">
+                    {i18n.t("bot.identity")}
+                  </h3>
+                  <div className="settings-card space-y-3 p-3">
+                    <div>
+                      <FieldLabel htmlFor={nameId}>
+                        {i18n.t("bot.name")}
+                      </FieldLabel>
+                      <TextInput
+                        id={nameId}
+                        value={name}
+                        maxLength={48}
+                        onChange={(event) => setName(event.target.value)}
+                        placeholder={i18n.t("bot.namePlaceholder")}
+                      />
                     </div>
-                  )}
+                    <div>
+                      <FieldLabel htmlFor={descriptionId}>
+                        {i18n.t("bot.description")}
+                      </FieldLabel>
+                      <TextInput
+                        id={descriptionId}
+                        value={description}
+                        maxLength={280}
+                        onChange={(event) => setDescription(event.target.value)}
+                        placeholder={i18n.t("bot.descriptionPlaceholder")}
+                      />
+                    </div>
+                    {!editing && (
+                      <div>
+                        <FieldLabel htmlFor={templateFieldId}>
+                          {i18n.t("bot.template")}
+                        </FieldLabel>
+                        <Select
+                          id={templateFieldId}
+                          value={selectedTemplate}
+                          onChange={setTemplateId}
+                          placeholder={i18n.t("bot.noAgents")}
+                          className="w-full"
+                          options={agents.map((agent) => ({
+                            value: agent.id,
+                            label: agent.description
+                              ? `${agent.id} — ${agent.description}`
+                              : agent.id,
+                          }))}
+                        />
+                        <p className="settings-field-hint">
+                          {i18n.t("bot.inheritHint")}
+                        </p>
+                      </div>
+                    )}
+                    {editing && (
+                      <div>
+                        <FieldLabel>{i18n.t("bot.type")}</FieldLabel>
+                        <div className="flex items-center justify-between rounded-md border border-(--_dk-line) px-3 py-2 text-xs">
+                          <span className="text-(--_dk-text-primary)">
+                            {i18n.t("bot.typeBot")}
+                          </span>
+                          <span className="text-[11px] text-(--_dk-text-disabled)">
+                            {i18n.t("bot.typeHint")}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </section>
 
                 {editing && (
@@ -325,130 +352,38 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
                       </p>
                     ) : profile ? (
                       <>
-                        <label className="block space-y-1">
-                          <span className="text-[11px] text-(--_dk-text-muted)">
-                            {i18n.t("bot.model")}
-                          </span>
-                          <select
-                            value={profile.model_ref}
-                            disabled={busy}
-                            onChange={(event) =>
-                              setProfile({ ...profile, model_ref: event.target.value })
-                            }
-                            className="w-full rounded-md border border-(--_dk-line) bg-(--_dk-side) px-2 py-1.5 text-xs text-(--_dk-text-primary) outline-none focus:border-(--_dk-accent-hover)"
-                          >
-                            {!availableModels.some(
-                              (model) => model.id === profile.model_ref,
-                            ) && profile.model_ref ? (
-                              <option value={profile.model_ref}>
-                                {profile.model_ref}
-                              </option>
-                            ) : null}
-                            {availableModels.map((model) => (
-                              <option key={model.id} value={model.id}>
-                                {model.label || model.id}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="block space-y-1">
-                          <span className="text-[11px] text-(--_dk-text-muted)">
-                            {i18n.t("bot.systemPrompt")}
-                          </span>
-                          <textarea
-                            value={profile.system_prompt}
-                            rows={4}
-                            disabled={busy}
-                            onChange={(event) =>
-                              setProfile({
-                                ...profile,
-                                system_prompt: event.target.value,
-                              })
-                            }
-                            className="w-full rounded-md border border-(--_dk-line) bg-(--_dk-editor) px-2 py-1.5 text-xs text-(--_dk-text-primary) outline-none focus:border-(--_dk-accent-hover)"
-                          />
-                        </label>
-                        <label className="block space-y-1">
-                          <span className="text-[11px] text-(--_dk-text-muted)">
-                            {i18n.t("bot.maxSteps")}
-                          </span>
-                          <input
-                            type="number"
-                            min={1}
-                            value={profile.max_steps}
-                            disabled={busy}
-                            onChange={(event) =>
-                              setProfile({
-                                ...profile,
-                                max_steps: Number(event.target.value) || 1,
-                              })
-                            }
-                            className="w-full rounded-md border border-(--_dk-line) bg-(--_dk-editor) px-2 py-1.5 text-xs text-(--_dk-text-primary) outline-none focus:border-(--_dk-accent-hover)"
-                          />
-                        </label>
-                        <div className="space-y-1">
-                          <span className="text-[11px] text-(--_dk-text-muted)">
-                            {i18n.t("bot.tools")}
-                          </span>
-                          <div className="max-h-56 space-y-1 overflow-y-auto rounded-md border border-(--_dk-line) p-2">
-                            {bindableTools.length === 0 ? (
-                              <p className="text-[11px] text-(--_dk-text-disabled)">
-                                {i18n.t("bot.noTools")}
-                              </p>
-                            ) : (
-                              bindableTools.map((tool) => {
-                                const binding = profile.tools[tool.id];
-                                return (
-                                  <div
-                                    key={tool.id}
-                                    className="flex items-center gap-2 rounded px-1 py-1 text-xs hover:bg-(--_dk-ix-bg-hover)"
-                                  >
-                                    <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
-                                      <input
-                                        type="checkbox"
-                                        checked={binding?.enabled === true}
-                                        disabled={busy}
-                                        onChange={(event) =>
-                                          toggleTool(tool, event.target.checked)
-                                        }
-                                        className="accent-(--_dk-accent-hover)"
-                                      />
-                                      <span className="truncate font-mono text-[11px]">
-                                        {tool.label || tool.id}
-                                      </span>
-                                    </label>
-                                    {tool.permission_surface === "preset" &&
-                                      binding?.enabled && (
-                                        <select
-                                          value={binding.preset ?? ""}
-                                          disabled={busy}
-                                          onChange={(event) =>
-                                            setToolPreset(
-                                              tool,
-                                              event.target.value
-                                                ? (event.target.value as ToolPreset)
-                                                : null,
-                                            )
-                                          }
-                                          className="rounded border border-(--_dk-line) bg-(--_dk-side) px-1 py-0.5 text-[10px]"
-                                        >
-                                          <option value="">
-                                            {i18n.t("bot.toolDefault")}
-                                          </option>
-                                          <option value="ALL">
-                                            {i18n.t("bot.toolAll")}
-                                          </option>
-                                          <option value="SAFE">
-                                            {i18n.t("bot.toolSafe")}
-                                          </option>
-                                        </select>
-                                      )}
-                                  </div>
-                                );
-                              })
-                            )}
+                        <div className="settings-card space-y-2 p-3">
+                          <div>
+                            <FieldLabel>{i18n.t("bot.model")}</FieldLabel>
+                            <ModelSwitcher
+                              variant="field"
+                              models={availableModels}
+                              modelId={profile.model_ref || null}
+                              disabled={busy}
+                              onChange={(model_ref) =>
+                                setProfile({ ...profile, model_ref })
+                              }
+                            />
                           </div>
                         </div>
+                        <AgentProfileFields
+                          draft={profile}
+                          saveBlocked={busy}
+                          onChange={setProfile}
+                          showDescription={false}
+                          anchorMaxSteps={false}
+                        />
+                        <AgentToolsGrid
+                          draft={profile}
+                          bindableTools={bindableTools}
+                          mcpServers={mcpServers}
+                          saveBlocked={busy}
+                          onBindingChange={updateBinding}
+                          gridStyle={{
+                            gridTemplateColumns:
+                              "repeat(auto-fill, minmax(220px, 1fr))",
+                          }}
+                        />
                       </>
                     ) : (
                       <p className="text-xs text-(--_dk-ix-danger-fg)">
@@ -459,7 +394,7 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
                 )}
               </div>
 
-              <div className="flex justify-end gap-2 border-t border-(--_dk-line) px-4 py-3">
+              <div className="flex justify-end gap-2 border-t border-(--_dk-line) px-6 py-3">
                 <button
                   type="button"
                   className="btn btn-sm btn-ghost"

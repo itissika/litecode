@@ -57,15 +57,15 @@
 - **归属与配额**：用户创建的 bot 深度为 0；bot 创建的 bot 深度为 1 并记录父 bot，不能继续创建。每工作区最多 16 个 bot。
 - **持久化**：bot 身份存 `.litecode/bots.json`，与 `sessions.db` 同目录；默认 session 被删除后，下次打开 bot 自动重建；注册表写入失败时删除刚创建的空 session，不留下无归属会话。
 - **工具面**：bot 工具为 `bot_create`、`bot_list`、`bot_send`，只追加到 bot 会话，不进入普通能力目录和 Settings；depth-1 bot 不再发布 `bot_create`。
-- **侧边栏**：bot 行与 session 行共用条目呈现和文件夹树；bot 的默认会话不再重复出现在普通会话列表。
+- **侧边栏**：bot 行与 session 行共用条目呈现，但分属 Bots / Sessions 两个域；文件夹按域隔离（bot 文件夹 id 使用 `bot-folder-` 前缀，普通文件夹保持 ULID），不允许跨域拖放或归组；bot 的默认会话不再重复出现在普通会话列表。
 
 ## 最小闭环实现约定（本轮）
 
-- **独立 profile**：bot 只写自己的 `bot_...` AgentProfile；模板 profile 只读复制，绝不共享。`bot_` 前缀 profile 从普通 primary 选择器和 Settings → Agents 列表过滤，但 `get_agent` 仍可按 id 供 bot 编辑器读取。
+- **独立 profile**：bot 只写自己的 `bot_...` AgentProfile；模板 profile 只读复制，绝不共享。`bot_` 前缀 profile 从普通 primary 选择器和 Settings → Agents 列表过滤；bot 会话在 Chat Input 显示固定 bot 身份，点击打开 bot 编辑器，不能切到其他 primary。`get_agent` 仍可按 id 供 bot 编辑器读取。bot 文件夹与普通文件夹也以 id 前缀分域，跨域移动由后端拒绝。
 - **迁移**：旧 `bots.json` 里的 `agent_id` 视为模板 id；启动时逐个复制为 owned profile，并同步默认 session 的 agent_id。只有该 bot 自己的 `bot_<id>` profile 不重复复制；其他 bot 的 profile 或共享模板都会复制为自己的。
 - **更新/删除**：`bot/update` 覆盖身份、文件夹/排序和能力 profile；运行中的 bot 拒绝能力变更。`bot/delete` 删除默认 session、owned profile 和 bot 记录；运行中的 bot 拒绝删除，成功删除释放配额。
 - **实时目录**：`bot/changed` 推送 created/updated/deleted；`bot_create` 工具创建也走同一条事件；默认 session 重建后事件带新 session id。UI 不依赖连接时 list 或手动刷新。
-- **侧边栏同构**：bot 行和 session 行共用 `SidebarRow`，共享选中/running/pending/unread/双击重命名/右键/文件夹拖放。
+- **侧边栏同构**：bot 行和 session 行共用 `SidebarRow`，共享选中/running/pending/unread/双击重命名/右键；文件夹与拖放只在各自域内生效。
 - **写入时机**：bot 生命周期属于产品层，可能发生在 bot 自己的回合内；owned profile 的写入使用 SettingsWriter 的 bot 专用入口，跳过全局 turn guard，但仍复用同一校验、commit lock 和 revision。
 - **失败补偿**：profile 写成功但 session 或 registry 失败时，删除 profile/session；registry 写失败删除空 session；删除 bot 时 session 先删、profile 再删、记录最后删，记录失败会恢复 profile。
 

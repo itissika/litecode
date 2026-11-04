@@ -396,14 +396,23 @@ impl SessionController {
         session_id: &str,
         folder_id: Option<String>,
     ) -> anyhow::Result<()> {
+        if let Some(folder_id) = folder_id.as_deref() {
+            if crate::bot::is_bot_folder_id(folder_id) {
+                anyhow::bail!("bot folders cannot hold sessions");
+            }
+        }
         self.service
             .set_session_folder(session_id, folder_id.as_deref())?;
         self.push_session_list().await?;
         Ok(())
     }
 
-    pub async fn create_session_folder(&mut self, name: &str) -> anyhow::Result<String> {
-        let folder_id = self.service.create_session_folder(name)?;
+    pub async fn create_session_folder(
+        &mut self,
+        name: &str,
+        bot: bool,
+    ) -> anyhow::Result<String> {
+        let folder_id = self.service.create_session_folder(name, bot)?;
         self.push_session_list().await?;
         Ok(folder_id)
     }
@@ -632,6 +641,32 @@ impl SessionController {
                     OperationKind::SetActivePrimary,
                     ErrorCode::InvalidRequest,
                     "child session identity is fixed by its agent profile".into(),
+                    &project,
+                    &binding,
+                );
+            }
+            return Ok(());
+        }
+        // Bot identity is fixed by the product layer: a bot's default session
+        // cannot switch away, and a bot-owned profile is not a selectable
+        // primary for ordinary sessions.
+        let current_is_bot = self
+            .service
+            .meta(session_id)
+            .map(|meta| crate::bot::is_bot_profile_id(&meta.agent_id))
+            .unwrap_or(false);
+        if current_is_bot || crate::bot::is_bot_profile_id(agent_id) {
+            let binding = self.session_binding(session_id);
+            if let Some(proj) = self.projection_mut(session_id) {
+                proj.push_operation_error(
+                    OperationKind::SetActivePrimary,
+                    ErrorCode::InvalidRequest,
+                    if current_is_bot {
+                        "bot session identity is fixed by its agent profile"
+                    } else {
+                        "bot-owned agent profiles are not selectable"
+                    }
+                    .into(),
                     &project,
                     &binding,
                 );

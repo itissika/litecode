@@ -185,7 +185,9 @@ mod tests {
         );
         assert!(service.pending_messages_snapshot(&session).is_empty());
 
-        let folder = service.create_session_folder("Inbox").expect("folder");
+        let folder = service
+            .create_session_folder("Inbox", false)
+            .expect("folder");
         assert!(
             service
                 .list_folders()

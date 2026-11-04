@@ -26,6 +26,9 @@ export interface SidebarRowProps {
   icon?: ReactNode;
   /** Drag handlers from useDragSource; spread onto the clickable row. */
   drag?: HTMLAttributes<HTMLElement>;
+  /** Drop handlers from useDropTarget; row-to-row grouping. */
+  dropHandlers?: HTMLAttributes<HTMLElement>;
+  dropPosition?: "before" | "inside" | "after" | null;
   /** Extra data-* attributes for tests / selection CSS. */
   dataAttrs?: Record<string, string | undefined>;
   onOpen: () => void;
@@ -62,6 +65,8 @@ export function SidebarRow({
   indentPx = 12,
   icon,
   drag,
+  dropHandlers,
+  dropPosition = null,
   dataAttrs,
   onOpen,
   onDelete,
@@ -88,6 +93,8 @@ export function SidebarRow({
             : ""
         }`}
         {...drag}
+        {...dropHandlers}
+        drop={dropPosition}
         onContextMenu={onContextMenu}
         onClick={(event) => {
           // A double-click starts renaming; do not re-open on its second click.

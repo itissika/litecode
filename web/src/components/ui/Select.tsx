@@ -14,6 +14,8 @@ interface Option {
 }
 
 interface SelectProps {
+  /** Optional control id, for a form label's htmlFor. */
+  id?: string;
   value: string;
   onChange: (value: string) => void;
   options: Option[];
@@ -47,6 +49,7 @@ export function SelectChevron({ open }: { open: boolean }) {
 }
 
 export function Select({
+  id,
   value,
   onChange,
   options,
@@ -66,6 +69,7 @@ export function Select({
       bgClassName="bg-(--_dk-overlay)"
       trigger={({ open, toggle }) => (
         <button
+          id={id}
           type="button"
           disabled={disabled}
           onClick={() => !disabled && toggle()}

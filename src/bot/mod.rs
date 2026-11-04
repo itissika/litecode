@@ -8,6 +8,7 @@
 mod service;
 
 pub use service::{
-    BOT_PROFILE_PREFIX, BotError, BotEvent, BotRecord, BotService, BotTurnRunner, BotUpdate,
-    MAX_BOT_DEPTH, MAX_BOTS_PER_WORKSPACE, is_bot_profile_id,
+    BOT_FOLDER_PREFIX, BOT_PROFILE_PREFIX, BotError, BotEvent, BotRecord, BotService,
+    BotTurnRunner, BotUpdate, MAX_BOT_DEPTH, MAX_BOTS_PER_WORKSPACE, is_bot_folder_id,
+    is_bot_profile_id,
 };

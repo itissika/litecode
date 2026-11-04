@@ -674,6 +674,29 @@ async fn bot_create_list_and_open_round_trip() {
         Some(session_id.as_str())
     );
 
+    // A bot's default session identity is fixed: the generic agent switch is
+    // rejected and the session keeps its owned profile.
+    send(
+        &mut ws,
+        100,
+        "agent/set-primary",
+        json!({ "session_id": session_id, "agent_id": "default" }),
+    )
+    .await;
+    let (switched, _) = until_reply(&mut ws, 100).await;
+    assert!(
+        switched.get("error").is_none(),
+        "switch rpc returns an operation error frame: {switched}"
+    );
+    assert_eq!(
+        env.state
+            .service
+            .meta(&session_id)
+            .expect("bot session meta")
+            .agent_id,
+        profile_id
+    );
+
     let registry = env
         .state
         .runtime
