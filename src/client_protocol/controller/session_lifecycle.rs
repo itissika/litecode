@@ -108,7 +108,7 @@ impl SessionController {
         let default_primary = self.runtime.desired_primary_agent();
         let primary_agent = self
             .service
-            .resolve_primary_agent(session_id, default_primary, &self.runtime.resolved)
+            .resolve_primary_agent_for_session(&self.runtime, session_id, default_primary)
             .map_err(|e| StartTurnError::Runtime(anyhow::anyhow!("{e}")))?;
 
         // Keep the session runnable before it is reserved: a sticky model that was
@@ -314,6 +314,16 @@ impl SessionController {
     }
 
     pub async fn delete_session(&mut self, id: &str) -> anyhow::Result<()> {
+        if let Some(bot) = self
+            .runtime
+            .bots()
+            .and_then(|bots| bots.bot_for_session(id))
+        {
+            return Err(anyhow::anyhow!(
+                "bot '{}' owns this session; delete the bot instead",
+                bot.name
+            ));
+        }
         // WP-091 K4/R6: shared delete entry (precheck descendant_running,
         // lease, remove_session, purge/forget every removed id).
         let deleted = self
@@ -407,11 +417,7 @@ impl SessionController {
         Ok(())
     }
 
-    pub async fn create_session_folder(
-        &mut self,
-        name: &str,
-        bot: bool,
-    ) -> anyhow::Result<String> {
+    pub async fn create_session_folder(&mut self, name: &str, bot: bool) -> anyhow::Result<String> {
         let folder_id = self.service.create_session_folder(name, bot)?;
         self.push_session_list().await?;
         Ok(folder_id)
@@ -647,22 +653,24 @@ impl SessionController {
             }
             return Ok(());
         }
-        // Bot identity is fixed by the product layer: a bot's default session
-        // cannot switch away, and a bot-owned profile is not a selectable
-        // primary for ordinary sessions.
-        let current_is_bot = self
-            .service
-            .meta(session_id)
-            .map(|meta| crate::bot::is_bot_profile_id(&meta.agent_id))
-            .unwrap_or(false);
-        if current_is_bot || crate::bot::is_bot_profile_id(agent_id) {
+        // Bot identity is fixed by the product layer: a bot's session
+        // cannot switch away, and a legacy bot-owned profile is not a
+        // selectable primary for ordinary sessions.
+        let bots = self.runtime.bots().cloned();
+        let current_is_bot = bots
+            .as_ref()
+            .is_some_and(|bots| bots.bot_for_session(session_id).is_some());
+        let target_is_bot = bots
+            .as_ref()
+            .is_some_and(|bots| bots.find(agent_id).is_some_and(|bot| bot.id == agent_id));
+        if current_is_bot || target_is_bot {
             let binding = self.session_binding(session_id);
             if let Some(proj) = self.projection_mut(session_id) {
                 proj.push_operation_error(
                     OperationKind::SetActivePrimary,
                     ErrorCode::InvalidRequest,
                     if current_is_bot {
-                        "bot session identity is fixed by its agent profile"
+                        "bot session identity is fixed by the bot record"
                     } else {
                         "bot-owned agent profiles are not selectable"
                     }

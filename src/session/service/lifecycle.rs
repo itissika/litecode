@@ -32,17 +32,6 @@ impl SessionService {
         self.sessions.session_model_id(session_id)
     }
 
-    /// Persist the sticky session model without appending a control event.
-    /// Bot capability edits use this to keep the bot's default session on the
-    /// model the owned profile now declares.
-    pub(crate) fn set_session_model_id(
-        &self,
-        session_id: &str,
-        model_id: Option<String>,
-    ) -> Result<()> {
-        self.sessions.set_session_model_id(session_id, model_id)
-    }
-
     pub(crate) fn set_session_model_with_change(
         &self,
         session_id: &str,
@@ -77,6 +66,24 @@ impl SessionService {
     ) -> Result<String> {
         self.sessions
             .resolve_primary_agent(session_id, default_primary, resolved)
+    }
+
+    /// Session -> agent identity with the bot product layer first. A bot
+    /// session's agent id is the bot id; normal sessions still validate the
+    /// settings profile.
+    pub(crate) fn resolve_primary_agent_for_session(
+        &self,
+        runtime: &crate::runtime::RuntimeHandle,
+        session_id: &str,
+        default_primary: &str,
+    ) -> Result<String> {
+        if let Some(bot) = runtime
+            .bots()
+            .and_then(|bots| bots.bot_for_session(session_id))
+        {
+            return Ok(bot.id);
+        }
+        self.resolve_primary_agent(session_id, default_primary, &runtime.resolved)
     }
 
     pub(crate) fn list_folders(&self) -> Result<Vec<SessionFolderRow>> {

@@ -340,26 +340,9 @@ impl SettingsWriter {
     where
         F: FnOnce(&mut GlobalSettings) -> Result<bool>,
     {
-        self.commit_partial_with_guard(docs, mutate, false)
-    }
-
-    /// "allow_during_turn" exists for product-owned bot profiles: creating or
-    /// editing a bot must work from a tool running inside a turn, while the
-    /// general Settings surface still refuses to edit config mid-turn.
-    fn commit_partial_with_guard<F>(
-        &self,
-        docs: &[DocId],
-        mutate: F,
-        allow_during_turn: bool,
-    ) -> Result<CommitAck>
-    where
-        F: FnOnce(&mut GlobalSettings) -> Result<bool>,
-    {
         let _guard = Self::commit_lock();
-        if !allow_during_turn {
-            self.ensure_writable()
-                .map_err(|e| LitecodeError::Config(e.to_string()))?;
-        }
+        self.ensure_writable()
+            .map_err(|e| LitecodeError::Config(e.to_string()))?;
         let mut settings = self.load()?;
         let restart_required = mutate(&mut settings)?;
         // Auto-heal agent model refs in the same commit: adding or removing a
@@ -641,22 +624,7 @@ impl SettingsWriter {
         })
     }
 
-    pub fn write_agent(&self, id: &str, profile: AgentProfile) -> Result<CommitAck> {
-        self.write_agent_with_guard(id, profile, false)
-    }
-
-    /// Internal bot-profile write. Bot lifecycle is product-owned and may run
-    /// from a tool inside a turn; the general Settings guard does not apply.
-    pub fn write_bot_agent(&self, id: &str, profile: AgentProfile) -> Result<CommitAck> {
-        self.write_agent_with_guard(id, profile, true)
-    }
-
-    fn write_agent_with_guard(
-        &self,
-        id: &str,
-        mut profile: AgentProfile,
-        allow_during_turn: bool,
-    ) -> Result<CommitAck> {
+    pub fn write_agent(&self, id: &str, mut profile: AgentProfile) -> Result<CommitAck> {
         validate_agent_id(id)?;
         let loaded = self.load()?;
         let defs = loaded.custom_tools.clone();
@@ -666,7 +634,7 @@ impl SettingsWriter {
         }
         normalize_agent_profile(&mut profile);
         let id = id.to_string();
-        self.commit_partial_with_guard(&[DocId::Agents], |settings| {
+        self.commit_partial(&[DocId::Agents], |settings| {
             // WP-149: a newly created primary agent binds code_search by default
             // unless the caller sent the key (true or false). Existing agents
             // switched to primary are not auto-bound.
@@ -684,26 +652,16 @@ impl SettingsWriter {
             }
             settings.agents.insert(id.clone(), profile);
             Ok(false)
-        }, allow_during_turn)
+        })
     }
 
     pub fn delete_agent(&self, id: &str) -> Result<CommitAck> {
-        self.delete_agent_with_guard(id, false)
-    }
-
-    /// Internal bot-profile delete; the bot lifecycle counterpart to
-    /// write_bot_agent.
-    pub fn delete_bot_agent(&self, id: &str) -> Result<CommitAck> {
-        self.delete_agent_with_guard(id, true)
-    }
-
-    fn delete_agent_with_guard(&self, id: &str, allow_during_turn: bool) -> Result<CommitAck> {
         if PROTECTED_AGENT_IDS.contains(&id) {
             return Err(LitecodeError::Config(format!(
                 "agent '{id}' is protected and cannot be deleted"
             )));
         }
-        self.commit_partial_with_guard(&[DocId::Agents], |settings| {
+        self.commit_partial(&[DocId::Agents], |settings| {
             if settings.agents.remove(id).is_none() {
                 return Err(LitecodeError::Config(format!("agent not found: {id}")));
             }
@@ -711,7 +669,7 @@ impl SettingsWriter {
                 profile.allowed_subagents.retain(|s| s != id);
             }
             Ok(false)
-        }, allow_during_turn)
+        })
     }
 
     pub fn apply_agent_tool_preset(
@@ -2196,24 +2154,6 @@ max_output = 1024
             .get(id)
             .and_then(|p| p.tools.get("code_search"))
             .map(|b| b.enabled)
-    }
-
-    #[test]
-    fn bot_profile_writes_are_allowed_while_a_turn_runs() {
-        let (_dir, _db, writer) = writer_with_catalog();
-        let profile = AgentProfile {
-            role: crate::config::schema::AgentRole::Primary,
-            ..Default::default()
-        };
-        writer.turn_guard().begin_turn();
-        assert!(writer.write_agent("normal_during_turn", profile.clone()).is_err());
-        writer
-            .write_bot_agent("bot_during_turn", profile.clone())
-            .expect("bot profile write");
-        writer
-            .delete_bot_agent("bot_during_turn")
-            .expect("bot profile delete");
-        writer.turn_guard().end_turn();
     }
 
     #[test]

@@ -12,11 +12,23 @@ pub fn build_system_prompt(
     agent_config: &AgentConfig,
     ctx: Option<&Context>,
 ) -> String {
+    build_system_prompt_with_platform(agent_id, agent_config, ctx, None)
+}
+
+/// Same stack with an engine-owned platform segment between the editable body
+/// and citations. Bot sessions pass their segment here; it is never part of the
+/// bot body and never user-editable.
+pub fn build_system_prompt_with_platform(
+    agent_id: &str,
+    agent_config: &AgentConfig,
+    ctx: Option<&Context>,
+    platform: Option<&str>,
+) -> String {
     let editable = resolve_body(agent_id, &agent_config.system_prompt);
     if agent_config.role == "hidden" {
         return editable;
     }
-    let body = splice_harness(&editable);
+    let body = splice_harness(&editable, platform);
     let agents_md = ctx.and_then(|c| c.agents_md.as_deref()).unwrap_or("");
     let claude_md = ctx.and_then(|c| c.claude_md.as_deref()).unwrap_or("");
     // Stable order: AGENTS.md then CLAUDE.md. An absent file adds no bytes,
@@ -27,12 +39,18 @@ pub fn build_system_prompt(
 
 /// Fixed LiteCode layers around the editable block. An empty editable block still
 /// gets the header and citations.
-fn splice_harness(editable: &str) -> String {
-    let mut parts = Vec::with_capacity(3);
+fn splice_harness(editable: &str, platform: Option<&str>) -> String {
+    let mut parts = Vec::with_capacity(4);
     parts.push(HARNESS_SYSTEM.trim());
     let editable = editable.trim();
     if !editable.is_empty() {
         parts.push(editable);
+    }
+    if let Some(platform) = platform
+        .map(str::trim)
+        .filter(|platform| !platform.is_empty())
+    {
+        parts.push(platform);
     }
     parts.push(CITATION_PROMPT.trim());
     parts.join("\n\n")
@@ -91,6 +109,24 @@ mod tests {
         assert!(agents < claude);
         assert!(prompt.contains("follow agents"));
         assert!(prompt.contains("# contract"));
+    }
+
+    #[test]
+    fn platform_segment_sits_between_body_and_citations() {
+        let ctx = make_ctx(Some("# contract"), Some("follow agents"));
+        let prompt = build_system_prompt_with_platform(
+            "default",
+            &cfg("primary", "editable body"),
+            Some(&ctx),
+            Some("BOT PLATFORM"),
+        );
+        let body = prompt.find("editable body").expect("body");
+        let platform = prompt.find("BOT PLATFORM").expect("platform");
+        let citations = prompt.find("# Citations").expect("citations");
+        let agents = prompt.find("<context from=\"AGENTS.md\">").expect("agents");
+        assert!(body < platform);
+        assert!(platform < citations);
+        assert!(citations < agents);
     }
 
     #[test]

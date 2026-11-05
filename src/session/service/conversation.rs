@@ -199,7 +199,7 @@ impl SessionService {
 
             let default_primary = runtime.desired_primary_agent();
             let agent_id =
-                self.resolve_primary_agent(session_id, default_primary, &runtime.resolved)?;
+                self.resolve_primary_agent_for_session(&runtime, session_id, default_primary)?;
             let _ = self.ensure_session_model(&runtime.resolved, session_id, &agent_id);
 
             let depth = self.meta(session_id)?.subagent_depth;

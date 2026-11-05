@@ -10,7 +10,6 @@ use crate::config::AgentConfig;
 use crate::config::resolved::ResolvedConfig;
 use crate::config::schema::{AgentProfile, AgentRole, GlobalSettings};
 use crate::provider_catalog::ProviderCatalog;
-use crate::types::LitecodeError;
 
 /// Whether a catalog provider can be called right now (non-blank credential).
 fn provider_keyed(credentials: &HashMap<String, String>, provider_id: &str) -> bool {
@@ -109,24 +108,7 @@ pub fn agent_config_from_profile(profile: &AgentProfile) -> AgentConfig {
         model_ref: profile.model_ref.clone(),
         system_prompt: profile.system_prompt.clone(),
         description: profile.description.clone(),
-        max_steps: profile.max_steps,
     }
-}
-
-/// Resolve runtime agent config for `agent_name` from a resolved view.
-pub fn agent_config_for(
-    resolved: &ResolvedConfig,
-    agent_name: &str,
-) -> Result<AgentConfig, LitecodeError> {
-    resolved
-        .agents()
-        .get(agent_name)
-        .map(agent_config_from_profile)
-        .ok_or_else(|| {
-            LitecodeError::Config(format!(
-                "agent '{agent_name}' not found in configuration (seed/import required)"
-            ))
-        })
 }
 
 /// Warn once per start when an agent still points at a model the catalog does

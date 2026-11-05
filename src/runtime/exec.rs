@@ -820,7 +820,7 @@ impl AgentDeps for AgentRuntime {
     }
 
     fn max_steps(&self) -> u32 {
-        self.agent_config.max_steps
+        self.step_max
     }
 
     fn persist_new(&self, items: &[Item], result_data: &[ToolResultData]) -> Result<bool> {

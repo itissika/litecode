@@ -4,30 +4,23 @@ import { useTranslation } from "react-i18next";
 import type { AgentProfile } from "../../api/settings";
 import { FieldLabel, TextArea, TextInput } from "../ui/FormField";
 
-/** Agent prompt/limits form. Shared by Settings → Agents and the bot editor. */
+/** Agent prompt form. Shared by Settings → Agents and the bot editor. */
 export function AgentProfileFields({
   draft,
   saveBlocked,
   onChange,
-  flashMaxSteps = false,
   showDescription = true,
-  anchorMaxSteps = true,
 }: {
   draft: AgentProfile;
   saveBlocked: boolean;
   onChange: (profile: AgentProfile) => void;
-  /** First-run detour: ring + hint on the row, so the user changes it themselves. */
-  flashMaxSteps?: boolean;
   /** Bot identity owns its own description field, so the bot editor hides this one. */
   showDescription?: boolean;
-  /** Settings' first-run detour reaches this row by a document-wide anchor. */
-  anchorMaxSteps?: boolean;
 }) {
   const { t } = useTranslation();
   const fieldId = useId();
   const descriptionId = `${fieldId}-description`;
   const promptId = `${fieldId}-system-prompt`;
-  const maxStepsId = `${fieldId}-max-steps`;
   return (
     <div className="settings-card space-y-2 p-3">
       {showDescription ? (
@@ -71,34 +64,6 @@ export function AgentProfileFields({
         <p className="mt-1 text-[11px] text-(--_dk-text-muted)">
           {t("settings.agents.systemPromptHint")}
         </p>
-      </div>
-      <div
-        data-anchor={anchorMaxSteps ? "max-steps" : undefined}
-        className={
-          flashMaxSteps
-            ? "rounded-md ring-1 ring-(--_dk-amber-500)"
-            : undefined
-        }
-      >
-        <FieldLabel htmlFor={maxStepsId}>{t("settings.agents.maxSteps")}</FieldLabel>
-        <TextInput
-          id={maxStepsId}
-          type="number"
-          min="1"
-          value={draft.max_steps}
-          onChange={(e) =>
-            onChange({
-              ...draft,
-              max_steps: Number(e.target.value) || 1,
-            })
-          }
-          disabled={saveBlocked}
-        />
-        {flashMaxSteps ? (
-          <p className="mt-1 text-[11px] text-(--_dk-amber-500)">
-            {t("settings.agents.maxStepsHint")}
-          </p>
-        ) : null}
       </div>
     </div>
   );

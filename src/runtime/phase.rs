@@ -106,7 +106,7 @@ impl AgentRuntime {
     pub(crate) fn emit_step_started(&self, step: u64) {
         self.emit_internal(InternalEvent::StepStarted {
             step,
-            step_max: self.agent_config.max_steps,
+            step_max: self.step_max,
         });
     }
 }

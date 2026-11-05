@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::config::global_db::tools::core_none_tools;
 use crate::config::resolved::ResolvedConfig;
-use crate::config::schema::{AgentRole, AgentToolBinding, ToolPreset};
+use crate::config::schema::{AgentProfile, AgentRole, AgentToolBinding, ToolPreset};
 use crate::permission::action::PermissionAction;
 use crate::permission::policy::{BindingPathMode, ToolPolicy};
 
@@ -24,6 +24,9 @@ pub enum PermissionView {
 pub struct PermissionEngine {
     resolved: ResolvedConfig,
     agent_id: String,
+    /// Effective body resolved for this turn. Bot sessions pass the record
+    /// body here; normal sessions fall back to `resolved.agents()`.
+    profile: Option<AgentProfile>,
     view: PermissionView,
     /// Member name → capability id, built once instead of rebuilding the
     /// catalog for every `binding()` lookup during a tool call.
@@ -32,10 +35,21 @@ pub struct PermissionEngine {
 
 impl PermissionEngine {
     pub fn resolver(resolved: ResolvedConfig, agent_id: impl Into<String>, depth: u32) -> Self {
+        Self::resolver_with_profile(resolved, agent_id, None, depth)
+    }
+
+    /// Build from an already-resolved body so bot records share the same
+    /// permission path as settings profiles.
+    pub fn resolver_with_profile(
+        resolved: ResolvedConfig,
+        agent_id: impl Into<String>,
+        profile: Option<AgentProfile>,
+        depth: u32,
+    ) -> Self {
         let agent_id = agent_id.into();
-        let role = resolved
-            .agents()
-            .get(&agent_id)
+        let role = profile
+            .as_ref()
+            .or_else(|| resolved.agents().get(&agent_id))
             .map(|p| p.role)
             .unwrap_or(AgentRole::Primary);
         let view = if depth > 0 || role == AgentRole::Subagent {
@@ -48,6 +62,7 @@ impl PermissionEngine {
         Self {
             resolved,
             agent_id,
+            profile,
             view,
             member_owner,
         }
@@ -71,9 +86,9 @@ impl PermissionEngine {
             .get(tool_name)
             .map(String::as_str)
             .unwrap_or(tool_name);
-        self.resolved
-            .agents()
-            .get(&self.agent_id)
+        self.profile
+            .as_ref()
+            .or_else(|| self.resolved.agents().get(&self.agent_id))
             .and_then(|profile| profile.tools.get(bind_name))
     }
 

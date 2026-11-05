@@ -67,8 +67,6 @@ fn seed_agents(conn: &Connection) -> Result<()> {
         AgentRole::Primary,
         "",
         "builtin:general",
-        0.7,
-        50,
         DEFAULT_DESCRIPTION,
         &["explore".into()],
     )?;
@@ -78,8 +76,6 @@ fn seed_agents(conn: &Connection) -> Result<()> {
         AgentRole::Primary,
         "",
         "builtin:orchestrator",
-        0.7,
-        50,
         ORCHESTRATOR_DESCRIPTION,
         &["explore".into(), "general".into()],
     )?;
@@ -89,8 +85,6 @@ fn seed_agents(conn: &Connection) -> Result<()> {
         AgentRole::Subagent,
         "",
         "builtin:explore",
-        0.7,
-        30,
         EXPLORE_DESCRIPTION,
         &[],
     )?;
@@ -100,8 +94,6 @@ fn seed_agents(conn: &Connection) -> Result<()> {
         AgentRole::Subagent,
         "",
         "builtin:general",
-        0.7,
-        50,
         GENERAL_DESCRIPTION,
         &[],
     )?;
@@ -585,8 +577,6 @@ fn ensure_general_agent(conn: &Connection) -> Result<()> {
             AgentRole::Subagent,
             "",
             "builtin:general",
-            0.7,
-            50,
             GENERAL_DESCRIPTION,
             &[],
         )?;
@@ -667,8 +657,6 @@ fn ensure_orchestrator_agent(conn: &Connection) -> Result<()> {
             AgentRole::Primary,
             &model_ref,
             "builtin:orchestrator",
-            0.7,
-            50,
             ORCHESTRATOR_DESCRIPTION,
             &["explore".into(), "general".into()],
         )?;
@@ -695,23 +683,20 @@ fn ensure_orchestrator_agent(conn: &Connection) -> Result<()> {
 
 /// Undo the mistaken rewrite of `default` into Orchestrator (seed revision 13).
 fn restore_default_if_mistakenly_replaced(conn: &Connection) -> Result<()> {
-    let Some((role, model_ref, system_prompt, temperature, max_steps, description, allowed_json)) =
-        conn.query_row(
-            "SELECT role, model_ref, system_prompt, temperature, max_steps, description, allowed_subagents_json
+    let Some((role, model_ref, system_prompt, description, allowed_json)) = conn.query_row(
+        "SELECT role, model_ref, system_prompt, description, allowed_subagents_json
              FROM agents WHERE id = 'default'",
-            [],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, f64>(3)?,
-                    r.get::<_, i64>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, String>(6)?,
-                ))
-            },
-        )
+        [],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        },
+    )
         .optional()?
     else {
         return Ok(());
@@ -735,8 +720,6 @@ fn restore_default_if_mistakenly_replaced(conn: &Connection) -> Result<()> {
         AgentRole::Primary,
         &model_ref,
         "builtin:general",
-        temperature,
-        max_steps as u32,
         desc,
         &allowed,
     )
@@ -1092,8 +1075,6 @@ mod tests {
             AgentRole::Hidden,
             "",
             "custom legacy body",
-            0.7,
-            50,
             "",
             &[],
         )
@@ -1134,8 +1115,6 @@ mod tests {
             AgentRole::Hidden,
             "",
             "custom hidden body",
-            0.7,
-            50,
             "",
             &[],
         )
@@ -1272,8 +1251,6 @@ mod tests {
             AgentRole::Primary,
             "",
             "",
-            0.7,
-            50,
             "",
             &[],
         )
@@ -1284,8 +1261,6 @@ mod tests {
             AgentRole::Subagent,
             "",
             "",
-            0.7,
-            50,
             "",
             &[],
         )

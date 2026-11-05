@@ -23,9 +23,12 @@ pub(crate) async fn start_turn_like_human(
     runtime.sync_workspace_tool_readiness();
 
     let turn_id = uuid::Uuid::new_v4().to_string();
-    let step_max = crate::config::bridge::agent_config_for(&runtime.resolved, agent_id)
-        .map(|agent| agent.max_steps)
-        .unwrap_or(50);
+    let step_max = crate::bot::step_max_for_session(
+        &runtime.resolved,
+        runtime.bots().map(|bots| bots.as_ref()),
+        session_id,
+        agent_id,
+    );
     match service
         .start_turn(
             &runtime,

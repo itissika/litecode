@@ -125,7 +125,7 @@ export function SessionList() {
     [bots],
   );
   const botSessionIds = useMemo(
-    () => new Set(bots.map((bot) => bot.default_session_id)),
+    () => new Set(bots.map((bot) => bot.session_id)),
     [bots],
   );
   const roots = useMemo(
@@ -339,7 +339,7 @@ export function SessionList() {
   };
 
   const botSession = (bot: BotInfo) =>
-    sessionsById.get(bot.default_session_id);
+    sessionsById.get(bot.session_id);
   const botBusy = (bot: BotInfo) => {
     const session = botSession(bot);
     return Boolean(
@@ -425,8 +425,8 @@ export function SessionList() {
       session={botSession(bot)}
       now={now}
       indentPx={grouped ? GROUPED_ROW_INDENT_PX : undefined}
-      focused={activeSessionIds.includes(bot.default_session_id)}
-      unread={unread[bot.default_session_id] === true}
+      focused={activeSessionIds.includes(bot.session_id)}
+      unread={unread[bot.session_id] === true}
       onOpen={(id) => void openBotById(id)}
       onDelete={requestDeleteBot}
       onDropBot={(sourceId) => void groupRows("bot", sourceId, bot.id)}

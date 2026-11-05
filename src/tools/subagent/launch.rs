@@ -4,7 +4,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::ResolvedConfig;
-use crate::config::schema::AgentRole;
+use crate::config::schema::{AgentProfile, AgentRole};
 use crate::config::workspace::workspace_root_from_paths;
 use crate::context_pipeline::Context;
 use crate::runtime::{RuntimeHandle, TurnOptions};
@@ -167,12 +167,21 @@ impl SubagentLaunchTool {
         }
     }
 
+    /// The caller's effective body. A bot session reads its record; a normal
+    /// primary reads its settings profile.
+    fn parent_profile(&self) -> Option<AgentProfile> {
+        crate::bot::resolve_agent_for_session(
+            &self.runtime.resolved,
+            self.runtime.bots().map(Arc::as_ref),
+            &self.parent_session_id,
+            &self.parent_agent_id,
+        )
+        .map(|resolution| resolution.profile)
+    }
+
     fn allowed_subagent_ids(&self) -> Vec<String> {
-        self.runtime
-            .resolved
-            .agents()
-            .get(&self.parent_agent_id)
-            .map(|p| p.allowed_subagents.clone())
+        self.parent_profile()
+            .map(|profile| profile.allowed_subagents)
             .unwrap_or_default()
     }
 
@@ -192,15 +201,12 @@ impl SubagentLaunchTool {
             .to_string();
 
         let resolved = &self.runtime.resolved;
-        let parent = resolved
-            .agents()
-            .get(&self.parent_agent_id)
-            .ok_or_else(|| {
-                ToolCallResult::error(format!(
-                    "parent primary agent '{}' not found in configuration",
-                    self.parent_agent_id
-                ))
-            })?;
+        let parent = self.parent_profile().ok_or_else(|| {
+            ToolCallResult::error(format!(
+                "parent primary agent '{}' not found in configuration",
+                self.parent_agent_id
+            ))
+        })?;
         let allowed = parent.allowed_subagents.clone();
         let available = format_available_subagents(resolved, &allowed);
         let profile = match resolved.agents().get(&agent_name) {

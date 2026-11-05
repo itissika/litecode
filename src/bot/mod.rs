@@ -5,10 +5,14 @@
 //! [`crate::session::SessionService`]; bot fields live only in this layer's
 //! workspace-local registry.
 
+mod resolve;
 mod service;
 
+pub use resolve::{
+    AgentResolution, BOT_MAX_STEPS, expand_builtin_prompt, platform_prompt,
+    resolve_agent_for_session, step_max_for_session,
+};
 pub use service::{
-    BOT_FOLDER_PREFIX, BOT_PROFILE_PREFIX, BotError, BotEvent, BotRecord, BotService,
-    BotTurnRunner, BotUpdate, MAX_BOT_DEPTH, MAX_BOTS_PER_WORKSPACE, is_bot_folder_id,
-    is_bot_profile_id,
+    BOT_FOLDER_PREFIX, BotBody, BotError, BotEvent, BotPosition, BotRecord, BotService,
+    BotTurnRunner, BotUpdate, MAX_BOTS_PER_WORKSPACE, is_bot_folder_id,
 };

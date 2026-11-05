@@ -41,8 +41,7 @@ const sessionSearchTool: AvailableTool = {
 
 function profile(patch: Partial<AgentProfile> = {}): AgentProfile {
   return {
-    role: "primary", model_ref: "prov/m1", system_prompt: "", temperature: 0.7,
-    max_steps: 50, description: "", tools: {}, allowed_subagents: [], ...patch,
+    role: "primary", model_ref: "prov/m1", system_prompt: "", description: "", tools: {}, allowed_subagents: [], ...patch,
   };
 }
 

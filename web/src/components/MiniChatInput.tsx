@@ -8,7 +8,6 @@ import {
   messageTooLong,
 } from "../lib/composerLimits";
 import { mentionKeysOf } from "../lib/knowledge/flowProjection";
-import { isBotProfileId } from "../lib/botProfile";
 import { useKnowledgeStore } from "../stores/knowledgeStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useToastStore } from "../stores/toastStore";
@@ -95,17 +94,16 @@ export function MiniChatInput({
     >
       <div className="flex min-w-0 items-center gap-1 overflow-hidden px-1.5 py-1">
         <div className="flex min-w-0 flex-1 items-center gap-1">
-          {primaryAgents.length > 0 || isBotProfileId(settings.primaryId) ? (
-            <AgentPicker
-              agents={primaryAgents}
-              activeId={settings.primaryId}
-              pendingId={null}
-              disabled={disabled}
-              onChange={(primaryId) =>
-                onChange(draft, { ...settings, primaryId })
-              }
-            />
-          ) : null}
+          <AgentPicker
+            sessionId={sessionId}
+            agents={primaryAgents}
+            activeId={settings.primaryId}
+            pendingId={null}
+            disabled={disabled}
+            onChange={(primaryId) =>
+              onChange(draft, { ...settings, primaryId })
+            }
+          />
           <ModelSwitcher
             sessionId={sessionId}
             disabled={disabled}

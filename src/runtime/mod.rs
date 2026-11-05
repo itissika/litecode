@@ -27,7 +27,6 @@ use tokio::sync::mpsc;
 
 use crate::agent::{AgentDeps, TurnOutcome};
 use crate::apps::AppService;
-use crate::config::bridge::agent_config_for;
 use crate::config::workspace::set_runtime_paths;
 use crate::config::{AgentConfig, ConfigManager, ResolvedConfig, WorkspaceState, log_filter};
 use crate::context_pipeline::{Context, build_context};
@@ -289,7 +288,6 @@ impl RuntimeHandle {
             sink,
             observer,
             None,
-            None,
         )
     }
 }
@@ -440,10 +438,17 @@ pub fn spawn_turn(
     // `validate_primary_agent` would reject. Config is never a caller choice.
     let agent_name = match &opts.identity {
         AgentIdentity::FromSession => {
-            let default_primary = runtime.desired_primary_agent();
-            sessions
-                .resolve_primary_agent(&session_id, default_primary, &runtime.resolved)
-                .map_err(|e| anyhow::anyhow!("{e}"))?
+            if let Some(bot) = runtime
+                .bots()
+                .and_then(|bots| bots.bot_for_session(&session_id))
+            {
+                bot.id
+            } else {
+                let default_primary = runtime.desired_primary_agent();
+                sessions
+                    .resolve_primary_agent(&session_id, default_primary, &runtime.resolved)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+            }
         }
         AgentIdentity::Named(name) => name.clone(),
     };
@@ -470,7 +475,7 @@ pub fn spawn_turn(
     stages.mark("build_runtime");
 
     let cancel = agent_loop.cancel_token();
-    let step_max = agent_loop.agent_config.max_steps;
+    let step_max = agent_loop.step_max;
     let workspace_paths = runtime.workspace.paths.clone();
     let turn_id_for_thread = turn_id.clone();
     let turn_input = input.into();
@@ -507,6 +512,8 @@ pub struct AgentRuntime {
     /// Shared handle so compact (and other sidecars) reuse the process provider registry.
     runtime_handle: RuntimeHandle,
     pub agent_config: AgentConfig,
+    /// Engine-level step budget for this session; never a profile field.
+    pub step_max: u32,
     pub(crate) tool_pipeline: Option<ToolPipeline>,
     pub(crate) context_pipeline: ContextPipeline,
     /// Cached context for access before lazy tool init (mirrors what runtime_ctx.ctx would hold).
@@ -567,7 +574,6 @@ impl AgentRuntime {
         permission_sink: Arc<dyn PermissionSink>,
         observer: Arc<dyn RuntimeObserver>,
         cancel: Option<tokio_util::sync::CancellationToken>,
-        max_steps_override: Option<u32>,
     ) -> Result<Self> {
         let cancel = cancel.unwrap_or_default();
         // Instruction files stay the process snapshot on `runtime.resolved`.
@@ -576,16 +582,33 @@ impl AgentRuntime {
         let resolved = runtime.resolved.clone();
         let runtime_handle = runtime.clone();
 
-        let mut agent_config = agent_config_for(&resolved, agent_name)?;
-        if let Some(max_steps) = max_steps_override {
-            agent_config.max_steps = max_steps;
-        }
+        // Bot sessions resolve their body from the record; normal sessions
+        // fall back to the settings profile. Same entry point as tool selection.
+        let resolution = crate::bot::resolve_agent_for_session(
+            &resolved,
+            runtime.bots().map(Arc::as_ref),
+            &session_id,
+            agent_name,
+        )
+        .ok_or_else(|| {
+            LitecodeError::Config(format!(
+                "agent '{agent_name}' not found in configuration (seed/import required)"
+            ))
+        })?;
+        let agent_config =
+            crate::config::bridge::agent_config_from_profile(&resolution.profile);
+        let step_max = if resolution.bot.is_some() {
+            crate::bot::BOT_MAX_STEPS
+        } else {
+            crate::agent::AGENT_MAX_STEPS
+        };
 
-        let binding_count = resolved
-            .agents()
-            .get(agent_name)
-            .map(|profile| profile.tools.values().filter(|b| b.enabled).count())
-            .unwrap_or(0);
+        let binding_count = resolution
+            .profile
+            .tools
+            .values()
+            .filter(|binding| binding.enabled)
+            .count();
 
         tracing::debug!(
             "agent init: name={} model_ref={} bindings_enabled={} provider={}",
@@ -601,8 +624,13 @@ impl AgentRuntime {
         let paths = resolved.paths().clone();
         let cwd = resolved.workspace_root().to_path_buf();
         let context = build_context(&resolved, &cwd, &paths);
-        let instructions =
-            crate::context_pipeline::build_system_prompt(agent_name, &agent_config, Some(&context));
+        let platform = resolution.bot.as_ref().map(crate::bot::platform_prompt);
+        let instructions = crate::context_pipeline::build_system_prompt_with_platform(
+            agent_name,
+            &agent_config,
+            Some(&context),
+            platform.as_deref(),
+        );
 
         let context_window = turn_llm.context_window;
         let context_pipeline =
@@ -621,6 +649,7 @@ impl AgentRuntime {
         let runtime = Self {
             resolved,
             session_id,
+            step_max,
             agent_name: agent_name.to_string(),
             sessions,
             runtime_ctx: None,
@@ -955,9 +984,17 @@ impl AgentRuntime {
         let Some(params) = self.build_tool_params.take() else {
             return Ok(());
         };
-        let permission = PermissionEngine::resolver(
+        let profile = crate::bot::resolve_agent_for_session(
+            &params.runtime.resolved,
+            params.runtime.bots().map(Arc::as_ref),
+            &params.parent_session_id,
+            &params.agent_name,
+        )
+        .map(|resolution| resolution.profile);
+        let permission = PermissionEngine::resolver_with_profile(
             params.runtime.resolved.clone(),
             &params.agent_name,
+            profile,
             params.depth,
         );
         let permission_sink = Arc::new(CancellingPermissionSink::new(
@@ -1060,7 +1097,7 @@ impl AgentRuntime {
     }
 
     pub async fn run(&mut self, user_prompt: &str) -> Result<String> {
-        let step_max = self.agent_config.max_steps;
+        let step_max = self.step_max;
         self.run_with_turn(
             TurnInput::User(UserInput::text(user_prompt)),
             "local-turn",

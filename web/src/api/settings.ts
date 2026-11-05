@@ -137,8 +137,6 @@ export interface AgentProfile {
   role: AgentRole;
   model_ref: string;
   system_prompt: string;
-  temperature: number;
-  max_steps: number;
   description: string;
   tools: Record<string, AgentToolBinding>;
   allowed_subagents: string[];

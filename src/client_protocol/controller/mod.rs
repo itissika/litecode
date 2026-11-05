@@ -362,7 +362,9 @@ impl Projection {
         };
         let context_tokens_estimate = context_meter.used_tokens;
         let meter = service.meter(&session_id).unwrap_or_default();
-        let rollup = service.provider_usage_rollup(&session_id).unwrap_or_default();
+        let rollup = service
+            .provider_usage_rollup(&session_id)
+            .unwrap_or_default();
         let meta = service.meta(&session_id).ok();
         let compacted_seq = meta.as_ref().and_then(|meta| meta.compacted_seq);
         let surface_rewrite_seq = meta.as_ref().map_or(0, |meta| meta.surface_rewrite_seq);
@@ -487,9 +489,7 @@ impl Projection {
             self.cumulative_token_stats.clone(),
             &meter,
             &envelope,
-            project::compaction_state_wire(
-                &self.service.compaction_state(&self.session_id),
-            ),
+            project::compaction_state_wire(&self.service.compaction_state(&self.session_id)),
         );
         snap.context_token_breakdown = self.context_token_breakdown.clone();
         if self.provider_billed_requests == 0 {
@@ -1096,10 +1096,7 @@ impl SessionController {
         // Cold subscribe with no persisted request header: seed the full
         // server-owned envelope from the same main-turn shape a real request
         // would use. The browser never reconstructs instructions/tools/output.
-        let has_persisted_envelope = self
-            .service
-            .latest_persisted_envelope(session_id)
-            .is_some();
+        let has_persisted_envelope = self.service.latest_persisted_envelope(session_id).is_some();
         let mut cold_seed_unknown = false;
         if !has_persisted_envelope {
             let agent_id = binding.agent_id.clone();
@@ -1286,7 +1283,6 @@ impl SessionController {
         let primary_agents: Vec<crate::client_protocol::protocol::PrimaryAgentInfo> =
             crate::config::bridge::primary_agent_infos(&self.runtime.resolved)
                 .into_iter()
-                .filter(|(id, _)| !crate::bot::is_bot_profile_id(id))
                 .map(
                     |(id, description)| crate::client_protocol::protocol::PrimaryAgentInfo {
                         id,
@@ -1434,9 +1430,12 @@ impl SessionController {
             .service
             .agent_id(session_id)
             .unwrap_or_else(|| self.runtime.desired_primary_agent().to_string());
-        crate::config::bridge::agent_config_for(&self.runtime.resolved, &primary)
-            .map(|a| a.max_steps)
-            .unwrap_or(50)
+        crate::bot::step_max_for_session(
+            &self.runtime.resolved,
+            self.runtime.bots().map(|bots| bots.as_ref()),
+            session_id,
+            &primary,
+        )
     }
 
     /// Bind this connection as the session's current permission route. Called

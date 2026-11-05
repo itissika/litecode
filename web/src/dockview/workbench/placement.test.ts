@@ -112,6 +112,40 @@ describe("ensureMainCenterGroup", () => {
 });
 
 describe("placementFor", () => {
+  it("prefers the active agent group over an earlier split", () => {
+    const first = group("first", "grid", {
+      width: 400,
+      height: 600,
+      components: ["agent"],
+    });
+    const active = group("active", "grid", {
+      width: 400,
+      height: 600,
+      components: ["agent"],
+    });
+    const api = { groups: [first, active], activeGroup: active, addGroup: vi.fn() };
+    expect(placementFor("agent", api as never)?.position).toEqual({
+      referenceGroup: "active",
+    });
+  });
+
+  it("skips a zero-size agent group when a usable one exists", () => {
+    const hidden = group("hidden", "grid", {
+      width: 0,
+      height: 0,
+      components: ["agent"],
+    });
+    const visible = group("visible", "grid", {
+      width: 800,
+      height: 600,
+      components: ["agent"],
+    });
+    const api = { groups: [hidden, visible], activeGroup: visible, addGroup: vi.fn() };
+    expect(placementFor("agent", api as never)?.position).toEqual({
+      referenceGroup: "visible",
+    });
+  });
+
   it("puts an editor to the right of an agent group", () => {
     const agent = group("agent", "grid", { components: ["agent"] });
     const api = { groups: [agent], activeGroup: agent, addGroup: vi.fn() };
@@ -195,6 +229,39 @@ describe("openPanel", () => {
     );
     expect(setActive).toHaveBeenCalled();
     expect(addPanel).not.toHaveBeenCalled();
+  });
+
+  it("updates parameters when opening an existing panel", () => {
+    const setActive = vi.fn();
+    const updateParameters = vi.fn();
+    const host = group("main", "grid", { components: ["appview"] });
+    openPanel(
+      {
+        id: "app-1",
+        component: "appview",
+        title: "App",
+        params: { url: "https://example.test" },
+      },
+      {
+        groups: [host],
+        activeGroup: host,
+        addPanel: vi.fn(),
+        addGroup: vi.fn(),
+        getPanel: () => ({
+          api: {
+            component: "appview",
+            isVisible: true,
+            setActive,
+            updateParameters,
+            group: host,
+          },
+        }),
+      } as never,
+    );
+    expect(updateParameters).toHaveBeenCalledWith({
+      url: "https://example.test",
+    });
+    expect(setActive).toHaveBeenCalled();
   });
 
   it("moves a panel off an anchor before activating it", () => {

@@ -75,7 +75,7 @@ pub fn try_begin_pending_flush(
         }
     } else {
         let default_primary = runtime.desired_primary_agent();
-        match service.resolve_primary_agent(sid, default_primary, &runtime.resolved) {
+        match service.resolve_primary_agent_for_session(runtime, sid, default_primary) {
             Ok(id) => id,
             Err(_) => return PendingFlush::SkippedSessionGone,
         }
@@ -83,9 +83,12 @@ pub fn try_begin_pending_flush(
     let project = service
         .project(sid)
         .unwrap_or_else(|| workspace_root.display().to_string());
-    let step_max = crate::config::bridge::agent_config_for(&runtime.resolved, &primary_agent)
-        .map(|a| a.max_steps)
-        .unwrap_or(50);
+    let step_max = crate::bot::step_max_for_session(
+        &runtime.resolved,
+        runtime.bots().map(|bots| bots.as_ref()),
+        sid,
+        &primary_agent,
+    );
     let turn_id = uuid::Uuid::new_v4().to_string();
     if use_follow_up {
         let input = match service.reserve_follow_up_auto_turn(

@@ -182,8 +182,6 @@ describe("ensureSectionLoaded", () => {
       role: "primary",
       model_ref: "",
       system_prompt: "",
-      temperature: 0,
-      max_steps: 1,
       description: "",
       tools: {},
       allowed_subagents: [],

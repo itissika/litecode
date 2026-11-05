@@ -51,10 +51,6 @@ pub struct AgentProfile {
     pub model_ref: String,
     #[serde(default)]
     pub system_prompt: String,
-    #[serde(default = "default_temperature")]
-    pub temperature: f64,
-    #[serde(default = "default_max_steps")]
-    pub max_steps: u32,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -70,8 +66,6 @@ impl Default for AgentProfile {
             role: AgentRole::Primary,
             model_ref: String::new(),
             system_prompt: String::new(),
-            temperature: default_temperature(),
-            max_steps: default_max_steps(),
             description: String::new(),
             tools: HashMap::new(),
             allowed_subagents: Vec::new(),
@@ -99,14 +93,6 @@ pub const SUBAGENT_MEMBER_TOOL_IDS: &[&str] = &[
 /// Task-board / memory / human-Ask tools. Subagent role does not bind these (tool-set gate).
 /// `knowledge` and `litecode_workspace` stay on the subagent tool set.
 pub const PRIMARY_ONLY_TOOL_IDS: &[&str] = &["plan", "todo", "memory", "ask_user", "browser"];
-
-fn default_temperature() -> f64 {
-    0.7
-}
-
-fn default_max_steps() -> u32 {
-    50
-}
 
 /// Bind-card kind shown on Agents (not a persist gate).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

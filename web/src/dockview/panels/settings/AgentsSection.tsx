@@ -118,10 +118,6 @@ function AllowedSubagentsSelect({
   );
 }
 
-// Temperature is built-in: modern providers ignore it, so we never expose it
-// and always persist a fixed default rather than a user-edited value.
-const BUILTIN_TEMPERATURE = 0.7;
-
 // Bindings for tools not in this workspace catalog stay on the profile so a PUT
 // does not wipe other-workspace MCP/custom rows. The grid only shows catalog ids.
 function agentPersistPayload(draft: AgentProfile): AgentProfile {
@@ -130,13 +126,11 @@ function agentPersistPayload(draft: AgentProfile): AgentProfile {
       ...draft,
       tools: { ...draft.tools },
       allowed_subagents: [],
-      temperature: BUILTIN_TEMPERATURE,
     };
   }
   return {
     ...draft,
     tools: { ...draft.tools },
-    temperature: BUILTIN_TEMPERATURE,
   };
 }
 
@@ -162,8 +156,6 @@ export function AgentsSection() {
   const saveBlocked = useSettingsSaveBlocked();
   const { persistStatus, setPersistStatus } = useDocPersist("agents");
   const setSelectedAgentId = useSettingsStore((s) => s.setSelectedAgentId);
-  const focusAnchor = useSettingsStore((s) => s.focusAnchor);
-  const consumeFocusAnchor = useSettingsStore((s) => s.consumeFocusAnchor);
   const saveAgent = useSettingsStore((s) => s.saveAgent);
   const createAgent = useSettingsStore((s) => s.createAgent);
   const removeAgent = useSettingsStore((s) => s.removeAgent);
@@ -171,8 +163,6 @@ export function AgentsSection() {
 
   const [creating, setCreating] = useState(false);
   const [newAgentId, setNewAgentId] = useState("");
-  /** Row id currently ringed + hinted (first-run Max steps detour). */
-  const [flashedAnchor, setFlashedAnchor] = useState<string | null>(null);
 
   const profile = agents[selectedAgentId];
   const [draft, setDraft] = useState<AgentProfile | null>(null);
@@ -236,33 +226,6 @@ export function AgentsSection() {
     },
   });
 
-  // The flash ends on its own: never a permanent decoration.
-  useEffect(() => {
-    if (!flashedAnchor) return;
-    const timer = window.setTimeout(() => setFlashedAnchor(null), 8000);
-    return () => window.clearTimeout(timer);
-  }, [flashedAnchor]);
-
-  /**
-   * First-run deep-link (see lib/firstRun): centre the anchored row, ring it and
-   * put the caret in its input. The value is the user's to change — this never
-   * writes a setting.
-   */
-  useEffect(() => {
-    if (focusAnchor !== "max-steps") return;
-    // The row only exists once the draft is hydrated from the store.
-    if (creating || !profile || !draft) return;
-    consumeFocusAnchor();
-    if (selectedAgentId !== "default") return;
-    setFlashedAnchor("max-steps");
-    const raf = requestAnimationFrame(() => {
-      const row = document.querySelector<HTMLElement>('[data-anchor="max-steps"]');
-      row?.scrollIntoView?.({ block: "center" });
-      row?.querySelector("input")?.focus();
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [focusAnchor, creating, profile, draft, selectedAgentId, consumeFocusAnchor]);
-
   const updateBinding = (toolId: string, patch: Partial<AgentToolBinding>) => {
     if (!draft) return;
     if (patch.enabled !== undefined) {
@@ -295,8 +258,6 @@ export function AgentsSection() {
       // A new agent starts on the first active catalog model.
       model_ref: activeModels[0]?.ref ?? "",
       system_prompt: "",
-      temperature: BUILTIN_TEMPERATURE,
-      max_steps: 50,
       description: "",
       tools: {},
       allowed_subagents: [],
@@ -501,7 +462,6 @@ export function AgentsSection() {
               draft={draft}
               saveBlocked={saveBlocked}
               onChange={setDraft}
-              flashMaxSteps={flashedAnchor === "max-steps"}
             />
           ) : null}
         </div>

@@ -272,7 +272,7 @@ fn custom_member(
 fn mcp_members(
     runtime: &RuntimeHandle,
     resolved: &ResolvedConfig,
-    agent_id: &str,
+    profile: &crate::config::schema::AgentProfile,
     capability_id: &str,
     server_id: &str,
     mcp_schemas: &HashMap<String, Vec<McpToolSchema>>,
@@ -284,10 +284,9 @@ fn mcp_members(
     let Some(tool_schemas) = mcp_schemas.get(server_id) else {
         return Ok(Vec::new());
     };
-    let allowed_tools = resolved
-        .agents()
-        .get(agent_id)
-        .and_then(|agent| agent.tools.get(capability_id))
+    let allowed_tools = profile
+        .tools
+        .get(capability_id)
         .and_then(|binding| binding.allowed_tools.as_ref());
     let _ = runtime;
     let mut seen = std::collections::HashSet::new();
@@ -400,7 +399,18 @@ pub async fn build_tool_list(
     for error in &catalog.errors {
         tracing::error!(error = %error, "capability catalog rejected one definition");
     }
-    let selected = catalog.selected_for_agent(resolved, agent_id, depth);
+    // One resolution feeds both capability selection and bot-tool injection.
+    let resolution = crate::bot::resolve_agent_for_session(
+        resolved,
+        runtime.bots().map(Arc::as_ref),
+        parent_session_id,
+        agent_id,
+    );
+    let (profile, bot) = match resolution {
+        Some(resolution) => (resolution.profile, resolution.bot),
+        None => (crate::config::schema::AgentProfile::default(), None),
+    };
+    let selected = catalog.selected_for_profile(&profile, depth);
 
     let mut mcp_schemas: HashMap<String, Vec<McpToolSchema>> = HashMap::new();
     let mcp_defs = resolved.mcp_servers();
@@ -470,7 +480,7 @@ pub async fn build_tool_list(
                 tools.extend(mcp_members(
                     runtime,
                     resolved,
-                    agent_id,
+                    &profile,
                     &capability.id,
                     server_id,
                     &mcp_schemas,
@@ -502,16 +512,10 @@ pub async fn build_tool_list(
     // Bot tools are a product-layer capability, not part of the configurable
     // catalog: they exist only for a session that a bot owns. Appending after
     // projection keeps them out of Settings and out of every normal session.
-    if let Some(bots) = runtime.bots()
-        && let Some(bot) = bots.bot_for_session(parent_session_id)
+    if let Some(_bot) = bot
+        && let Some(bots) = runtime.bots()
     {
-        // A depth-1 bot cannot create further bots, so do not even publish the
-        // capability; the service still rejects the call as a second guard.
-        let may_create = bot.depth < crate::bot::MAX_BOT_DEPTH;
         for tool in crate::tools::bot::bot_tools(Arc::clone(bots)) {
-            if !may_create && tool.name() == crate::tools::bot::BOT_CREATE_TOOL {
-                continue;
-            }
             if let Some(index) = tools
                 .iter()
                 .position(|existing| existing.name() == tool.name())
@@ -801,7 +805,7 @@ mod tests {
             .build()
             .unwrap();
         let bot = rt
-            .block_on(bots.create_user_bot("Helper", "", "default"))
+            .block_on(bots.create_user_bot("Helper", "", crate::bot::BotBody::default()))
             .expect("bot");
 
         let engines = WorkspaceEngines::new();
@@ -825,7 +829,7 @@ mod tests {
                 "default",
                 0,
                 tokio_util::sync::CancellationToken::new(),
-                &bot.default_session_id,
+                &bot.session_id,
                 Arc::clone(&sessions),
                 None,
             ))
@@ -834,6 +838,28 @@ mod tests {
             assert!(
                 bot_tools.iter().any(|tool| tool.name() == name),
                 "bot session is missing {name}"
+            );
+        }
+
+        // A bot-created bot is not depth-limited: it gets all three tools too.
+        let child = rt
+            .block_on(bots.create_from_bot(&bot.session_id, "Child", ""))
+            .expect("child bot");
+        let child_tools = rt
+            .block_on(build_tool_list(
+                &runtime,
+                &child.id,
+                0,
+                tokio_util::sync::CancellationToken::new(),
+                &child.session_id,
+                Arc::clone(&sessions),
+                None,
+            ))
+            .expect("child bot tool list");
+        for name in ["bot_create", "bot_list", "bot_send"] {
+            assert!(
+                child_tools.iter().any(|tool| tool.name() == name),
+                "a bot-created bot is missing {name}"
             );
         }
 

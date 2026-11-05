@@ -25,11 +25,9 @@ function bot(patch: Partial<BotInfo> = {}): BotInfo {
     id: "b1",
     name: "Researcher",
     description: "finds papers",
-    profile_id: "bot_b1",
-    owner_bot_id: null,
-    depth: 0,
+    body: { system_prompt: "", tools: {}, allowed_subagents: [] },
     created_at: 1,
-    default_session_id: "s1",
+    session_id: "s1",
     folder_id: null,
     sort_order: 1,
     ...patch,
@@ -41,8 +39,6 @@ function profile(patch: Partial<AgentProfile> = {}): AgentProfile {
     role: "primary",
     model_ref: "main/default",
     system_prompt: "old prompt",
-    temperature: 0.7,
-    max_steps: 20,
     description: "",
     tools: {},
     allowed_subagents: [],
@@ -78,7 +74,9 @@ afterEach(() => {
 });
 
 describe("BotDialog", () => {
-  it("creates from a template and reports the new bot", async () => {
+  it("creates from a template body and reports the new bot", async () => {
+    vi.mocked(getAgent).mockResolvedValue(profile());
+    vi.mocked(getAvailableTools).mockResolvedValue([]);
     const created = bot({ id: "b-new", name: "New bot" });
     const sendRpc = vi.fn(async () => ({ bot: created }));
     useConnectionStore.setState({ state: "connected", sendRpc } as never);
@@ -93,21 +91,27 @@ describe("BotDialog", () => {
     fireEvent.change(screen.getByLabelText("Description"), {
       target: { value: "does things" },
     });
+    await waitFor(() =>
+      expect(screen.getByLabelText("System prompt")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Create bot" }));
 
     await waitFor(() =>
       expect(sendRpc).toHaveBeenCalledWith("bot/create", {
         name: "New bot",
         description: "does things",
-        agent_id: "default",
+        body: {
+          system_prompt: "old prompt",
+          tools: {},
+          allowed_subagents: [],
+        },
       }),
     );
     expect(onCreated).toHaveBeenCalledWith(created);
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("loads and saves the owned profile in edit mode", async () => {
-    vi.mocked(getAgent).mockResolvedValue(profile());
+  it("loads and saves the bot body in edit mode", async () => {
     vi.mocked(getAvailableTools).mockResolvedValue([
       {
         id: "read",
@@ -142,9 +146,8 @@ describe("BotDialog", () => {
         expect.objectContaining({
           id: "b1",
           name: "Renamed",
-          profile: expect.objectContaining({
+          body: expect.objectContaining({
             system_prompt: "new prompt",
-            role: "primary",
           }),
         }),
       ),

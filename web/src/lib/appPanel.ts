@@ -1,5 +1,4 @@
 import type { AppView } from "../api/apps";
-import { dockview } from "../dockview/workbench/host";
 import { closePanel, openPanel } from "../dockview/workbench/commands";
 import i18n from "../i18n";
 
@@ -11,17 +10,8 @@ export function appViewPanelId(appId: string): string {
 
 /** Open or focus the singleton panel for a running app. */
 export function openAppPanel(app: AppView): void {
-  const id = appViewPanelId(app.id);
-  const live = dockview();
-  const existing = live?.getPanel(id);
-  if (existing) {
-    existing.api.setTitle?.(app.name);
-    existing.api.updateParameters?.({ appId: app.id, url: app.url });
-    existing.api.setActive();
-    return;
-  }
   openPanel({
-    id,
+    id: appViewPanelId(app.id),
     component: "appview",
     title: app.name,
     tabComponent: "app",
@@ -46,13 +36,6 @@ export function builtinAppName(app: Pick<AppView, "builtin_view" | "name">): str
  */
 export function openBuiltinAppView(view: string): void {
   if (view !== "gallery") return;
-  const live = dockview();
-  const existing = live?.getPanel(GALLERY_PANEL_ID);
-  if (existing) {
-    existing.api.setTitle?.(i18n.t("gallery.title"));
-    existing.api.setActive();
-    return;
-  }
   openPanel({
     id: GALLERY_PANEL_ID,
     component: "gallery",

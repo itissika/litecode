@@ -287,8 +287,6 @@ pub fn repair_agent_models_on_boot(
             profile.role,
             &profile.model_ref,
             &profile.system_prompt,
-            profile.temperature,
-            profile.max_steps,
             &profile.description,
             &profile.allowed_subagents,
         )?;
@@ -339,8 +337,6 @@ pub mod store {
                 profile.role,
                 &profile.model_ref,
                 &profile.system_prompt,
-                profile.temperature,
-                profile.max_steps,
                 &profile.description,
                 &profile.allowed_subagents,
             )?;
@@ -421,7 +417,7 @@ pub mod store {
 
     fn load_agents(conn: &Connection) -> Result<HashMap<String, AgentProfile>> {
         let mut stmt = conn.prepare(
-            "SELECT id, role, model_ref, system_prompt, temperature, max_steps, description,
+            "SELECT id, role, model_ref, system_prompt, description,
                     allowed_subagents_json
              FROM agents",
         )?;
@@ -429,7 +425,7 @@ pub mod store {
         let mut map = HashMap::new();
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
-            let allowed_json: String = row.get(7)?;
+            let allowed_json: String = row.get(5)?;
             let allowed_subagents: Vec<String> =
                 serde_json::from_str(&allowed_json).map_err(|e| {
                     LitecodeError::Config(format!(
@@ -440,9 +436,7 @@ pub mod store {
                 role: parse_role(row.get(1)?)?,
                 model_ref: row.get(2)?,
                 system_prompt: row.get(3)?,
-                temperature: row.get(4)?,
-                max_steps: row.get(5)?,
-                description: row.get(6)?,
+                description: row.get(4)?,
                 tools: HashMap::new(),
                 allowed_subagents,
             };
@@ -488,21 +482,17 @@ pub mod store {
         role: AgentRole,
         model_ref: &str,
         system_prompt: &str,
-        temperature: f64,
-        max_steps: u32,
         description: &str,
         allowed_subagents: &[String],
     ) -> Result<()> {
         let allowed_json = serde_json::to_string(allowed_subagents)?;
         conn.execute(
-            "INSERT INTO agents (id, role, model_ref, system_prompt, temperature, max_steps, description, allowed_subagents_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO agents (id, role, model_ref, system_prompt, description, allowed_subagents_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(id) DO UPDATE SET
                role = excluded.role,
                model_ref = excluded.model_ref,
                system_prompt = excluded.system_prompt,
-               temperature = excluded.temperature,
-               max_steps = excluded.max_steps,
                description = excluded.description,
                allowed_subagents_json = excluded.allowed_subagents_json",
             params![
@@ -510,8 +500,6 @@ pub mod store {
                 role_to_str(role),
                 model_ref,
                 system_prompt,
-                temperature,
-                max_steps,
                 description,
                 allowed_json,
             ],

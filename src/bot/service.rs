@@ -1,12 +1,11 @@
 //! Workspace-local bot registry and product operations.
 //!
 //! The registry is a small JSON file next to `sessions.db`. It is the only
-//! authority for bot identity; sessions stay ordinary sessions and the session
-//! model never learns about bots. Each bot owns one ordinary AgentProfile; the
-//! profile itself lives in the normal settings store and is hidden from normal
-//! agent lists by its `bot_` id prefix.
+//! authority for bot identity and body; sessions stay ordinary sessions and the
+//! session model never learns about bots. A bot's session points at the bot id,
+//! never at a settings agent profile.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
@@ -15,34 +14,23 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::config::DocId;
-use crate::config::schema::{AgentProfile, AgentRole};
+use crate::config::schema::AgentToolBinding;
 use crate::config::settings_writer::SettingsWriter;
 use crate::runtime::RuntimeHandle;
 use crate::session::SessionService;
 use crate::session::delete::{DeleteSessionError, RemovedSessionCleanup};
 use crate::types::UserInput;
 
-/// Current on-disk registry shape.
-const BOT_REGISTRY_VERSION: u32 = 1;
+/// Current on-disk registry shape. Version 4 is single-authority: the record
+/// owns the body and points at one ordinary session by `session_id`.
+const BOT_REGISTRY_VERSION: u32 = 4;
 /// Hard cap for one workspace. User-created and bot-created bots share it.
 pub const MAX_BOTS_PER_WORKSPACE: usize = 16;
-/// A user creates depth 0; that bot may create one depth-1 bot, which may not
-/// create further bots.
-pub const MAX_BOT_DEPTH: u32 = 1;
-/// Bot-owned agent profiles use this reserved id prefix. Normal primary-agent
-/// pickers and Settings -> Agents filter the prefix out; `get_agent` still
-/// resolves the profile by id for the bot editor.
-pub const BOT_PROFILE_PREFIX: &str = "bot_";
 /// Bot folders are session-folder rows with this reserved id prefix. Sessions
 /// never move into one; bots never move into an unprefixed folder.
 pub const BOT_FOLDER_PREFIX: &str = "bot-folder-";
 const MAX_BOT_NAME_CHARS: usize = 48;
 const MAX_BOT_DESCRIPTION_CHARS: usize = 280;
-
-/// A profile id owned by a bot rather than exposed as a user primary agent.
-pub fn is_bot_profile_id(id: &str) -> bool {
-    id.starts_with(BOT_PROFILE_PREFIX)
-}
 
 /// A folder owned by the bot domain rather than the session domain.
 pub fn is_bot_folder_id(id: &str) -> bool {
@@ -64,22 +52,18 @@ pub enum BotError {
     InvalidName,
     #[error("bot message is required")]
     EmptyMessage,
+    #[error("more than one bot is named '{0}'; use the bot id")]
+    AmbiguousTarget(String),
     #[error("this workspace already has {MAX_BOTS_PER_WORKSPACE} bots")]
     QuotaExceeded,
-    #[error("bot creation depth is limited to {max}")]
-    DepthExceeded { max: u32 },
     #[error("this session is not a bot session")]
     NotBotSession,
     #[error("bot registry: {0}")]
     Registry(String),
     #[error("session: {0}")]
     Session(String),
-    #[error("agent template not found: {0}")]
-    TemplateNotFound(String),
-    #[error("bot agent profile not found: {0}")]
-    ProfileNotFound(String),
-    #[error("bot template must be a primary agent")]
-    InvalidTemplate,
+    #[error("bot session is missing: {0}")]
+    SessionMissing(String),
     #[error("this bot is running; stop it before changing capability or deleting it")]
     Busy,
     #[error("session folder not found: {0}")]
@@ -88,8 +72,6 @@ pub enum BotError {
     FolderScope(String),
     #[error("bot settings: {0}")]
     Settings(String),
-    #[error("bot does not own its agent profile")]
-    ProfileNotOwned,
 }
 
 impl From<crate::types::LitecodeError> for BotError {
@@ -98,35 +80,73 @@ impl From<crate::types::LitecodeError> for BotError {
     }
 }
 
-/// One durable bot identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One durable bot identity and its single ordinary session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BotRecord {
     pub id: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
-    /// Bot-owned AgentProfile id. Legacy registries called this `agent_id`;
-    /// serde accepts that name so an existing workspace upgrades in place.
-    #[serde(default, alias = "agent_id")]
-    pub profile_id: String,
-    /// `None` means the user created this bot. A bot-created bot points at its
-    /// creator, which is also how depth is audited.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_bot_id: Option<String>,
-    #[serde(default)]
-    pub depth: u32,
     pub created_at: i64,
-    /// Ordinary session driven by `SessionService`. Empty only while a create
-    /// is being reserved in-process.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub default_session_id: String,
-    /// Bot-scoped sidebar folder id (`bot-folder-...`). Bot folders share the
-    /// `session_folders` table but never mix with session folders.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub folder_id: Option<String>,
+    /// The bot's one ordinary session. Empty only while a create is being
+    /// reserved in-process. Legacy registries called this `default_session_id`.
+    #[serde(
+        default,
+        alias = "default_session_id",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub session_id: String,
+    /// The authoritative capability body. Resolved into tool selection,
+    /// permissions, and the system prompt through `bot::resolve_agent_for_session`.
+    #[serde(flatten)]
+    pub body: BotBody,
+    /// Single placement: ungrouped, a bot folder, or another bot.
+    #[serde(default, skip_serializing_if = "BotPosition::is_none")]
+    pub position: BotPosition,
     /// Manual order inside the bot group. New bots get max + 1.
     #[serde(default)]
     pub sort_order: i64,
+}
+
+/// The bot-owned capability body. This is the one authority for a bot's prompt,
+/// tool selection, and allowed subagents; settings profiles are read only for
+/// the one-time cutover.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BotBody {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub system_prompt: String,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tools: HashMap<String, AgentToolBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_subagents: Vec<String>,
+}
+
+/// Where a bot lives in the product tree. Exactly one placement; variants are
+/// mutually exclusive by construction instead of nullable sibling fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BotPosition {
+    #[default]
+    None,
+    Folder {
+        id: String,
+    },
+    Bot {
+        id: String,
+    },
+}
+
+impl BotPosition {
+    pub fn folder_id(&self) -> Option<&str> {
+        match self {
+            Self::Folder { id } => Some(id),
+            _ => None,
+        }
+    }
+
+    fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
 }
 
 /// One change to the workspace bot directory. Forwarded to every websocket as
@@ -137,17 +157,17 @@ pub enum BotEvent {
     Updated(BotRecord),
     Removed {
         bot_id: String,
-        default_session_id: Option<String>,
+        session_id: Option<String>,
     },
 }
 
-/// Fields accepted by `bot/update`. Identity, folder, and capability are
-/// independent: a running bot may be renamed, but its profile cannot change.
+/// Fields accepted by `bot/update`. Identity, folder, and body are
+/// independent: a running bot may be renamed, but its body cannot change.
 #[derive(Debug, Default)]
 pub struct BotUpdate {
     pub name: Option<String>,
     pub description: Option<String>,
-    pub profile: Option<AgentProfile>,
+    pub body: Option<BotBody>,
     pub folder_id: Option<String>,
     pub clear_folder: bool,
     pub sort_order: Option<i64>,
@@ -169,8 +189,6 @@ pub type BotTurnRunner = Arc<dyn Fn(&str) + Send + Sync>;
 /// Workspace-local bot directory and delivery facade.
 pub struct BotService {
     service: Arc<SessionService>,
-    /// Weak to avoid SettingsWriter -> runtime -> BotService -> SettingsWriter.
-    settings: Weak<SettingsWriter>,
     /// Weak to avoid RuntimeHandle -> BotService -> RuntimeHandle.
     runtime: Option<Weak<RwLock<RuntimeHandle>>>,
     project: String,
@@ -188,103 +206,93 @@ impl BotService {
         project: impl Into<String>,
         path: PathBuf,
     ) -> Result<Self, BotError> {
-        let mut bots = load_registry(&path)?;
+        // Loading also promotes the legacy `folder_id` key into `position`
+        // and collects the old identity-profile ids for one-time cleanup.
+        let loaded = load_registry(&path)?;
+        let mut bots = loaded.bots;
+        let mut changed = loaded.legacy_shape;
         let mut docs = Vec::new();
-        let mut changed = false;
 
-        // Upgrade legacy bots whose profile id still points at a user template.
-        // The profile is copied once per bot; shared templates are never
-        // mutated or deleted by bot lifecycle.
-        let mut used_profiles: HashSet<String> = settings
-            .load_settings()
-            .map_err(|error| BotError::Settings(error.to_string()))?
-            .agents
-            .keys()
-            .cloned()
-            .collect();
         for bot in &mut bots {
             // Folders created before bot folders existed are session folders.
             // Ungroup those bots instead of leaving a cross-domain placement.
             if bot
-                .folder_id
-                .as_deref()
+                .position
+                .folder_id()
                 .is_some_and(|folder| !is_bot_folder_id(folder))
             {
-                bot.folder_id = None;
+                bot.position = BotPosition::None;
                 changed = true;
             }
-            if bot.profile_id.is_empty() {
+        }
+
+        // A record written before the built-in prompt expansion may still hold
+        // a marker. Expand it in place; expanded text is not a marker, so this
+        // pass is idempotent.
+        for bot in &mut bots {
+            let expanded = super::expand_builtin_prompt(&bot.body.system_prompt);
+            if expanded != bot.body.system_prompt {
+                bot.body.system_prompt = expanded;
+                changed = true;
+            }
+        }
+
+        // One-time identity migration: the bot session's agent id becomes the
+        // bot id. A missing session is not recreated; bot/open reports it.
+        for bot in &bots {
+            if bot.session_id.is_empty() {
                 continue;
             }
-            let loaded = settings
+            match service.meta(&bot.session_id) {
+                Ok(meta) => {
+                    if meta.agent_id != bot.id && !service.is_session_busy_blocking(&bot.session_id)
+                    {
+                        service.set_agent_id(&bot.session_id, bot.id.clone())?;
+                    }
+                }
+                Err(crate::types::LitecodeError::SessionNotFound(_)) => {}
+                Err(error) => return Err(BotError::Session(error.to_string())),
+            }
+        }
+
+        // Delete the old identity profiles named by the v3 records. Never
+        // delete a protected agent or one still referenced by another session.
+        if !loaded.legacy_profile_ids.is_empty() {
+            let settings_snapshot = settings
                 .load_settings()
                 .map_err(|error| BotError::Settings(error.to_string()))?;
-            // An owned id is derived from this bot's id. Any other id (an old
-            // shared template, or even another bot's profile) must be copied.
-            if owns_profile(bot) && loaded.agents.contains_key(&bot.profile_id) {
-                continue;
-            }
-            let template = loaded
-                .agents
-                .get(&bot.profile_id)
-                .cloned()
-                .or_else(|| loaded.agents.get("default").cloned());
-            let Some(template) = template else {
-                tracing::warn!(
-                    bot_id = %bot.id,
-                    template = %bot.profile_id,
-                    "bot profile migration skipped: template is missing"
-                );
-                continue;
-            };
-            if template.role != AgentRole::Primary {
-                tracing::warn!(
-                    bot_id = %bot.id,
-                    template = %bot.profile_id,
-                    "bot profile migration skipped: template is not primary"
-                );
-                continue;
-            }
-            let profile_id = unique_profile_id(&bot.id, &used_profiles);
-            let mut profile = template;
-            profile.role = AgentRole::Primary;
-            match settings.write_bot_agent(&profile_id, profile) {
-                Ok(ack) => {
-                    docs.extend(ack.docs);
-                    if !bot.default_session_id.is_empty()
-                        && service.meta(&bot.default_session_id).is_ok()
-                        && let Err(error) =
-                            service.set_agent_id(&bot.default_session_id, profile_id.clone())
-                    {
-                        tracing::warn!(
-                            bot_id = %bot.id,
-                            session_id = %bot.default_session_id,
-                            %error,
-                            "bot profile migrated but the default session could not be rebound"
-                        );
-                    }
-                    bot.profile_id = profile_id.clone();
-                    used_profiles.insert(profile_id);
-                    changed = true;
+            let sessions = service
+                .list_sessions()
+                .map_err(|error| BotError::Session(error.to_string()))?;
+            for profile_id in loaded.legacy_profile_ids {
+                if profile_id.is_empty()
+                    || crate::config::schema::PROTECTED_AGENT_IDS.contains(&profile_id.as_str())
+                    || !settings_snapshot.agents.contains_key(&profile_id)
+                    || sessions.iter().any(|row| row.agent_id == profile_id)
+                {
+                    continue;
                 }
-                Err(error) => {
-                    tracing::warn!(
-                        bot_id = %bot.id,
-                        template = %bot.profile_id,
+                match settings.delete_agent(&profile_id) {
+                    Ok(ack) => docs.extend(ack.docs),
+                    Err(error) => tracing::warn!(
+                        profile = %profile_id,
                         %error,
-                        "bot profile migration failed; keeping the old profile id"
-                    );
+                        "legacy bot identity profile was not deleted"
+                    ),
                 }
             }
         }
+
         if changed {
+            // Rewrite the pre-v4 shape only after the session rebind and legacy
+            // profile cleanup succeeded. A failed save leaves the old file for
+            // the next start to retry.
             save_registry(&path, &bots)?;
         }
 
         let (events, _) = broadcast::channel(64);
         let service = Self {
             service,
-            settings: Arc::downgrade(&settings),
             runtime,
             project: project.into(),
             path,
@@ -317,14 +325,14 @@ impl BotService {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .iter()
-            .filter(|bot| !bot.default_session_id.is_empty())
+            .filter(|bot| !bot.session_id.is_empty())
             .cloned()
             .collect();
         sort_records(&mut bots);
         bots
     }
 
-    /// The bot whose default session is `session_id`.
+    /// The bot whose session is `session_id`.
     pub fn bot_for_session(&self, session_id: &str) -> Option<BotRecord> {
         if session_id.is_empty() {
             return None;
@@ -333,7 +341,7 @@ impl BotService {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .iter()
-            .find(|bot| bot.default_session_id == session_id)
+            .find(|bot| bot.session_id == session_id)
             .cloned()
     }
 
@@ -348,25 +356,24 @@ impl BotService {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .iter()
-            .filter(|bot| !bot.default_session_id.is_empty())
+            .filter(|bot| !bot.session_id.is_empty())
             .find(|bot| bot.id == needle || bot.name.to_lowercase() == folded)
             .cloned()
     }
 
-    /// User-created bot: depth 0, no owner, copied from a visible primary
-    /// agent template.
+    /// User-created bot: ungrouped, body supplied by the caller.
     pub async fn create_user_bot(
         &self,
         name: &str,
         description: &str,
-        template_agent_id: &str,
+        body: BotBody,
     ) -> Result<BotRecord, BotError> {
-        self.create(name, description, template_agent_id, None)
+        self.create(name, description, body, BotPosition::None)
             .await
     }
 
-    /// Bot-created bot: inherits a copy of the caller's owned profile and
-    /// records the owner. It never shares the caller's profile id.
+    /// Bot-created bot: inherits a copy of the caller's body and is placed
+    /// under the caller. It never gets a settings agent profile.
     pub async fn create_from_bot(
         &self,
         caller_session_id: &str,
@@ -376,26 +383,30 @@ impl BotService {
         let caller = self
             .bot_for_session(caller_session_id)
             .ok_or(BotError::NotBotSession)?;
-        if caller.depth >= MAX_BOT_DEPTH {
-            return Err(BotError::DepthExceeded { max: MAX_BOT_DEPTH });
-        }
-        self.create(name, description, &caller.profile_id, Some(&caller))
-            .await
+        self.create(
+            name,
+            description,
+            caller.body.clone(),
+            BotPosition::Bot {
+                id: caller.id.clone(),
+            },
+        )
+        .await
     }
 
     async fn create(
         &self,
         name: &str,
         description: &str,
-        template_agent_id: &str,
-        owner: Option<&BotRecord>,
+        body: BotBody,
+        position: BotPosition,
     ) -> Result<BotRecord, BotError> {
+        let body = BotBody {
+            system_prompt: super::expand_builtin_prompt(&body.system_prompt),
+            ..body
+        };
         let name = normalize_name(name)?;
         let description = normalize_description(description);
-        let depth = owner.map(|bot| bot.depth + 1).unwrap_or(0);
-        if depth > MAX_BOT_DEPTH {
-            return Err(BotError::DepthExceeded { max: MAX_BOT_DEPTH });
-        }
 
         // Reserve the identity before the async session create so concurrent
         // creates cannot mint two bots with the same name or exceed the quota.
@@ -414,12 +425,10 @@ impl BotService {
                 id: ulid::Ulid::new().to_string(),
                 name,
                 description,
-                profile_id: String::new(),
-                owner_bot_id: owner.map(|bot| bot.id.clone()),
-                depth,
                 created_at: now_ms(),
-                default_session_id: String::new(),
-                folder_id: None,
+                session_id: String::new(),
+                body,
+                position,
                 sort_order: state.iter().map(|bot| bot.sort_order).max().unwrap_or(0) + 1,
             };
             state.push(record.clone());
@@ -427,45 +436,31 @@ impl BotService {
         };
 
         // A cancelled create (for example, a dropped RPC future) must not leave
-        // a reservation, a profile, or a session behind.
+        // a reservation or a session behind.
         let mut reservation = Reservation {
             service: self,
             id: record.id.clone(),
-            profile_id: None,
             session_id: None,
             committed: false,
         };
 
-        let allow_bot_template = owner.is_some();
-        let (profile_id, profile) =
-            self.create_owned_profile(&record.id, template_agent_id, allow_bot_template)?;
-        reservation.profile_id = Some(profile_id.clone());
-
-        let model_ref = self.model_for_profile(&profile_id, &profile);
+        // The session's agent id is the bot id itself; there is no profile.
+        let model_ref = self.model_for(&record.id);
         let session_id = match self
             .service
-            .open_session(&self.project, &profile_id, model_ref.as_deref())
+            .open_session(&self.project, &record.id, model_ref.as_deref())
             .await
         {
             Ok(session_id) => session_id,
-            Err(error) => {
-                if self.discard_profile(&profile_id) {
-                    reservation.profile_id = None;
-                }
-                return Err(error.into());
-            }
+            Err(error) => return Err(error.into()),
         };
         reservation.session_id = Some(session_id.clone());
 
         let mut committed = record;
-        committed.profile_id = profile_id;
-        committed.default_session_id = session_id;
+        committed.session_id = session_id;
         if let Err(error) = self.commit(committed.clone()) {
-            if self.discard_session(&committed.default_session_id).await {
+            if self.discard_session(&committed.session_id).await {
                 reservation.session_id = None;
-            }
-            if self.discard_profile(&committed.profile_id) {
-                reservation.profile_id = None;
             }
             return Err(error);
         }
@@ -474,39 +469,20 @@ impl BotService {
         Ok(committed)
     }
 
-    /// Ensure a bot still has a live default session, recreating it if the user
-    /// deleted the old one. Returns the refreshed bot.
-    pub async fn ensure_default_session(&self, bot_id: &str) -> Result<BotRecord, BotError> {
+    /// Open a bot only when its one session still exists. Missing sessions are
+    /// reported; a bot session is never recreated on read.
+    pub fn open(&self, bot_id: &str) -> Result<BotRecord, BotError> {
         let record = self
             .find(bot_id)
             .ok_or_else(|| BotError::NotFound(bot_id.to_string()))?;
-        if self.session_exists(&record.default_session_id)? {
-            self.rebind_session_agent(&record)?;
-            return Ok(record);
+        if !self.session_exists(&record.session_id)? {
+            return Err(BotError::SessionMissing(record.session_id));
         }
-        if !owns_profile(&record) {
-            return Err(BotError::ProfileNotOwned);
-        }
-        let profile = self
-            .load_profile(&record.profile_id)?
-            .ok_or_else(|| BotError::ProfileNotFound(record.profile_id.clone()))?;
-        let model_ref = self.model_for_profile(&record.profile_id, &profile);
-        let session_id = self
-            .service
-            .open_session(&self.project, &record.profile_id, model_ref.as_deref())
-            .await?;
-        let mut updated = record;
-        updated.default_session_id = session_id;
-        if let Err(error) = self.commit(updated.clone()) {
-            self.discard_session(&updated.default_session_id).await;
-            return Err(error);
-        }
-        self.emit(BotEvent::Updated(updated.clone()));
-        Ok(updated)
+        Ok(record)
     }
 
-    /// Update identity, folder/order, and/or the owned capability profile.
-    /// Capability changes are rejected while the bot's own turn is running.
+    /// Update identity, folder/order, and/or the authoritative body.
+    /// Body changes are rejected while the bot's own turn is running.
     pub async fn update(&self, bot_id: &str, update: BotUpdate) -> Result<BotRecord, BotError> {
         let current = self
             .find(bot_id)
@@ -529,7 +505,7 @@ impl BotService {
             next.description = normalize_description(&description);
         }
         if update.clear_folder {
-            next.folder_id = None;
+            next.position = BotPosition::None;
         } else if let Some(folder_id) = update.folder_id {
             if !self
                 .service
@@ -543,103 +519,42 @@ impl BotService {
             if !is_bot_folder_id(&folder_id) {
                 return Err(BotError::FolderScope(folder_id));
             }
-            next.folder_id = Some(folder_id);
+            next.position = BotPosition::Folder { id: folder_id };
         }
         if let Some(sort_order) = update.sort_order {
             next.sort_order = sort_order;
         }
 
-        let Some(profile_update) = update.profile else {
-            self.commit(next.clone())?;
-            self.emit(BotEvent::Updated(next.clone()));
-            return Ok(next);
-        };
-
-        if !owns_profile(&current) {
-            return Err(BotError::ProfileNotOwned);
-        }
-        if self
-            .service
-            .is_session_busy_blocking(&current.default_session_id)
-        {
-            return Err(BotError::Busy);
-        }
-        if self.session_exists(&current.default_session_id)? {
-            self.rebind_session_agent(&current)?;
-        }
-        let profile_id = current.profile_id.clone();
-        let old_profile = self
-            .load_profile(&profile_id)?
-            .ok_or_else(|| BotError::ProfileNotFound(profile_id.clone()))?;
-        let old_session_model = if current.default_session_id.is_empty() {
-            None
-        } else {
-            self.service
-                .session_model_id(&current.default_session_id)
-                .or_else(|| {
-                    self.service
-                        .meta(&current.default_session_id)
-                        .ok()
-                        .and_then(|meta| meta.model_id)
-                })
-        };
-
-        let mut new_profile = profile_update;
-        new_profile.role = AgentRole::Primary;
-        self.write_profile(&profile_id, new_profile.clone())?;
-        let saved_profile = self.load_profile(&profile_id)?.unwrap_or(new_profile);
-        let model_changed = saved_profile.model_ref != old_profile.model_ref;
-        if model_changed
-            && !current.default_session_id.is_empty()
-            && self.session_exists(&current.default_session_id)?
-        {
-            let model = normalized_model(&saved_profile);
-            if let Err(error) = self
-                .service
-                .set_session_model_id(&current.default_session_id, model)
+        if let Some(body) = update.body {
+            if !current.session_id.is_empty()
+                && self.service.is_session_busy_blocking(&current.session_id)
             {
-                let _ = self.write_profile(&profile_id, old_profile.clone());
-                return Err(error.into());
+                return Err(BotError::Busy);
             }
+            next.body = BotBody {
+                system_prompt: super::expand_builtin_prompt(&body.system_prompt),
+                ..body
+            };
         }
 
-        if let Err(error) = self.commit(next.clone()) {
-            let _ = self.write_profile(&profile_id, old_profile);
-            if model_changed && !current.default_session_id.is_empty() {
-                let _ = self
-                    .service
-                    .set_session_model_id(&current.default_session_id, old_session_model);
-            }
-            return Err(error);
-        }
+        self.commit(next.clone())?;
         self.emit(BotEvent::Updated(next.clone()));
         Ok(next)
     }
 
-    /// Delete the bot, its owned profile, and its default session. A running
-    /// bot is never deleted silently.
+    /// Delete the bot and its one session. Children take its position. A
+    /// running bot is never deleted silently.
     pub async fn delete(&self, bot_id: &str) -> Result<BotRecord, BotError> {
         let record = self
             .find(bot_id)
             .ok_or_else(|| BotError::NotFound(bot_id.to_string()))?;
-        if !record.default_session_id.is_empty()
-            && self
-                .service
-                .is_session_busy_blocking(&record.default_session_id)
+        if !record.session_id.is_empty()
+            && self.service.is_session_busy_blocking(&record.session_id)
         {
             return Err(BotError::Busy);
         }
 
-        let owned_profile = owns_profile(&record);
-        let saved_profile = if owned_profile {
-            self.load_profile(&record.profile_id)?
-        } else {
-            None
-        };
-
-        if !record.default_session_id.is_empty()
-            && self.session_exists(&record.default_session_id)?
-        {
+        if !record.session_id.is_empty() && self.session_exists(&record.session_id)? {
             let hub = self.subagent_hub();
             let cleanup = |session_id: &str| {
                 if let Some(hub) = &hub {
@@ -648,7 +563,7 @@ impl BotService {
             };
             match self
                 .service
-                .delete_session_tree(&cleanup, &record.default_session_id)
+                .delete_session_tree(&cleanup, &record.session_id)
                 .await
             {
                 Ok(_) => {}
@@ -660,21 +575,15 @@ impl BotService {
             }
         }
 
-        if owned_profile && saved_profile.is_some() {
-            self.delete_profile(&record.profile_id)?;
-        }
-        if let Err(error) = self.remove_record(&record.id) {
-            if let Some(profile) = saved_profile {
-                let _ = self.write_profile(&record.profile_id, profile);
-            }
-            return Err(error);
+        let (removed, promoted) = self.remove_record_with_promotion(&record.id)?;
+        for bot in promoted {
+            self.emit(BotEvent::Updated(bot));
         }
         self.emit(BotEvent::Removed {
-            bot_id: record.id.clone(),
-            default_session_id: (!record.default_session_id.is_empty())
-                .then(|| record.default_session_id.clone()),
+            bot_id: removed.id.clone(),
+            session_id: (!removed.session_id.is_empty()).then(|| removed.session_id.clone()),
         });
-        Ok(record)
+        Ok(removed)
     }
 
     /// Session folders are shared. Deleting a folder ungroups bots that used it
@@ -685,8 +594,8 @@ impl BotService {
             let mut next = state.clone();
             let mut changed_ids = HashSet::new();
             for bot in &mut next {
-                if bot.folder_id.as_deref() == Some(folder_id) {
-                    bot.folder_id = None;
+                if bot.position.folder_id() == Some(folder_id) {
+                    bot.position = BotPosition::None;
                     changed_ids.insert(bot.id.clone());
                 }
             }
@@ -731,37 +640,50 @@ impl BotService {
         if message.is_empty() {
             return Err(BotError::EmptyMessage);
         }
-        let target = self
-            .find(target)
-            .ok_or_else(|| BotError::NotFound(target.to_string()))?;
-        let target = self.ensure_default_session(&target.id).await?;
+        let target = self.resolve_target(target)?;
+        if !self.session_exists(&target.session_id)? {
+            return Err(BotError::SessionMissing(target.session_id));
+        }
 
-        let text = format!("[from bot {}]\n{}", caller.name, message);
+        let text = format!(
+            "[from bot id={} name={}]\n{}",
+            caller.id, caller.name, message
+        );
         self.service
-            .enqueue_user_input(&target.default_session_id, UserInput::text(text))?;
+            .enqueue_user_input(&target.session_id, UserInput::text(text))?;
         if let Some(runner) = self.turn_runner.get() {
-            runner(&target.default_session_id);
+            runner(&target.session_id);
         }
         Ok(target)
     }
 
-    /// Heal a default session that still points at a shared template (an old
-    /// registry whose migration could not run, or an externally edited row).
-    fn rebind_session_agent(&self, bot: &BotRecord) -> Result<(), BotError> {
-        let meta = self.service.meta(&bot.default_session_id)?;
-        if meta.agent_id != bot.profile_id
-            && !self
-                .service
-                .is_session_busy_blocking(&bot.default_session_id)
-        {
-            self.service
-                .set_agent_id(&bot.default_session_id, bot.profile_id.clone())?;
+    /// Resolve a bot_send target. An exact id wins; a name must be unique.
+    fn resolve_target(&self, target: &str) -> Result<BotRecord, BotError> {
+        let needle = target.trim();
+        if needle.is_empty() {
+            return Err(BotError::NotFound(target.to_string()));
         }
-        Ok(())
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(bot) = state
+            .iter()
+            .find(|bot| !bot.session_id.is_empty() && bot.id == needle)
+        {
+            return Ok(bot.clone());
+        }
+        let folded = needle.to_lowercase();
+        let matches: Vec<&BotRecord> = state
+            .iter()
+            .filter(|bot| !bot.session_id.is_empty() && bot.name.to_lowercase() == folded)
+            .collect();
+        match matches.as_slice() {
+            [bot] => Ok((*bot).clone()),
+            [] => Err(BotError::NotFound(needle.to_string())),
+            _ => Err(BotError::AmbiguousTarget(needle.to_string())),
+        }
     }
 
     /// Durable existence check. status only sees sessions hydrated in this
-    /// process, so a restart must not treat an on-disk default session as gone.
+    /// process, so a restart must not treat an on-disk session as gone.
     fn session_exists(&self, session_id: &str) -> Result<bool, BotError> {
         if session_id.is_empty() {
             return Ok(false);
@@ -771,86 +693,6 @@ impl BotService {
             Err(crate::types::LitecodeError::SessionNotFound(_)) => Ok(false),
             Err(error) => Err(BotError::Session(error.to_string())),
         }
-    }
-
-    /// Load the bot-owned profile from the normal settings store.
-    fn load_profile(&self, profile_id: &str) -> Result<Option<AgentProfile>, BotError> {
-        let settings = self.settings()?;
-        let loaded = settings
-            .load_settings()
-            .map_err(|error| BotError::Settings(error.to_string()))?;
-        Ok(loaded.agents.get(profile_id).cloned())
-    }
-
-    /// Copy a template profile into a new bot-owned profile. The template is
-    /// never mutated or shared.
-    fn create_owned_profile(
-        &self,
-        bot_id: &str,
-        template_agent_id: &str,
-        allow_bot_template: bool,
-    ) -> Result<(String, AgentProfile), BotError> {
-        if !allow_bot_template && is_bot_profile_id(template_agent_id) {
-            return Err(BotError::InvalidTemplate);
-        }
-        let settings = self.settings()?;
-        let loaded = settings
-            .load_settings()
-            .map_err(|error| BotError::Settings(error.to_string()))?;
-        let template = loaded
-            .agents
-            .get(template_agent_id)
-            .cloned()
-            .ok_or_else(|| BotError::TemplateNotFound(template_agent_id.to_string()))?;
-        if template.role != AgentRole::Primary {
-            return Err(BotError::InvalidTemplate);
-        }
-        let used: HashSet<String> = loaded.agents.keys().cloned().collect();
-        let profile_id = unique_profile_id(bot_id, &used);
-        let mut profile = template;
-        profile.role = AgentRole::Primary;
-        let ack = settings
-            .write_bot_agent(&profile_id, profile.clone())
-            .map_err(|error| BotError::Settings(error.to_string()))?;
-        self.apply_docs(&ack.docs);
-        // A read-back can fail transiently after a successful commit. Keep the
-        // profile we just wrote so the create path still owns a cleanup handle.
-        let saved = settings
-            .load_settings()
-            .ok()
-            .and_then(|loaded| loaded.agents.get(&profile_id).cloned())
-            .unwrap_or(profile);
-        Ok((profile_id, saved))
-    }
-
-    fn write_profile(&self, profile_id: &str, profile: AgentProfile) -> Result<(), BotError> {
-        if !is_bot_profile_id(profile_id) {
-            return Err(BotError::ProfileNotOwned);
-        }
-        let settings = self.settings()?;
-        let ack = settings
-            .write_bot_agent(profile_id, profile)
-            .map_err(|error| BotError::Settings(error.to_string()))?;
-        self.apply_docs(&ack.docs);
-        Ok(())
-    }
-
-    fn delete_profile(&self, profile_id: &str) -> Result<(), BotError> {
-        if !is_bot_profile_id(profile_id) {
-            return Err(BotError::ProfileNotOwned);
-        }
-        let settings = self.settings()?;
-        let ack = settings
-            .delete_bot_agent(profile_id)
-            .map_err(|error| BotError::Settings(error.to_string()))?;
-        self.apply_docs(&ack.docs);
-        Ok(())
-    }
-
-    fn settings(&self) -> Result<Arc<SettingsWriter>, BotError> {
-        self.settings
-            .upgrade()
-            .ok_or_else(|| BotError::Settings("settings writer is not available".into()))
     }
 
     fn apply_docs(&self, docs: &[DocId]) {
@@ -873,18 +715,17 @@ impl BotService {
         Some(Arc::clone(&runtime.subagent_hub))
     }
 
-    fn model_for_profile(&self, profile_id: &str, profile: &AgentProfile) -> Option<String> {
-        normalized_model(profile).or_else(|| {
-            let runtime = self.runtime.as_ref().and_then(Weak::upgrade)?;
-            let runtime = runtime.read().ok()?;
-            crate::runtime::seed_model_ref(&runtime.resolved, profile_id)
-        })
+    /// Seed the session with the first runnable model. The bot body has no
+    /// model; only the session row does.
+    fn model_for(&self, bot_id: &str) -> Option<String> {
+        let runtime = self.runtime.as_ref().and_then(Weak::upgrade)?;
+        let runtime = runtime.read().ok()?;
+        crate::runtime::seed_model_ref(&runtime.resolved, bot_id)
     }
 
     /// Best-effort removal of a session opened for a bot that could not be
-    /// recorded. The session is brand new and idle, so this is the rollback
-    /// half of "identity + default session"; cleanup failure is logged but
-    /// never masks the registry error.
+    /// recorded. The session is brand new and idle; cleanup failure is logged
+    /// but never masks the registry error.
     async fn discard_session(&self, session_id: &str) -> bool {
         match self
             .service
@@ -897,20 +738,6 @@ impl BotService {
                     session_id,
                     %error,
                     "could not remove the unowned bot session"
-                );
-                false
-            }
-        }
-    }
-
-    fn discard_profile(&self, profile_id: &str) -> bool {
-        match self.delete_profile(profile_id) {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::warn!(
-                    profile_id,
-                    %error,
-                    "could not remove the unowned bot profile"
                 );
                 false
             }
@@ -936,22 +763,40 @@ impl BotService {
         Ok(())
     }
 
-    fn remove_record(&self, bot_id: &str) -> Result<BotRecord, BotError> {
+    /// Remove the record and re-place its direct children at the removed
+    /// bot's own position. The registry write is atomic; memory follows disk.
+    fn remove_record_with_promotion(
+        &self,
+        bot_id: &str,
+    ) -> Result<(BotRecord, Vec<BotRecord>), BotError> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let index = state
+        let mut next = state.clone();
+        let index = next
             .iter()
             .position(|bot| bot.id == bot_id)
             .ok_or_else(|| BotError::NotFound(bot_id.to_string()))?;
-        let removed = state.remove(index);
-        if let Err(error) = save_registry(&self.path, &state) {
-            state.insert(index, removed.clone());
+        let removed = next.remove(index);
+        let replacement = removed.position.clone();
+        let mut promoted = Vec::new();
+        for bot in &mut next {
+            if bot.position
+                == (BotPosition::Bot {
+                    id: removed.id.clone(),
+                })
+            {
+                bot.position = replacement.clone();
+                promoted.push(bot.clone());
+            }
+        }
+        if let Err(error) = save_registry(&self.path, &next) {
             return Err(error);
         }
-        Ok(removed)
+        *state = next;
+        Ok((removed, promoted))
     }
 
-    /// Remove an uncommitted in-memory reservation and its best-effort
-    /// profile/session cleanup.
+    /// Remove an uncommitted in-memory reservation. The background cleanup
+    /// still removes any session that was already opened.
     fn remove_reserved(&self, bot_id: &str) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.retain(|bot| bot.id != bot_id);
@@ -967,11 +812,10 @@ impl BotService {
 
 /// Remove an uncommitted in-memory reservation on every exit path, including
 /// async cancellation of the create call. A session delete is handed to a
-/// background task because Drop cannot await; a profile delete is synchronous.
+/// background task because Drop cannot await.
 struct Reservation<'a> {
     service: &'a BotService,
     id: String,
-    profile_id: Option<String>,
     session_id: Option<String>,
     committed: bool,
 }
@@ -982,9 +826,6 @@ impl Drop for Reservation<'_> {
             return;
         }
         self.service.remove_reserved(&self.id);
-        if let Some(profile_id) = self.profile_id.take() {
-            self.service.discard_profile(&profile_id);
-        }
         let Some(session_id) = self.session_id.take() else {
             return;
         };
@@ -1009,36 +850,6 @@ impl Drop for Reservation<'_> {
             }
         });
     }
-}
-
-/// True when the profile id is derived from this bot's own id. A legacy
-/// shared template or another bot's profile is not owned.
-fn owns_profile(bot: &BotRecord) -> bool {
-    let base = format!("{BOT_PROFILE_PREFIX}{}", bot.id.to_lowercase());
-    bot.profile_id == base
-        || bot
-            .profile_id
-            .strip_prefix(&base)
-            .is_some_and(|rest| rest.starts_with('_'))
-}
-
-fn unique_profile_id(bot_id: &str, used: &HashSet<String>) -> String {
-    let base = format!("{BOT_PROFILE_PREFIX}{}", bot_id.to_lowercase());
-    if !used.contains(&base) {
-        return base;
-    }
-    for suffix in 2.. {
-        let candidate = format!("{base}_{suffix}");
-        if !used.contains(&candidate) {
-            return candidate;
-        }
-    }
-    unreachable!("unbounded bot profile id suffixes")
-}
-
-fn normalized_model(profile: &AgentProfile) -> Option<String> {
-    let model = profile.model_ref.trim();
-    (!model.is_empty()).then(|| model.to_string())
 }
 
 fn sort_records(bots: &mut [BotRecord]) {
@@ -1079,18 +890,119 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn load_registry(path: &Path) -> Result<Vec<BotRecord>, BotError> {
+struct LoadedRegistry {
+    bots: Vec<BotRecord>,
+    /// The file still uses a pre-v4 shape and must be rewritten.
+    legacy_shape: bool,
+    /// Identity-profile ids named by a v3 record. They are deleted once the
+    /// session no longer references them.
+    legacy_profile_ids: Vec<String>,
+}
+
+fn load_registry(path: &Path) -> Result<LoadedRegistry, BotError> {
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok(LoadedRegistry {
+            bots: Vec::new(),
+            legacy_shape: false,
+            legacy_profile_ids: Vec::new(),
+        });
     }
     let text = fs::read_to_string(path)
         .map_err(|error| BotError::Registry(format!("read {}: {error}", path.display())))?;
     if text.trim().is_empty() {
-        return Ok(Vec::new());
+        return Ok(LoadedRegistry {
+            bots: Vec::new(),
+            legacy_shape: false,
+            legacy_profile_ids: Vec::new(),
+        });
     }
-    let file: BotRegistryFile = serde_json::from_str(&text)
+    let mut value: serde_json::Value = serde_json::from_str(&text)
         .map_err(|error| BotError::Registry(format!("parse {}: {error}", path.display())))?;
-    Ok(file.bots)
+    let legacy_position = promote_legacy_folder_ids(&mut value);
+    let legacy_profile_ids = collect_legacy_profile_ids(&value);
+    let file: BotRegistryFile = serde_json::from_value(value)
+        .map_err(|error| BotError::Registry(format!("parse {}: {error}", path.display())))?;
+    let legacy_shape =
+        file.version < BOT_REGISTRY_VERSION || legacy_position || !legacy_profile_ids.is_empty();
+    Ok(LoadedRegistry {
+        bots: file.bots,
+        legacy_shape,
+        legacy_profile_ids,
+    })
+}
+
+/// Collect the old `profile_id` / `agent_id` values before serde drops them.
+fn collect_legacy_profile_ids(file: &serde_json::Value) -> Vec<String> {
+    let Some(bots) = file.get("bots").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    for bot in bots {
+        let Some(object) = bot.as_object() else {
+            continue;
+        };
+        for key in ["profile_id", "agent_id"] {
+            if let Some(id) = object.get(key).and_then(serde_json::Value::as_str) {
+                if !id.is_empty() {
+                    ids.push(id.to_string());
+                    break;
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// Accept the pre-`position` registry shape. Returns true when a legacy
+/// `folder_id` key was present, so the caller rewrites the file once.
+fn promote_legacy_folder_ids(file: &mut serde_json::Value) -> bool {
+    let Some(bots) = file
+        .get_mut("bots")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return false;
+    };
+    let mut changed = false;
+    for bot in bots {
+        let Some(object) = bot.as_object_mut() else {
+            continue;
+        };
+        let Some(folder) = object.remove("folder_id") else {
+            continue;
+        };
+        changed = true;
+        if object.contains_key("position") {
+            continue;
+        }
+        if let Some(folder) = folder.as_str().filter(|folder| !folder.is_empty()) {
+            object.insert(
+                "position".to_string(),
+                serde_json::json!({ "kind": "folder", "id": folder }),
+            );
+        }
+    }
+    changed
+}
+
+fn registry_prev_path(path: &Path) -> PathBuf {
+    path.with_extension("json.prev")
+}
+
+/// Restore the file this failed write started from. `prev` is copied before
+/// every replace, so a Windows remove+rename failure never falls back to an
+/// older migration snapshot.
+fn restore_registry(path: &Path, prev: &Path) {
+    if !prev.exists() {
+        return;
+    }
+    if let Err(error) = fs::copy(prev, path) {
+        tracing::warn!(
+            prev = %prev.display(),
+            path = %path.display(),
+            %error,
+            "bot registry write rollback failed"
+        );
+    }
 }
 
 fn save_registry(path: &Path, bots: &[BotRecord]) -> Result<(), BotError> {
@@ -1102,7 +1014,7 @@ fn save_registry(path: &Path, bots: &[BotRecord]) -> Result<(), BotError> {
         version: BOT_REGISTRY_VERSION,
         bots: bots
             .iter()
-            .filter(|bot| !bot.default_session_id.is_empty())
+            .filter(|bot| !bot.session_id.is_empty())
             .cloned()
             .collect(),
     };
@@ -1111,28 +1023,65 @@ fn save_registry(path: &Path, bots: &[BotRecord]) -> Result<(), BotError> {
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, body)
         .map_err(|error| BotError::Registry(format!("write {}: {error}", tmp.display())))?;
-    if let Err(first) = fs::rename(&tmp, path) {
-        // Windows cannot replace an existing file with rename.
-        if path.exists() {
-            let _ = fs::remove_file(path);
+    let prev = registry_prev_path(path);
+    let had_original = path.exists();
+    if had_original {
+        fs::copy(path, &prev)
+            .map_err(|error| BotError::Registry(format!("backup {}: {error}", prev.display())))?;
+    }
+    if let Err(error) = replace_registry(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        if had_original {
+            restore_registry(path, &prev);
         }
-        fs::rename(&tmp, path).map_err(|_| {
-            let _ = fs::remove_file(&tmp);
-            BotError::Registry(format!("replace {}: {first}", path.display()))
-        })?;
+        return Err(BotError::Registry(format!(
+            "replace {}: {error}",
+            path.display()
+        )));
     }
     Ok(())
+}
+
+/// Replace the registry file. Windows cannot rename over an existing file, so
+/// the fallback removes it first; a failure in that window is handled by the
+/// caller restoring the per-write `prev` copy.
+fn replace_registry(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_REGISTRY_REPLACE.with(std::cell::Cell::get) {
+        FAIL_REGISTRY_REPLACE.with(|flag| flag.set(false));
+        let _ = fs::remove_file(path);
+        return Err(std::io::Error::other("injected registry replace failure"));
+    }
+    match fs::rename(tmp, path) {
+        Ok(()) => Ok(()),
+        Err(first) => {
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+            fs::rename(tmp, path)
+                .map_err(|second| std::io::Error::new(second.kind(), format!("{first}; {second}")))
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only seam: fail the next replace after the target file is removed,
+    /// mirroring the Windows remove+rename window.
+    static FAIL_REGISTRY_REPLACE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::TurnGuard;
+    use crate::config::schema::{AgentProfile, AgentRole};
     use crate::session::SessionManager;
     use tempfile::TempDir;
 
     struct Fixture {
         dir: TempDir,
+        manager: Arc<SessionManager>,
         settings: Arc<SettingsWriter>,
         bots: Arc<BotService>,
     }
@@ -1143,7 +1092,7 @@ mod tests {
             Arc::new(TurnGuard::new()),
             dir.path().join("sessions.db").to_string_lossy().to_string(),
         ));
-        let service = Arc::new(SessionService::new(manager));
+        let service = Arc::new(SessionService::new(Arc::clone(&manager)));
         let settings = Arc::new(SettingsWriter::with_path(
             dir.path().join("settings.db"),
             Arc::new(TurnGuard::new()),
@@ -1169,137 +1118,563 @@ mod tests {
         );
         Fixture {
             dir,
+            manager,
             settings,
             bots,
         }
     }
 
+    fn body(prompt: &str) -> BotBody {
+        BotBody {
+            system_prompt: prompt.into(),
+            ..BotBody::default()
+        }
+    }
+
+    fn body_with_tool(prompt: &str, tool: &str) -> BotBody {
+        BotBody {
+            system_prompt: prompt.into(),
+            tools: HashMap::from([(
+                tool.to_string(),
+                AgentToolBinding {
+                    enabled: true,
+                    preset: None,
+                    allowed_tools: None,
+                },
+            )]),
+            ..BotBody::default()
+        }
+    }
+
+    fn resolved(f: &Fixture) -> crate::config::ResolvedConfig {
+        crate::config::ConfigManager::resolve_without_catalog(
+            f.settings.load_settings().expect("settings"),
+            crate::config::WorkspaceState::new(f.dir.path()),
+        )
+    }
+
     #[tokio::test]
-    async fn create_persists_identity_and_default_session() {
+    async fn create_persists_identity_and_session_without_a_profile() {
         let f = fixture();
         let bot = f
             .bots
-            .create_user_bot("Researcher", "finds papers", "default")
+            .create_user_bot("Researcher", "finds papers", body("hello"))
             .await
             .expect("create");
 
-        assert!(!bot.default_session_id.is_empty());
-        assert!(is_bot_profile_id(&bot.profile_id));
-        assert_eq!(
-            f.bots.bot_for_session(&bot.default_session_id),
-            Some(bot.clone())
-        );
+        assert!(!bot.session_id.is_empty());
+        assert_eq!(f.bots.bot_for_session(&bot.session_id), Some(bot.clone()));
         assert_eq!(f.bots.find("researcher"), Some(bot.clone()));
-        assert!(
-            f.settings
-                .load_settings()
-                .expect("settings")
-                .agents
-                .contains_key(&bot.profile_id)
+        assert_eq!(
+            f.bots
+                .service()
+                .meta(&bot.session_id)
+                .expect("session")
+                .agent_id,
+            bot.id
         );
-
-        let reloaded = BotService::new(
-            Arc::clone(f.bots.service()),
-            Arc::clone(&f.settings),
-            None,
-            "/proj",
-            f.dir.path().join("bots.json"),
-        )
-        .expect("reload");
-        assert_eq!(reloaded.list(), vec![bot]);
+        let settings = f.settings.load_settings().expect("settings");
+        assert!(!settings.agents.contains_key(&bot.id));
     }
 
     #[tokio::test]
     async fn duplicate_names_and_quota_are_rejected() {
         let f = fixture();
         f.bots
-            .create_user_bot("One", "", "default")
+            .create_user_bot("One", "", body(""))
             .await
             .expect("first");
         let error = f
             .bots
-            .create_user_bot("one", "", "default")
+            .create_user_bot("one", "", body(""))
             .await
             .expect_err("duplicate");
         assert!(matches!(error, BotError::NameTaken(_)));
 
         for index in 1..MAX_BOTS_PER_WORKSPACE {
             f.bots
-                .create_user_bot(&format!("Bot {index}"), "", "default")
+                .create_user_bot(&format!("Bot {index}"), "", body(""))
                 .await
                 .expect("under quota");
         }
         let error = f
             .bots
-            .create_user_bot("Overflow", "", "default")
+            .create_user_bot("Overflow", "", body(""))
             .await
             .expect_err("quota");
         assert!(matches!(error, BotError::QuotaExceeded));
     }
 
     #[tokio::test]
-    async fn each_bot_owns_an_independent_profile() {
+    async fn bot_created_bot_gets_the_callers_body_and_position() {
         let f = fixture();
-        let first = f
+        let parent = f
             .bots
-            .create_user_bot("First", "", "default")
+            .create_user_bot("Parent", "", body_with_tool("parent prompt", "read"))
             .await
-            .expect("first");
-        let second = f
+            .expect("parent");
+        let child = f
             .bots
-            .create_user_bot("Second", "", "default")
+            .create_from_bot(&parent.session_id, "Child", "")
             .await
-            .expect("second");
-        assert_ne!(first.profile_id, second.profile_id);
+            .expect("child");
 
-        let mut edit =
-            f.settings.load_settings().expect("settings").agents[&first.profile_id].clone();
-        edit.system_prompt = "only first changes".into();
+        assert_eq!(
+            child.position,
+            BotPosition::Bot {
+                id: parent.id.clone()
+            }
+        );
+        assert_eq!(child.body, parent.body);
+        assert_eq!(
+            f.bots
+                .service()
+                .meta(&child.session_id)
+                .expect("child session")
+                .agent_id,
+            child.id
+        );
+        assert!(
+            !f.settings
+                .load_settings()
+                .expect("settings")
+                .agents
+                .contains_key(&child.id)
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_parent_replaces_its_position_for_children() {
+        let f = fixture();
+        let folder_id = f
+            .bots
+            .service()
+            .create_session_folder("Team", true)
+            .expect("bot folder");
+        let parent = f
+            .bots
+            .create_user_bot("Parent", "", body("parent"))
+            .await
+            .expect("parent");
         f.bots
             .update(
-                &first.id,
+                &parent.id,
                 BotUpdate {
-                    profile: Some(edit),
+                    folder_id: Some(folder_id.clone()),
+                    ..BotUpdate::default()
+                },
+            )
+            .await
+            .expect("move parent");
+        let child = f
+            .bots
+            .create_from_bot(&parent.session_id, "Child", "")
+            .await
+            .expect("child");
+
+        f.bots.delete(&parent.id).await.expect("delete parent");
+        assert_eq!(
+            f.bots.find(&child.id).expect("child").position,
+            BotPosition::Folder {
+                id: folder_id.clone()
+            }
+        );
+        assert!(f.bots.service().status(&parent.session_id).is_none());
+        assert!(f.bots.service().status(&child.session_id).is_some());
+
+        let root = f
+            .bots
+            .create_user_bot("Root", "", body("root"))
+            .await
+            .expect("root");
+        let root_child = f
+            .bots
+            .create_from_bot(&root.session_id, "Root child", "")
+            .await
+            .expect("root child");
+        f.bots.delete(&root.id).await.expect("delete root");
+        assert_eq!(
+            f.bots.find(&root_child.id).expect("root child").position,
+            BotPosition::None
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_bot_session_errors_and_is_not_recreated() {
+        let f = fixture();
+        let bot = f
+            .bots
+            .create_user_bot("Gone", "", body(""))
+            .await
+            .expect("bot");
+        f.bots
+            .service()
+            .delete_session_tree(&|_: &str| {}, &bot.session_id)
+            .await
+            .expect("delete session");
+
+        let error = f.bots.open(&bot.id).expect_err("missing session");
+        assert!(matches!(error, BotError::SessionMissing(_)));
+        assert!(
+            f.bots
+                .service()
+                .list_sessions()
+                .expect("sessions")
+                .is_empty(),
+            "open must not recreate the session"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_identity_profile_is_deleted_after_session_rebind() {
+        let f = fixture();
+        let bot = f
+            .bots
+            .create_user_bot("Legacy", "", body("record body"))
+            .await
+            .expect("bot");
+        f.manager
+            .set_agent_id(&bot.session_id, "legacy_identity".into())
+            .expect("old agent id");
+        f.settings
+            .write_agent(
+                "legacy_identity",
+                AgentProfile {
+                    role: AgentRole::Primary,
+                    system_prompt: "legacy profile body".into(),
+                    ..AgentProfile::default()
+                },
+            )
+            .expect("legacy profile");
+
+        let registry = f.dir.path().join("bots.json");
+        let mut file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&registry).expect("registry")).expect("json");
+        let row = file["bots"]
+            .as_array_mut()
+            .expect("bots")
+            .iter_mut()
+            .find(|row| row["id"] == bot.id)
+            .expect("bot row");
+        row.as_object_mut()
+            .expect("record")
+            .insert("profile_id".into(), serde_json::json!("legacy_identity"));
+        fs::write(
+            &registry,
+            serde_json::to_string_pretty(&file).expect("json"),
+        )
+        .expect("write registry");
+
+        let restarted = BotService::new(
+            Arc::clone(f.bots.service()),
+            Arc::clone(&f.settings),
+            None,
+            "/proj",
+            registry.clone(),
+        )
+        .expect("restart");
+        let opened = restarted.open(&bot.id).expect("open");
+        assert_eq!(opened.body.system_prompt, "record body");
+        assert_eq!(
+            f.bots
+                .service()
+                .meta(&bot.session_id)
+                .expect("session")
+                .agent_id,
+            bot.id
+        );
+        let settings = f.settings.load_settings().expect("settings");
+        assert!(!settings.agents.contains_key("legacy_identity"));
+        assert!(settings.agents.contains_key("default"));
+        let resolution = crate::bot::resolve_agent_for_session(
+            &resolved(&f),
+            Some(&restarted),
+            &bot.session_id,
+            &bot.id,
+        )
+        .expect("bot body");
+        assert_eq!(resolution.profile.system_prompt, "record body");
+        assert!(resolution.profile.tools.is_empty());
+
+        let after_first = fs::read_to_string(&registry).expect("registry after restart");
+        let again = BotService::new(
+            Arc::clone(f.bots.service()),
+            Arc::clone(&f.settings),
+            None,
+            "/proj",
+            registry.clone(),
+        )
+        .expect("second restart");
+        assert_eq!(
+            fs::read_to_string(&registry).expect("registry after second restart"),
+            after_first,
+            "the v4 migration must be idempotent"
+        );
+        assert_eq!(
+            again.open(&bot.id).expect("open again").body.system_prompt,
+            "record body"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_reads_the_bot_record_and_falls_back_to_settings() {
+        let f = fixture();
+        let mut profile = f.settings.load_settings().expect("settings").agents["default"].clone();
+        profile.system_prompt = "profile prompt".into();
+        profile.tools.insert(
+            "read".into(),
+            AgentToolBinding {
+                enabled: true,
+                preset: None,
+                allowed_tools: None,
+            },
+        );
+        f.settings.write_agent("default", profile).expect("profile");
+        let bot = f
+            .bots
+            .create_user_bot("Body owner", "", body_with_tool("bot prompt", "grep"))
+            .await
+            .expect("bot");
+        let resolved = resolved(&f);
+
+        let bot_resolution = crate::bot::resolve_agent_for_session(
+            &resolved,
+            Some(f.bots.as_ref()),
+            &bot.session_id,
+            &bot.id,
+        )
+        .expect("bot body");
+        assert!(bot_resolution.is_bot());
+        assert_eq!(bot_resolution.profile.system_prompt, "bot prompt");
+        assert!(bot_resolution.profile.tools.contains_key("grep"));
+        assert!(!bot_resolution.profile.tools.contains_key("read"));
+
+        let normal = crate::bot::resolve_agent_for_session(
+            &resolved,
+            Some(f.bots.as_ref()),
+            "not-a-bot-session",
+            "default",
+        )
+        .expect("settings profile");
+        assert!(!normal.is_bot());
+        assert_eq!(normal.profile.system_prompt, "profile prompt");
+        assert!(normal.profile.tools.contains_key("read"));
+    }
+
+    #[tokio::test]
+    async fn builtin_prompt_is_owned_text_and_survives_restart() {
+        let f = fixture();
+        let created = f
+            .bots
+            .create_user_bot("Prompt owner", "", body("builtin:general"))
+            .await
+            .expect("create");
+        let default_prompt = crate::config::global_db::DEFAULT_PROMPT;
+        assert_eq!(created.body.system_prompt, default_prompt);
+        assert!(!created.body.system_prompt.contains("subagent"));
+
+        let registry = f.dir.path().join("bots.json");
+        let before_restart = fs::read_to_string(&registry).expect("registry");
+        for _ in 0..2 {
+            let restarted = BotService::new(
+                Arc::clone(f.bots.service()),
+                Arc::clone(&f.settings),
+                None,
+                "/proj",
+                registry.clone(),
+            )
+            .expect("restart");
+            assert_eq!(
+                restarted
+                    .find(&created.id)
+                    .expect("restarted bot")
+                    .body
+                    .system_prompt,
+                default_prompt,
+                "an expanded prompt must survive restart unchanged"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(&registry).expect("registry after restart"),
+            before_restart,
+            "an already expanded prompt must not be rewritten"
+        );
+
+        let resolution = crate::bot::resolve_agent_for_session(
+            &resolved(&f),
+            Some(f.bots.as_ref()),
+            &created.session_id,
+            &created.id,
+        )
+        .expect("bot body");
+        let config = crate::config::bridge::agent_config_from_profile(&resolution.profile);
+        let prompt = crate::context_pipeline::build_system_prompt(&created.id, &config, None);
+        assert!(prompt.contains("General Purpose Agent"));
+        assert!(!prompt.contains("subagent"));
+    }
+
+    #[tokio::test]
+    async fn platform_segment_is_bot_session_only_and_uses_the_record() {
+        let f = fixture();
+        let bot = f
+            .bots
+            .create_user_bot("Platform bot", "", body("body prompt"))
+            .await
+            .expect("bot");
+        let segment = crate::bot::platform_prompt(&bot);
+        assert!(segment.contains("\"Platform bot\""));
+        assert!(segment.contains(&bot.id));
+        assert!(segment.contains("[from bot id=<sender_id> name=<sender_name>]"));
+        assert!(segment.contains("bot_send"));
+        assert!(segment.contains("Do not send a courtesy message"));
+
+        let renamed = f
+            .bots
+            .update(
+                &bot.id,
+                BotUpdate {
+                    name: Some("Renamed platform bot".into()),
+                    ..BotUpdate::default()
+                },
+            )
+            .await
+            .expect("rename");
+        assert!(crate::bot::platform_prompt(&renamed).contains("Renamed platform bot"));
+
+        let resolved = resolved(&f);
+        let bot_resolution = crate::bot::resolve_agent_for_session(
+            &resolved,
+            Some(f.bots.as_ref()),
+            &bot.session_id,
+            &bot.id,
+        )
+        .expect("bot body");
+        let bot_config = crate::config::bridge::agent_config_from_profile(&bot_resolution.profile);
+        let bot_prompt = crate::context_pipeline::build_system_prompt_with_platform(
+            &bot.id,
+            &bot_config,
+            None,
+            Some(&segment),
+        );
+        assert!(bot_prompt.contains("You are bot \"Platform bot\""));
+        assert!(bot_prompt.contains("[from bot id=<sender_id> name=<sender_name>]"));
+
+        let default_profile = resolved.agents().get("default").expect("default");
+        let normal_config = crate::config::bridge::agent_config_from_profile(default_profile);
+        let normal_prompt =
+            crate::context_pipeline::build_system_prompt("default", &normal_config, None);
+        assert!(!normal_prompt.contains("You are bot"));
+        assert!(!normal_prompt.contains("[from bot id="));
+
+        let child = crate::bot::resolve_agent_for_session(
+            &resolved,
+            Some(f.bots.as_ref()),
+            "child-session",
+            "explore",
+        )
+        .expect("child profile");
+        assert!(!child.is_bot(), "a subagent child is not a bot session");
+        let child_config = crate::config::bridge::agent_config_from_profile(&child.profile);
+        let child_prompt =
+            crate::context_pipeline::build_system_prompt("explore", &child_config, None);
+        assert!(!child_prompt.contains("You are bot"));
+    }
+
+    #[tokio::test]
+    async fn step_budget_is_engine_level_for_bot_and_normal_sessions() {
+        let f = fixture();
+        let bot = f
+            .bots
+            .create_user_bot("Long task", "", body(""))
+            .await
+            .expect("bot");
+        let resolved = resolved(&f);
+        assert_eq!(
+            crate::bot::step_max_for_session(
+                &resolved,
+                Some(f.bots.as_ref()),
+                &bot.session_id,
+                &bot.id
+            ),
+            crate::bot::BOT_MAX_STEPS
+        );
+        assert!(crate::bot::BOT_MAX_STEPS >= 200_000);
+        assert_ne!(crate::bot::BOT_MAX_STEPS, 50);
+        assert_eq!(
+            crate::bot::step_max_for_session(
+                &resolved,
+                Some(f.bots.as_ref()),
+                "normal-session",
+                "default"
+            ),
+            crate::agent::AGENT_MAX_STEPS
+        );
+    }
+
+    #[tokio::test]
+    async fn body_update_is_authoritative_across_restart() {
+        let f = fixture();
+        let bot = f
+            .bots
+            .create_user_bot("Body authority", "", body("original"))
+            .await
+            .expect("create");
+        f.bots
+            .update(
+                &bot.id,
+                BotUpdate {
+                    body: Some(body("edited after cutover")),
                     ..BotUpdate::default()
                 },
             )
             .await
             .expect("update");
 
-        let settings = f.settings.load_settings().expect("settings");
+        let restarted = BotService::new(
+            Arc::clone(f.bots.service()),
+            Arc::clone(&f.settings),
+            None,
+            "/proj",
+            f.dir.path().join("bots.json"),
+        )
+        .expect("restart");
         assert_eq!(
-            settings.agents[&first.profile_id].system_prompt,
-            "only first changes"
+            restarted.find(&bot.id).expect("bot").body.system_prompt,
+            "edited after cutover"
         );
-        assert_ne!(
-            settings.agents[&second.profile_id].system_prompt,
-            "only first changes"
-        );
-    }
-
-    #[tokio::test]
-    async fn delete_removes_session_profile_and_frees_quota() {
-        let f = fixture();
-        let bot = f
-            .bots
-            .create_user_bot("Delete me", "", "default")
-            .await
-            .expect("create");
-        f.bots.delete(&bot.id).await.expect("delete");
-
-        assert!(f.bots.list().is_empty());
-        assert!(f.bots.service().status(&bot.default_session_id).is_none());
         assert!(
             !f.settings
                 .load_settings()
                 .expect("settings")
                 .agents
-                .contains_key(&bot.profile_id)
+                .contains_key(&bot.id),
+            "bot updates never write a settings profile"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_removes_session_and_frees_quota() {
+        let f = fixture();
+        let bot = f
+            .bots
+            .create_user_bot("Delete me", "", body(""))
+            .await
+            .expect("create");
+        f.bots.delete(&bot.id).await.expect("delete");
+
+        assert!(f.bots.list().is_empty());
+        assert!(f.bots.service().status(&bot.session_id).is_none());
+        assert!(
+            !f.settings
+                .load_settings()
+                .expect("settings")
+                .agents
+                .contains_key(&bot.id)
         );
 
         for index in 0..MAX_BOTS_PER_WORKSPACE {
             f.bots
-                .create_user_bot(&format!("Replacement {index}"), "", "default")
+                .create_user_bot(&format!("Replacement {index}"), "", body(""))
                 .await
                 .expect("quota released");
         }
@@ -1310,7 +1685,7 @@ mod tests {
         let f = fixture();
         let bot = f
             .bots
-            .create_user_bot("Folder bot", "", "default")
+            .create_user_bot("Folder bot", "", body(""))
             .await
             .expect("create");
         let folder_id = f
@@ -1330,11 +1705,18 @@ mod tests {
             )
             .await
             .expect("move");
-        assert_eq!(updated.folder_id.as_deref(), Some(folder_id.as_str()));
+        assert_eq!(
+            updated.position,
+            BotPosition::Folder {
+                id: folder_id.clone()
+            }
+        );
 
         f.bots.clear_folder(&folder_id);
-        let moved = f.bots.find(&bot.id).expect("bot");
-        assert!(moved.folder_id.is_none());
+        assert_eq!(
+            f.bots.find(&bot.id).expect("bot").position,
+            BotPosition::None
+        );
     }
 
     #[tokio::test]
@@ -1342,7 +1724,7 @@ mod tests {
         let f = fixture();
         let bot = f
             .bots
-            .create_user_bot("Scoped bot", "", "default")
+            .create_user_bot("Scoped bot", "", body(""))
             .await
             .expect("create");
         let session_folder = f
@@ -1365,44 +1747,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deleted_default_session_is_recreated_on_open() {
-        let f = fixture();
-        let bot = f
-            .bots
-            .create_user_bot("Recreate", "", "default")
-            .await
-            .expect("create");
-        f.bots
-            .service()
-            .delete_session_tree(&|_: &str| {}, &bot.default_session_id)
-            .await
-            .expect("delete default session");
-
-        let refreshed = f
-            .bots
-            .ensure_default_session(&bot.id)
-            .await
-            .expect("recreate");
-        assert_ne!(refreshed.default_session_id, bot.default_session_id);
-        assert!(
-            f.bots
-                .service()
-                .status(&refreshed.default_session_id)
-                .is_some()
-        );
-        assert_eq!(
-            f.bots.find(&bot.id).expect("bot").default_session_id,
-            refreshed.default_session_id
-        );
-    }
-
-    #[tokio::test]
     async fn bot_events_cover_create_update_and_delete() {
         let f = fixture();
         let mut events = f.bots.subscribe();
         let bot = f
             .bots
-            .create_user_bot("Event bot", "", "default")
+            .create_user_bot("Event bot", "", body(""))
             .await
             .expect("create");
         assert!(matches!(
@@ -1437,12 +1787,12 @@ mod tests {
         let f = fixture();
         let sender = f
             .bots
-            .create_user_bot("Sender", "", "default")
+            .create_user_bot("Sender", "", body(""))
             .await
             .expect("sender");
         let target = f
             .bots
-            .create_user_bot("Target", "", "default")
+            .create_user_bot("Target", "", body(""))
             .await
             .expect("target");
 
@@ -1454,223 +1804,78 @@ mod tests {
 
         let sent = f
             .bots
-            .send_from_bot(&sender.default_session_id, "target", "  hello  ")
+            .send_from_bot(&sender.session_id, "target", "  hello  ")
             .await
             .expect("send");
 
         assert_eq!(sent.id, target.id);
         assert_eq!(
             delivered.lock().unwrap().as_slice(),
-            std::slice::from_ref(&target.default_session_id)
+            std::slice::from_ref(&target.session_id)
         );
         let pending = f
             .bots
             .service()
-            .pending_messages_snapshot(&target.default_session_id);
+            .pending_messages_snapshot(&target.session_id);
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].text, "[from bot Sender]\nhello");
+        assert_eq!(
+            pending[0].text,
+            format!("[from bot id={} name=Sender]\nhello", sender.id)
+        );
+
+        // A unique name resolves to the id; the receipt carries the target.
+        let by_name = f
+            .bots
+            .send_from_bot(&sender.session_id, "TARGET", "again")
+            .await
+            .expect("name target");
+        assert_eq!(by_name.id, target.id);
+        assert_eq!(by_name.name, "Target");
     }
 
     #[tokio::test]
-    async fn bot_created_bots_stop_at_depth_one() {
+    async fn duplicate_bot_names_are_rejected_for_bot_send() {
         let f = fixture();
-        let user_bot = f
+        let sender = f
             .bots
-            .create_user_bot("Parent", "", "default")
+            .create_user_bot("Sender", "", body(""))
             .await
-            .expect("user bot");
-
-        assert!(matches!(
-            f.bots
-                .create_from_bot("not-a-bot-session", "Child", "")
-                .await,
-            Err(BotError::NotBotSession)
-        ));
-
-        let child = f
+            .expect("sender");
+        let first = f
             .bots
-            .create_from_bot(&user_bot.default_session_id, "Child", "")
+            .create_user_bot("Dup", "", body(""))
             .await
-            .expect("child");
-        assert_eq!(child.depth, 1);
-        assert_eq!(child.owner_bot_id.as_deref(), Some(user_bot.id.as_str()));
-        assert_ne!(child.profile_id, user_bot.profile_id);
+            .expect("first");
+        let second = f
+            .bots
+            .create_user_bot("Other", "", body(""))
+            .await
+            .expect("second");
+        {
+            let mut state = f.bots.state.lock().unwrap();
+            let other = state
+                .iter_mut()
+                .find(|bot| bot.id == second.id)
+                .expect("second");
+            other.name = first.name.clone();
+        }
 
         let error = f
             .bots
-            .create_from_bot(&child.default_session_id, "Grandchild", "")
+            .send_from_bot(&sender.session_id, "dup", "hello")
             .await
-            .expect_err("depth");
-        assert!(matches!(error, BotError::DepthExceeded { .. }));
+            .expect_err("ambiguous name");
+        assert!(matches!(error, BotError::AmbiguousTarget(_)));
     }
 
     #[tokio::test]
-    async fn legacy_bot_is_migrated_to_an_owned_profile() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let manager = Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            dir.path().join("sessions.db").to_string_lossy().to_string(),
-        ));
-        let service = Arc::new(SessionService::new(manager));
-        let settings = Arc::new(SettingsWriter::with_path(
-            dir.path().join("settings.db"),
-            Arc::new(TurnGuard::new()),
-        ));
-        settings
-            .write_agent(
-                "default",
-                AgentProfile {
-                    role: AgentRole::Primary,
-                    ..AgentProfile::default()
-                },
-            )
-            .expect("template");
-        let registry = dir.path().join("bots.json");
-        fs::write(
-            &registry,
-            serde_json::to_string_pretty(&serde_json::json!({
-                "version": 1,
-                "bots": [{
-                    "id": "legacy",
-                    "name": "Legacy",
-                    "agent_id": "default",
-                    "depth": 0,
-                    "created_at": 1,
-                    "default_session_id": "missing"
-                }]
-            }))
-            .expect("json"),
-        )
-        .expect("registry");
-
-        let bots = BotService::new(service, Arc::clone(&settings), None, "/proj", registry)
-            .expect("migrate");
-        let record = bots.find("legacy").expect("legacy bot");
-        assert!(is_bot_profile_id(&record.profile_id));
-        assert!(
-            settings
-                .load_settings()
-                .expect("settings")
-                .agents
-                .contains_key(&record.profile_id)
-        );
-    }
-
-    #[tokio::test]
-    async fn restart_finds_the_durable_default_session_instead_of_minting_one() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let settings = Arc::new(SettingsWriter::with_path(
-            dir.path().join("settings.db"),
-            Arc::new(TurnGuard::new()),
-        ));
-        settings
-            .write_agent(
-                "default",
-                AgentProfile {
-                    role: AgentRole::Primary,
-                    ..AgentProfile::default()
-                },
-            )
-            .expect("template");
-        let db_path = dir.path().join("sessions.db").to_string_lossy().to_string();
-        let (bot_id, session_id) = {
-            let manager = Arc::new(SessionManager::new_for_test(
-                Arc::new(TurnGuard::new()),
-                db_path.clone(),
-            ));
-            let service = Arc::new(SessionService::new(manager));
-            let bots = Arc::new(
-                BotService::new(
-                    Arc::clone(&service),
-                    Arc::clone(&settings),
-                    None,
-                    "/proj",
-                    dir.path().join("bots.json"),
-                )
-                .expect("bots"),
-            );
-            let bot = bots
-                .create_user_bot("Restart", "", "default")
-                .await
-                .expect("create");
-            (bot.id, bot.default_session_id)
-        };
-
-        // A fresh manager has no hydrated records; only the durable row exists.
-        let manager = Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            db_path,
-        ));
-        let service = Arc::new(SessionService::new(Arc::clone(&manager)));
-        let bots = BotService::new(
-            Arc::clone(&service),
-            Arc::clone(&settings),
-            None,
-            "/proj",
-            dir.path().join("bots.json"),
-        )
-        .expect("restarted bots");
-        assert!(service.status(&session_id).is_none());
-        let reopened = bots.ensure_default_session(&bot_id).await.expect("reopen");
-        assert_eq!(reopened.default_session_id, session_id);
-        assert_eq!(
-            service
-                .list_sessions()
-                .expect("sessions")
-                .iter()
-                .filter(|row| row.agent_id == reopened.profile_id)
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn migration_rebinds_the_default_session_to_the_owned_profile() {
+    async fn failed_registry_write_removes_the_unowned_session() {
         let f = fixture();
-        let bot = f
-            .bots
-            .create_user_bot("Legacy session", "", "default")
-            .await
-            .expect("create");
-        let registry = f.dir.path().join("bots.json");
-        let mut file: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&registry).expect("registry")).expect("json");
-        file["bots"][0]["profile_id"] = serde_json::json!("default");
-        fs::write(
-            &registry,
-            serde_json::to_string_pretty(&file).expect("json"),
-        )
-        .expect("write");
-
-        let migrated = BotService::new(
-            Arc::clone(f.bots.service()),
-            Arc::clone(&f.settings),
-            None,
-            "/proj",
-            registry,
-        )
-        .expect("migrate");
-        let migrated = migrated.find(&bot.id).expect("bot");
-        assert_ne!(migrated.profile_id, "default");
-        assert_eq!(
-            f.bots
-                .service()
-                .agent_id(&bot.default_session_id)
-                .as_deref(),
-            Some(migrated.profile_id.as_str())
-        );
-    }
-
-    #[tokio::test]
-    async fn failed_registry_write_removes_the_unowned_session_and_profile() {
-        let f = fixture();
-        // A directory at the registry path makes the atomic replace fail after
-        // the default session and bot profile have already been created.
         std::fs::create_dir(f.dir.path().join("bots.json")).expect("block registry path");
 
         let error = f
             .bots
-            .create_user_bot("Orphan", "", "default")
+            .create_user_bot("Orphan", "", body(""))
             .await
             .expect_err("registry write must fail");
         assert!(matches!(error, BotError::Registry(_)));
@@ -1684,13 +1889,54 @@ mod tests {
             "failed create must not leave a session behind"
         );
         assert!(
-            f.settings
+            !f.settings
                 .load_settings()
                 .expect("settings")
                 .agents
-                .keys()
-                .all(|id| !is_bot_profile_id(id)),
-            "failed create must not leave a bot profile behind"
+                .contains_key("Orphan")
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_write_restores_this_write_not_the_first_snapshot() {
+        let f = fixture();
+        let bot = f
+            .bots
+            .create_user_bot("Before", "", body(""))
+            .await
+            .expect("create");
+        let before_update = fs::read_to_string(f.dir.path().join("bots.json")).expect("registry");
+
+        f.bots
+            .update(
+                &bot.id,
+                BotUpdate {
+                    name: Some("After update".into()),
+                    ..BotUpdate::default()
+                },
+            )
+            .await
+            .expect("first successful write");
+        let after_update = fs::read_to_string(f.dir.path().join("bots.json")).expect("registry");
+        assert_ne!(after_update, before_update);
+
+        FAIL_REGISTRY_REPLACE.with(|flag| flag.set(true));
+        let error = f
+            .bots
+            .update(
+                &bot.id,
+                BotUpdate {
+                    name: Some("Lost update".into()),
+                    ..BotUpdate::default()
+                },
+            )
+            .await
+            .expect_err("injected replace failure");
+        assert!(matches!(error, BotError::Registry(_)));
+        assert_eq!(f.bots.find(&bot.id).expect("bot").name, "After update");
+        assert_eq!(
+            fs::read_to_string(f.dir.path().join("bots.json")).expect("registry"),
+            after_update
         );
     }
 }

@@ -16,9 +16,7 @@ pub mod workspace;
 pub mod workspace_identity;
 
 pub use binding_scope::BindingScope;
-pub use bridge::{
-    agent_config_for, agent_config_from_profile, primary_agent_infos, warn_unresolved_agent_models,
-};
+pub use bridge::{agent_config_from_profile, primary_agent_infos, warn_unresolved_agent_models};
 pub use gate::{ApplyPlan, CommitAck, DocId, EvalView, PersistDoc};
 pub use manager::ConfigManager;
 pub use path::{
@@ -52,8 +50,6 @@ pub struct AgentConfig {
     pub system_prompt: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default = "default_max_steps")]
-    pub max_steps: u32,
 }
 
 impl Default for AgentConfig {
@@ -63,13 +59,8 @@ impl Default for AgentConfig {
             model_ref: default_model_ref(),
             system_prompt: String::new(),
             description: String::new(),
-            max_steps: default_max_steps(),
         }
     }
-}
-
-fn default_max_steps() -> u32 {
-    50
 }
 
 fn default_role() -> String {

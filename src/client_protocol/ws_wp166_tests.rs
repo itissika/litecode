@@ -234,12 +234,10 @@ async fn session_list_fastlane_matches_controller_list() {
     let (reply, _) = until_reply(&mut ws, 1).await;
 
     let resolved = env.state.runtime.read().unwrap().resolved.clone();
-    let direct = crate::client_protocol::controller::build_session_list(
-        &env.state.service,
-        &resolved,
-    )
-    .await
-    .expect("direct list");
+    let direct =
+        crate::client_protocol::controller::build_session_list(&env.state.service, &resolved)
+            .await
+            .expect("direct list");
     assert_eq!(
         reply.pointer("/result/sessions").cloned().unwrap(),
         serde_json::to_value(&direct.sessions).unwrap(),
@@ -544,7 +542,7 @@ async fn startup_settled_fires_without_list_or_new() {
 }
 
 /// Bot product RPCs: create persists identity, list projects it, and open
-/// returns the bot's ordinary default session instead of minting a new one.
+/// returns the bot's ordinary session instead of minting a new one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bot_create_list_and_open_round_trip() {
     let env = env().await;
@@ -560,7 +558,11 @@ async fn bot_create_list_and_open_round_trip() {
         json!({
             "name": "Researcher",
             "description": "finds papers",
-            "agent_id": "default"
+            "body": {
+                "system_prompt": "research carefully",
+                "tools": { "read": { "enabled": true } },
+                "allowed_subagents": ["explore"]
+            }
         }),
     )
     .await;
@@ -572,40 +574,35 @@ async fn bot_create_list_and_open_round_trip() {
         .expect("bot id")
         .to_string();
     let session_id = created
-        .pointer("/result/bot/default_session_id")
+        .pointer("/result/bot/session_id")
         .and_then(Value::as_str)
-        .expect("default session")
-        .to_string();
-    let profile_id = created
-        .pointer("/result/bot/profile_id")
-        .and_then(Value::as_str)
-        .expect("owned profile")
+        .expect("bot session")
         .to_string();
     assert!(
-        crate::bot::is_bot_profile_id(&profile_id),
-        "profile id is bot-owned: {profile_id}"
+        created.pointer("/result/bot/profile_id").is_none(),
+        "the wire must not expose a settings agent id"
+    );
+    assert_eq!(
+        created
+            .pointer("/result/bot/body/system_prompt")
+            .and_then(Value::as_str),
+        Some("research carefully")
     );
     let changed = until_method(&mut events, "bot/changed").await;
     assert_eq!(
-        changed.get("params").and_then(|p| p.get("event")).and_then(Value::as_str),
+        changed
+            .get("params")
+            .and_then(|p| p.get("event"))
+            .and_then(Value::as_str),
         Some("created")
     );
     assert_eq!(
-        changed
-            .pointer("/params/bot/id")
-            .and_then(Value::as_str),
+        changed.pointer("/params/bot/id").and_then(Value::as_str),
         Some(bot_id.as_str())
     );
-    assert_eq!(
-        created.pointer("/result/bot/depth").and_then(Value::as_u64),
-        Some(0)
-    );
     assert!(
-        env.state
-            .service
-            .status(&session_id)
-            .is_some(),
-        "bot default session is a real session"
+        env.state.service.status(&session_id).is_some(),
+        "bot session is a real session"
     );
 
     send(&mut ws, 2, "bot/list", json!({})).await;
@@ -615,24 +612,30 @@ async fn bot_create_list_and_open_round_trip() {
         .and_then(Value::as_array)
         .expect("bots");
     assert_eq!(bots.len(), 1);
-    assert_eq!(bots[0].get("id").and_then(Value::as_str), Some(bot_id.as_str()));
     assert_eq!(
-        bots[0].get("default_session_id").and_then(Value::as_str),
+        bots[0].get("id").and_then(Value::as_str),
+        Some(bot_id.as_str())
+    );
+    assert_eq!(
+        bots[0].get("session_id").and_then(Value::as_str),
         Some(session_id.as_str())
     );
+    assert!(bots[0].get("profile_id").is_none());
     assert_eq!(
-        bots[0].get("profile_id").and_then(Value::as_str),
-        Some(profile_id.as_str())
+        bots[0]
+            .pointer("/body/system_prompt")
+            .and_then(Value::as_str),
+        Some("research carefully")
     );
 
-    // The owned profile exists but never appears in the normal Agents list.
+    // The bot id never appears as a settings agent.
     assert!(
-        env.state
+        !env.state
             .settings_writer
             .load_settings()
             .expect("settings")
             .agents
-            .contains_key(&profile_id)
+            .contains_key(&bot_id)
     );
     let agents_url = env
         .url
@@ -652,8 +655,8 @@ async fn bot_create_list_and_open_round_trip() {
             .as_array()
             .expect("agents")
             .iter()
-            .all(|agent| agent.get("id").and_then(Value::as_str) != Some(profile_id.as_str())),
-        "bot profile must be hidden from Settings -> Agents"
+            .all(|agent| agent.get("id").and_then(Value::as_str) != Some(bot_id.as_str())),
+        "a bot id must not appear in Settings -> Agents"
     );
     let mut hello_ws = connect(&env.url).await;
     let hello = until_method(&mut hello_ws, "server/hello").await;
@@ -662,8 +665,8 @@ async fn bot_create_list_and_open_round_trip() {
             .as_array()
             .expect("primary agents")
             .iter()
-            .all(|agent| agent.get("id").and_then(Value::as_str) != Some(profile_id.as_str())),
-        "bot profile must be hidden from the primary agent picker"
+            .all(|agent| agent.get("id").and_then(Value::as_str) != Some(bot_id.as_str())),
+        "a bot id must not appear in the primary agent picker"
     );
 
     send(&mut ws, 3, "bot/open", json!({ "id": bot_id })).await;
@@ -674,7 +677,27 @@ async fn bot_create_list_and_open_round_trip() {
         Some(session_id.as_str())
     );
 
-    // A bot's default session identity is fixed: the generic agent switch is
+    // A bot session cannot be deleted from the ordinary session surface.
+    send(&mut ws, 101, "session/delete", json!({ "id": session_id })).await;
+    let (delete_reply, _) = until_reply(&mut ws, 101).await;
+    assert!(
+        delete_reply.get("error").is_some(),
+        "session/delete must reject a bot session: {delete_reply}"
+    );
+    send(&mut ws, 102, "bot/open", json!({ "id": bot_id })).await;
+    let (reopened, _) = until_reply(&mut ws, 102).await;
+    assert!(
+        reopened.get("error").is_none(),
+        "bot remains open: {reopened}"
+    );
+    assert_eq!(
+        reopened
+            .pointer("/result/session_id")
+            .and_then(Value::as_str),
+        Some(session_id.as_str())
+    );
+
+    // A bot's session identity is fixed: the generic agent switch is
     // rejected and the session keeps its owned profile.
     send(
         &mut ws,
@@ -694,7 +717,7 @@ async fn bot_create_list_and_open_round_trip() {
             .meta(&session_id)
             .expect("bot session meta")
             .agent_id,
-        profile_id
+        bot_id
     );
 
     let registry = env
@@ -708,16 +731,11 @@ async fn bot_create_list_and_open_round_trip() {
         .parent()
         .unwrap()
         .join("bots.json");
-    assert!(registry.exists(), "bot registry must be written next to sessions.db");
+    assert!(
+        registry.exists(),
+        "bot registry must be written next to sessions.db"
+    );
 
-    let mut profile = env
-        .state
-        .settings_writer
-        .load_settings()
-        .expect("settings")
-        .agents[&profile_id]
-        .clone();
-    profile.system_prompt = "updated by the bot editor".into();
     send(
         &mut ws,
         4,
@@ -726,7 +744,11 @@ async fn bot_create_list_and_open_round_trip() {
             "id": bot_id,
             "name": "Renamed",
             "description": "edited",
-            "profile": profile,
+            "body": {
+                "system_prompt": "updated by the bot editor",
+                "tools": { "read": { "enabled": true } },
+                "allowed_subagents": ["explore"]
+            },
         }),
     )
     .await;
@@ -746,18 +768,29 @@ async fn bot_create_list_and_open_round_trip() {
     );
     assert_eq!(
         env.state
+            .bots
+            .find(&bot_id)
+            .expect("bot")
+            .body
+            .system_prompt,
+        "updated by the bot editor"
+    );
+    assert!(
+        !env.state
             .settings_writer
             .load_settings()
             .expect("settings")
-            .agents[&profile_id]
-            .system_prompt,
-        "updated by the bot editor"
+            .agents
+            .contains_key(&bot_id),
+        "bot/update must not create a settings agent"
     );
 
     send(&mut ws, 5, "bot/list", json!({})).await;
     let (listed, _) = until_reply(&mut ws, 5).await;
     assert_eq!(
-        listed.pointer("/result/bots/0/name").and_then(Value::as_str),
+        listed
+            .pointer("/result/bots/0/name")
+            .and_then(Value::as_str),
         Some("Renamed")
     );
 
@@ -789,6 +822,6 @@ async fn bot_create_list_and_open_round_trip() {
             .load_settings()
             .expect("settings")
             .agents
-            .contains_key(&profile_id)
+            .contains_key(&bot_id)
     );
 }

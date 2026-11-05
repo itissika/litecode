@@ -25,8 +25,6 @@ CREATE TABLE IF NOT EXISTS agents (
     role                    TEXT NOT NULL,
     model_ref               TEXT NOT NULL,
     system_prompt           TEXT NOT NULL DEFAULT '',
-    temperature             REAL NOT NULL DEFAULT 0.7,
-    max_steps               INTEGER NOT NULL DEFAULT 50,
     description             TEXT NOT NULL DEFAULT '',
     allowed_subagents_json  TEXT NOT NULL DEFAULT '[]'
 );

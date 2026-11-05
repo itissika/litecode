@@ -870,13 +870,13 @@ pub fn bot_changed(event: &crate::bot::BotEvent) -> Value {
         ),
         crate::bot::BotEvent::Removed {
             bot_id,
-            default_session_id,
+            session_id,
         } => notification(
             super::protocol::methods::BOT_CHANGED,
             json!({
                 "event": "deleted",
                 "bot_id": bot_id,
-                "default_session_id": default_session_id,
+                "session_id": session_id,
             }),
         ),
     }

@@ -1,14 +1,13 @@
 import { create } from "zustand";
 
-import type { BotChanged, BotInfo } from "../api/types";
-import type { AgentProfile } from "../api/settings";
+import type { BotBody, BotChanged, BotInfo } from "../api/types";
 import { attachSiblingStores, useConnectionStore } from "./connectionStore";
 import { useToastStore } from "./toastStore";
 
 export interface BotUpdateInput {
   name?: string;
   description?: string;
-  profile?: AgentProfile;
+  body?: BotBody;
   folder_id?: string;
   clear_folder?: boolean;
   sort_order?: number;
@@ -22,7 +21,7 @@ interface BotState {
   createBot: (
     name: string,
     description: string,
-    templateAgentId: string,
+    body: BotBody,
   ) => Promise<BotInfo | null>;
   updateBot: (id: string, update: BotUpdateInput) => Promise<BotInfo | null>;
   deleteBot: (id: string) => Promise<boolean>;
@@ -79,14 +78,14 @@ export const useBotStore = create<BotState>((set, get) => ({
       });
   },
 
-  createBot: async (name, description, templateAgentId) => {
+  createBot: async (name, description, body) => {
     try {
       const result = await useConnectionStore
         .getState()
         .sendRpc<{ bot: BotInfo }>("bot/create", {
           name,
           description,
-          agent_id: templateAgentId,
+          body,
         });
       botListGeneration += 1;
       set((state) => ({

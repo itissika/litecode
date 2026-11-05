@@ -34,21 +34,18 @@ interface ExploreStep {
   md: string;
   /** Settings page the step lives on. */
   section: SettingsSection;
-  /** Row to centre when the step is opened (see SettingsDialog anchors). */
-  anchor?: string;
 }
 
 /**
- * The explore list. v1 consumes only the max-steps step; the shape is here so
- * later steps are data, not UI.
+ * The explore list. v1 consumes only the agent prompt step; the shape is here
+ * so later steps are data, not UI.
  */
 const EXPLORE_STEPS: ExploreStep[] = [
   {
-    id: "max-steps",
+    id: "agents",
     emoji: "🧗",
-    md: "Long tasks may need ~200.",
+    md: "Review the default agent's prompt.",
     section: "agents",
-    anchor: "max-steps",
   },
 ];
 
@@ -145,7 +142,7 @@ function announceConfigured(): void {
     const settings = useSettingsStore.getState();
     if (!settings.open) return;
     settings.setSelectedAgentId("default");
-    void settings.setSection(step.section, { anchor: step.anchor });
+    void settings.setSection(step.section);
   }, KEY_STEER_DELAY_MS);
 }
 

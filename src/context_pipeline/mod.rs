@@ -39,7 +39,7 @@ pub use context_meter::{
 };
 pub use env::{Context, build_context};
 pub use limits::{COMPACT_MAX_OUTPUT_TOKENS, KEEP_RECENT_CAP, MAX_PROMPT_RESERVE_TOKENS};
-pub use system::build_system_prompt;
+pub use system::{build_system_prompt, build_system_prompt_with_platform};
 pub use view::{HotView, PreparedView};
 
 /// Result of persisting a transcript delta.
@@ -74,8 +74,7 @@ struct PipelineState {
 
 /// L1 context pipeline: single prepare / commit entry for LLM-bound context.
 #[cfg(test)]
-static FAIL_NEXT_SYNC_READ: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static FAIL_NEXT_SYNC_READ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
 fn fail_next_sync_read() {

@@ -110,7 +110,7 @@ describe("key edge", () => {
     vi.useRealTimers();
   });
 
-  it("celebrates immediately, ignores clicks, then opens Max steps", () => {
+  it("celebrates immediately, ignores clicks, then opens Agents", () => {
     noteHello(summary());
     useSettingsStore.setState({ open: true });
 
@@ -128,7 +128,7 @@ describe("key edge", () => {
     vi.advanceTimersByTime(1);
     expect(areClicksLocked()).toBe(false);
     expect(setSelectedAgentId).toHaveBeenCalledWith("default");
-    expect(setSection).toHaveBeenCalledWith("agents", { anchor: "max-steps" });
+    expect(setSection).toHaveBeenCalledWith("agents");
 
     noteSummary(summary({ configured_provider_count: 2, active_model_count: 3 }));
     vi.advanceTimersByTime(KEY_STEER_DELAY_MS);
@@ -147,7 +147,7 @@ describe("key edge", () => {
     expect(toastIds()).toEqual([READY_TOAST_CHANNEL]);
     expect(areClicksLocked()).toBe(true);
     vi.advanceTimersByTime(KEY_STEER_DELAY_MS);
-    expect(setSection).toHaveBeenCalledWith("agents", { anchor: "max-steps" });
+    expect(setSection).toHaveBeenCalledWith("agents");
   });
 
   it("never steers when the dialog is closed by then", () => {
@@ -203,6 +203,6 @@ describe("key edge", () => {
     expect(toastIds()).toEqual([READY_TOAST_CHANNEL]);
     expect(areClicksLocked()).toBe(true);
     vi.advanceTimersByTime(KEY_STEER_DELAY_MS);
-    expect(setSection).toHaveBeenCalledWith("agents", { anchor: "max-steps" });
+    expect(setSection).toHaveBeenCalledWith("agents");
   });
 });

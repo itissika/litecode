@@ -4,11 +4,11 @@ use crate::types::{LitecodeError, Result};
 
 const SCHEMA: &str = include_str!("schema.sql");
 
-/// Current schema epoch. v7→v8 moves agent tool intent to `preset`.
-pub const CURRENT_USER_VERSION: i32 = 8;
+/// Current schema epoch. v8→v9 drops per-agent temperature/max_steps.
+pub const CURRENT_USER_VERSION: i32 = 9;
 
 /// Epochs that `migrate()` can lift to current without archive-rebuild.
-pub const MIGRATABLE_FROM: &[i32] = &[5, 6, 7];
+pub const MIGRATABLE_FROM: &[i32] = &[5, 6, 7, 8];
 
 pub fn can_migrate_in_place(version: i32) -> bool {
     version == 0 || version == CURRENT_USER_VERSION || MIGRATABLE_FROM.contains(&version)
@@ -37,7 +37,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
 
     Err(LitecodeError::Config(format!(
-        "incompatible global DB user_version {version} (expected {CURRENT_USER_VERSION}, 5, 6, 7, or empty). \
+        "incompatible global DB user_version {version} (expected {CURRENT_USER_VERSION}, 5, 6, 7, 8, or empty). \
          Schema is delete-and-rebuild only; `global_db::open` archives the old file and recreates."
     )))
 }
@@ -65,6 +65,18 @@ fn ensure_current_columns(conn: &Connection) -> Result<()> {
     ensure_custom_tools_columns(conn)?;
     ensure_provider_credentials_table(conn)?;
     ensure_disabled_models_table(conn)?;
+    ensure_agents_drop_limits(conn)?;
+    Ok(())
+}
+
+/// Remove the dead per-agent sampling/step columns from older databases. New
+/// databases are created without them by `schema.sql`.
+fn ensure_agents_drop_limits(conn: &Connection) -> Result<()> {
+    for column in ["temperature", "max_steps"] {
+        if column_exists(conn, "agents", column)? {
+            conn.execute(&format!("ALTER TABLE agents DROP COLUMN {column}"), [])?;
+        }
+    }
     Ok(())
 }
 

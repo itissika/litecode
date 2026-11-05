@@ -15,8 +15,8 @@ use crate::runtime::observer::{
 use crate::session::data::command::WorkingSetState;
 use crate::session::event::Seq;
 use crate::session::manager::{
-    CompactionCancelReason, CompactionCommitKind, CompactionEpisodeLease,
-    CompactionFailureAction, EpisodeOutcome, SessionManager,
+    CompactionCancelReason, CompactionCommitKind, CompactionEpisodeLease, CompactionFailureAction,
+    EpisodeOutcome, SessionManager,
 };
 #[cfg(test)]
 use crate::session::working::WorkingPayload;
@@ -136,7 +136,6 @@ pub struct CompactionPlan {
     /// only: the shadow range is still `kept_from_seq`.
     pub at: Seq,
 }
-
 
 /// One compaction input. Ordinary compaction receives only sealed rows;
 /// overflow receives the full surface plus the live tail. The input is frozen
@@ -392,10 +391,7 @@ fn read_compaction_state_result(
     ))
 }
 
-fn read_compaction_surface(
-    sessions: &SessionManager,
-    session_id: &str,
-) -> Result<Vec<WorkingRow>> {
+fn read_compaction_surface(sessions: &SessionManager, session_id: &str) -> Result<Vec<WorkingRow>> {
     read_compaction_state_result(sessions, session_id).map(|state| state.rows)
 }
 
@@ -409,14 +405,8 @@ fn measure_final_surface(
     let mut view = vec![checkpoint.model_item()];
     view.extend(rows_after_cut.iter().map(|row| row.payload.model_item()));
     let view_seqs = vec![None; view.len()];
-    let projection = super::project_model_view(
-        &view,
-        &view_seqs,
-        None,
-        None,
-        &request.target,
-        data_root,
-    );
+    let projection =
+        super::project_model_view(&view, &view_seqs, None, None, &request.target, data_root);
     ContextMeter::measure_local(
         request.context_window,
         request.target.context_window_max,
@@ -451,33 +441,32 @@ fn commit_mechanical_plan(
             replacements: replacements.clone(),
         };
         match sessions.mutate_blocking(mutation) {
-                Ok(receipt) => match receipt.outcome {
-                    crate::session::data::command::CommitKind::Replaced { seqs } => {
-                        return Ok(seqs);
-                    }
-                    other => {
-                        return Err(LitecodeError::ToolExecution(format!(
-                            "mechanical prune mutation returned unexpected outcome {other:?}"
-                        )));
-                    }
-                },
-                Err(error) if is_corruption_error(&error) => {
-                    panic!("mechanical prune commit hit a corrupt session store: {error}");
+            Ok(receipt) => match receipt.outcome {
+                crate::session::data::command::CommitKind::Replaced { seqs } => {
+                    return Ok(seqs);
                 }
-                Err(error)
-                    if is_retryable_write_error(&error)
-                        && attempt < COMPACTION_STORE_RETRIES =>
-                {
-                    tracing::warn!(
-                        attempt,
-                        error = %error,
-                        "mechanical prune commit blocked; retrying"
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
+                other => {
+                    return Err(LitecodeError::ToolExecution(format!(
+                        "mechanical prune mutation returned unexpected outcome {other:?}"
+                    )));
                 }
-                Err(error) => return Err(error),
+            },
+            Err(error) if is_corruption_error(&error) => {
+                panic!("mechanical prune commit hit a corrupt session store: {error}");
             }
+            Err(error)
+                if is_retryable_write_error(&error) && attempt < COMPACTION_STORE_RETRIES =>
+            {
+                tracing::warn!(
+                    attempt,
+                    error = %error,
+                    "mechanical prune commit blocked; retrying"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => return Err(error),
         }
+    }
     Err(LitecodeError::SessionStorage(
         "mechanical prune commit kept contending".into(),
     ))
@@ -530,33 +519,32 @@ fn commit_summary_plan(
             provider_id: Some(request.target.provider_id.clone()),
         };
         match sessions.mutate_blocking(mutation) {
-                Ok(receipt) => match receipt.outcome {
-                    crate::session::data::command::CommitKind::Compacted { seq } => {
-                        return Ok(seq);
-                    }
-                    other => {
-                        return Err(LitecodeError::ToolExecution(format!(
-                            "summary compact mutation returned unexpected outcome {other:?}"
-                        )));
-                    }
-                },
-                Err(error) if is_corruption_error(&error) => {
-                    panic!("summary commit hit a corrupt session store: {error}");
+            Ok(receipt) => match receipt.outcome {
+                crate::session::data::command::CommitKind::Compacted { seq } => {
+                    return Ok(seq);
                 }
-                Err(error)
-                    if is_retryable_write_error(&error)
-                        && attempt < COMPACTION_STORE_RETRIES =>
-                {
-                    tracing::warn!(
-                        attempt,
-                        error = %error,
-                        "summary commit blocked; retrying"
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
+                other => {
+                    return Err(LitecodeError::ToolExecution(format!(
+                        "summary compact mutation returned unexpected outcome {other:?}"
+                    )));
                 }
-                Err(error) => return Err(error),
+            },
+            Err(error) if is_corruption_error(&error) => {
+                panic!("summary commit hit a corrupt session store: {error}");
             }
+            Err(error)
+                if is_retryable_write_error(&error) && attempt < COMPACTION_STORE_RETRIES =>
+            {
+                tracing::warn!(
+                    attempt,
+                    error = %error,
+                    "summary commit blocked; retrying"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => return Err(error),
         }
+    }
     Err(LitecodeError::SessionStorage(
         "summary commit kept contending".into(),
     ))
@@ -814,25 +802,21 @@ fn commit_plan(
     }
     match plan {
         CompactionCommitPlan::Mechanical { plan, telemetry } => {
-            let replacement_seqs = match commit_mechanical_plan(
-                sessions,
-                session_id,
-                operation_id,
-                &plan,
-            ) {
-                Ok(seqs) => seqs,
-                Err(error) => {
-                    record_compact_failure(
-                        sessions,
-                        session_id,
-                        trigger,
-                        Some(operation_id),
-                        &error,
-                        telemetry,
-                    );
-                    return Err(error);
-                }
-            };
+            let replacement_seqs =
+                match commit_mechanical_plan(sessions, session_id, operation_id, &plan) {
+                    Ok(seqs) => seqs,
+                    Err(error) => {
+                        record_compact_failure(
+                            sessions,
+                            session_id,
+                            trigger,
+                            Some(operation_id),
+                            &error,
+                            telemetry,
+                        );
+                        return Err(error);
+                    }
+                };
             Ok(CommittedCompaction {
                 kind: CompactionCommitKind::Mechanical {
                     replacements: plan.replacements.len(),
@@ -843,28 +827,25 @@ fn commit_plan(
             })
         }
         CompactionCommitPlan::Summary(commit) => {
-            let checkpoint_seq = match commit_summary_plan(
-                sessions,
-                session_id,
-                operation_id,
-                request,
-                &commit,
-            ) {
-                Ok(seq) => seq,
-                Err(error) => {
-                    record_compact_failure(
-                        sessions,
-                        session_id,
-                        trigger,
-                        Some(operation_id),
-                        &error,
-                        commit.telemetry.clone(),
-                    );
-                    return Err(error);
-                }
-            };
+            let checkpoint_seq =
+                match commit_summary_plan(sessions, session_id, operation_id, request, &commit) {
+                    Ok(seq) => seq,
+                    Err(error) => {
+                        record_compact_failure(
+                            sessions,
+                            session_id,
+                            trigger,
+                            Some(operation_id),
+                            &error,
+                            commit.telemetry.clone(),
+                        );
+                        return Err(error);
+                    }
+                };
             Ok(CommittedCompaction {
-                kind: CompactionCommitKind::Checkpoint { seq: checkpoint_seq },
+                kind: CompactionCommitKind::Checkpoint {
+                    seq: checkpoint_seq,
+                },
                 telemetry: commit.telemetry,
                 summary: Some(commit.summary),
                 rebuild: RebuildTarget::Summary(checkpoint_seq),
@@ -945,9 +926,8 @@ fn rebuild_committed_surface(
             Err(error) => return Err(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| {
-        LitecodeError::SessionStorage("committed surface read failed".into())
-    }))
+    Err(last_error
+        .unwrap_or_else(|| LitecodeError::SessionStorage("committed surface read failed".into())))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -967,14 +947,8 @@ async fn compact_input(
     if cancel.is_cancelled() {
         return Err(LitecodeError::Canceled);
     }
-    let Some(selection) = select_compaction_method(
-        &input,
-        budget,
-        request,
-        max_tokens,
-        trigger,
-        data_root,
-    )?
+    let Some(selection) =
+        select_compaction_method(&input, budget, request, max_tokens, trigger, data_root)?
     else {
         return Ok(None);
     };
@@ -1672,7 +1646,10 @@ impl CompactPolicy {
         prompt_baseline: &ProviderPromptBaseline,
         data_root: &std::path::Path,
     ) -> Option<ContextMeter> {
-        let state = sessions.data().working_set_state_blocking(session_id).ok()?;
+        let state = sessions
+            .data()
+            .working_set_state_blocking(session_id)
+            .ok()?;
         let sealed_len = sealed_prefix_len(&state.rows, &state.in_progress);
         if sealed_len == 0 {
             return None;
@@ -1900,9 +1877,7 @@ impl CompactPolicy {
                 lease.finish(EpisodeOutcome::Failed {
                     kind: compact_fail_kind(&error),
                     action: readback_failure_action(trigger, &error),
-                    message: format!(
-                        "compaction committed but surface read-back failed: {error}"
-                    ),
+                    message: format!("compaction committed but surface read-back failed: {error}"),
                 });
                 return Ok(());
             }
@@ -2137,8 +2112,7 @@ impl CompactPolicy {
 /// Build the compaction input from the same projected view as the main
 /// request. The selected items are the prefix whose source row index is in the
 /// discarded range; synthetic pads inherit the unanswered call's index.
-const OMITTED_HISTORY_MARKER: &str =
-    "[Earlier history was omitted before this summary.]\n\n";
+const OMITTED_HISTORY_MARKER: &str = "[Earlier history was omitted before this summary.]\n\n";
 
 fn is_user_message(item: &Item) -> bool {
     matches!(
@@ -2287,8 +2261,7 @@ fn provider_usage_from_response(
 }
 // Test-only: next post-persist `working_set_blocking` in compact returns Err once.
 #[cfg(test)]
-thread_local! {
-}
+thread_local! {}
 
 fn compaction_telemetry(
     trigger: CompactionTrigger,
@@ -2306,10 +2279,7 @@ fn compaction_telemetry(
     }
 }
 
-fn failure_action(
-    trigger: CompactionTrigger,
-    err: &LitecodeError,
-) -> CompactionFailureAction {
+fn failure_action(trigger: CompactionTrigger, err: &LitecodeError) -> CompactionFailureAction {
     // Manual has no turn to stop. Its failure is reported through the
     // lifecycle; an auto turn that happens to share the session must not be
     // stopped by a manual episode's outcome.
@@ -3363,9 +3333,7 @@ max_output = 8192
             .expect("terminal outcome");
         match outcome {
             EpisodeOutcome::Failed {
-                action,
-                message,
-                ..
+                action, message, ..
             } => {
                 assert_eq!(
                     action,
@@ -3677,8 +3645,8 @@ max_output = 8192
             WorkingRow::persisted(1, user_text("newest sealed")),
             WorkingRow::pending(user_text("live tail")),
         ];
-        let input = CompactionInput::from_rows_full(&rows, &HashSet::new())
-            .expect("overflow input");
+        let input =
+            CompactionInput::from_rows_full(&rows, &HashSet::new()).expect("overflow input");
         assert_eq!(input.rows.len(), 3, "overflow sees surface + tail");
         assert_eq!(input.sealed_len, 2, "commit may end only on sealed rows");
         assert_eq!(input.last_seq, 1, "checkpoint anchor is the sealed tail");
@@ -3699,8 +3667,7 @@ max_output = 8192
         );
         assert_eq!(plan.kept_from_seq, input.rows[plan.cut].log_seq.unwrap());
 
-        let ordinary = CompactionInput::from_rows(&rows, &HashSet::new())
-            .expect("ordinary input");
+        let ordinary = CompactionInput::from_rows(&rows, &HashSet::new()).expect("ordinary input");
         assert_eq!(ordinary.rows.len(), 2);
         assert_eq!(ordinary.sealed_len, 2);
     }
@@ -3713,8 +3680,8 @@ max_output = 8192
             "overflow-tail {}",
             "x".repeat(2_000_000)
         ))));
-        let input = CompactionInput::from_rows_full(&rows, &HashSet::new())
-            .expect("full overflow input");
+        let input =
+            CompactionInput::from_rows_full(&rows, &HashSet::new()).expect("full overflow input");
         let request = compact_context(Arc::new(TextProvider));
         let error = match compact_input(
             &sessions,
@@ -3760,8 +3727,8 @@ max_output = 8192
             WorkingRow::persisted(0, user_text(format!("old {}", "word ".repeat(5_000)))),
             WorkingRow::persisted(1, user_text("newest user anchor")),
         ];
-        let (input, omitted) = build_compaction_input(&request, &sessions, &rows, 2, 512)
-            .expect("summary input");
+        let (input, omitted) =
+            build_compaction_input(&request, &sessions, &rows, 2, 512).expect("summary input");
         assert!(omitted, "oldest history must be dropped");
         assert!(
             input

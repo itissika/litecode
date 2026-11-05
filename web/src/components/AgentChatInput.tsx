@@ -18,7 +18,6 @@ import {
 } from "../lib/composerLimits";
 import { paintDragCursor, viewOf } from "../lib/domView";
 import { mentionKeysOf } from "../lib/knowledge/flowProjection";
-import { isBotProfileId } from "../lib/botProfile";
 import { useBotStore } from "../stores/botStore";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useKnowledgeStore } from "../stores/knowledgeStore";
@@ -84,12 +83,15 @@ export function composerPlaceholder(input: {
 }
 
 export function AgentPicker({
+  sessionId,
   agents,
   activeId,
   pendingId,
   disabled,
   onChange,
 }: {
+  /** Bot sessions are identified by their bound session, never by an agent id. */
+  sessionId: string;
   agents: { id: string }[];
   activeId: string;
   pendingId: string | null;
@@ -100,19 +102,19 @@ export function AgentPicker({
   const botsLoading = useBotStore((s) => s.botsLoading);
   const listBots = useBotStore((s) => s.listBots);
   const connected = useConnectionStore((s) => s.state === "connected");
+  const currentBot = bots.find((bot) => bot.session_id === sessionId);
   const currentId = pendingId ?? activeId;
-  const botProfile = isBotProfileId(currentId);
-  const currentBot = botProfile
-    ? bots.find((bot) => bot.profile_id === currentId)
-    : undefined;
+  const knownPrimary = agents.some((agent) => agent.id === currentId);
   const requestedBots = useRef(false);
   const [editingBot, setEditingBot] = useState(false);
 
   useEffect(() => {
     // A bot session's identity is fixed; the picker only needs the directory
-    // to resolve its display name. The session list usually loads it first.
+    // to resolve its display name. A normal session already has its primary in
+    // the list, so it never issues a bot-directory read.
     if (
-      !botProfile ||
+      knownPrimary ||
+      agents.length === 0 ||
       !connected ||
       currentBot ||
       botsLoading ||
@@ -122,19 +124,19 @@ export function AgentPicker({
     }
     requestedBots.current = true;
     listBots();
-  }, [botProfile, connected, currentBot, botsLoading, listBots]);
+  }, [knownPrimary, agents.length, connected, currentBot, botsLoading, listBots]);
 
-  if (botProfile) {
+  if (currentBot) {
     // Editing a bot identity is safe during a turn; only a missing bot record
     // or a dead connection should block the editor.
     return (
       <>
         <button
           type="button"
-          disabled={!currentBot || !connected}
+          disabled={!connected}
           onClick={() => setEditingBot(true)}
           className={`${CTRL_BTN} min-w-[32px] max-w-[150px] shrink justify-start gap-1`}
-          title={currentBot ? i18n.t("bot.edit") : i18n.t("bot.title")}
+          title={i18n.t("bot.edit")}
           aria-haspopup="dialog"
         >
           <span className="shrink-0">
@@ -158,6 +160,7 @@ export function AgentPicker({
     );
   }
 
+  if (agents.length === 0) return null;
   const color = agentColor(currentId);
 
   return (
@@ -752,17 +755,16 @@ export function AgentChatInput({
     >
       <div className="flex min-w-0 items-center gap-1 overflow-hidden px-1.5 py-1">
         <div className="flex min-w-0 flex-1 items-center gap-1">
-          {(primaryAgents.length > 0 || isBotProfileId(activePrimary)) && (
-            <AgentPicker
-              agents={primaryAgents}
-              activeId={activePrimary}
-              pendingId={pendingPrimaryId}
-              disabled={connBlocked}
-              onChange={(id: string) => {
-                setActivePrimary(sessionId, id);
-              }}
-            />
-          )}
+          <AgentPicker
+            sessionId={sessionId}
+            agents={primaryAgents}
+            activeId={activePrimary}
+            pendingId={pendingPrimaryId}
+            disabled={connBlocked}
+            onChange={(id: string) => {
+              setActivePrimary(sessionId, id);
+            }}
+          />
           <ModelSwitcher sessionId={sessionId} disabled={connBlocked} />
         </div>
         <div className="flex shrink-0 items-center gap-1">

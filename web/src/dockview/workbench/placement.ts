@@ -72,6 +72,17 @@ function pickMain(
   return candidates[0] as unknown as DockviewGroupPanel;
 }
 
+/** Most recently active candidate, else the first one Dockview reports. */
+function pickRecent(candidates: GroupLike[]): GroupLike | null {
+  for (let index = recentMainGroups.length - 1; index >= 0; index -= 1) {
+    const id = recentMainGroups[index];
+    if (!id) continue;
+    const match = candidates.find((group) => groupId(group) === id);
+    if (match) return match;
+  }
+  return candidates[0] ?? null;
+}
+
 /**
  * A main-center group to host a new panel.
  *
@@ -153,9 +164,11 @@ function documentPlace(api: DockviewApi): PanelPlace | null {
   ) {
     return placeOn(active);
   }
-  const editorGroup = usable.find((group) => !hasAgent(group) && hasDocument(group));
+  const editorGroup = pickRecent(
+    usable.filter((group) => !hasAgent(group) && hasDocument(group)),
+  );
   if (editorGroup) return placeOn(editorGroup);
-  const agentGroup = usable.find((group) => hasAgent(group));
+  const agentGroup = pickRecent(usable.filter((group) => hasAgent(group)));
   if (agentGroup) return placeOn(agentGroup, "right");
   const created = ensureMainCenterGroup(api);
   if (!created) return null;
@@ -163,8 +176,19 @@ function documentPlace(api: DockviewApi): PanelPlace | null {
 }
 
 function agentPlace(api: DockviewApi): PanelPlace | null {
-  // Include zero-size main-center: restored agent groups can read 0×0 until paint.
-  const agentGroup = anyMainCenterGroups(api).find((group) => hasAgent(group));
+  const usable = usableMainGroups(api);
+  const active = api.activeGroup as unknown as GroupLike | undefined;
+  // A zero-size group is not a host, even if it still carries an agent panel
+  // from a restore pass. Prefer the group the user is actually looking at.
+  if (
+    active &&
+    usable.some((group) => groupId(group) === groupId(active)) &&
+    hasAgent(active)
+  ) {
+    return placeOn(active);
+  }
+  const agentGroups = usable.filter((group) => hasAgent(group));
+  const agentGroup = pickRecent(agentGroups);
   if (agentGroup) return placeOn(agentGroup);
   const created = ensureMainCenterGroup(api);
   if (!created) return null;

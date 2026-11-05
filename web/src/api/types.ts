@@ -1,3 +1,5 @@
+import type { AgentToolBinding } from "./settings";
+
 // --- ErrorCode (snake_case) ---
 
 type ErrorCode =
@@ -414,17 +416,23 @@ export type SessionStatus =
   | "stopping"
   | "running_with_subagent";
 
+/** The authoritative bot capability body. */
+export interface BotBody {
+  system_prompt: string;
+  tools: Record<string, AgentToolBinding>;
+  allowed_subagents: string[];
+}
+
 /** One workspace bot. The default session is an ordinary session. */
 export interface BotInfo {
   id: string;
   name: string;
   description?: string;
-  /** Bot-owned AgentProfile; never shared with another bot or a normal agent. */
-  profile_id: string;
-  owner_bot_id?: string | null;
-  depth: number;
+  /** Prompt, tool selection, and allowed subagents. Never a settings profile. */
+  body: BotBody;
   created_at: number;
-  default_session_id: string;
+  /** The UI identifies a bot session by this id, never by an agent/profile id. */
+  session_id: string;
   /** Shared session folder; absent means ungrouped. */
   folder_id?: string | null;
   sort_order: number;
@@ -435,7 +443,7 @@ export interface BotChanged {
   event: "created" | "updated" | "deleted";
   bot?: BotInfo;
   bot_id?: string;
-  default_session_id?: string | null;
+  session_id?: string | null;
 }
 
 export interface SessionInfo {

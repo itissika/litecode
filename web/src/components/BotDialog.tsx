@@ -9,7 +9,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import type { BotInfo } from "../api/types";
+import type { BotBody, BotInfo } from "../api/types";
 import {
   applyToolEnabled,
   getAgent,
@@ -25,7 +25,6 @@ import {
 import { useSessionStore } from "../stores/sessionStore";
 import { useBotStore } from "../stores/botStore";
 import { usePortalTarget } from "./ui/usePortalTarget";
-import { ModelSwitcher } from "./ModelSwitcher";
 import { Select } from "./ui/Select";
 import { AgentProfileFields } from "./agent/AgentProfileFields";
 import { AgentToolsGrid, bindingFor } from "./agent/AgentToolsGrid";
@@ -42,8 +41,27 @@ interface BotDialogProps {
   onCreated?: (bot: BotInfo) => void;
 }
 
+function draftFromBody(body: BotBody): AgentProfile {
+  return {
+    role: "primary",
+    model_ref: "",
+    system_prompt: body.system_prompt,
+    description: "",
+    tools: body.tools,
+    allowed_subagents: body.allowed_subagents,
+  };
+}
+
+function bodyFromDraft(draft: AgentProfile): BotBody {
+  return {
+    system_prompt: draft.system_prompt,
+    tools: draft.tools,
+    allowed_subagents: draft.allowed_subagents,
+  };
+}
+
 function isBusy(bot: BotInfo, sessions: ReturnType<typeof useSessionStore.getState>["sessions"]) {
-  const session = sessions.find((item) => item.id === bot.default_session_id);
+  const session = sessions.find((item) => item.id === bot.session_id);
   return Boolean(
     session?.running ||
       session?.status === "running_with_subagent" ||
@@ -61,7 +79,6 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const primaryAgents = useSessionStore((s) => s.primaryAgents);
   const activePrimary = useSessionStore((s) => s.activePrimary);
-  const availableModels = useSessionStore((s) => s.availableModels);
   const sessions = useSessionStore((s) => s.sessions);
   const createBot = useBotStore((s) => s.createBot);
   const updateBot = useBotStore((s) => s.updateBot);
@@ -69,10 +86,13 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
   const [name, setName] = useState(editing?.name ?? "");
   const [description, setDescription] = useState(editing?.description ?? "");
   const [templateId, setTemplateId] = useState(activePrimary);
-  const [profile, setProfile] = useState<AgentProfile | null>(null);
+  const [profile, setProfile] = useState<AgentProfile | null>(
+    editing ? draftFromBody(editing.body) : null,
+  );
   const [tools, setTools] = useState<AvailableTool[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerItem[]>([]);
-  const [loading, setLoading] = useState(mode.kind === "edit");
+  const [toolsLoading, setToolsLoading] = useState(true);
+  const [templateLoading, setTemplateLoading] = useState(!editing);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -88,29 +108,25 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
   const presetIds = useMemo(() => presetToolIds(bindableTools), [bindableTools]);
 
   useEffect(() => {
-    if (!editing) return;
     let cancelled = false;
-    setLoading(true);
-    setError(null);
+    setToolsLoading(true);
     Promise.all([
-      getAgent(editing.profile_id),
       getAvailableTools(),
       // MCP discovery only feeds the per-server tool picker. A failure here
-      // must not hide the rest of the profile editor.
+      // must not hide the rest of the body editor.
       getMcpServers().catch(() => null),
     ])
-      .then(([loadedProfile, loadedTools, loadedMcp]) => {
+      .then(([loadedTools, loadedMcp]) => {
         if (cancelled) return;
-        setProfile(loadedProfile);
         setTools(loadedTools);
         setMcpServers(
           loadedMcp ? [...loadedMcp.global, ...loadedMcp.workspace] : [],
         );
-        setLoading(false);
+        setToolsLoading(false);
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
-        setLoading(false);
+        setToolsLoading(false);
         setError(
           reason instanceof Error
             ? reason.message
@@ -120,13 +136,48 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
     return () => {
       cancelled = true;
     };
-  }, [editing?.profile_id]);
+  }, []);
+
+  // A new bot starts from the template's body; the record, not the template
+  // profile, is what gets persisted.
+  useEffect(() => {
+    if (editing || !selectedTemplate) return;
+    let cancelled = false;
+    setTemplateLoading(true);
+    setProfile(null);
+    setError(null);
+    getAgent(selectedTemplate)
+      .then((template) => {
+        if (cancelled) return;
+        setProfile(
+          draftFromBody({
+            system_prompt: template.system_prompt,
+            tools: template.tools,
+            allowed_subagents: template.allowed_subagents,
+          }),
+        );
+        setTemplateLoading(false);
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setTemplateLoading(false);
+        setProfile(null);
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : i18n.t("bot.profileLoadFailed"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editing, selectedTemplate]);
 
   useEffect(() => {
     const panel = panelRef.current;
     if (!target || !panel) return;
     panel.querySelector<HTMLElement>("input, textarea, select")?.focus();
-  }, [target, loading]);
+  }, [target, toolsLoading, templateLoading]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
@@ -163,13 +214,19 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
     if (!trimmed || saving) return;
     setSaving(true);
     setError(null);
+    if (!profile) {
+      setSaving(false);
+      setError(i18n.t("bot.profileLoadFailed"));
+      return;
+    }
+    const body = bodyFromDraft(profile);
     if (!editing) {
       if (!selectedTemplate) {
         setSaving(false);
         setError(i18n.t("bot.noAgents"));
         return;
       }
-      const bot = await createBot(trimmed, description.trim(), selectedTemplate);
+      const bot = await createBot(trimmed, description.trim(), body);
       setSaving(false);
       if (!bot) {
         setError(i18n.t("bot.createFailed"));
@@ -179,17 +236,12 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
       onClose();
       return;
     }
-    if (!profile && !busy) {
-      setSaving(false);
-      setError(i18n.t("bot.profileLoadFailed"));
-      return;
-    }
-    // While a bot is running, identity edits are safe; capability edits are not
+    // While a bot is running, identity edits are safe; body edits are not
     // applied silently. The server enforces the same split.
     const updated = await updateBot(editing.id, {
       name: trimmed,
       description: description.trim(),
-      ...(busy || !profile ? {} : { profile }),
+      ...(busy ? {} : { body }),
     });
     setSaving(false);
     if (!updated) {
@@ -336,62 +388,45 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
                   </div>
                 </section>
 
-                {editing && (
-                  <section className="space-y-3">
-                    <h3 className="settings-section-title">
-                      {i18n.t("bot.capability")}
-                    </h3>
-                    {busy && (
-                      <p className="rounded-md border border-(--_dk-amber-500)/40 bg-(--_dk-amber-500)/10 px-3 py-2 text-xs text-(--_dk-amber-500)">
-                        {i18n.t("bot.busyCannotEdit")}
-                      </p>
-                    )}
-                    {loading ? (
-                      <p className="text-xs text-(--_dk-text-disabled)">
-                        {i18n.t("bot.loadingProfile")}
-                      </p>
-                    ) : profile ? (
-                      <>
-                        <div className="settings-card space-y-2 p-3">
-                          <div>
-                            <FieldLabel>{i18n.t("bot.model")}</FieldLabel>
-                            <ModelSwitcher
-                              variant="field"
-                              models={availableModels}
-                              modelId={profile.model_ref || null}
-                              disabled={busy}
-                              onChange={(model_ref) =>
-                                setProfile({ ...profile, model_ref })
-                              }
-                            />
-                          </div>
-                        </div>
-                        <AgentProfileFields
-                          draft={profile}
-                          saveBlocked={busy}
-                          onChange={setProfile}
-                          showDescription={false}
-                          anchorMaxSteps={false}
-                        />
-                        <AgentToolsGrid
-                          draft={profile}
-                          bindableTools={bindableTools}
-                          mcpServers={mcpServers}
-                          saveBlocked={busy}
-                          onBindingChange={updateBinding}
-                          gridStyle={{
-                            gridTemplateColumns:
-                              "repeat(auto-fill, minmax(220px, 1fr))",
-                          }}
-                        />
-                      </>
-                    ) : (
-                      <p className="text-xs text-(--_dk-ix-danger-fg)">
-                        {i18n.t("bot.profileLoadFailed")}
-                      </p>
-                    )}
-                  </section>
-                )}
+                <section className="space-y-3">
+                  <h3 className="settings-section-title">
+                    {i18n.t("bot.capability")}
+                  </h3>
+                  {busy && (
+                    <p className="rounded-md border border-(--_dk-amber-500)/40 bg-(--_dk-amber-500)/10 px-3 py-2 text-xs text-(--_dk-amber-500)">
+                      {i18n.t("bot.busyCannotEdit")}
+                    </p>
+                  )}
+                  {templateLoading ? (
+                    <p className="text-xs text-(--_dk-text-disabled)">
+                      {i18n.t("bot.loadingProfile")}
+                    </p>
+                  ) : profile ? (
+                    <>
+                      <AgentProfileFields
+                        draft={profile}
+                        saveBlocked={busy}
+                        onChange={setProfile}
+                        showDescription={false}
+                      />
+                      <AgentToolsGrid
+                        draft={profile}
+                        bindableTools={bindableTools}
+                        mcpServers={mcpServers}
+                        saveBlocked={busy || toolsLoading}
+                        onBindingChange={updateBinding}
+                        gridStyle={{
+                          gridTemplateColumns:
+                            "repeat(auto-fill, minmax(220px, 1fr))",
+                        }}
+                      />
+                    </>
+                  ) : (
+                    <p className="text-xs text-(--_dk-ix-danger-fg)">
+                      {i18n.t("bot.profileLoadFailed")}
+                    </p>
+                  )}
+                </section>
               </div>
 
               <div className="flex justify-end gap-2 border-t border-(--_dk-line) px-6 py-3">
@@ -408,8 +443,8 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
                   disabled={
                     saving ||
                     !name.trim() ||
-                    (!editing && !selectedTemplate) ||
-                    (editing !== null && loading)
+                    !profile ||
+                    (!editing && !selectedTemplate)
                   }
                 >
                   {saving

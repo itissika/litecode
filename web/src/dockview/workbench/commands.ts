@@ -28,6 +28,7 @@ interface PanelApiLike {
   group?: GroupLike;
   setActive: () => void;
   setTitle?: (title: string) => void;
+  updateParameters?: (params: Record<string, unknown>) => void;
   moveTo?: (options: { group?: DockviewGroupPanel; position?: string }) => void;
   close?: () => void;
 }
@@ -170,7 +171,9 @@ export function openPanel(request: OpenPanelRequest, api?: DockviewApi | null): 
   const tabComponent = request.tabComponent ?? spec?.tabComponent;
   const existing = live.getPanel(request.id);
   if (existing) {
-    if (request.title) panelApi(existing).setTitle?.(request.title);
+    const api = panelApi(existing);
+    if (request.title) api.setTitle?.(request.title);
+    if (request.params) api.updateParameters?.(request.params);
     const where = hosting(existing);
     if (where === "popout") {
       existing.api.setActive();

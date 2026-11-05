@@ -184,8 +184,7 @@ impl ContextMeter {
     /// here, but it may still send if the episode fails and the meter remains
     /// below [`Self::hard_limit`].
     pub fn is_at_wait_line(&self, margin: usize) -> bool {
-        self.pressure_enabled()
-            && self.used_tokens > self.hard_limit().saturating_sub(margin)
+        self.pressure_enabled() && self.used_tokens > self.hard_limit().saturating_sub(margin)
     }
 
     /// Prompt occupancy plus the separate output reservation. Useful for

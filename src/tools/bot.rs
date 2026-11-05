@@ -76,8 +76,8 @@ impl Tool for BotCreateTool {
                 .await
             {
                 Ok(bot) => ToolCallResult::ok(format!(
-                    "Created bot \"{}\" (id: {}, profile: {}, depth: {}). It has its own default session; message it with bot_send.",
-                    bot.name, bot.id, bot.profile_id, bot.depth
+                    "Created bot \"{}\" (id: {}). It has its own session; message it with bot_send.",
+                    bot.name, bot.id
                 )),
                 Err(error) => ToolCallResult::error(error.to_string()),
             }
@@ -162,11 +162,11 @@ impl Tool for BotSendTool {
                 "properties": {
                     "bot": {
                         "type": "string",
-                        "description": "Target bot id or name."
+                        "description": "Target bot id (preferred) or a unique bot name."
                     },
                     "message": {
                         "type": "string",
-                        "description": "Message text delivered to the target bot's session."
+                        "description": "Message text queued for the target bot's session."
                     }
                 },
                 "required": ["bot", "message"]
@@ -197,8 +197,8 @@ impl Tool for BotSendTool {
                 .await
             {
                 Ok(bot) => ToolCallResult::ok(format!(
-                    "Queued a message for bot \"{}\" (session {}). This call returned without waiting for a reply.",
-                    bot.name, bot.default_session_id
+                    "Queued a message for bot \"{}\" (id {}, session {}). This call returned without waiting for a reply.",
+                    bot.name, bot.id, bot.session_id
                 )),
                 Err(error) => ToolCallResult::error(error.to_string()),
             }
@@ -236,10 +236,6 @@ fn bot_list_text(bots: &[BotRecord], caller_id: &str) -> String {
         if bot.id.as_str() == caller_id {
             out.push_str(" (self)");
         }
-        out.push_str(&format!(" — profile {}", bot.profile_id));
-        if bot.depth > 0 {
-            out.push_str(&format!(" — depth {}", bot.depth));
-        }
         if !bot.description.is_empty() {
             out.push_str(&format!(" — {}", bot.description));
         }
@@ -264,12 +260,10 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             description: String::new(),
-            profile_id: format!("bot_{id}"),
-            owner_bot_id: None,
-            depth: 0,
             created_at: 1,
-            default_session_id: format!("s-{id}"),
-            folder_id: None,
+            session_id: format!("s-{id}"),
+            body: crate::bot::BotBody::default(),
+            position: crate::bot::BotPosition::None,
             sort_order: 0,
         }
     }

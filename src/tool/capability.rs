@@ -10,7 +10,7 @@ use crate::config::global_db::tools::{
 };
 use crate::config::resolved::ResolvedConfig;
 use crate::config::schema::{
-    AgentRole, AvailableKind, CallSurface, CustomToolDefinition, PermissionSurface,
+    AgentProfile, AvailableKind, CallSurface, CustomToolDefinition, PermissionSurface,
     SUBAGENT_CAPABILITY_ID, SUBAGENT_MEMBER_TOOL_IDS, ToolOrigin,
 };
 use crate::permission::has_permission_preset;
@@ -97,18 +97,26 @@ impl CapabilityCatalog {
         agent_id: &str,
         depth: u32,
     ) -> Vec<&'a Capability> {
-        let role = resolved
-            .agents()
-            .get(agent_id)
-            .map(|profile| profile.role)
-            .unwrap_or(AgentRole::Primary);
-        let profile = resolved.agents().get(agent_id);
+        match resolved.agents().get(agent_id) {
+            Some(profile) => self.selected_for_profile(profile, depth),
+            None => Vec::new(),
+        }
+    }
+
+    /// Select capabilities from an already-resolved body. Bot bodies and
+    /// settings profiles share this path, including suite-collapsed tools.
+    pub fn selected_for_profile<'a>(
+        &'a self,
+        profile: &AgentProfile,
+        depth: u32,
+    ) -> Vec<&'a Capability> {
         self.capabilities
             .iter()
             .filter(|capability| {
-                capability.scope.allows(role, depth)
+                capability.scope.allows(profile.role, depth)
                     && profile
-                        .and_then(|agent| agent.tools.get(&capability.id))
+                        .tools
+                        .get(&capability.id)
                         .is_some_and(|binding| binding.enabled)
             })
             .collect()
