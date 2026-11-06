@@ -1020,8 +1020,8 @@ pub enum WaitOutcome {
 
 /// Default foreground window for `run`: a command that exits within it returns
 /// its `exit_code` directly; one still alive afterwards detaches with
-/// `exit_code: null` and stays a `wait` / `kill` target. `run` may shorten it
-/// to the enclosing `run_code` budget.
+/// `exit_code: null` and stays a `wait` / `kill` target. Inside `run_code`,
+/// `run` uses the program budget instead of this window.
 pub const RUN_FOREGROUND_WINDOW: Duration = Duration::from_secs(30);
 
 /// How the supervisor waits before it either returns the exit or detaches.

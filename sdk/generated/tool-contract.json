@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "dadf06c6e427d62503bb2b64b0664f7f6f6cec57795a5325ecda9421857236c0",
+  "sdk_hash": "66ad3bbc627ea3cb0a2e2c9ed5aaf3a52a8904ddb10c66b29344847f870059e3",
   "tools": {
     "apply_edits": {
       "path": [
@@ -875,7 +875,7 @@
           },
           "run_in_background": {
             "type": "boolean",
-            "description": "Return immediately after spawn with exit_code:null and keep the job as a wait/kill target. Default false: wait up to 30 seconds; longer jobs detach automatically.",
+            "description": "Return immediately after spawn with exit_code:null and keep the job as a wait/kill target. Default false: stay in the foreground until the command exits or the run_code budget runs out; a job still alive then detaches with exit_code:null.",
             "default": false
           }
         },

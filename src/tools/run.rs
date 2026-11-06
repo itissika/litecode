@@ -1,12 +1,13 @@
 //! Code-surface shell starter (`run`).
 //!
-//! Spawns a pipe job on [`AgentJobRegistry`] with a foreground window of
-//! [`RUN_FOREGROUND_WINDOW`] (capped by the enclosing `run_code` budget).
-//! Non-read-only commands hold the workspace locks only until spawn. Returns [`CommandData`] immediately: finished processes carry an
+//! Spawns a pipe job on [`AgentJobRegistry`] and blocks in the foreground until
+//! the process exits or the enclosing `run_code` budget runs out (kept
+//! [`BUDGET_MARGIN`] short of it). The job then detaches. Outside a program
+//! budget the window is [`RUN_FOREGROUND_WINDOW`].
+//! Non-read-only commands hold the workspace locks only until spawn. Returns [`CommandData`]: finished processes carry an
 //! exit code; still-running ones keep `exit_code = null` and remain wait/kill
-//! targets. Pass `run_in_background: true` to detach immediately; otherwise a
-//! fast command returns its exit code and a command still alive after the
-//! window returns `exit_code = null`. No `kind`, timeout, or promote knob.
+//! targets. Pass `run_in_background: true` to detach at spawn. No `kind`,
+//! timeout, or promote knob.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -27,8 +28,10 @@ use crate::tools::file_path::coded_error;
 use crate::types::ToolCallResult;
 
 /// Kept back from the `run_code` deadline so `run` returns before the program
-/// budget stops the whole call.
-const BUDGET_MARGIN: Duration = Duration::from_millis(250);
+/// budget stops the whole call. The window is measured from this call, while the
+/// supervisor starts its timer after spawn, so spawn latency is spent from this
+/// margin too.
+const BUDGET_MARGIN: Duration = Duration::from_secs(1);
 
 pub struct RunTool {
     jobs: Arc<AgentJobRegistry>,
@@ -49,14 +52,13 @@ impl RunTool {
         Self { jobs, window }
     }
 
-    /// `min(window, run_code remaining - margin)`.
+    /// The enclosing `run_code` budget minus the margin, or
+    /// [`RUN_FOREGROUND_WINDOW`] when the call has no program budget.
     fn effective_window(&self, deadline: Option<tokio::time::Instant>) -> Duration {
         match deadline {
-            Some(deadline) => self.window.min(
-                deadline
-                    .saturating_duration_since(tokio::time::Instant::now())
-                    .saturating_sub(BUDGET_MARGIN),
-            ),
+            Some(deadline) => deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .saturating_sub(BUDGET_MARGIN),
             None => self.window,
         }
     }
@@ -391,6 +393,41 @@ mod tests {
         };
         let pid = jobs.job_pid(&id).expect("pid");
         assert!(pid_alive(pid), "job should still be running");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn foreground_wait_runs_to_the_program_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, jobs) = tool();
+        let session = "sess-run-deadline";
+        let started = Instant::now();
+        // The program deadline, not the tool's own 500ms window, bounds the wait.
+        let result = crate::tool::run_scope::scope(
+            crate::tool::run_scope::RunScope {
+                deadline: Some(tokio::time::Instant::now() + Duration::from_secs(3)),
+                ..Default::default()
+            },
+            tool.execute(
+                serde_json::json!({"command": sleep_shell(30)}),
+                test_execution(dir.path(), session),
+            ),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().expect("data");
+        assert!(data["exit_code"].is_null(), "{data}");
+        assert!(
+            elapsed >= Duration::from_millis(1500),
+            "the program deadline must outlast the tool window: {elapsed:?}"
+        );
+        let id = data["id"].as_str().expect("id").to_string();
+        let _stop = StopJob {
+            jobs: Arc::clone(&jobs),
+            id: id.clone(),
+            session_id: session.into(),
+        };
+        assert!(jobs.get(&id).is_some(), "a detached job must survive");
     }
 
     #[tokio::test(flavor = "current_thread")]

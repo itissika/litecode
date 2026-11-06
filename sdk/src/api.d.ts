@@ -290,8 +290,9 @@ type RunInput = {
   command: string;
   /**
    * Return immediately after spawn with exit_code:null and keep the job as a
-   * wait/kill target. Default false: wait up to 30 seconds; longer jobs detach
-   * automatically. @default false
+   * wait/kill target. Default false: stay in the foreground until the command
+   * exits or the run_code budget runs out; a job still alive then detaches with
+   * exit_code:null. @default false
    */
   run_in_background?: boolean;
 };
