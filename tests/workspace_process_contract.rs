@@ -235,7 +235,6 @@ fn agent_runtime_cwd_uses_resolved_workspace_not_process_cwd() {
             test_auto_approve_sink(),
             Arc::new(NoopObserver),
             None,
-            None,
         )
     };
     let _ = std::env::set_current_dir(prev);

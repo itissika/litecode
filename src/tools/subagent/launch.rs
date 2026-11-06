@@ -133,6 +133,10 @@ pub struct SubagentLaunchTool {
     service: Arc<SessionService>,
     parent_session_id: String,
     parent_call_id: String,
+    /// Turn-start body snapshot. None only for direct test/tool construction;
+    /// production always binds this so a mid-turn edit cannot change launch
+    /// authorization.
+    parent_profile: Option<AgentProfile>,
 }
 
 impl SubagentLaunchTool {
@@ -152,7 +156,15 @@ impl SubagentLaunchTool {
             service,
             parent_session_id: parent_session_id.into(),
             parent_call_id: String::new(),
+            parent_profile: None,
         }
+    }
+
+    /// Bind the body captured at turn start. The live resolver remains a
+    /// compatibility fallback for tests and direct tool construction.
+    pub fn with_profile(mut self, profile: AgentProfile) -> Self {
+        self.parent_profile = Some(profile);
+        self
     }
 
     fn clone_for_call(&self) -> Self {
@@ -164,12 +176,16 @@ impl SubagentLaunchTool {
             service: Arc::clone(&self.service),
             parent_session_id: self.parent_session_id.clone(),
             parent_call_id: self.parent_call_id.clone(),
+            parent_profile: self.parent_profile.clone(),
         }
     }
 
-    /// The caller's effective body. A bot session reads its record; a normal
-    /// primary reads its settings profile.
+    /// The caller's effective body. Prefer the turn-start snapshot; a fallback
+    /// exists only for direct tool construction/tests.
     fn parent_profile(&self) -> Option<AgentProfile> {
+        if let Some(profile) = &self.parent_profile {
+            return Some(profile.clone());
+        }
         crate::bot::resolve_agent_for_session(
             &self.runtime.resolved,
             self.runtime.bots().map(Arc::as_ref),

@@ -842,6 +842,83 @@ describe("MessageList reminder rows", () => {
     );
   });
 
+  it("marks a bot message from structured sources and keeps it read-only", () => {
+    const onEditAnchor = vi.fn();
+    const row: HumanRow = {
+      seq: 13,
+      kind: "item/user",
+      state: "final",
+      sources: [{ kind: "bot", id: "b1", name: "Sender" }],
+      body: {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: "[from bot id=b1 name=Sender]\nping" },
+        ],
+      },
+    };
+    render(
+      <MessageList
+        messages={[row]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        isRunning={false}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+        onEditAnchor={onEditAnchor}
+      />,
+    );
+
+    expect(screen.getByText("From Sender")).toBeTruthy();
+    expect(screen.getByText("ping")).toBeTruthy();
+    expect(screen.queryByText(/from bot id=/)).toBeNull();
+
+    fireEvent.click(screen.getByText("ping"));
+    expect(onEditAnchor).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /From Sender/ }));
+    expect(screen.getByText("b1")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Bot message. Read-only: it cannot be edited, reverted, or deleted.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("recognizes a legacy bot envelope without structured sources", () => {
+    const onEditAnchor = vi.fn();
+    const row: HumanRow = {
+      seq: 14,
+      kind: "item/user",
+      state: "final",
+      body: {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: "[from bot id=old name=Old Bot]\nlegacy" },
+        ],
+      },
+    };
+    render(
+      <MessageList
+        messages={[row]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        isRunning={false}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+        onEditAnchor={onEditAnchor}
+      />,
+    );
+
+    expect(screen.getByText("From Old Bot")).toBeTruthy();
+    expect(screen.getByText("legacy")).toBeTruthy();
+    fireEvent.click(screen.getByText("legacy"));
+    expect(onEditAnchor).not.toHaveBeenCalled();
+  });
+
   it("does not open the editor for an unsealed optimistic user bubble, while earlier sealed bubbles still open", () => {
     const onEditAnchor = vi.fn();
     const sealed: HumanRow = {

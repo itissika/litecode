@@ -43,7 +43,11 @@
     "cannotDeleteBusy": "Stop the bot before deleting it",
     "busyCannotEdit": "This bot is running. Identity can change, but capability editing is disabled until it stops.",
     "moveToFolder": "Move to folder",
-    "removeFromFolder": "Remove from folder"
+    "removeFromFolder": "Remove from folder",
+    "moveToTopLevel": "Move to top level",
+    "messageFrom": "From {{name}}",
+    "messageSource": "Bot message source",
+    "messageReadOnly": "Bot message. Read-only: it cannot be edited, reverted, or deleted."
   },
   "apps": {
     "title": "Apps",

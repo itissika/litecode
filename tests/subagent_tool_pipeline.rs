@@ -40,7 +40,6 @@ fn reviewer_resolved(cwd: &std::path::Path) -> litecode::config::ResolvedConfig 
     let mut global = base.global().clone();
     if let Some(default) = global.agents.get_mut("default") {
         default.allowed_subagents = vec!["reviewer".into()];
-        default.max_steps = 4;
     }
     global.agents.insert(
         "reviewer".into(),
@@ -49,7 +48,6 @@ fn reviewer_resolved(cwd: &std::path::Path) -> litecode::config::ResolvedConfig 
             model_ref: TEST_PRIMARY_MODEL_REF.into(),
             system_prompt: "builtin:general".into(),
             tools: HashMap::from([("read".into(), binding_safe_for("read"))]),
-            max_steps: 2,
             ..Default::default()
         },
     );

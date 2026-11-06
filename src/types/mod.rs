@@ -15,9 +15,9 @@ pub use error::{
 pub use media::{MediaArtifact, MediaKind, MediaSource, ToolOutputPart};
 pub use result::{ToolCallResult, ToolError, ToolErrorKind, ToolResultData, ToolSignalLevel};
 pub use transcript::{
-    FunctionCallOutputItemParam, FunctionToolCall, InputItem, Item, OutputItem, OutputMessage,
-    ReasoningItem, Response, StreamEvents, Transcript, UserInput, assistant_text,
-    item_text_preview, user_message, user_text,
+    FunctionCallOutputItemParam, FunctionToolCall, InputItem, Item, MessageSource, OutputItem,
+    OutputMessage, ReasoningItem, Response, StreamEvents, Transcript, UserInput, assistant_text,
+    item_text_preview, message_sources, take_message_sources, user_message, user_text,
 };
 
 /// WP-098 L5: who stopped or deleted a turn/session. Persisted as

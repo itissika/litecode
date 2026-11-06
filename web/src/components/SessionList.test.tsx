@@ -20,7 +20,7 @@ import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useUnreadStore } from "../stores/unreadStore";
 import { bindDockview } from "../dockview/workbench/host";
-import { SESSION_DRAG_MIME } from "./dnd/sessionDnd";
+import { BOT_DRAG_MIME, SESSION_DRAG_MIME } from "./dnd/sessionDnd";
 import { SessionList } from "./SessionList";
 
 function session(id: string, patch: Partial<SessionInfo> = {}): SessionInfo {
@@ -300,7 +300,7 @@ describe("SessionList — bots share the sidebar tree", () => {
       body: { system_prompt: "", tools: {}, allowed_subagents: [] },
           created_at: 1,
       session_id: "bot-s",
-      folder_id: "bot-folder-f1",
+      position: { kind: "folder", id: "bot-folder-f1" },
       sort_order: 1,
     };
     useBotStore.setState({ bots: [bot], botsLoading: false, botsError: null });
@@ -345,7 +345,7 @@ describe("SessionList — bots share the sidebar tree", () => {
       body: { system_prompt: "", tools: {}, allowed_subagents: [] },
           created_at: 1,
       session_id: "bot-s",
-      folder_id: null,
+      position: { kind: "none" },
       sort_order: 1,
     };
     const botSession = session("bot-s", { preview: "hidden bot preview" });
@@ -359,7 +359,9 @@ describe("SessionList — bots share the sidebar tree", () => {
         return { folder_id: "bot-folder-f9" };
       }
       if (method === "bot/update") {
-        return { bot: { ...bot, folder_id: "bot-folder-f9" } };
+        return {
+          bot: { ...bot, position: { kind: "folder", id: "bot-folder-f9" } },
+        };
       }
       return {};
     });
@@ -381,6 +383,92 @@ describe("SessionList — bots share the sidebar tree", () => {
     );
   });
 
+  it("renders bot-under-bot rows and drops a bot onto a parent", async () => {
+    const parent: BotInfo = {
+      id: "b1",
+      name: "Parent",
+      body: { system_prompt: "", tools: {}, allowed_subagents: [] },
+      created_at: 1,
+      session_id: "bot-parent",
+      position: { kind: "none" },
+      sort_order: 1,
+    };
+    const child: BotInfo = {
+      id: "b2",
+      name: "Child",
+      body: { system_prompt: "", tools: {}, allowed_subagents: [] },
+      created_at: 2,
+      session_id: "bot-child",
+      position: { kind: "bot", id: "b1" },
+      sort_order: 2,
+    };
+    const other: BotInfo = {
+      id: "b3",
+      name: "Other",
+      body: { system_prompt: "", tools: {}, allowed_subagents: [] },
+      created_at: 3,
+      session_id: "bot-other",
+      position: { kind: "none" },
+      sort_order: 3,
+    };
+    useBotStore.setState({
+      bots: [parent, child, other],
+      botsLoading: false,
+      botsError: null,
+    });
+    const sendRpc = vi.fn(async (method: string, params?: unknown) => {
+      if (method === "session/list") {
+        return {
+          sessions: [
+            session("bot-parent"),
+            session("bot-child"),
+            session("bot-other"),
+          ],
+          folders: [],
+        };
+      }
+      if (method === "bot/list") return { bots: [parent, child, other] };
+      if (method === "bot/update") {
+        const update = params as { id: string; parent_bot_id?: string };
+        const bot = [parent, child, other].find((item) => item.id === update.id)!;
+        return {
+          bot: {
+            ...bot,
+            position: update.parent_bot_id
+              ? { kind: "bot", id: update.parent_bot_id }
+              : bot.position,
+          },
+        };
+      }
+      return {};
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+
+    render(<SessionList />);
+    expect(await screen.findByText("Parent")).toBeTruthy();
+    expect(screen.getByText("Child")).toBeTruthy();
+    const childRow = screen.getByText("Child").closest("[data-bot-parent]");
+    expect(childRow?.getAttribute("data-bot-parent")).toBe("b1");
+
+    fireEvent.drop(screen.getByText("Parent"), {
+      dataTransfer: {
+        types: [BOT_DRAG_MIME],
+        getData: () => JSON.stringify({ kind: "bot", id: "b3" }),
+      },
+    });
+    await waitFor(() =>
+      expect(sendRpc).toHaveBeenCalledWith("bot/update", {
+        id: "b3",
+        parent_bot_id: "b1",
+      }),
+    );
+    expect(
+      screen.getByText("Other").closest("[data-bot-parent]")?.getAttribute(
+        "data-bot-parent",
+      ),
+    ).toBe("b1");
+  });
+
   it("does not group a session onto a bot row", async () => {
     const bot: BotInfo = {
       id: "b1",
@@ -389,7 +477,7 @@ describe("SessionList — bots share the sidebar tree", () => {
       body: { system_prompt: "", tools: {}, allowed_subagents: [] },
           created_at: 1,
       session_id: "bot-s",
-      folder_id: null,
+      position: { kind: "none" },
       sort_order: 1,
     };
     const botSession = session("bot-s", { preview: "hidden bot preview" });

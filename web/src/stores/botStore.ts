@@ -10,6 +10,8 @@ export interface BotUpdateInput {
   body?: BotBody;
   folder_id?: string;
   clear_folder?: boolean;
+  parent_bot_id?: string;
+  clear_parent?: boolean;
   sort_order?: number;
 }
 
@@ -26,6 +28,8 @@ interface BotState {
   updateBot: (id: string, update: BotUpdateInput) => Promise<BotInfo | null>;
   deleteBot: (id: string) => Promise<boolean>;
   moveBot: (id: string, folderId: string | null) => Promise<boolean>;
+  moveBotUnder: (id: string, parentBotId: string) => Promise<boolean>;
+  unparentBot: (id: string) => Promise<boolean>;
   openBot: (id: string) => Promise<string | null>;
   applyBotEvent: (event: BotChanged) => void;
 }
@@ -143,6 +147,17 @@ export const useBotStore = create<BotState>((set, get) => ({
       id,
       folderId ? { folder_id: folderId } : { clear_folder: true },
     );
+    return updated !== null;
+  },
+
+  moveBotUnder: async (id, parentBotId) => {
+    if (id === parentBotId) return false;
+    const updated = await get().updateBot(id, { parent_bot_id: parentBotId });
+    return updated !== null;
+  },
+
+  unparentBot: async (id) => {
+    const updated = await get().updateBot(id, { clear_parent: true });
     return updated !== null;
   },
 

@@ -1,6 +1,7 @@
 import { memo, useLayoutEffect, useMemo, useRef, type CSSProperties, type RefObject } from "react";
 
 import type { HumanRow, PendingMessage } from "../api/types";
+import { botSourcesForRows } from "../lib/botMessage";
 import { canRevertFiles, projectBubbles, withCompacting } from "../lib/transcriptProjection";
 import { useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
@@ -241,8 +242,10 @@ export const MessageList = memo(function MessageList({
               bubble.isUser && bubble.first != null && bubble.first.seq >= 0
                 ? bubble.first.seq
                 : undefined;
-            const showRevert = !readOnly && userSeq !== undefined;
+            const botMessage = botSourcesForRows(bubble.rows).length > 0;
+            const showRevert = !readOnly && !botMessage && userSeq !== undefined;
             const showRevertFiles =
+              !botMessage &&
               userSeq !== undefined &&
               canRevertFiles(userSeq, maxFileRevertSeq);
             // The queue hands over to its durable row: "sending" — that row,

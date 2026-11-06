@@ -3,7 +3,10 @@ import type { IDockviewPanelProps } from "dockview-react";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useTurnStore } from "../../stores/turnStore";
 import { fallbackSessionTitle } from "../../lib/sessionPanelNav";
-import { sessionTitle } from "../../lib/sessionDisplay";
+import {
+  sessionDisplayTitle,
+  useBotForSession,
+} from "../../lib/botIdentity";
 import {
   SessionStatusDot,
   deriveSessionStatus,
@@ -29,9 +32,10 @@ export function AgentTab(
   const status = deriveSessionStatus(session, {
     pendingPermissionCount: pendingCount,
   });
-  // Subscribe to the session row directly so the tab shows the live name
-  // instead of relying on setTitle() propagating to api.title.
-  const title = sessionTitle(session);
+  // One identity projection for bot and normal sessions. A bot tab names the
+  // bot, never its latest message; a normal session keeps title/preview.
+  const bot = useBotForSession(sessionId);
+  const title = sessionDisplayTitle(session, bot);
   // Same rule as AgentPanel's writability: a known non-child session, or a
   // trusted root entry (a freshly created session the list has not seen yet).
   // A blank root reads "NEW"; a child or unclassified id keeps its short id.

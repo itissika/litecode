@@ -289,6 +289,11 @@ impl AskUserTool {
 
         let prompt = AskPrompt::ask_user("ask_user", "ask", summary, &questions);
         let reply = sink.ask(&prompt, cancel);
+        if reply.timed_out {
+            return ToolCallResult::ok(
+                "User did not answer within 60 seconds (no answer).".to_string(),
+            );
+        }
         match reply.outcome {
             AskOutcome::Aborted => ToolCallResult::error("ask_user aborted (turn cancelled)"),
             AskOutcome::Deny => {
@@ -349,4 +354,39 @@ fn format_answers(questions: &[AskQuestion], answers: &HashMap<String, AskAnswer
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use crate::permission::{AskPrompt, AskReply};
+
+    struct TimedOutSink;
+
+    impl PermissionSink for TimedOutSink {
+        fn ask(&self, _prompt: &AskPrompt<'_>, _cancel: &CancellationToken) -> AskReply {
+            let mut reply = AskReply::from_outcome(AskOutcome::Deny);
+            reply.timed_out = true;
+            reply
+        }
+    }
+
+    #[test]
+    fn timeout_is_a_successful_no_answer_result() {
+        let tool = AskUserTool::new();
+        let input = serde_json::json!({
+            "questions": [{
+                "id": "q",
+                "prompt": "pick",
+                "options": [
+                    { "id": "a", "label": "A" },
+                    { "id": "b", "label": "B" }
+                ]
+            }]
+        });
+        let result = tool.run(
+            &input,
+            &CancellationToken::new(),
+            Some(&TimedOutSink),
+        );
+        assert!(result.error.is_none());
+        assert!(result.content.contains("did not answer"));
+    }
+}

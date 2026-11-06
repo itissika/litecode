@@ -8,14 +8,33 @@ use crate::authority::responses::{
     OutputMessageContent, OutputStatus, OutputTextContent,
 };
 
+/// Who originated a user message. This is durable metadata beside the
+/// Responses Item, never a second message type: the body stays `item/user`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MessageSource {
+    Bot { id: String, name: String },
+}
+
+impl MessageSource {
+    pub fn bot(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::Bot {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+}
+
 /// What the composer sends: plain text plus `litecode-media:` image refs.
 ///
 /// Refs stay refs until the ephemeral model view. Auto-turns and plan
-/// execution use [`UserInput::text`] and carry no images.
+/// execution use [`UserInput::text`] and carry no images. `sources` is empty
+/// for human input and names the bot senders for bot-to-bot messages.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UserInput {
     pub text: String,
     pub images: Vec<String>,
+    pub sources: Vec<MessageSource>,
 }
 
 impl UserInput {
@@ -23,6 +42,20 @@ impl UserInput {
         Self {
             text: text.into(),
             images: Vec::new(),
+            sources: Vec::new(),
+        }
+    }
+
+    /// A bot-to-bot message: normal text plus the sender snapshot.
+    pub fn from_bot(
+        text: impl Into<String>,
+        id: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            images: Vec::new(),
+            sources: vec![MessageSource::bot(id, name)],
         }
     }
 
@@ -102,6 +135,23 @@ pub fn assistant_text(text: impl Into<String>) -> Item {
         status: OutputStatus::Completed,
         phase: None,
     }))
+}
+
+/// Bot senders carried beside a message Item. Older rows have none; callers
+/// may fall back to the legacy text envelope for display.
+pub fn message_sources(data: &serde_json::Value) -> Vec<MessageSource> {
+    data.get("sources")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// Remove the sidecar from a body before it goes on the wire. The Item stays a
+/// pure Responses payload; callers project the sources as an envelope field.
+pub fn take_message_sources(data: &mut serde_json::Value) -> Vec<MessageSource> {
+    data.as_object_mut()
+        .and_then(|object| object.remove("sources"))
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
 }
 
 /// Extract plain text preview from an Item (best-effort).

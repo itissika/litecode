@@ -1,5 +1,3 @@
-Send a message to another bot in this workspace.
+Queue a message for another bot and return immediately.
 
-The message is queued into the target bot's own session. This call returns
-immediately and does NOT wait for a reply; the target runs its own turn and may
-message you back with bot_send. Use bot_list first to find the bot id or name.
+The target accepts a bot id (preferred) or a unique bot name. Only bots visible to you can be addressed: yourself, your ancestors, your same-parent siblings, and your own subtree. A target outside that set is reported exactly like a missing bot. This call only guarantees the message is queued; the target runs its own turn.

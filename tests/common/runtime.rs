@@ -35,12 +35,11 @@ pub struct TestAgentSpec {
     pub tools: Vec<String>,
 }
 
-pub fn test_agent(tools: Vec<String>, _permission: &str, max_steps: u32) -> TestAgentSpec {
+pub fn test_agent(tools: Vec<String>, _permission: &str, _max_steps: u32) -> TestAgentSpec {
+    // max_steps is an engine-level policy now, not an agent field. The argument
+    // is kept so existing fixtures remain source-compatible; it is not applied.
     TestAgentSpec {
-        agent: AgentConfig {
-            max_steps,
-            ..Default::default()
-        },
+        agent: AgentConfig::default(),
         tools,
     }
 }
@@ -187,7 +186,7 @@ pub fn set_compaction_request_capacity(
 /// Build `AgentRuntime` against a live `LlmProvider` (Responses product path).
 ///
 /// `cwd` must already contain an initialized `.litecode/` (see [`test_workspace`]).
-/// `max_steps` is applied via the `with_mcp_pool` override (product path).
+/// Step budget is engine-level; the legacy `test_agent` max argument is ignored.
 pub fn build_runtime_with_provider(
     cwd: &Path,
     spec: TestAgentSpec,
@@ -229,13 +228,10 @@ fn build_runtime_inner(
     set_runtime_paths(workspace.paths.clone());
 
     let tool_names = spec.tools.clone();
-    let mut global = {
+    let global = {
         let resolved = test_resolved_with_budget("default", &tool_names, test_context_window());
         resolved.global().clone()
     };
-    if let Some(p) = global.agents.get_mut("default") {
-        p.max_steps = spec.agent.max_steps;
-    }
     let resolved = resolve(
         global,
         workspace.clone(),
@@ -292,7 +288,6 @@ fn build_runtime_inner(
             test_auto_approve_sink(),
             observer,
             None,
-            Some(spec.agent.max_steps),
         )
         .expect("AgentRuntime::with_mcp_pool")
     };

@@ -5,6 +5,7 @@ use crate::config::global_db::tools::{
     non_transport_name_rejection, reserved_command_name_rejection,
 };
 use crate::config::resolved::ResolvedConfig;
+use crate::config::schema::AgentProfile;
 use crate::engines::WorkspaceEngines;
 use crate::ide_base::IdeBaseHandle;
 use crate::mcp::McpToolSchema;
@@ -340,6 +341,7 @@ fn subagent_tools(
     parent_cancel: tokio_util::sync::CancellationToken,
     sessions: &Arc<SessionManager>,
     parent_session_id: &str,
+    parent_profile: &AgentProfile,
     members: &[MemberSpec],
 ) -> Vec<Arc<dyn Tool>> {
     let service = Arc::new(SessionService::new(Arc::clone(sessions)));
@@ -353,7 +355,8 @@ fn subagent_tools(
                 parent_cancel.clone(),
                 Arc::clone(&service),
                 parent_session_id.to_string(),
-            ))),
+            )
+            .with_profile(parent_profile.clone()))),
             "subagent_wait" => tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(&service)))),
             "subagent_stop" => tools.push(Arc::new(SubagentStopTool::new(Arc::clone(&service)))),
             "subagent_send" => tools.push(Arc::new(SubagentSendTool::new(
@@ -387,6 +390,39 @@ pub async fn build_tool_list(
     sessions: Arc<SessionManager>,
     code_host: Option<Arc<CodeToolHost>>,
 ) -> crate::types::Result<Vec<Arc<dyn Tool>>> {
+    // One resolution feeds both capability selection and bot-tool injection.
+    let resolution = crate::bot::resolve_agent_for_session(
+        &runtime.resolved,
+        runtime.bots().map(Arc::as_ref),
+        parent_session_id,
+        agent_id,
+    );
+    build_tool_list_with_resolution(
+        runtime,
+        resolution,
+        agent_id,
+        depth,
+        parent_cancel,
+        parent_session_id,
+        sessions,
+        code_host,
+    )
+    .await
+}
+
+/// Build from an already-captured turn snapshot. A bot body edited after the
+/// turn started must not change the current tool set.
+#[allow(clippy::too_many_arguments)]
+pub async fn build_tool_list_with_resolution(
+    runtime: &RuntimeHandle,
+    resolution: Option<crate::bot::AgentResolution>,
+    agent_id: &str,
+    depth: u32,
+    parent_cancel: tokio_util::sync::CancellationToken,
+    parent_session_id: &str,
+    sessions: Arc<SessionManager>,
+    code_host: Option<Arc<CodeToolHost>>,
+) -> crate::types::Result<Vec<Arc<dyn Tool>>> {
     let resolved = &runtime.resolved;
     let engines = &runtime.engine_manager;
     let workspace_engines = &runtime.workspace_engines;
@@ -399,13 +435,6 @@ pub async fn build_tool_list(
     for error in &catalog.errors {
         tracing::error!(error = %error, "capability catalog rejected one definition");
     }
-    // One resolution feeds both capability selection and bot-tool injection.
-    let resolution = crate::bot::resolve_agent_for_session(
-        resolved,
-        runtime.bots().map(Arc::as_ref),
-        parent_session_id,
-        agent_id,
-    );
     let (profile, bot) = match resolution {
         Some(resolution) => (resolution.profile, resolution.bot),
         None => (crate::config::schema::AgentProfile::default(), None),
@@ -456,6 +485,7 @@ pub async fn build_tool_list(
                     parent_cancel.clone(),
                     &sessions,
                     parent_session_id,
+                    &profile,
                     &capability.members,
                 ));
             }
@@ -879,6 +909,142 @@ mod tests {
                 .iter()
                 .all(|tool| !tool.name().starts_with("bot_")),
             "normal session received a bot tool"
+        );
+    }
+
+    #[test]
+    fn turn_resolution_snapshot_keeps_the_old_bot_tools() {
+        let resolved = test_resolved(default_bindings());
+        let sessions = dummy_sessions();
+        let service = Arc::new(crate::session::SessionService::new(Arc::clone(&sessions)));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = Arc::new(crate::config::SettingsWriter::with_path(
+            dir.path().join("settings.db"),
+            Arc::new(crate::config::TurnGuard::new()),
+        ));
+        settings
+            .write_agent(
+                "default",
+                AgentProfile {
+                    role: crate::config::schema::AgentRole::Primary,
+                    ..AgentProfile::default()
+                },
+            )
+            .expect("template");
+        let bots = Arc::new(
+            crate::bot::BotService::new(
+                Arc::clone(&service),
+                Arc::clone(&settings),
+                None,
+                "/tmp",
+                dir.path().join("bots.json"),
+            )
+            .expect("bot service"),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let bot = rt
+            .block_on(bots.create_user_bot(
+                "Snapshot",
+                "",
+                crate::bot::BotBody::default(),
+            ))
+            .expect("bot");
+        let engines = WorkspaceEngines::new();
+        let ide = IdeBaseHandle::open(resolved.workspace_root(), Arc::new(engines.clone()))
+            .expect("ide base");
+        let runtime = RuntimeHandle::new(
+            resolved.clone(),
+            "default".into(),
+            WorkspaceState::new(resolved.workspace_root()),
+            Arc::new(EngineManager::new()),
+            Arc::new(engines),
+            ide,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            std::path::PathBuf::from("/tmp/litecode-test-global.db"),
+        );
+        runtime.set_bots(Arc::clone(&bots));
+        let old = crate::bot::resolve_agent_for_session(
+            &resolved,
+            Some(bots.as_ref()),
+            &bot.session_id,
+            &bot.id,
+        )
+        .expect("old resolution");
+        let old_tools = rt
+            .block_on(build_tool_list_with_resolution(
+                &runtime,
+                Some(old.clone()),
+                &bot.id,
+                0,
+                tokio_util::sync::CancellationToken::new(),
+                &bot.session_id,
+                Arc::clone(&sessions),
+                None,
+            ))
+            .expect("old tool list");
+        assert!(!old_tools.iter().any(|tool| tool.name() == "ask_user"));
+
+        let mut body = crate::bot::BotBody::default();
+        body.tools.insert(
+            "ask_user".into(),
+            AgentToolBinding {
+                enabled: true,
+                preset: Some(ToolPreset::All),
+                allowed_tools: None,
+            },
+        );
+        rt.block_on(bots.update(
+            &bot.id,
+            crate::bot::BotUpdate {
+                body: Some(body),
+                ..crate::bot::BotUpdate::default()
+            },
+        ))
+        .expect("update");
+        let new = crate::bot::resolve_agent_for_session(
+            &resolved,
+            Some(bots.as_ref()),
+            &bot.session_id,
+            &bot.id,
+        )
+        .expect("new resolution");
+        assert!(
+            new.profile.tools.contains_key("ask_user"),
+            "new profile tools: {:?}",
+            new.profile.tools
+        );
+        let old_again = rt
+            .block_on(build_tool_list_with_resolution(
+                &runtime,
+                Some(old),
+                &bot.id,
+                0,
+                tokio_util::sync::CancellationToken::new(),
+                &bot.session_id,
+                Arc::clone(&sessions),
+                None,
+            ))
+            .expect("old rebuilt");
+        assert!(!old_again.iter().any(|tool| tool.name() == "ask_user"));
+        let new_tools = rt
+            .block_on(build_tool_list_with_resolution(
+                &runtime,
+                Some(new),
+                &bot.id,
+                0,
+                tokio_util::sync::CancellationToken::new(),
+                &bot.session_id,
+                sessions,
+                None,
+            ))
+            .expect("new tool list");
+        assert!(
+            new_tools.iter().any(|tool| tool.name() == "ask_user"),
+            "new tools: {:?}",
+            new_tools.iter().map(|tool| tool.name()).collect::<Vec<_>>()
         );
     }
 

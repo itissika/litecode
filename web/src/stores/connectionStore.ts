@@ -40,7 +40,7 @@ import {
   whenCentreSettled,
 } from "../lib/centreSettle";
 import { whenIdle } from "../lib/idle";
-import { sessionTitle } from "../lib/sessionDisplay";
+import { botForSession, sessionDisplayTitle } from "../lib/botDirectory";
 import { maybeNotifyTurnEnd } from "../lib/turnNotification";
 
 interface StoreLike {
@@ -456,7 +456,11 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               | undefined;
             const row = rows?.find((entry) => entry.id === finished.session_id);
             if (!finished.parent_session_id && !row?.parent_session_id) {
-              maybeNotifyTurnEnd(finished, sessionTitle(row));
+              const botRows = siblingStores.bot?.getState().bots ?? [];
+              maybeNotifyTurnEnd(
+                finished,
+                sessionDisplayTitle(row, botForSession(botRows, finished.session_id)),
+              );
             }
             return;
           }

@@ -10,7 +10,8 @@ use common::{
 };
 use litecode::llm::provider_from_model;
 use litecode::provider_catalog::EndpointKind;
-use litecode::types::LitecodeError;
+use litecode::runtime::TurnInput;
+use litecode::types::{LitecodeError, UserInput};
 
 fn responses_provider(endpoint: &str) -> Arc<dyn litecode::llm::LlmProvider> {
     let catalog = test_catalog(endpoint, 128_000, 8192);
@@ -64,8 +65,10 @@ async fn agent_e2e_responses_tool_loop_hits_max_steps() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("test.txt"), "content").unwrap();
 
-    // Two identical tool-call Responses fixtures; max_steps=1 ⇒ MaxStepsReached
-    // after the first tool round continues into step 2.
+    // Two identical tool-call Responses fixtures; the explicit turn budget of
+    // 1 ⇒ MaxStepsReached after the first tool round continues into step 2.
+    // The agent profile no longer carries max_steps; this test still exercises
+    // the loop's own budget boundary.
     let tool = fixture_responses_sse("tool_call");
     assert!(
         tool.contains("function_call") && tool.contains("\"name\":\"read\""),
@@ -82,8 +85,14 @@ async fn agent_e2e_responses_tool_loop_hits_max_steps() {
         test_agent(vec!["read".into()], "readonly", 1),
         provider,
     );
+    // The profile no longer carries max_steps; drive the loop budget directly
+    // for this boundary test.
+    runtime.step_max = 1;
 
-    let err = runtime.run("read file").await.expect_err("max steps");
+    let err = runtime
+        .run_with_turn(TurnInput::User(UserInput::text("read file")), "max-steps", 1)
+        .await
+        .expect_err("max steps");
     assert!(
         matches!(err, LitecodeError::MaxStepsReached),
         "expected MaxStepsReached after Responses FunctionCall Items enter the loop, got {err:?}"

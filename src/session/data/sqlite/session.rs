@@ -626,6 +626,22 @@ fn event_sql_envelope(event: &SessionEvent) -> Result<(String, Option<String>, O
     Ok((surface_op, source_seqs, cites))
 }
 
+/// Re-attach the durable source sidecar to the encoded Item body. The model
+/// still parses the body as a normal Item; the UI reads sources separately.
+fn attach_message_sources(body: Option<String>, event: &SessionEvent) -> Result<Option<String>> {
+    let Some(sources) = event.data.get("sources") else {
+        return Ok(body);
+    };
+    let Some(raw) = body else {
+        return Ok(None);
+    };
+    let mut value: serde_json::Value = serde_json::from_str(&raw)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("sources".to_string(), sources.clone());
+    }
+    Ok(Some(value.to_string()))
+}
+
 fn insert_event_row(
     tx: &Connection,
     session_id: &str,
@@ -639,18 +655,22 @@ fn insert_event_row(
 ) -> Result<()> {
     let seq = event.seq as i64;
     let (body, body_ref, encoded_tokens) = if let Some(item) = item {
-        if is_user_message_item(item) {
-            let (body, body_ref, tokens) =
-                encode_detail_row(item, data_root, DEFAULT_SPILL_THRESHOLD)?;
-            if body.is_none() {
+        let encoded = if is_user_message_item(item) {
+            let encoded = encode_detail_row(item, data_root, DEFAULT_SPILL_THRESHOLD)?;
+            if encoded.0.is_none() {
                 return Err(LitecodeError::ToolExecution(
                     "user detail item must keep inline body for anchors".into(),
                 ));
             }
-            (body, body_ref, tokens)
+            encoded
         } else {
             encode_detail_row(item, data_root, DEFAULT_SPILL_THRESHOLD)?
-        }
+        };
+        (
+            attach_message_sources(encoded.0, event)?,
+            encoded.1,
+            encoded.2,
+        )
     } else {
         (Some(event.data.to_string()), None, 0)
     };
@@ -1247,6 +1267,13 @@ fn event_from_disk_row(
             state,
         });
     }
+    // The sidecar rides beside the Item JSON. Pull it out before parsing the
+    // body (Item ignores unknown fields) and put it back on the event so live
+    // and historical reads project the same sources field.
+    let sources = body
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|mut value| value.get_mut("sources").map(serde_json::Value::take));
     let item = row_to_item(
         &TranscriptRow {
             session_id: session_id.to_string(),
@@ -1266,11 +1293,15 @@ fn event_from_disk_row(
         "" => None,
         raw => Some(serde_json::from_str(raw)?),
     };
+    let mut data = serde_json::to_value(&item)?;
+    if let Some(sources) = sources {
+        data["sources"] = sources;
+    }
     Ok(SessionEvent {
         seq,
         time: created_at,
         event_type,
-        data: serde_json::to_value(&item)?,
+        data,
         result_data,
         surface_op,
         source_seqs,

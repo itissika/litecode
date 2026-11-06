@@ -303,7 +303,11 @@ pub async fn handle_jsonrpc(
                 );
                 return false;
             }
-            let user_input = crate::types::UserInput { text, images };
+            let user_input = crate::types::UserInput {
+                text,
+                images,
+                sources: Vec::new(),
+            };
             let sid = resolve_sid(session, &params.session_id);
             // WP-091 K1: covers plain run and plan_execution.
             if reject_child_turn_start(session, sink, &id, &sid) {
@@ -576,10 +580,14 @@ pub async fn handle_jsonrpc(
             if reject_child_turn_start(session, sink, &id, &sid) {
                 return false;
             }
-            match session
-                .service
-                .enqueue_user_input(&sid, crate::types::UserInput { text, images })
-            {
+            match session.service.enqueue_user_input(
+                &sid,
+                crate::types::UserInput {
+                    text,
+                    images,
+                    sources: Vec::new(),
+                },
+            ) {
                 Ok(_) => {
                     // Idle race: the turn ended between the composer's last state
                     // and this RPC. Send the queue as a fresh turn instead of
@@ -823,6 +831,10 @@ pub async fn handle_jsonrpc(
                 #[serde(default)]
                 clear_folder: bool,
                 #[serde(default)]
+                parent_bot_id: Option<String>,
+                #[serde(default)]
+                clear_parent: bool,
+                #[serde(default)]
                 sort_order: Option<i64>,
             }
             let params: Params = match serde_json::from_value::<Params>(rpc.params.clone()) {
@@ -858,6 +870,8 @@ pub async fn handle_jsonrpc(
                 body: params.body,
                 folder_id: params.folder_id,
                 clear_folder: params.clear_folder,
+                parent_bot_id: params.parent_bot_id,
+                clear_parent: params.clear_parent,
                 sort_order: params.sort_order,
             };
             match bots.update(&params.id, update).await {
@@ -2307,6 +2321,26 @@ pub async fn run_session_loop(
 
     loop {
         finalize_ready_turn(session, &response_tx);
+
+        // A timed-out/stale Ask closes its oneshot receiver without a reply.
+        // Drop the card and durable row before the next select wait; the tool's
+        // no-answer result will wake this loop through the turn stream.
+        let closed_asks: Vec<(String, String, String)> = pending_asks
+            .iter()
+            .filter(|(_, ask)| ask.reply_tx.is_closed())
+            .map(|(request_id, ask)| {
+                (
+                    ask.session_id.clone(),
+                    request_id.clone(),
+                    ask.tool.clone(),
+                )
+            })
+            .collect();
+        for (sid, request_id, tool) in closed_asks {
+            pending_asks.remove(&request_id);
+            session.service.remove_pending_permission(&sid, &request_id);
+            emit_permission_resolved(session, &response_tx, &sid, &tool, false, false);
+        }
 
         tokio::select! {
             // Merged broadcast events from all subscribed sessions.

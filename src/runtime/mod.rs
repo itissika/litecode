@@ -48,7 +48,7 @@ use crate::session::working::WorkingRow;
 use crate::session::{EventDraft, EventType};
 use crate::tool::ToolPipeline;
 use crate::tool::output;
-use crate::tool::registry::build_tool_list;
+use crate::tool::registry::build_tool_list_with_resolution;
 use crate::tools::code::CodeToolHost;
 use crate::types::{CompactionFailureKind, LitecodeError, Result, UserInput, user_message};
 
@@ -552,6 +552,11 @@ struct BuildToolParams {
     parent_session_id: String,
     sessions: Arc<SessionManager>,
     permission_sink: Arc<dyn PermissionSink>,
+    /// Body/profile snapshot taken at turn construction. Never re-resolve this
+    /// during the turn, even before the lazy tool build.
+    resolution: crate::bot::AgentResolution,
+    /// Product policy selector; this is a bot session, not a session kind.
+    bot: bool,
 }
 
 impl AgentRuntime {
@@ -636,6 +641,7 @@ impl AgentRuntime {
         let context_pipeline =
             ContextPipeline::new(context_window, context.clone(), sessions.data_root_path());
 
+        let bot = resolution.is_bot();
         let build_tool_params = Arc::new(BuildToolParams {
             runtime,
             agent_name: agent_name.to_string(),
@@ -644,6 +650,8 @@ impl AgentRuntime {
             parent_session_id: session_id.clone(),
             sessions: Arc::clone(&sessions),
             permission_sink,
+            resolution,
+            bot,
         });
 
         let runtime = Self {
@@ -984,23 +992,25 @@ impl AgentRuntime {
         let Some(params) = self.build_tool_params.take() else {
             return Ok(());
         };
-        let profile = crate::bot::resolve_agent_for_session(
-            &params.runtime.resolved,
-            params.runtime.bots().map(Arc::as_ref),
-            &params.parent_session_id,
-            &params.agent_name,
-        )
-        .map(|resolution| resolution.profile);
+        let profile = params.resolution.profile.clone();
         let permission = PermissionEngine::resolver_with_profile(
             params.runtime.resolved.clone(),
             &params.agent_name,
-            profile,
+            Some(profile),
             params.depth,
         );
         let permission_sink = Arc::new(CancellingPermissionSink::new(
             Arc::clone(&params.permission_sink),
             params.cancel.clone(),
         ));
+        // Bot policy sits inside the phase sink: an auto-denied permission ask
+        // must not look like a turn cancellation, and an ask_user timeout still
+        // leaves the turn in ExecutingTools.
+        let permission_sink = if params.bot {
+            crate::bot::bot_permission_sink(permission_sink)
+        } else {
+            permission_sink
+        };
         let permission_sink = phase::PhasePermissionSink::wrap(
             permission_sink,
             Arc::clone(&self.observer),
@@ -1035,8 +1045,9 @@ impl AgentRuntime {
         ));
 
         let tools_lap = crate::telemetry::latency::lap("build_tool_list");
-        let tools = build_tool_list(
+        let tools = build_tool_list_with_resolution(
             &params.runtime,
+            Some(params.resolution.clone()),
             &params.agent_name,
             params.depth,
             params.cancel.clone(),

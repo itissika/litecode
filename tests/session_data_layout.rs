@@ -63,7 +63,7 @@ fn folder_crud_move_and_delete_returns_sessions_to_ungrouped() {
     let revision = data.revision_blocking(&sid).unwrap();
     let updated_at = data.meta_blocking(&sid).unwrap().updated_at;
 
-    let folder = data.create_session_folder_blocking("Work").unwrap();
+    let folder = data.create_session_folder_blocking("Work", "").unwrap();
     let folders = data.list_folders_blocking().unwrap();
     assert_eq!(folders.len(), 1);
     assert_eq!(folders[0].id, folder);
@@ -123,8 +123,8 @@ fn moving_to_an_unknown_folder_is_rejected_without_touching_the_session() {
 fn empty_folders_are_listed_and_new_folders_append_in_sort_order() {
     let fixture = SessionDataFixture::new();
     let data = fixture.data.clone();
-    let first = data.create_session_folder_blocking("First").unwrap();
-    let second = data.create_session_folder_blocking("Second").unwrap();
+    let first = data.create_session_folder_blocking("First", "").unwrap();
+    let second = data.create_session_folder_blocking("Second", "").unwrap();
 
     let folders = data.list_folders_blocking().unwrap();
     assert_eq!(
@@ -137,9 +137,9 @@ fn empty_folders_are_listed_and_new_folders_append_in_sort_order() {
 fn reorder_folders_rewrites_sort_order_and_appends_unlisted() {
     let fixture = SessionDataFixture::new();
     let data = fixture.data.clone();
-    let first = data.create_session_folder_blocking("First").unwrap();
-    let second = data.create_session_folder_blocking("Second").unwrap();
-    let third = data.create_session_folder_blocking("Third").unwrap();
+    let first = data.create_session_folder_blocking("First", "").unwrap();
+    let second = data.create_session_folder_blocking("Second", "").unwrap();
+    let third = data.create_session_folder_blocking("Third", "").unwrap();
 
     data.reorder_session_folders_blocking(&[third.clone(), first.clone()])
         .unwrap();
@@ -164,7 +164,7 @@ fn reorder_folders_rewrites_sort_order_and_appends_unlisted() {
 fn root_list_caps_each_folder_bucket_separately() {
     let fixture = SessionDataFixture::new();
     let data = fixture.data.clone();
-    let folder = data.create_session_folder_blocking("Archive").unwrap();
+    let folder = data.create_session_folder_blocking("Archive", "").unwrap();
     let filed = create_with_preview(&fixture, "filed, older than the rest");
     data.set_session_folder_blocking(&filed, Some(&folder))
         .unwrap();
@@ -201,7 +201,7 @@ fn folder_names_and_titles_reject_empty_values() {
     let data = fixture.data.clone();
     let sid = create_with_preview(&fixture, "named");
 
-    assert!(data.create_session_folder_blocking("   ").is_err());
+    assert!(data.create_session_folder_blocking("   ", "").is_err());
     assert!(
         data.set_session_title_blocking(&sid, Some("   ")).is_ok(),
         "clearing a title is allowed; only folder names require content"

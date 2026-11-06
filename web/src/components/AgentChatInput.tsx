@@ -19,6 +19,7 @@ import {
 import { paintDragCursor, viewOf } from "../lib/domView";
 import { mentionKeysOf } from "../lib/knowledge/flowProjection";
 import { useBotStore } from "../stores/botStore";
+import { useBotForSession } from "../lib/botIdentity";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useKnowledgeStore } from "../stores/knowledgeStore";
 import { useSessionStore } from "../stores/sessionStore";
@@ -98,11 +99,10 @@ export function AgentPicker({
   disabled: boolean;
   onChange: (id: string) => void;
 }) {
-  const bots = useBotStore((s) => s.bots);
   const botsLoading = useBotStore((s) => s.botsLoading);
   const listBots = useBotStore((s) => s.listBots);
   const connected = useConnectionStore((s) => s.state === "connected");
-  const currentBot = bots.find((bot) => bot.session_id === sessionId);
+  const currentBot = useBotForSession(sessionId);
   const currentId = pendingId ?? activeId;
   const knownPrimary = agents.some((agent) => agent.id === currentId);
   const requestedBots = useRef(false);

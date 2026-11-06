@@ -43,7 +43,11 @@
     "cannotDeleteBusy": "运行中的 bot 不能删除，请先停止",
     "busyCannotEdit": "bot 正在运行；身份可以修改，能力编辑需要等它停止。",
     "moveToFolder": "移动到文件夹",
-    "removeFromFolder": "移出文件夹"
+    "removeFromFolder": "移出文件夹",
+    "moveToTopLevel": "移到顶层",
+    "messageFrom": "来自 {{name}}",
+    "messageSource": "bot 消息来源",
+    "messageReadOnly": "bot 消息，只读：不能编辑、回退或删除。"
   },
   "apps": {
     "title": "应用",

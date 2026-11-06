@@ -4,8 +4,8 @@ use crate::runtime::observer::{
     CompactionFailKind, CompactionStage, FailReason, InternalEvent, TurnEndReason, TurnErrorKind,
     TurnPhase,
 };
-use crate::session::live::{LifecycleEvent, TurnProgress};
 use crate::session::SessionService;
+use crate::session::live::{LifecycleEvent, TurnProgress};
 
 use serde_json::{Value, json};
 
@@ -20,16 +20,21 @@ pub fn buffer_log_row(
     event: &crate::session::event::SessionEvent,
     child_session_id: Option<String>,
 ) -> Value {
+    let mut body = event.data.clone();
+    let sources = crate::types::take_message_sources(&mut body);
     let mut params = json!({
         "session_id": session_id,
         "seq": event.seq,
         "kind": event.event_type.as_str(),
-        "body": event.data,
+        "body": body,
         "cites": event.source_seqs.clone().unwrap_or_default(),
         "state": event.state.as_str(),
     });
     if let Some(data) = &event.result_data {
         params["result_data"] = data.clone();
+    }
+    if !sources.is_empty() {
+        params["sources"] = serde_json::to_value(sources).unwrap_or(Value::Null);
     }
     if let Some(op) = &event.surface_op {
         params["surface_op"] = serde_json::to_value(op).unwrap_or(Value::Null);
@@ -868,10 +873,7 @@ pub fn bot_changed(event: &crate::bot::BotEvent) -> Value {
                 "bot": super::protocol::BotInfo::from(bot.clone()),
             }),
         ),
-        crate::bot::BotEvent::Removed {
-            bot_id,
-            session_id,
-        } => notification(
+        crate::bot::BotEvent::Removed { bot_id, session_id } => notification(
             super::protocol::methods::BOT_CHANGED,
             json!({
                 "event": "deleted",
@@ -1393,6 +1395,35 @@ pub fn buffer_snapshot(
         llm_reconnect: None,
         // WP-186: always present (even empty) — filled by Projection/manager.
         pending_permissions: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod bot_source_projection_tests {
+    use super::*;
+
+    #[test]
+    fn sources_ride_beside_a_pure_item_body() {
+        let mut data = json!({
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": "hi" }],
+        });
+        data["sources"] = json!([{ "kind": "bot", "id": "b1", "name": "Sender" }]);
+        let event = crate::session::event::SessionEvent {
+            seq: 3,
+            time: 0,
+            event_type: crate::session::EventType::ItemUser,
+            data,
+            result_data: None,
+            surface_op: Some(crate::session::surface::SurfaceOp::Append),
+            source_seqs: None,
+            state: crate::session::LogState::Final,
+            ignorable: false,
+        };
+        let value = buffer_log_row("s", &event, None);
+        assert_eq!(value["params"]["sources"][0]["id"], "b1");
+        assert!(value["params"]["body"].get("sources").is_none());
     }
 }
 

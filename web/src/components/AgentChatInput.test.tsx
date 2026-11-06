@@ -401,7 +401,7 @@ describe("AgentPicker bots", () => {
     body: { system_prompt: "", tools: {}, allowed_subagents: [] },
     created_at: 1,
     session_id: "session-1",
-    folder_id: null,
+    position: { kind: "none" } as const,
     sort_order: 1,
   };
 

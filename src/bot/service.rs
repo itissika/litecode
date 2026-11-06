@@ -24,6 +24,60 @@ use crate::types::UserInput;
 /// Current on-disk registry shape. Version 4 is single-authority: the record
 /// owns the body and points at one ordinary session by `session_id`.
 const BOT_REGISTRY_VERSION: u32 = 4;
+
+/// Parent edge of a placement. Root/folder rows have no parent.
+fn parent_of(bot: &BotRecord) -> Option<&str> {
+    match &bot.position {
+        BotPosition::Bot { id } => Some(id),
+        _ => None,
+    }
+}
+
+/// The org visibility set: self, ancestors, same-parent siblings, own subtree.
+fn visible_bot_ids(bots: &[BotRecord], caller_id: &str) -> HashSet<String> {
+    let mut visible = HashSet::new();
+    let Some(caller) = bots.iter().find(|bot| bot.id == caller_id) else {
+        return visible;
+    };
+    visible.insert(caller.id.clone());
+
+    // Ancestor chain. The seen set also turns a corrupt placement cycle into a
+    // finite read instead of an infinite walk.
+    let mut seen = HashSet::from([caller.id.clone()]);
+    let mut cursor = parent_of(caller);
+    while let Some(parent_id) = cursor {
+        if !seen.insert(parent_id.to_string()) {
+            break;
+        }
+        let Some(parent) = bots.iter().find(|bot| bot.id == parent_id) else {
+            break;
+        };
+        visible.insert(parent.id.clone());
+        cursor = parent_of(parent);
+    }
+
+    // Same parent means sibling. None is also a parent group: every root is a
+    // peer of every other root, but a root's children are not visible to a
+    // different root's branch (cousins/nephews stay out of scope).
+    let caller_parent = parent_of(caller);
+    for bot in bots {
+        if bot.id != caller.id && parent_of(bot) == caller_parent {
+            visible.insert(bot.id.clone());
+        }
+    }
+
+    // Own subtree (children recursively). Use an explicit stack and a seen set.
+    let mut stack = vec![caller.id.clone()];
+    while let Some(id) = stack.pop() {
+        for child in bots.iter().filter(|bot| parent_of(bot) == Some(id.as_str())) {
+            if visible.insert(child.id.clone()) {
+                stack.push(child.id.clone());
+            }
+        }
+    }
+    visible
+}
+
 /// Hard cap for one workspace. User-created and bot-created bots share it.
 pub const MAX_BOTS_PER_WORKSPACE: usize = 16;
 /// Bot folders are session-folder rows with this reserved id prefix. Sessions
@@ -70,6 +124,10 @@ pub enum BotError {
     FolderNotFound(String),
     #[error("folder is not owned by the bot domain: {0}")]
     FolderScope(String),
+    #[error("parent bot not found: {0}")]
+    ParentNotFound(String),
+    #[error("a bot cannot be placed under itself or one of its descendants")]
+    ParentCycle,
     #[error("bot settings: {0}")]
     Settings(String),
 }
@@ -170,6 +228,10 @@ pub struct BotUpdate {
     pub body: Option<BotBody>,
     pub folder_id: Option<String>,
     pub clear_folder: bool,
+    /// Move under another bot. Clears a folder placement; validated for cycles.
+    pub parent_bot_id: Option<String>,
+    /// Return a bot-under-bot row to the ungrouped root.
+    pub clear_parent: bool,
     pub sort_order: Option<i64>,
 }
 
@@ -223,6 +285,33 @@ impl BotService {
             {
                 bot.position = BotPosition::None;
                 changed = true;
+            }
+        }
+
+        // Placement is a tree edge. An old or hand-edited registry may point at
+        // a missing bot or contain a cycle; ungroup that row rather than making
+        // the sidebar recurse forever.
+        let ids: HashSet<String> = bots.iter().map(|bot| bot.id.clone()).collect();
+        let parents: HashMap<String, String> = bots
+            .iter()
+            .filter_map(|bot| match &bot.position {
+                BotPosition::Bot { id } => Some((bot.id.clone(), id.clone())),
+                _ => None,
+            })
+            .collect();
+        for bot in &mut bots {
+            let Some(parent) = parents.get(&bot.id).cloned() else {
+                continue;
+            };
+            let mut cursor = Some(parent);
+            let mut seen = HashSet::new();
+            while let Some(id) = cursor {
+                if id == bot.id || !ids.contains(&id) || !seen.insert(id.clone()) {
+                    bot.position = BotPosition::None;
+                    changed = true;
+                    break;
+                }
+                cursor = parents.get(&id).cloned();
             }
         }
 
@@ -330,6 +419,26 @@ impl BotService {
             .collect();
         sort_records(&mut bots);
         bots
+    }
+
+    /// Bots visible to one caller: self, ancestors, same-parent siblings, and
+    /// the caller's own subtree. A cousin branch is deliberately absent.
+    pub fn list_for_caller(&self, caller_id: &str) -> Vec<BotRecord> {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let visible = visible_bot_ids(&state, caller_id);
+        let mut bots: Vec<BotRecord> = state
+            .iter()
+            .filter(|bot| visible.contains(&bot.id) && !bot.session_id.is_empty())
+            .cloned()
+            .collect();
+        sort_records(&mut bots);
+        bots
+    }
+
+    /// Whether `target_id` is in the caller's visibility scope.
+    pub fn can_see(&self, caller_id: &str, target_id: &str) -> bool {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        visible_bot_ids(&state, caller_id).contains(target_id)
     }
 
     /// The bot whose session is `session_id`.
@@ -481,7 +590,36 @@ impl BotService {
         Ok(record)
     }
 
-    /// Update identity, folder/order, and/or the authoritative body.
+    /// Validate one bot-under-bot placement: the parent must exist and the
+    /// moving node must not appear anywhere in its ancestor chain.
+    fn parent_position(&self, bot_id: &str, parent_id: &str) -> Result<BotPosition, BotError> {
+        if bot_id == parent_id {
+            return Err(BotError::ParentCycle);
+        }
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if !state.iter().any(|bot| bot.id == parent_id) {
+            return Err(BotError::ParentNotFound(parent_id.to_string()));
+        }
+        let mut cursor = Some(parent_id.to_string());
+        let mut seen = HashSet::new();
+        while let Some(id) = cursor {
+            if id == bot_id || !seen.insert(id.clone()) {
+                return Err(BotError::ParentCycle);
+            }
+            cursor = state
+                .iter()
+                .find(|bot| bot.id == id)
+                .and_then(|bot| match &bot.position {
+                    BotPosition::Bot { id } => Some(id.clone()),
+                    _ => None,
+                });
+        }
+        Ok(BotPosition::Bot {
+            id: parent_id.to_string(),
+        })
+    }
+
+    /// Update identity, placement/order, and/or the authoritative body.
     /// Body changes are rejected while the bot's own turn is running.
     pub async fn update(&self, bot_id: &str, update: BotUpdate) -> Result<BotRecord, BotError> {
         let current = self
@@ -504,9 +642,10 @@ impl BotService {
         if let Some(description) = update.description {
             next.description = normalize_description(&description);
         }
-        if update.clear_folder {
+        if update.clear_folder || update.clear_parent {
             next.position = BotPosition::None;
-        } else if let Some(folder_id) = update.folder_id {
+        }
+        if let Some(folder_id) = update.folder_id {
             if !self
                 .service
                 .list_folders()
@@ -520,6 +659,9 @@ impl BotService {
                 return Err(BotError::FolderScope(folder_id));
             }
             next.position = BotPosition::Folder { id: folder_id };
+        }
+        if let Some(parent_bot_id) = update.parent_bot_id {
+            next.position = self.parent_position(&current.id, &parent_bot_id)?;
         }
         if let Some(sort_order) = update.sort_order {
             next.sort_order = sort_order;
@@ -640,7 +782,7 @@ impl BotService {
         if message.is_empty() {
             return Err(BotError::EmptyMessage);
         }
-        let target = self.resolve_target(target)?;
+        let target = self.resolve_target_for(&caller.id, target)?;
         if !self.session_exists(&target.session_id)? {
             return Err(BotError::SessionMissing(target.session_id));
         }
@@ -649,31 +791,32 @@ impl BotService {
             "[from bot id={} name={}]\n{}",
             caller.id, caller.name, message
         );
-        self.service
-            .enqueue_user_input(&target.session_id, UserInput::text(text))?;
+        self.service.enqueue_user_input(
+            &target.session_id,
+            UserInput::from_bot(text, caller.id, caller.name),
+        )?;
         if let Some(runner) = self.turn_runner.get() {
             runner(&target.session_id);
         }
         Ok(target)
     }
 
-    /// Resolve a bot_send target. An exact id wins; a name must be unique.
-    fn resolve_target(&self, target: &str) -> Result<BotRecord, BotError> {
+    /// Resolve a bot_send target inside the caller's visibility scope. An exact
+    /// id wins; a name must be unique among visible bots. An out-of-scope
+    /// target is reported exactly like a missing one.
+    fn resolve_target_for(&self, caller_id: &str, target: &str) -> Result<BotRecord, BotError> {
         let needle = target.trim();
         if needle.is_empty() {
             return Err(BotError::NotFound(target.to_string()));
         }
-        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some(bot) = state
-            .iter()
-            .find(|bot| !bot.session_id.is_empty() && bot.id == needle)
-        {
+        let visible = self.list_for_caller(caller_id);
+        if let Some(bot) = visible.iter().find(|bot| bot.id == needle) {
             return Ok(bot.clone());
         }
         let folded = needle.to_lowercase();
-        let matches: Vec<&BotRecord> = state
+        let matches: Vec<&BotRecord> = visible
             .iter()
-            .filter(|bot| !bot.session_id.is_empty() && bot.name.to_lowercase() == folded)
+            .filter(|bot| bot.name.to_lowercase() == folded)
             .collect();
         match matches.as_slice() {
             [bot] => Ok((*bot).clone()),
@@ -1526,6 +1669,8 @@ mod tests {
         assert!(segment.contains(&bot.id));
         assert!(segment.contains("[from bot id=<sender_id> name=<sender_name>]"));
         assert!(segment.contains("bot_send"));
+        assert!(segment.contains("Cousins are not visible"));
+        assert!(segment.contains("same-parent siblings"));
         assert!(segment.contains("Do not send a courtesy message"));
 
         let renamed = f
@@ -1747,6 +1892,188 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_moves_under_a_bot_and_rejects_cycles() {
+        let f = fixture();
+        let parent = f
+            .bots
+            .create_user_bot("Parent", "", body("parent"))
+            .await
+            .expect("parent");
+        let child = f
+            .bots
+            .create_from_bot(&parent.session_id, "Child", "")
+            .await
+            .expect("child");
+        let grandchild = f
+            .bots
+            .create_from_bot(&child.session_id, "Grandchild", "")
+            .await
+            .expect("grandchild");
+
+        let info = crate::client_protocol::protocol::BotInfo::from(child.clone());
+        assert_eq!(
+            info.position,
+            BotPosition::Bot {
+                id: parent.id.clone()
+            }
+        );
+        let wire = serde_json::to_value(&info).expect("bot info");
+        assert_eq!(wire["position"]["kind"], "bot");
+        assert_eq!(wire["position"]["id"], parent.id);
+
+        let self_cycle = f
+            .bots
+            .update(
+                &parent.id,
+                BotUpdate {
+                    parent_bot_id: Some(parent.id.clone()),
+                    ..BotUpdate::default()
+                },
+            )
+            .await
+            .expect_err("self is not a parent");
+        assert!(matches!(self_cycle, BotError::ParentCycle));
+
+        let descendant_cycle = f
+            .bots
+            .update(
+                &parent.id,
+                BotUpdate {
+                    parent_bot_id: Some(grandchild.id.clone()),
+                    ..BotUpdate::default()
+                },
+            )
+            .await
+            .expect_err("descendant is not a parent");
+        assert!(matches!(descendant_cycle, BotError::ParentCycle));
+
+        let missing = f
+            .bots
+            .update(
+                &child.id,
+                BotUpdate {
+                    parent_bot_id: Some("missing-parent".into()),
+                    ..BotUpdate::default()
+                },
+            )
+            .await
+            .expect_err("parent must exist");
+        assert!(matches!(missing, BotError::ParentNotFound(_)));
+
+        f.bots
+            .update(
+                &child.id,
+                BotUpdate {
+                    clear_parent: true,
+                    ..BotUpdate::default()
+                },
+            )
+            .await
+            .expect("unparent");
+        assert_eq!(
+            f.bots.find(&child.id).expect("child").position,
+            BotPosition::None
+        );
+        assert_eq!(
+            f.bots.find(&grandchild.id).expect("grandchild").position,
+            BotPosition::Bot {
+                id: child.id.clone()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn captured_turn_resolution_does_not_follow_body_edits() {
+        let f = fixture();
+        let bot = f
+            .bots
+            .create_user_bot(
+                "Snapshot",
+                "",
+                body_with_tool("old prompt", "read"),
+            )
+            .await
+            .expect("bot");
+        let resolved = resolved(&f);
+        let before = crate::bot::resolve_agent_for_session(
+            &resolved,
+            Some(f.bots.as_ref()),
+            &bot.session_id,
+            &bot.id,
+        )
+        .expect("before");
+        assert_eq!(before.profile.system_prompt, "old prompt");
+        assert!(before.profile.tools.contains_key("read"));
+
+        f.bots
+            .update(
+                &bot.id,
+                BotUpdate {
+                    body: Some(body_with_tool("new prompt", "grep")),
+                    ..BotUpdate::default()
+                },
+            )
+            .await
+            .expect("update");
+
+        assert_eq!(before.profile.system_prompt, "old prompt");
+        assert!(before.profile.tools.contains_key("read"));
+        assert!(!before.profile.tools.contains_key("grep"));
+        let after = crate::bot::resolve_agent_for_session(
+            &resolved,
+            Some(f.bots.as_ref()),
+            &bot.session_id,
+            &bot.id,
+        )
+        .expect("after");
+        assert_eq!(after.profile.system_prompt, "new prompt");
+        assert!(after.profile.tools.contains_key("grep"));
+    }
+
+    #[tokio::test]
+    async fn editing_bots_json_is_not_hot_loaded() {
+        let f = fixture();
+        let bot = f
+            .bots
+            .create_user_bot("Memory", "", body("old"))
+            .await
+            .expect("bot");
+        let path = f.dir.path().join("bots.json");
+        let mut disk = bot.clone();
+        disk.name = "Disk only".into();
+        disk.body = body("disk");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "version": BOT_REGISTRY_VERSION,
+                "bots": [disk],
+            }))
+            .expect("json"),
+        )
+        .expect("write registry");
+
+        assert_eq!(f.bots.find(&bot.id).expect("memory").name, "Memory");
+        let reloaded = BotService::new(
+            Arc::clone(f.bots.service()),
+            Arc::clone(&f.settings),
+            None,
+            "/proj",
+            path,
+        )
+        .expect("reload");
+        assert_eq!(reloaded.find(&bot.id).expect("reloaded").name, "Disk only");
+        assert_eq!(
+            reloaded
+                .find(&bot.id)
+                .expect("reloaded")
+                .body
+                .system_prompt,
+            "disk"
+        );
+    }
+
+
+    #[tokio::test]
     async fn bot_events_cover_create_update_and_delete() {
         let f = fixture();
         let mut events = f.bots.subscribe();
@@ -1792,7 +2119,7 @@ mod tests {
             .expect("sender");
         let target = f
             .bots
-            .create_user_bot("Target", "", body(""))
+            .create_from_bot(&sender.session_id, "Target", "")
             .await
             .expect("target");
 
@@ -1822,6 +2149,13 @@ mod tests {
             pending[0].text,
             format!("[from bot id={} name=Sender]\nhello", sender.id)
         );
+        assert_eq!(
+            pending[0].sources,
+            vec![crate::types::MessageSource::bot(
+                sender.id.clone(),
+                "Sender"
+            )]
+        );
 
         // A unique name resolves to the id; the receipt carries the target.
         let by_name = f
@@ -1834,6 +2168,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn org_visibility_covers_self_ancestors_siblings_and_subtree_only() {
+        let f = fixture();
+        let root = f
+            .bots
+            .create_user_bot("Root", "", body("root"))
+            .await
+            .expect("root");
+        let child_a = f
+            .bots
+            .create_from_bot(&root.session_id, "Child A", "")
+            .await
+            .expect("child a");
+        let child_b = f
+            .bots
+            .create_from_bot(&root.session_id, "Child B", "")
+            .await
+            .expect("child b");
+        let grand_a = f
+            .bots
+            .create_from_bot(&child_a.session_id, "Grand A", "")
+            .await
+            .expect("grand a");
+        let other_root = f
+            .bots
+            .create_user_bot("Other Root", "", body("other"))
+            .await
+            .expect("other root");
+        let other_child = f
+            .bots
+            .create_from_bot(&other_root.session_id, "Other Child", "")
+            .await
+            .expect("other child");
+
+        let ids = |caller: &str| {
+            let mut ids: Vec<String> = f
+                .bots
+                .list_for_caller(caller)
+                .into_iter()
+                .map(|bot| bot.id)
+                .collect();
+            ids.sort();
+            ids
+        };
+        let mut expected_child_a = vec![
+            root.id.clone(),
+            child_a.id.clone(),
+            child_b.id.clone(),
+            grand_a.id.clone(),
+        ];
+        expected_child_a.sort();
+        assert_eq!(ids(&child_a.id), expected_child_a);
+
+        let mut expected_root = vec![
+            root.id.clone(),
+            child_a.id.clone(),
+            child_b.id.clone(),
+            grand_a.id.clone(),
+            other_root.id.clone(),
+        ];
+        expected_root.sort();
+        assert_eq!(ids(&root.id), expected_root);
+
+        let expected_child_b = {
+            let mut ids = vec![root.id.clone(), child_a.id.clone(), child_b.id.clone()];
+            ids.sort();
+            ids
+        };
+        assert_eq!(ids(&child_b.id), expected_child_b);
+        assert!(!f.bots.can_see(&child_a.id, &other_root.id));
+        assert!(!f.bots.can_see(&child_a.id, &other_child.id));
+        assert!(!f.bots.can_see(&child_b.id, &grand_a.id));
+        assert!(f.bots.can_see(&root.id, &other_root.id));
+        assert!(f.bots.can_see(&other_root.id, &root.id));
+        assert!(!f.bots.can_see(&root.id, &other_child.id));
+        assert!(!f.bots.can_see(&other_root.id, &child_a.id));
+        assert!(f.bots.can_see(&child_a.id, &child_b.id));
+        assert!(f.bots.can_see(&grand_a.id, &root.id));
+
+        f.bots
+            .send_from_bot(&child_a.session_id, &child_b.id, "sibling")
+            .await
+            .expect("sibling send");
+        f.bots
+            .send_from_bot(&child_a.session_id, &root.id, "ancestor")
+            .await
+            .expect("ancestor send");
+        let hidden = f
+            .bots
+            .send_from_bot(&child_a.session_id, &other_child.id, "cousin")
+            .await
+            .expect_err("cousin must be out of scope");
+        assert!(matches!(hidden, BotError::NotFound(_)));
+        let hidden_by_name = f
+            .bots
+            .send_from_bot(&child_a.session_id, "Other Child", "cousin")
+            .await
+            .expect_err("out-of-scope name");
+        assert!(matches!(hidden_by_name, BotError::NotFound(_)));
+        f.bots
+            .send_from_bot(&root.session_id, &other_root.id, "other root")
+            .await
+            .expect("roots are peers");
+        assert!(
+            f.bots
+                .send_from_bot(&root.session_id, &other_child.id, "other branch")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn duplicate_bot_names_are_rejected_for_bot_send() {
         let f = fixture();
         let sender = f
@@ -1843,12 +2288,12 @@ mod tests {
             .expect("sender");
         let first = f
             .bots
-            .create_user_bot("Dup", "", body(""))
+            .create_from_bot(&sender.session_id, "Dup", "")
             .await
             .expect("first");
         let second = f
             .bots
-            .create_user_bot("Other", "", body(""))
+            .create_from_bot(&sender.session_id, "Other", "")
             .await
             .expect("second");
         {

@@ -176,7 +176,7 @@ async fn empty_session_in_folder_stays_listed() {
         let data = env.open();
         let sid = persist(&data, &[]);
         let folder = data
-            .create_session_folder_blocking("Planning")
+            .create_session_folder_blocking("Planning", "")
             .expect("create folder");
         data.set_session_folder_blocking(&sid, Some(&folder))
             .expect("move session");

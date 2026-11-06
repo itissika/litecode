@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useEffect,
   useMemo,
   useState,
@@ -23,6 +24,8 @@ import { ListRow } from "./ui/ListRow";
 import { Popover } from "./ui/Popover";
 import { WorkspaceUsage } from "./WorkspaceUsage";
 import { folderScope, type FolderScope } from "../lib/botFolders";
+import { botFolderId, botParentId } from "../lib/botDirectory";
+import { botChildren, botRoots, botSubtree } from "../lib/botOrg";
 import { reorderFolderIds } from "../lib/sessionFolders";
 import { openSessionPanel } from "../lib/sessionPanelNav";
 import { watchActiveCenterSessionIds } from "../dockview/workbench/queries";
@@ -96,6 +99,8 @@ export function SessionList() {
   const updateBot = useBotStore((s) => s.updateBot);
   const deleteBot = useBotStore((s) => s.deleteBot);
   const moveBot = useBotStore((s) => s.moveBot);
+  const moveBotUnder = useBotStore((s) => s.moveBotUnder);
+  const unparentBot = useBotStore((s) => s.unparentBot);
   const createFolder = useSessionStore((s) => s.createFolder);
   const renameFolder = useSessionStore((s) => s.renameFolder);
   const deleteFolder = useSessionStore((s) => s.deleteFolder);
@@ -148,22 +153,18 @@ export function SessionList() {
     () => orderedFolders.filter((folder) => folderScope(folder.id) === "session"),
     [orderedFolders],
   );
+  const botChildrenById = useMemo(
+    () => botChildren(orderedBots),
+    [orderedBots],
+  );
   const { botByFolder, botUngrouped, sessionByFolder, sessionUngrouped } =
     useMemo(() => {
       const botMap = new Map<string, BotInfo[]>();
       const sessionMap = new Map<string, SessionInfo[]>();
-      for (const folder of botFolders) botMap.set(folder.id, []);
-      for (const folder of sessionFolders) sessionMap.set(folder.id, []);
-      const looseBots: BotInfo[] = [];
-      for (const bot of orderedBots) {
-        const folder = bot.folder_id;
-        const bucket =
-          folder && folderScope(folder) === "bot"
-            ? botMap.get(folder)
-            : undefined;
-        if (bucket) bucket.push(bot);
-        else looseBots.push(bot);
+      for (const folder of botFolders) {
+        botMap.set(folder.id, botRoots(orderedBots, folder.id));
       }
+      for (const folder of sessionFolders) sessionMap.set(folder.id, []);
       const looseSessions: SessionInfo[] = [];
       for (const session of roots) {
         const folder = session.folder_id;
@@ -176,7 +177,7 @@ export function SessionList() {
       }
       return {
         botByFolder: botMap,
-        botUngrouped: looseBots,
+        botUngrouped: botRoots(orderedBots, null),
         sessionByFolder: sessionMap,
         sessionUngrouped: looseSessions,
       };
@@ -307,34 +308,31 @@ export function SessionList() {
   };
 
   /** Row-on-row drop: join the target's group, or seed a new one with both. */
-  const groupRows = async (
-    scope: FolderScope,
-    sourceId: string,
-    targetId: string,
-  ) => {
+  const groupRows = async (sourceId: string, targetId: string) => {
     if (sourceId === targetId) return;
-    const rows = scope === "bot" ? bots : sessions;
-    const byId = new Map(rows.map((row) => [row.id, row]));
+    // Bot rows are a tree, not folder-groupable peers: a drop on a bot row sets
+    // its parent (see BotItem). Only session rows still group by drop.
+    const byId = new Map(sessions.map((row) => [row.id, row]));
     const targetFolder = byId.get(targetId)?.folder_id ?? null;
     const sourceFolder = byId.get(sourceId)?.folder_id ?? null;
     const usable = (folder: string | null) =>
-      folder && folderScope(folder) === scope ? folder : null;
+      folder && folderScope(folder) === "session" ? folder : null;
     const targetGroup = usable(targetFolder);
     const sourceGroup = usable(sourceFolder);
     if (targetGroup) {
       if (sourceGroup !== targetGroup) {
-        await moveRow(scope, sourceId, targetGroup);
+        await moveRow("session", sourceId, targetGroup);
       }
       return;
     }
     if (sourceGroup) {
-      await moveRow(scope, targetId, sourceGroup);
+      await moveRow("session", targetId, sourceGroup);
       return;
     }
-    const folderId = await createFolder(i18n.t("session.newGroup"), scope);
+    const folderId = await createFolder(i18n.t("session.newGroup"), "session");
     if (!folderId) return;
-    await moveRow(scope, sourceId, folderId);
-    await moveRow(scope, targetId, folderId);
+    await moveRow("session", sourceId, folderId);
+    await moveRow("session", targetId, folderId);
     focusGroup(folderId);
   };
 
@@ -391,9 +389,7 @@ export function SessionList() {
       unread={unread[session.id] === true}
       onOpen={handleSessionClick}
       onDelete={deleteSession}
-      onDropSession={(sourceId) =>
-        void groupRows("session", sourceId, session.id)
-      }
+      onDropSession={(sourceId) => void groupRows(sourceId, session.id)}
       onContextMenu={(event: MouseEvent) => {
         event.preventDefault();
         event.stopPropagation();
@@ -418,37 +414,49 @@ export function SessionList() {
     />
   );
 
-  const renderBot = (bot: BotInfo, grouped = false) => (
-    <BotItem
-      key={bot.id}
-      bot={bot}
-      session={botSession(bot)}
-      now={now}
-      indentPx={grouped ? GROUPED_ROW_INDENT_PX : undefined}
-      focused={activeSessionIds.includes(bot.session_id)}
-      unread={unread[bot.session_id] === true}
-      onOpen={(id) => void openBotById(id)}
-      onDelete={requestDeleteBot}
-      onDropBot={(sourceId) => void groupRows("bot", sourceId, bot.id)}
-      onContextMenu={(event: MouseEvent) => {
-        event.preventDefault();
-        event.stopPropagation();
-        setMenu({
-          kind: "bot",
-          id: bot.id,
-          x: event.clientX,
-          y: event.clientY,
-        });
-      }}
-      renaming={renamingBotId === bot.id}
-      onStartRename={() => startBotRename(bot.id)}
-      onRename={(name) => void commitBotRename(bot, name)}
-      onRenameCancel={() => setRenamingBotId(null)}
-    />
-  );
+  const renderBot = (
+    bot: BotInfo,
+    depth = 0,
+    grouped = false,
+    seen: Set<string> = new Set(),
+  ) => {
+    if (seen.has(bot.id)) return null;
+    seen.add(bot.id);
+    const children = botChildrenById.get(bot.id) ?? [];
+    return (
+      <Fragment key={bot.id}>
+        <BotItem
+          bot={bot}
+          session={botSession(bot)}
+          now={now}
+          indentPx={(grouped ? GROUPED_ROW_INDENT_PX : 12) + depth * 16}
+          focused={activeSessionIds.includes(bot.session_id)}
+          unread={unread[bot.session_id] === true}
+          onOpen={(id) => void openBotById(id)}
+          onDelete={requestDeleteBot}
+          onDropBot={(sourceId) => void moveBotUnder(sourceId, bot.id)}
+          onContextMenu={(event: MouseEvent) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setMenu({
+              kind: "bot",
+              id: bot.id,
+              x: event.clientX,
+              y: event.clientY,
+            });
+          }}
+          renaming={renamingBotId === bot.id}
+          onStartRename={() => startBotRename(bot.id)}
+          onRename={(name) => void commitBotRename(bot, name)}
+          onRenameCancel={() => setRenamingBotId(null)}
+        />
+        {children.map((child) => renderBot(child, depth + 1, grouped, seen))}
+      </Fragment>
+    );
+  };
 
   const renderBotEntries = (entries: BotInfo[], grouped = false) =>
-    entries.map((bot) => renderBot(bot, grouped));
+    entries.map((bot) => renderBot(bot, 0, grouped));
 
   const renderSessionEntries = (entries: SessionInfo[], grouped = false) =>
     entries.map((session) => renderSession(session, grouped));
@@ -512,6 +520,13 @@ export function SessionList() {
           onClick: () => void startGroup("bot", bot.id),
         },
       ];
+      if (botParentId(bot)) {
+        items.push({
+          id: "unparent-bot",
+          label: i18n.t("bot.moveToTopLevel"),
+          onClick: () => void unparentBot(bot.id),
+        });
+      }
       const botFoldersForMenu = orderedFolders.filter(
         (folder) => folderScope(folder.id) === "bot",
       );
@@ -521,11 +536,11 @@ export function SessionList() {
           items.push({
             id: `move-bot-${folder.id}`,
             label: i18n.t("session.moveToFolderName", { name: folder.name }),
-            disabled: bot.folder_id === folder.id,
+            disabled: botFolderId(bot) === folder.id,
             onClick: () => void moveBot(bot.id, folder.id),
           });
         }
-        if (bot.folder_id) {
+        if (botFolderId(bot)) {
           items.push({
             id: "move-bot-ungrouped",
             label: i18n.t("session.removeFromFolder"),
@@ -593,6 +608,7 @@ export function SessionList() {
     moveSession,
     renameSession,
     moveBot,
+    unparentBot,
     requestDeleteBot,
     startGroup,
   ]);
@@ -602,12 +618,19 @@ export function SessionList() {
       scope === "bot"
         ? (botByFolder.get(folder.id) ?? [])
         : (sessionByFolder.get(folder.id) ?? []);
+    const count =
+      scope === "bot"
+        ? (entries as BotInfo[]).reduce(
+            (total, bot) => total + botSubtree(bot, botChildrenById).length,
+            0,
+          )
+        : entries.length;
     const isCollapsed = Boolean(collapsed[folder.id]);
     return (
       <div key={folder.id}>
         <SessionFolderHeader
           folder={folder}
-          count={entries.length}
+          count={count}
           collapsed={isCollapsed}
           renaming={renamingFolderId === folder.id}
           onToggle={() => toggle(folder.id)}

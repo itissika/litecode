@@ -40,6 +40,9 @@ pub struct PendingMessage {
     /// `litecode-media:` refs, in paste order. Empty for a text-only queue entry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// Bot senders for this queue entry. Empty for human input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<crate::types::MessageSource>,
 }
 
 /// One user message from a claimed queue: texts joined the way the client
@@ -55,6 +58,15 @@ pub fn merge_pending(messages: &[PendingMessage]) -> crate::types::UserInput {
             .iter()
             .flat_map(|message| message.images.iter().cloned())
             .collect(),
+        sources: messages
+            .iter()
+            .flat_map(|message| message.sources.iter().cloned())
+            .fold(Vec::new(), |mut sources, source| {
+                if !sources.contains(&source) {
+                    sources.push(source);
+                }
+                sources
+            }),
     }
 }
 
@@ -1830,6 +1842,7 @@ impl SessionManager {
             id: uuid::Uuid::new_v4().to_string(),
             text: input.text,
             images: input.images,
+            sources: input.sources,
         };
         let mut records = self.records.lock().unwrap();
         let record = records.get_mut(session_id).ok_or_else(|| {
@@ -3922,12 +3935,18 @@ impl SessionManager {
         input: impl Into<crate::types::UserInput>,
     ) -> anyhow::Result<crate::session::event::Seq> {
         let input = input.into();
+        let sources = input.sources.clone();
         let item = crate::types::user_message(input.text, &input.images);
         let mut draft = EventDraft::surface_item(
             EventType::ItemUser,
             &item,
             crate::session::surface::SurfaceOp::Append,
         )?;
+        if !sources.is_empty() {
+            // Durable sidecar beside the Item body; readers put it back on the
+            // wire as sources and the model still sees the ordinary message.
+            draft.data["sources"] = serde_json::to_value(sources)?;
+        }
         draft.time = chrono::Utc::now().timestamp_millis();
         let receipt = self.apply(session_id, SessionApply::Append(draft))?;
         match receipt.outcome {
@@ -4490,6 +4509,31 @@ mod child_session_tests {
             dir.path().join("sessions.db").to_str().unwrap().to_string(),
         ));
         (guard, mgr)
+    }
+
+    #[tokio::test]
+    async fn bot_message_sources_round_trip_beside_the_user_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_guard, mgr) = wp090_mgr(&dir);
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        let source = crate::types::MessageSource::bot("bot-1", "Sender");
+        mgr.append_user_message(
+            &sid,
+            crate::types::UserInput::from_bot(
+                "[from bot id=bot-1 name=Sender]\nhello",
+                "bot-1",
+                "Sender",
+            ),
+        )
+        .unwrap();
+        let events = mgr.entry_load_events_range(&sid, 0, 10).unwrap();
+        let event = events
+            .iter()
+            .find(|event| event.event_type == crate::session::EventType::ItemUser)
+            .expect("user row");
+        assert_eq!(crate::types::message_sources(&event.data), vec![source]);
+        // The model-facing payload is still an ordinary Item.
+        assert!(crate::session::event::item_from_event(event).is_ok());
     }
 
     #[tokio::test]

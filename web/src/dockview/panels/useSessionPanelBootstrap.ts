@@ -3,7 +3,10 @@ import type { DockviewPanelApi } from "dockview-react";
 
 import type { SessionInfo } from "../../api/types";
 import { releaseSessionTab } from "../../components/sessionTeardown";
-import { sessionTitle } from "../../lib/sessionDisplay";
+import {
+  sessionDisplayTitle,
+  useBotForSession,
+} from "../../lib/botIdentity";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useToastStore } from "../../stores/toastStore";
@@ -71,5 +74,6 @@ export function useSessionPanelBootstrap(
   const session = useSessionStore((s) =>
     s.sessions.find((x) => x.id === sessionId),
   );
-  return { isActive, session, title: sessionTitle(session) };
+  const bot = useBotForSession(sessionId);
+  return { isActive, session, title: sessionDisplayTitle(session, bot) };
 }

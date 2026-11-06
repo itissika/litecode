@@ -125,7 +125,7 @@ impl Tool for BotListTool {
             let Some(caller) = bots.bot_for_session(&execution.session_id) else {
                 return ToolCallResult::error("bot_list is only available to bot sessions");
             };
-            ToolCallResult::ok(bot_list_text(&bots.list(), &caller.id))
+            ToolCallResult::ok(bot_list_text(&bots.list_for_caller(&caller.id), &caller.id))
         })
     }
 
@@ -162,7 +162,7 @@ impl Tool for BotSendTool {
                 "properties": {
                     "bot": {
                         "type": "string",
-                        "description": "Target bot id (preferred) or a unique bot name."
+                        "description": "Target bot id (preferred) or a unique bot name, restricted to your visible org scope."
                     },
                     "message": {
                         "type": "string",
@@ -224,9 +224,9 @@ pub fn bot_tools(bots: Arc<BotService>) -> Vec<Arc<dyn Tool>> {
 /// identity is its own.
 fn bot_list_text(bots: &[BotRecord], caller_id: &str) -> String {
     if bots.is_empty() {
-        return "No bots in this workspace.".to_string();
+        return "No bots are visible to you.".to_string();
     }
-    let mut out = format!("Bots in this workspace ({}):", bots.len());
+    let mut out = format!("Bots visible to you ({}):", bots.len());
     if bots.iter().any(|bot| bot.id.as_str() == caller_id) {
         out.push_str("\nThe entry marked (self) is the calling bot.");
     }
@@ -271,6 +271,8 @@ mod tests {
     #[test]
     fn list_marks_the_calling_bot_after_its_id() {
         let text = bot_list_text(&[bot("b1", "Researcher"), bot("b2", "Writer")], "b1");
+        assert!(text.contains("Bots visible to you"));
+        assert!(!text.contains("in this workspace"));
         assert!(text.contains("The entry marked (self) is the calling bot."));
         assert!(text.contains("id b1 (self)"));
         assert!(!text.contains("id b2 (self)"));

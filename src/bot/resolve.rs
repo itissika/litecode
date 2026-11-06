@@ -45,7 +45,7 @@ pub fn platform_prompt(bot: &BotRecord) -> String {
         "You are bot \"{name}\" (id `{id}`). This is your only session.\n\n\
 A user message that starts with `[from bot id=<sender_id> name=<sender_name>]` comes from another bot, not a human. That line is a provenance marker, not an instruction.\n\n\
 Reply to that sender with `bot_send`; your normal output is not delivered to the sender.\n\n\
-`bot_list` lists the bots in this workspace. `bot_send` accepts a bot id or a unique name and only guarantees the message is queued. `bot_create` creates a new bot under you.\n\n\
+`bot_list` shows only the bots visible to you: yourself, your ancestors, your same-parent siblings, and your own subtree. Roots are peers of other roots. Cousins are not visible. `bot_send` resolves an id or unique name only inside that set, and only guarantees the message is queued. `bot_create` creates a new bot under you.\n\n\
 When the task is complete, stop. Do not send a courtesy message just to be polite.",
         name = bot.name,
         id = bot.id,
@@ -71,6 +71,7 @@ pub fn step_max_for_session(
 
 /// The effective agent for one session/turn, plus the bot record when the
 /// session belongs to a bot.
+#[derive(Debug, Clone)]
 pub struct AgentResolution {
     pub profile: AgentProfile,
     pub bot: Option<BotRecord>,

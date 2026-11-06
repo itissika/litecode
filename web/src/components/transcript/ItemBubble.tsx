@@ -11,8 +11,13 @@ import {
 } from "../../lib/transcriptProjection";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useTurnStore } from "../../stores/turnStore";
+import {
+  botSourcesForRows,
+  rowWithoutBotEnvelope,
+} from "../../lib/botMessage";
 import { MiniChatInput, type MiniChatInputSettings } from "../MiniChatInput";
 import { processGroupAutoOpen } from "../toolCallStatus";
+import { BotSourceMark } from "./BotSourceMark";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { NodeView, ProcessGroup } from "./NodeView";
 
@@ -141,7 +146,10 @@ function ItemBubbleImpl({
   );
   const first = rows.find((r) => !isTranscriptMarkRow(r)) ?? rows[0];
   const isUser = first != null && isHumanUserRow(first);
-  const nodes = rowsToNodes(rows);
+  const botSources = botSourcesForRows(rows);
+  const botMessage = botSources.length > 0;
+  const displayRows = botMessage ? rows.map(rowWithoutBotEnvelope) : rows;
+  const nodes = rowsToNodes(displayRows);
   const streaming =
     rows.some((r) => r.state === "in_progress") || nodes.some((n) => n.streaming);
   const hasContent = nodes.length > 0 || !streaming;
@@ -157,6 +165,7 @@ function ItemBubbleImpl({
     nodes.find((node) => node.kind === "images")?.refs ?? [];
   const editing =
     !readOnly &&
+    !botMessage &&
     isUser &&
     bubbleKey !== undefined &&
     editingAnchor?.bubbleKey === bubbleKey &&
@@ -249,10 +258,11 @@ function ItemBubbleImpl({
         ) : (
           <div
             data-user-message-bubble
-            className={`flex items-start gap-2 ${readOnly ? "" : "cursor-text"}`}
+            className={`flex items-start gap-2 ${readOnly || botMessage ? "" : "cursor-text"}`}
             onClick={(event) => {
               if (
                 readOnly ||
+                botMessage ||
                 !showRevert ||
                 userSeq === undefined ||
                 !bubbleKey ||
@@ -275,7 +285,10 @@ function ItemBubbleImpl({
             }}
           >
             <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-accent-hover)" />
-            <div className="min-w-0 flex-1">{body}</div>
+            <div className="min-w-0 flex-1">
+              {botMessage ? <BotSourceMark sources={botSources} /> : null}
+              {body}
+            </div>
           </div>
         )
       ) : (

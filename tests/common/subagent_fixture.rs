@@ -53,7 +53,7 @@ impl SubagentHarness {
 
     pub fn with_subagent_max_steps(
         provider: Arc<dyn LlmProvider>,
-        subagent_max_steps: u32,
+        _subagent_max_steps: u32,
     ) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = test_workspace(dir.path());
@@ -63,7 +63,6 @@ impl SubagentHarness {
         let mut global = base.global().clone();
         if let Some(default) = global.agents.get_mut(PARENT_AGENT) {
             default.allowed_subagents = vec![SUBAGENT_AGENT.into()];
-            default.max_steps = 4;
         }
         global.agents.insert(
             SUBAGENT_AGENT.into(),
@@ -72,7 +71,6 @@ impl SubagentHarness {
                 model_ref: TEST_PRIMARY_MODEL_REF.into(),
                 system_prompt: "builtin:general".into(),
                 tools: HashMap::from([("read".into(), binding_safe_for("read"))]),
-                max_steps: subagent_max_steps,
                 ..Default::default()
             },
         );

@@ -1094,7 +1094,6 @@ fn build_runtime_with_observer(
         common::permission::test_auto_approve_sink(),
         observer,
         None,
-        Some(3),
     )
     .expect("AgentRuntime::with_mcp_pool");
     runtime.set_context_cwd(cwd.to_path_buf());

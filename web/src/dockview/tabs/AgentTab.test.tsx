@@ -2,7 +2,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { IDockviewPanelProps } from "dockview-react";
 
-import type { SessionInfo } from "../../api/types";
+import type { BotInfo, SessionInfo } from "../../api/types";
+import { useBotStore } from "../../stores/botStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { AgentTab } from "./AgentTab";
 
@@ -40,7 +41,20 @@ function seed(session: Partial<SessionInfo> | null): void {
 afterEach(() => {
   cleanup();
   useSessionStore.setState({ sessions: [] });
+  useBotStore.setState({ bots: [] });
 });
+
+function bot(patch: Partial<BotInfo> = {}): BotInfo {
+  return {
+    id: "b1",
+    name: "Researcher",
+    body: { system_prompt: "", tools: {}, allowed_subagents: [] },
+    created_at: 1,
+    session_id: ID,
+    sort_order: 1,
+    ...patch,
+  };
+}
 
 describe("AgentTab title", () => {
   it("shows NEW for a freshly created root with no preview yet", () => {
@@ -60,6 +74,18 @@ describe("AgentTab title", () => {
 
     expect(screen.getByText("fix the tab title")).toBeTruthy();
     expect(screen.queryByText("NEW")).toBeNull();
+  });
+
+  it("names a bot session from the directory, never its latest message", () => {
+    seed({ title: "Old session title", preview: "[from bot id=b1 name=Researcher]\nhi" });
+    useBotStore.setState({ bots: [bot()] });
+    render(
+      <AgentTab {...panelProps({ sessionId: ID, sessionKind: "root" })} />,
+    );
+
+    expect(screen.getByText("Researcher")).toBeTruthy();
+    expect(screen.queryByText("Old session title")).toBeNull();
+    expect(screen.queryByText(/from bot id=/)).toBeNull();
   });
 
   it("keeps the short id for a subagent without a preview", () => {

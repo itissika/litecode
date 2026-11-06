@@ -28,7 +28,7 @@ function bot(patch: Partial<BotInfo> = {}): BotInfo {
     body: { system_prompt: "", tools: {}, allowed_subagents: [] },
     created_at: 1,
     session_id: "s1",
-    folder_id: null,
+    position: { kind: "none" },
     sort_order: 1,
     ...patch,
   };

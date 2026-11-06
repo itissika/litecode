@@ -30,7 +30,7 @@ pub use coords::{
 };
 pub use pipeline::ToolPipeline;
 pub use project::{RejectedTool, ToolProjection, project_tools};
-pub use registry::build_tool_list;
+pub use registry::{build_tool_list, build_tool_list_with_resolution};
 pub use schema_validate::{
     check_tool_input, expected_type, invalid_input_for, missing_parameter, must_be,
     must_be_nonempty_string, must_be_one_of, parse_tool_arguments, require_nonempty_string,

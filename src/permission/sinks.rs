@@ -86,6 +86,7 @@ impl PermissionSink for RecordingPermissionSink {
             free_text: self.free_text.clone(),
             selected: self.selected.clone(),
             answers,
+            timed_out: false,
         }
     }
 }

@@ -216,9 +216,14 @@ type ItemLogKind =
 /** A committed row's lifecycle, as the session log itself records it. */
 type LogRowState = "in_progress" | "final" | "aborted";
 
+/** Durable sender metadata beside a user Item; not a second message type. */
+export type MessageSource = { kind: "bot"; id: string; name: string };
+
 /** Every committed row carries the log envelope; `seq` is its identity. */
 interface LogRowEnvelope {
   seq: number;
+  /** Bot senders for an `item/user` row. Empty/absent on human and older rows. */
+  sources?: MessageSource[];
   /** UI-only structured tool result data (currently `run_code`). Sits beside
    *  `body`, never inside the Responses `Item`. Absent on older rows. */
   result_data?: unknown;
@@ -433,10 +438,15 @@ export interface BotInfo {
   created_at: number;
   /** The UI identifies a bot session by this id, never by an agent/profile id. */
   session_id: string;
-  /** Shared session folder; absent means ungrouped. */
-  folder_id?: string | null;
+  /** One placement: ungrouped, a bot folder, or another bot. */
+  position?: BotPosition;
   sort_order: number;
 }
+
+export type BotPosition =
+  | { kind: "none" }
+  | { kind: "folder"; id: string }
+  | { kind: "bot"; id: string };
 
 /** Product-layer bot directory change, pushed as `bot/changed`. */
 export interface BotChanged {
@@ -650,6 +660,8 @@ export interface PendingMessage {
   text: string;
   /** `litecode-media:` refs, in paste order. Absent when the message is text. */
   images?: string[];
+  /** Bot senders for this queue entry. Absent for human input. */
+  sources?: MessageSource[];
 }
 
 export interface BashJob {

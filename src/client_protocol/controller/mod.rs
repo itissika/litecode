@@ -777,15 +777,18 @@ impl Projection {
                 .transpose()?;
             let child_session_id = self.child_session_id_for_encoded(encoded.as_ref());
             let hidden = crate::reminder::hidden_kind(event.event_type.as_str());
+            let mut body = event.data;
+            let sources = crate::types::take_message_sources(&mut body);
             out.push(crate::client_protocol::protocol::WireBufferEvent {
                 seq: event.seq,
                 event_type: event.event_type,
-                body: event.data,
+                body,
                 result_data: event.result_data,
                 cites: event.source_seqs.unwrap_or_default(),
                 state: event.state,
                 surface_op: event.surface_op,
                 child_session_id,
+                sources,
                 hidden,
             });
         }

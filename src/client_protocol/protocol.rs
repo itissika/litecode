@@ -220,15 +220,15 @@ pub struct BotInfo {
     pub body: crate::bot::BotBody,
     pub created_at: i64,
     pub session_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub folder_id: Option<String>,
+    /// One placement: ungrouped, a bot folder, or another bot.
+    #[serde(default)]
+    pub position: crate::bot::BotPosition,
     #[serde(default)]
     pub sort_order: i64,
 }
 
 impl From<crate::bot::BotRecord> for BotInfo {
     fn from(bot: crate::bot::BotRecord) -> Self {
-        let folder_id = bot.position.folder_id().map(str::to_string);
         Self {
             id: bot.id,
             name: bot.name,
@@ -236,7 +236,7 @@ impl From<crate::bot::BotRecord> for BotInfo {
             body: bot.body,
             created_at: bot.created_at,
             session_id: bot.session_id,
-            folder_id,
+            position: bot.position,
             sort_order: bot.sort_order,
         }
     }
@@ -388,6 +388,9 @@ pub struct WireBufferEvent {
     pub surface_op: Option<crate::session::surface::SurfaceOp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_session_id: Option<String>,
+    /// Bot senders for a user row. Empty for human messages and older rows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<crate::types::MessageSource>,
     /// Hidden reminders stay on the wire so seq cursors stay continuous.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,

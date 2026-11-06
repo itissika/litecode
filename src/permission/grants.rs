@@ -172,6 +172,9 @@ pub struct AskReply {
     pub selected: Vec<String>,
     /// ask_user submit: map question_id → answer.
     pub answers: HashMap<String, AskAnswer>,
+    /// The bot ask_user deadline elapsed (or no live frontend answered) without
+    /// a human reply. Distinct from a deliberate Skip (Deny).
+    pub timed_out: bool,
 }
 
 impl AskReply {
@@ -181,6 +184,7 @@ impl AskReply {
             free_text: None,
             selected: Vec::new(),
             answers: HashMap::new(),
+            timed_out: false,
         }
     }
 
@@ -211,6 +215,7 @@ impl AskReply {
             free_text,
             selected,
             answers,
+            timed_out: false,
         }
     }
 }

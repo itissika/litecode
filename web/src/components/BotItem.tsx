@@ -3,6 +3,7 @@ import { Robot } from "@phosphor-icons/react";
 import type { BotInfo, SessionInfo } from "../api/types";
 import { isWaitingForUserPhase } from "../api/types";
 import { useTurnStore } from "../stores/turnStore";
+import { botParentId } from "../lib/botDirectory";
 import { SidebarRow } from "./SidebarRow";
 import { formatRelative } from "./SessionItem";
 import {
@@ -109,6 +110,7 @@ export function BotItem({
       dataAttrs={{
         "data-bot-active": focused ? "true" : undefined,
         "data-bot-unread": unread ? "true" : undefined,
+        "data-bot-parent": botParentId(bot) ?? undefined,
       }}
       onOpen={() => onOpen(bot.id)}
       onDelete={() => onDelete(bot)}
