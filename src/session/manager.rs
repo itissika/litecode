@@ -304,7 +304,9 @@ pub enum CompactionFailureAction {
 /// it is not success, but `Continue` lets the session attempt the read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EpisodeOutcome {
-    Succeeded { commit: CompactionCommitKind },
+    Succeeded {
+        commit: CompactionCommitKind,
+    },
     Failed {
         kind: CompactionFailKind,
         message: String,
@@ -409,7 +411,8 @@ impl CompactionEpisodeLease {
     }
 
     pub fn set_at(&self, at: crate::session::event::Seq) {
-        self.manager.set_compaction_at(&self.session_id, &self.id, at);
+        self.manager
+            .set_compaction_at(&self.session_id, &self.id, at);
     }
 
     pub fn mark_committed(&mut self, commit: CompactionCommitKind) {
@@ -614,6 +617,9 @@ pub struct SessionManager {
     lifecycle_tx: broadcast::Sender<LifecycleEvent>,
     /// WP-090: optional turn status hook (default none = no-op). Session installs.
     turn_status_hook: std::sync::RwLock<Option<TurnStatusHook>>,
+    /// Derived session -> bot identity. Shared by every `SessionService` built
+    /// on this manager; the bot directory remains the authority.
+    bot_owners: std::sync::RwLock<HashMap<String, super::SessionBotOwner>>,
     /// WP-166: flips to `true` once, when the first `session/list` or
     /// `session/new` reply has been emitted on any connection. P2 startup work
     /// (session-index first tick, empty-session GC) waits on it.
@@ -693,6 +699,7 @@ impl SessionManager {
             _test_lease: test_lease,
             lifecycle_tx,
             turn_status_hook: std::sync::RwLock::new(None),
+            bot_owners: std::sync::RwLock::new(HashMap::new()),
             startup_settled: tokio::sync::watch::Sender::new(false),
             #[cfg(test)]
             fail_next_fanout_spawn: std::sync::atomic::AtomicBool::new(false),
@@ -710,6 +717,7 @@ impl SessionManager {
             _test_lease: None,
             lifecycle_tx,
             turn_status_hook: std::sync::RwLock::new(None),
+            bot_owners: std::sync::RwLock::new(HashMap::new()),
             startup_settled: tokio::sync::watch::Sender::new(false),
             #[cfg(test)]
             fail_next_fanout_spawn: std::sync::atomic::AtomicBool::new(false),
@@ -723,6 +731,63 @@ impl SessionManager {
 
     pub fn data(&self) -> &Arc<SessionData> {
         &self.data
+    }
+
+    /// Shared derived query: which bot owns this ordinary session.
+    pub fn bot_owner_for_session(&self, session_id: &str) -> Option<super::SessionBotOwner> {
+        if session_id.is_empty() {
+            return None;
+        }
+        self.bot_owners
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(session_id)
+            .cloned()
+    }
+
+    pub(crate) fn replace_bot_owners(
+        &self,
+        owners: impl IntoIterator<Item = super::SessionBotOwner>,
+    ) {
+        let next: HashMap<String, super::SessionBotOwner> = owners
+            .into_iter()
+            .filter(|owner| !owner.session_id.is_empty())
+            .map(|owner| (owner.session_id.clone(), owner))
+            .collect();
+        *self
+            .bot_owners
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = next;
+    }
+
+    pub(crate) fn upsert_bot_owner(&self, owner: super::SessionBotOwner) {
+        if owner.session_id.is_empty() {
+            return;
+        }
+        self.bot_owners
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(owner.session_id.clone(), owner);
+    }
+
+    pub(crate) fn remove_bot_owner(&self, session_id: &str) {
+        if session_id.is_empty() {
+            return;
+        }
+        self.bot_owners
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(session_id);
+    }
+
+    pub(crate) fn is_bot_id(&self, bot_id: &str) -> bool {
+        !bot_id.is_empty()
+            && self
+                .bot_owners
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .values()
+                .any(|owner| owner.bot_id == bot_id)
     }
 
     /// Test-only: next `start_turn` rolls back as if fanout thread spawn failed.
@@ -1176,7 +1241,15 @@ impl SessionManager {
                 operation_id: MutationId::new(),
                 memory: memory.clone(),
             }) {
-                Ok(_) => return Ok((memory, value)),
+                Ok(_) => {
+                    self.publish_internal(
+                        session_id,
+                        InternalEvent::MemoryUpdated {
+                            entries: memory.entries.clone(),
+                        },
+                    );
+                    return Ok((memory, value));
+                }
                 Err(LitecodeError::SessionConflict { .. }) if attempt < 2 => continue,
                 Err(e) => return Err(e),
             }
@@ -2017,9 +2090,7 @@ impl SessionManager {
             .get(&session_id)
             .is_some_and(|record| match &record.activity {
                 SessionActivity::RunningTurn(live) => live.turn_id.as_str() == turn_id.as_str(),
-                SessionActivity::StartingTurn { turn_id: t, .. } => {
-                    t.as_str() == turn_id.as_str()
-                }
+                SessionActivity::StartingTurn { turn_id: t, .. } => t.as_str() == turn_id.as_str(),
                 _ => false,
             });
         if live {
@@ -2540,13 +2611,16 @@ impl SessionManager {
         let Some(record) = records.get(session_id) else {
             return CompactionStateSnapshot::default();
         };
-        let active = record.episode.as_ref().map(|episode| ActiveCompactionProjection {
-            id: episode.id.clone(),
-            trigger: episode.trigger,
-            phase: episode.phase,
-            at: episode.at,
-            started_at_ms: episode.started_at_ms,
-        });
+        let active = record
+            .episode
+            .as_ref()
+            .map(|episode| ActiveCompactionProjection {
+                id: episode.id.clone(),
+                trigger: episode.trigger,
+                phase: episode.phase,
+                at: episode.at,
+                started_at_ms: episode.started_at_ms,
+            });
         CompactionStateSnapshot {
             revision: record.compaction_revision,
             active,
@@ -2617,12 +2691,7 @@ impl SessionManager {
         }
     }
 
-    fn set_compaction_at(
-        &self,
-        session_id: &str,
-        id: &str,
-        at: crate::session::event::Seq,
-    ) {
+    fn set_compaction_at(&self, session_id: &str, id: &str, at: crate::session::event::Seq) {
         let mut records = self.records.lock().unwrap();
         let Some(record) = records.get_mut(session_id) else {
             return;
@@ -2666,9 +2735,9 @@ impl SessionManager {
         let telemetry = episode.terminal_telemetry.clone().unwrap_or_default();
         let (stage, fail_kind, error) = match &outcome {
             EpisodeOutcome::Succeeded { .. } => (CompactionStage::Succeeded, None, None),
-            EpisodeOutcome::Failed {
-                kind, message, ..
-            } => (CompactionStage::Failed, Some(*kind), Some(message.clone())),
+            EpisodeOutcome::Failed { kind, message, .. } => {
+                (CompactionStage::Failed, Some(*kind), Some(message.clone()))
+            }
             EpisodeOutcome::Cancelled { reason } => (
                 CompactionStage::Cancelled,
                 None,
@@ -2735,11 +2804,7 @@ impl SessionManager {
             })
     }
 
-    pub fn last_episode_outcome(
-        &self,
-        session_id: &str,
-        id: &str,
-    ) -> Option<EpisodeOutcome> {
+    pub fn last_episode_outcome(&self, session_id: &str, id: &str) -> Option<EpisodeOutcome> {
         let records = self.records.lock().unwrap();
         records
             .get(session_id)
@@ -2750,11 +2815,7 @@ impl SessionManager {
 
     /// Wait for one episode. Returns the terminal it produced; if the episode
     /// already finished, the remembered terminal is returned by id.
-    pub async fn wait_compaction(
-        &self,
-        session_id: &str,
-        id: &str,
-    ) -> Option<EpisodeOutcome> {
+    pub async fn wait_compaction(&self, session_id: &str, id: &str) -> Option<EpisodeOutcome> {
         let (rx, existing) = {
             let records = self.records.lock().unwrap();
             let record = records.get(session_id)?;
@@ -2784,11 +2845,7 @@ impl SessionManager {
         }
     }
 
-    pub fn wait_compaction_blocking(
-        &self,
-        session_id: &str,
-        id: &str,
-    ) -> Option<EpisodeOutcome> {
+    pub fn wait_compaction_blocking(&self, session_id: &str, id: &str) -> Option<EpisodeOutcome> {
         let (done, existing) = {
             let records = self.records.lock().unwrap();
             let record = records.get(session_id)?;
@@ -2827,7 +2884,8 @@ impl SessionManager {
             episode.cancel.cancel();
             (episode.id.clone(), Arc::clone(&episode.done))
         };
-        done.wait().or_else(|| self.last_episode_outcome(session_id, &id))
+        done.wait()
+            .or_else(|| self.last_episode_outcome(session_id, &id))
     }
 
     /// Acquire a process-local exclusive lease while the session is idle.
@@ -3145,11 +3203,22 @@ impl SessionManager {
         removed_children
     }
 
-    /// Returns every removed session id: descendants (sorted) first, root last
-    /// (WP-090 interface v1 §2; implementation owned by Session / WP-091).
-    /// The idempotent SessionNotFound path returns the ids it could still
-    /// collect, root included. Each `SessionRemoved` carries its parent id.
-    pub fn remove_session(&self, session_id: &str) -> Result<Vec<String>> {
+    /// Public remove primitive. Bot-owned sessions are refused here too; the
+    /// bot lifecycle uses [`Self::remove_session_unchecked`].
+    pub(crate) fn remove_session(&self, session_id: &str) -> Result<Vec<String>> {
+        if let Some(owner) = self.bot_owner_for_session(session_id) {
+            return Err(LitecodeError::BotOwnedSession(owner.bot_id));
+        }
+        self.remove_session_unchecked(session_id)
+    }
+
+    /// Bot-lifecycle remove. Only `session::delete::delete_session_tree_for_bot`
+    /// reaches this crate-private entry.
+    pub(crate) fn remove_session_unchecked(&self, session_id: &str) -> Result<Vec<String>> {
+        // Returns every removed session id: descendants (sorted) first, root last
+        // (WP-090 interface v1 §2; implementation owned by Session / WP-091).
+        // The idempotent SessionNotFound path returns the ids it could still
+        // collect, root included. Each `SessionRemoved` carries its parent id.
         // Cancel live turns across the durable subtree before deleting rows.
         let known_children = self.collect_child_ids_blocking(session_id);
         {
@@ -3499,8 +3568,9 @@ impl SessionManager {
         records.get(session_id).and_then(|r| r.model_id.clone())
     }
 
-    /// Persist sticky session agent id. Does not touch `model_id`.
-    pub fn set_agent_id(&self, session_id: &str, agent_id: String) -> Result<()> {
+    /// Persist the agent-id mirror. Crate-private: only bot lifecycle/startup
+    /// reconciliation and the guarded primary-agent setter may write it.
+    pub(crate) fn set_agent_id(&self, session_id: &str, agent_id: String) -> Result<()> {
         let expected = self.expected_revision(session_id);
         self.mutate_blocking(SessionMutation::SetAgent {
             session_id: session_id.to_string(),
@@ -3721,13 +3791,11 @@ impl SessionManager {
         if rows.is_empty() {
             return Ok(());
         }
-        self.mutate_stream_checkpoint(session_id, |expected| {
-            SessionMutation::UpdateStreamItems {
-                session_id: session_id.to_string(),
-                expected_revision: expected,
-                operation_id: MutationId::new(),
-                rows: rows.clone(),
-            }
+        self.mutate_stream_checkpoint(session_id, |expected| SessionMutation::UpdateStreamItems {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            rows: rows.clone(),
         })?;
         Ok(())
     }
@@ -3738,14 +3806,12 @@ impl SessionManager {
         seq: crate::session::event::Seq,
         item: &crate::types::Item,
     ) -> crate::types::Result<()> {
-        self.mutate_stream_checkpoint(session_id, |expected| {
-            SessionMutation::UpdateStreamItem {
-                session_id: session_id.to_string(),
-                expected_revision: expected,
-                operation_id: MutationId::new(),
-                seq,
-                item: item.clone(),
-            }
+        self.mutate_stream_checkpoint(session_id, |expected| SessionMutation::UpdateStreamItem {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            seq,
+            item: item.clone(),
         })?;
         Ok(())
     }
@@ -3757,14 +3823,12 @@ impl SessionManager {
         seq: crate::session::event::Seq,
         item: &crate::types::Item,
     ) -> crate::types::Result<()> {
-        self.mutate_stream_checkpoint(session_id, |expected| {
-            SessionMutation::SealStreamItem {
-                session_id: session_id.to_string(),
-                expected_revision: expected,
-                operation_id: MutationId::new(),
-                seq,
-                item: item.clone(),
-            }
+        self.mutate_stream_checkpoint(session_id, |expected| SessionMutation::SealStreamItem {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            seq,
+            item: item.clone(),
         })?;
         Ok(())
     }
@@ -3897,12 +3961,10 @@ impl SessionManager {
         session_id: &str,
         limit: i64,
     ) -> Result<ProviderUsageSeries> {
-        match self
-            .data
-            .read_blocking(SessionRead::ProviderUsageSeries {
-                session_id: session_id.to_string(),
-                limit,
-            })? {
+        match self.data.read_blocking(SessionRead::ProviderUsageSeries {
+            session_id: session_id.to_string(),
+            limit,
+        })? {
             ReadValue::ProviderUsageSeries(series) => Ok(series),
             _ => Err(LitecodeError::SessionStorage(
                 "unexpected provider usage series".into(),
@@ -4916,10 +4978,7 @@ mod child_session_tests {
         assert!(mgr.upsert_pending_permission(pending_ask(&sid, "t-ask", "req-ask")));
         assert_eq!(mgr.pending_permissions_snapshot(&sid).len(), 1);
         assert_eq!(
-            mgr.data()
-                .pending_permissions_blocking(&sid)
-                .unwrap()
-                .len(),
+            mgr.data().pending_permissions_blocking(&sid).unwrap().len(),
             1
         );
 
@@ -5259,9 +5318,7 @@ mod usage_series_tests {
         assert_eq!(all.totals.cache_hit_tokens, 4_500);
         assert_eq!(all.totals.cache_miss_tokens, 510);
 
-        let tail = manager
-            .provider_usage_series(&session_id, 2)
-            .expect("tail");
+        let tail = manager.provider_usage_series(&session_id, 2).expect("tail");
         assert!(tail.truncated, "the window hides older bills");
         assert_eq!(tail.samples.len(), 2);
         assert_eq!(tail.requests, 5, "requests stay whole-session");
@@ -5277,10 +5334,9 @@ mod usage_series_tests {
         let small = manager.open_session_sync("", "default", None).unwrap();
         let large = manager.open_session_sync("", "default", None).unwrap();
         assert_ne!(small, large);
-        for (session_id, prompt, provider_id) in [
-            (&small, 1_000u64, "alpha"),
-            (&large, 3_000, "beta"),
-        ] {
+        for (session_id, prompt, provider_id) in
+            [(&small, 1_000u64, "alpha"), (&large, 3_000, "beta")]
+        {
             let header = manager
                 .append_request_origin(
                     session_id,
@@ -5300,10 +5356,7 @@ mod usage_series_tests {
             .insert_items(&small, &[crate::types::user_text("seed")])
             .unwrap();
         let rows = manager.data().working_set_blocking(&small).unwrap();
-        let expected_from = rows
-            .first()
-            .and_then(|row| row.log_seq)
-            .expect("seed row");
+        let expected_from = rows.first().and_then(|row| row.log_seq).expect("seed row");
         manager
             .mutate_blocking(SessionMutation::Compact {
                 session_id: small.clone(),
@@ -5333,7 +5386,11 @@ mod usage_series_tests {
             4_500
         );
         assert_eq!(
-            workspace.hours.iter().map(|hour| hour.requests).sum::<u64>(),
+            workspace
+                .hours
+                .iter()
+                .map(|hour| hour.requests)
+                .sum::<u64>(),
             3
         );
         assert_eq!(workspace.today.len(), 10, "a YYYY-MM-DD anchor");
@@ -5351,13 +5408,7 @@ mod usage_series_tests {
             workspace
                 .providers
                 .iter()
-                .map(|provider| {
-                    provider
-                        .days
-                        .iter()
-                        .map(|day| day.prompt)
-                        .sum::<u64>()
-                })
+                .map(|provider| { provider.days.iter().map(|day| day.prompt).sum::<u64>() })
                 .sum::<u64>(),
             workspace.totals.prompt_tokens,
             "provider buckets must reconcile with the workspace total"
@@ -5624,6 +5675,35 @@ mod memory_tests {
         let loaded = manager.load_memory(&sid).unwrap();
         assert!(loaded.entries.iter().any(|entry| entry.text == "other"));
         assert!(loaded.entries.iter().any(|entry| entry.text == "outer"));
+    }
+
+    #[test]
+    fn update_memory_publishes_the_full_list_on_the_session_bus() {
+        let manager = SessionManager::ephemeral_registry();
+        let sid = manager.open_session_sync("", "default", None).unwrap();
+        let mut events = manager.subscribe(&sid).unwrap();
+
+        manager
+            .update_memory(&sid, |memory| {
+                Ok(memory.apply_upsert(
+                    &[MemoryUpsertRequest {
+                        id: None,
+                        text: "use pnpm".into(),
+                    }],
+                    1,
+                ))
+            })
+            .unwrap();
+
+        let envelope = events.try_recv().expect("memory event");
+        match envelope.event {
+            InternalEvent::MemoryUpdated { entries } => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].id, "m1");
+                assert_eq!(entries[0].text, "use pnpm");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]

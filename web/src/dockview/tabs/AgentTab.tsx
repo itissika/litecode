@@ -5,7 +5,7 @@ import { useTurnStore } from "../../stores/turnStore";
 import { fallbackSessionTitle } from "../../lib/sessionPanelNav";
 import {
   sessionDisplayTitle,
-  useBotForSession,
+  useSessionBotIdentity,
 } from "../../lib/botIdentity";
 import {
   SessionStatusDot,
@@ -34,7 +34,7 @@ export function AgentTab(
   });
   // One identity projection for bot and normal sessions. A bot tab names the
   // bot, never its latest message; a normal session keeps title/preview.
-  const bot = useBotForSession(sessionId);
+  const bot = useSessionBotIdentity(sessionId);
   const title = sessionDisplayTitle(session, bot);
   // Same rule as AgentPanel's writability: a known non-child session, or a
   // trusted root entry (a freshly created session the list has not seen yet).

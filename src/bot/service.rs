@@ -17,13 +17,24 @@ use crate::config::DocId;
 use crate::config::schema::AgentToolBinding;
 use crate::config::settings_writer::SettingsWriter;
 use crate::runtime::RuntimeHandle;
-use crate::session::SessionService;
 use crate::session::delete::{DeleteSessionError, RemovedSessionCleanup};
+use crate::session::{SessionBotOwner, SessionService};
 use crate::types::UserInput;
 
 /// Current on-disk registry shape. Version 4 is single-authority: the record
 /// owns the body and points at one ordinary session by `session_id`.
 const BOT_REGISTRY_VERSION: u32 = 4;
+
+/// Map the authoritative record into the session read model. The bot directory
+/// stays the only source; this value is refreshed on every commit/remove.
+fn bot_owner(record: &BotRecord) -> SessionBotOwner {
+    SessionBotOwner {
+        session_id: record.session_id.clone(),
+        bot_id: record.id.clone(),
+        name: record.name.clone(),
+        description: record.description.clone(),
+    }
+}
 
 /// Parent edge of a placement. Root/folder rows have no parent.
 fn parent_of(bot: &BotRecord) -> Option<&str> {
@@ -69,7 +80,10 @@ fn visible_bot_ids(bots: &[BotRecord], caller_id: &str) -> HashSet<String> {
     // Own subtree (children recursively). Use an explicit stack and a seen set.
     let mut stack = vec![caller.id.clone()];
     while let Some(id) = stack.pop() {
-        for child in bots.iter().filter(|bot| parent_of(bot) == Some(id.as_str())) {
+        for child in bots
+            .iter()
+            .filter(|bot| parent_of(bot) == Some(id.as_str()))
+        {
             if visible.insert(child.id.clone()) {
                 stack.push(child.id.clone());
             }
@@ -326,17 +340,37 @@ impl BotService {
             }
         }
 
+        // A record without a live session is reported, never deleted or
+        // recreated here. Its children keep their exact positions. Only an
+        // explicit bot delete may remove the record.
+        for bot in &bots {
+            if bot.session_id.is_empty() {
+                tracing::warn!(bot_id = %bot.id, "bot record has no bound session");
+                continue;
+            }
+            match service.meta(&bot.session_id) {
+                Ok(_) => {}
+                Err(crate::types::LitecodeError::SessionNotFound(_)) => {
+                    tracing::warn!(
+                        bot_id = %bot.id,
+                        session_id = %bot.session_id,
+                        "bot record points at a missing session"
+                    );
+                }
+                Err(error) => return Err(BotError::Session(error.to_string())),
+            }
+        }
+
         // One-time identity migration: the bot session's agent id becomes the
-        // bot id. A missing session is not recreated; bot/open reports it.
+        // bot id. Startup has no live turn, so this repair is unconditional.
         for bot in &bots {
             if bot.session_id.is_empty() {
                 continue;
             }
             match service.meta(&bot.session_id) {
                 Ok(meta) => {
-                    if meta.agent_id != bot.id && !service.is_session_busy_blocking(&bot.session_id)
-                    {
-                        service.set_agent_id(&bot.session_id, bot.id.clone())?;
+                    if meta.agent_id != bot.id {
+                        service.bind_bot_agent_id(&bot.session_id, bot.id.clone())?;
                     }
                 }
                 Err(crate::types::LitecodeError::SessionNotFound(_)) => {}
@@ -378,6 +412,12 @@ impl BotService {
             // the next start to retry.
             save_registry(&path, &bots)?;
         }
+
+        service.replace_bot_owners(
+            bots.iter()
+                .filter(|bot| !bot.session_id.is_empty())
+                .map(bot_owner),
+        );
 
         let (events, _) = broadcast::channel(64);
         let service = Self {
@@ -439,6 +479,17 @@ impl BotService {
     pub fn can_see(&self, caller_id: &str, target_id: &str) -> bool {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         visible_bot_ids(&state, caller_id).contains(target_id)
+    }
+
+    /// By id even when the binding is empty or its session is missing. Used by
+    /// open/delete so a dangling record is reported or explicitly removable.
+    fn find_by_id_any(&self, bot_id: &str) -> Option<BotRecord> {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .find(|bot| bot.id == bot_id)
+            .cloned()
     }
 
     /// The bot whose session is `session_id`.
@@ -582,7 +633,7 @@ impl BotService {
     /// reported; a bot session is never recreated on read.
     pub fn open(&self, bot_id: &str) -> Result<BotRecord, BotError> {
         let record = self
-            .find(bot_id)
+            .find_by_id_any(bot_id)
             .ok_or_else(|| BotError::NotFound(bot_id.to_string()))?;
         if !self.session_exists(&record.session_id)? {
             return Err(BotError::SessionMissing(record.session_id));
@@ -688,7 +739,7 @@ impl BotService {
     /// running bot is never deleted silently.
     pub async fn delete(&self, bot_id: &str) -> Result<BotRecord, BotError> {
         let record = self
-            .find(bot_id)
+            .find_by_id_any(bot_id)
             .ok_or_else(|| BotError::NotFound(bot_id.to_string()))?;
         if !record.session_id.is_empty()
             && self.service.is_session_busy_blocking(&record.session_id)
@@ -705,7 +756,7 @@ impl BotService {
             };
             match self
                 .service
-                .delete_session_tree(&cleanup, &record.session_id)
+                .delete_bot_session_tree(&cleanup, &record.session_id)
                 .await
             {
                 Ok(_) => {}
@@ -872,7 +923,7 @@ impl BotService {
     async fn discard_session(&self, session_id: &str) -> bool {
         match self
             .service
-            .delete_session_tree(&|_: &str| {}, session_id)
+            .delete_bot_session_tree(&|_: &str| {}, session_id)
             .await
         {
             Ok(_) => true,
@@ -888,6 +939,7 @@ impl BotService {
     }
 
     fn commit(&self, record: BotRecord) -> Result<(), BotError> {
+        let owner = bot_owner(&record);
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let slot = state
             .iter_mut()
@@ -903,6 +955,7 @@ impl BotService {
             }
             return Err(error);
         }
+        self.service.upsert_bot_owner(owner);
         Ok(())
     }
 
@@ -935,6 +988,7 @@ impl BotService {
             return Err(error);
         }
         *state = next;
+        self.service.remove_bot_owner(&removed.session_id);
         Ok((removed, promoted))
     }
 
@@ -942,9 +996,16 @@ impl BotService {
     /// still removes any session that was already opened.
     fn remove_reserved(&self, bot_id: &str) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let removed_session = state
+            .iter()
+            .find(|bot| bot.id == bot_id)
+            .map(|bot| bot.session_id.clone());
         state.retain(|bot| bot.id != bot_id);
         if let Err(error) = save_registry(&self.path, &state) {
             tracing::warn!(bot_id, %error, "could not rewrite bot registry after reservation removal");
+        }
+        if let Some(session_id) = removed_session {
+            self.service.remove_bot_owner(&session_id);
         }
     }
 
@@ -982,7 +1043,7 @@ impl Drop for Reservation<'_> {
         };
         handle.spawn(async move {
             if let Err(error) = service
-                .delete_session_tree(&|_: &str| {}, &session_id)
+                .delete_bot_session_tree(&|_: &str| {}, &session_id)
                 .await
             {
                 tracing::warn!(
@@ -1452,7 +1513,7 @@ mod tests {
             .expect("bot");
         f.bots
             .service()
-            .delete_session_tree(&|_: &str| {}, &bot.session_id)
+            .delete_bot_session_tree(&|_: &str| {}, &bot.session_id)
             .await
             .expect("delete session");
 
@@ -1826,6 +1887,282 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_session_api_refuses_bot_delete_and_agent_switch() {
+        let f = fixture();
+        let bot = f
+            .bots
+            .create_user_bot("Guarded", "", body(""))
+            .await
+            .expect("bot");
+        let service = Arc::clone(f.bots.service());
+        let meta_json = serde_json::to_string(&service.meta(&bot.session_id).expect("meta"))
+            .expect("meta json");
+        assert!(
+            !meta_json.contains("Guarded"),
+            "session storage must not contain a copy of the bot name: {meta_json}"
+        );
+
+        let error = service
+            .delete_session_tree(&|_: &str| {}, &bot.session_id)
+            .await
+            .expect_err("ordinary delete must reject a bot session");
+        assert!(matches!(
+            error,
+            DeleteSessionError::BotOwned { ref bot_id, .. } if bot_id == &bot.id
+        ));
+        assert_eq!(
+            service
+                .meta(&bot.session_id)
+                .expect("session survives")
+                .agent_id,
+            bot.id
+        );
+
+        let error = service
+            .set_agent_id(&bot.session_id, "default".into())
+            .expect_err("ordinary agent switch must reject a bot session");
+        assert!(matches!(
+            error,
+            crate::types::LitecodeError::BotOwnedSession(ref bot_id) if bot_id == &bot.id
+        ));
+        assert_eq!(
+            service
+                .meta(&bot.session_id)
+                .expect("session identity survives")
+                .agent_id,
+            bot.id
+        );
+
+        let owner = service
+            .bot_owner_for_session(&bot.session_id)
+            .expect("shared owner query");
+        assert_eq!(owner.bot_id, bot.id);
+        assert_eq!(owner.name, "Guarded");
+
+        f.bots
+            .update(
+                &bot.id,
+                BotUpdate {
+                    name: Some("Renamed without restart".into()),
+                    ..BotUpdate::default()
+                },
+            )
+            .await
+            .expect("rename");
+        assert_eq!(
+            service
+                .bot_owner_for_session(&bot.session_id)
+                .expect("owner after rename")
+                .name,
+            "Renamed without restart"
+        );
+        let fresh_service = SessionService::new(Arc::clone(&f.manager));
+        assert_eq!(
+            fresh_service
+                .bot_owner_for_session(&bot.session_id)
+                .expect("a fresh facade sees the shared owner index")
+                .bot_id,
+            bot.id
+        );
+        let error = fresh_service
+            .delete_session_tree(&|_: &str| {}, &bot.session_id)
+            .await
+            .expect_err("a fresh facade also refuses bot delete");
+        assert!(matches!(
+            error,
+            DeleteSessionError::BotOwned { ref bot_id, .. } if bot_id == &bot.id
+        ));
+        let error = service
+            .remove_session(&bot.session_id)
+            .expect_err("the raw service remove also refuses a bot session");
+        assert!(matches!(
+            error,
+            crate::types::LitecodeError::BotOwnedSession(ref bot_id) if bot_id == &bot.id
+        ));
+        let error = f
+            .manager
+            .remove_session(&bot.session_id)
+            .expect_err("the low-level remove primitive also refuses a bot session");
+        assert!(matches!(
+            error,
+            crate::types::LitecodeError::BotOwnedSession(ref bot_id) if bot_id == &bot.id
+        ));
+
+        let normal = f
+            .manager
+            .open_session_sync("/proj", "default", None)
+            .expect("normal session");
+        let error = service
+            .set_agent_id(&normal, bot.id.clone())
+            .expect_err("a normal session cannot select a bot id");
+        assert!(matches!(
+            error,
+            crate::types::LitecodeError::BotOwnedSession(ref bot_id) if bot_id == &bot.id
+        ));
+
+        f.bots.delete(&bot.id).await.expect("bot delete");
+        assert!(
+            service.bot_owner_for_session(&bot.session_id).is_none(),
+            "bot delete must not leave an owner"
+        );
+        assert!(service.status(&bot.session_id).is_none());
+        assert!(f.bots.find(&bot.id).is_none());
+
+        service
+            .delete_session_tree(&|_: &str| {}, &normal)
+            .await
+            .expect("ordinary session delete stays available");
+    }
+
+    #[tokio::test]
+    async fn running_bot_and_running_child_block_delete() {
+        let f = fixture();
+        let parent = f
+            .bots
+            .create_user_bot("Parent", "", body(""))
+            .await
+            .expect("parent");
+        let child_session = f
+            .manager
+            .test_child_session("/proj", &parent.session_id, "subagent-call")
+            .expect("subagent child session");
+
+        let parent_lease = f
+            .manager
+            .try_begin_operation(
+                &parent.session_id,
+                crate::session::manager::SessionOperationKind::Revert,
+            )
+            .expect("parent lease");
+        let error = f.bots.delete(&parent.id).await.expect_err("parent busy");
+        assert!(matches!(error, BotError::Busy));
+        drop(parent_lease);
+
+        let child_lease = f
+            .manager
+            .try_begin_operation(
+                &child_session,
+                crate::session::manager::SessionOperationKind::Revert,
+            )
+            .expect("child lease");
+        let error = f
+            .bots
+            .delete(&parent.id)
+            .await
+            .expect_err("subagent child busy blocks parent delete");
+        assert!(matches!(error, BotError::Busy));
+        assert!(f.bots.find(&parent.id).is_some());
+        assert!(f.bots.service().status(&child_session).is_some());
+        drop(child_lease);
+    }
+
+    #[tokio::test]
+    async fn restart_keeps_dangling_record_reports_and_does_not_rewrite_registry() {
+        let f = fixture();
+        let parent = f
+            .bots
+            .create_user_bot("Dangling parent", "", body(""))
+            .await
+            .expect("parent");
+        let child = f
+            .bots
+            .create_from_bot(&parent.session_id, "Surviving child", "")
+            .await
+            .expect("child");
+        f.manager
+            .remove_session_unchecked(&parent.session_id)
+            .expect("simulate externally deleted session");
+
+        let registry = f.dir.path().join("bots.json");
+        let before = fs::read_to_string(&registry).expect("registry before restart");
+        let restarted = BotService::new(
+            Arc::clone(f.bots.service()),
+            Arc::clone(&f.settings),
+            None,
+            "/proj",
+            registry.clone(),
+        )
+        .expect("restart reports the dangling record");
+        assert!(
+            restarted.find(&parent.id).is_some(),
+            "startup must retain the record"
+        );
+        assert_eq!(
+            restarted.find(&child.id).expect("child survives").position,
+            BotPosition::Bot {
+                id: parent.id.clone()
+            },
+            "startup must not move children of a dangling record"
+        );
+        assert_eq!(
+            fs::read_to_string(&registry).expect("registry after restart"),
+            before,
+            "startup must not rewrite bots.json for a dangling record"
+        );
+        let error = restarted.open(&parent.id).expect_err("missing session");
+        assert!(matches!(error, BotError::SessionMissing(_)));
+        assert!(restarted.open(&child.id).is_ok());
+
+        restarted.delete(&parent.id).await.expect("explicit delete");
+        assert!(restarted.find(&parent.id).is_none());
+        assert_eq!(
+            restarted.find(&child.id).expect("child survives").position,
+            BotPosition::None,
+            "explicit delete still promotes children"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_keeps_an_empty_binding_until_explicit_delete() {
+        let f = fixture();
+        let bot = f
+            .bots
+            .create_user_bot("No binding", "", body(""))
+            .await
+            .expect("bot");
+        let registry = f.dir.path().join("bots.json");
+        let mut file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&registry).expect("registry"))
+                .expect("json");
+        file["bots"]
+            .as_array_mut()
+            .expect("bots")
+            .iter_mut()
+            .find(|row| row["id"] == bot.id)
+            .expect("row")
+            .as_object_mut()
+            .expect("object")
+            .remove("session_id");
+        fs::write(
+            &registry,
+            serde_json::to_string_pretty(&file).expect("json"),
+        )
+        .expect("write registry");
+        let before = fs::read_to_string(&registry).expect("registry before restart");
+
+        let restarted = BotService::new(
+            Arc::clone(f.bots.service()),
+            Arc::clone(&f.settings),
+            None,
+            "/proj",
+            registry.clone(),
+        )
+        .expect("restart");
+        assert!(
+            matches!(restarted.open(&bot.id), Err(BotError::SessionMissing(_))),
+            "an empty binding must report SessionMissing"
+        );
+        assert_eq!(
+            fs::read_to_string(&registry).expect("registry after restart"),
+            before,
+            "startup must not rewrite an empty binding"
+        );
+
+        restarted.delete(&bot.id).await.expect("explicit delete");
+        assert!(restarted.find(&bot.id).is_none());
+    }
+
+    #[tokio::test]
     async fn update_moves_to_folder_and_folder_delete_ungroups() {
         let f = fixture();
         let bot = f
@@ -1987,11 +2324,7 @@ mod tests {
         let f = fixture();
         let bot = f
             .bots
-            .create_user_bot(
-                "Snapshot",
-                "",
-                body_with_tool("old prompt", "read"),
-            )
+            .create_user_bot("Snapshot", "", body_with_tool("old prompt", "read"))
             .await
             .expect("bot");
         let resolved = resolved(&f);
@@ -2063,15 +2396,10 @@ mod tests {
         .expect("reload");
         assert_eq!(reloaded.find(&bot.id).expect("reloaded").name, "Disk only");
         assert_eq!(
-            reloaded
-                .find(&bot.id)
-                .expect("reloaded")
-                .body
-                .system_prompt,
+            reloaded.find(&bot.id).expect("reloaded").body.system_prompt,
             "disk"
         );
     }
-
 
     #[tokio::test]
     async fn bot_events_cover_create_update_and_delete() {

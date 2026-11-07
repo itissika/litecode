@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::client_protocol::project;
 use crate::client_protocol::protocol::{
-    ErrorCode, OperationKind, SessionBindingProjection, SessionFolder, SessionInfo, SessionList,
+    ErrorCode, OperationKind, SessionBindingProjection, SessionBotIdentity, SessionFolder,
+    SessionInfo, SessionList,
 };
 use crate::permission::PermissionSink;
 use crate::runtime::TurnOptions;
@@ -314,16 +315,6 @@ impl SessionController {
     }
 
     pub async fn delete_session(&mut self, id: &str) -> anyhow::Result<()> {
-        if let Some(bot) = self
-            .runtime
-            .bots()
-            .and_then(|bots| bots.bot_for_session(id))
-        {
-            return Err(anyhow::anyhow!(
-                "bot '{}' owns this session; delete the bot instead",
-                bot.name
-            ));
-        }
         // WP-091 K4/R6: shared delete entry (precheck descendant_running,
         // lease, remove_session, purge/forget every removed id).
         let deleted = self
@@ -657,9 +648,7 @@ impl SessionController {
         // cannot switch away, and a legacy bot-owned profile is not a
         // selectable primary for ordinary sessions.
         let bots = self.runtime.bots().cloned();
-        let current_is_bot = bots
-            .as_ref()
-            .is_some_and(|bots| bots.bot_for_session(session_id).is_some());
+        let current_is_bot = self.service.bot_owner_for_session(session_id).is_some();
         let target_is_bot = bots
             .as_ref()
             .is_some_and(|bots| bots.find(agent_id).is_some_and(|bot| bot.id == agent_id));
@@ -1012,6 +1001,13 @@ pub(crate) async fn build_session_list(
                     None => (String::new(), None),
                 }
             };
+        let bot = service
+            .bot_owner_for_session(&row.id)
+            .map(|owner| SessionBotIdentity {
+                id: owner.bot_id,
+                name: owner.name,
+                description: owner.description,
+            });
         result.push(SessionInfo {
             id: row.id,
             project: row.project,
@@ -1024,6 +1020,7 @@ pub(crate) async fn build_session_list(
             status,
             turn,
             agent_id: binding.agent_id,
+            bot,
             model_id: binding.model_id,
             api_model_id: binding.api_model_id,
             label: binding.label,

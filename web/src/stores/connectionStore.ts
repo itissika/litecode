@@ -17,6 +17,7 @@ import type {
   SubagentBound,
   SessionList,
   SessionLifecycle,
+  SessionBotIdentity,
   BotChanged,
   OperationResult,
   PermissionRequest,
@@ -62,6 +63,16 @@ interface SiblingStores {
 }
 
 /** Legacy forwarded subagent events — must not mutate the parent session UI. */
+/** Pick the notification title's bot identity. `null` is explicit no-bot and
+ * must not fall back to a stale directory record; only a missing field does. */
+export function sessionTitleBot(
+  row: { bot?: SessionBotIdentity | null } | undefined,
+  directory: { name?: string } | undefined,
+): { name?: string } | null | undefined {
+  if (row && row.bot !== undefined) return row.bot;
+  return directory;
+}
+
 export function shouldIgnoreForwardedSubagentEvent(
   method: string,
   params: Record<string, unknown> | undefined,
@@ -452,6 +463,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
                   title?: string | null;
                   preview?: string;
                   parent_session_id?: string | null;
+                  bot?: SessionBotIdentity | null;
                 }>
               | undefined;
             const row = rows?.find((entry) => entry.id === finished.session_id);
@@ -459,7 +471,13 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               const botRows = siblingStores.bot?.getState().bots ?? [];
               maybeNotifyTurnEnd(
                 finished,
-                sessionDisplayTitle(row, botForSession(botRows, finished.session_id)),
+                sessionDisplayTitle(
+                  row,
+                  sessionTitleBot(
+                    row,
+                    botForSession(botRows, finished.session_id),
+                  ),
+                ),
               );
             }
             return;

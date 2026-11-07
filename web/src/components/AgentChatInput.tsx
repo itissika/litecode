@@ -19,7 +19,7 @@ import {
 import { paintDragCursor, viewOf } from "../lib/domView";
 import { mentionKeysOf } from "../lib/knowledge/flowProjection";
 import { useBotStore } from "../stores/botStore";
-import { useBotForSession } from "../lib/botIdentity";
+import { useBotForSession, useSessionBotIdentity } from "../lib/botIdentity";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useKnowledgeStore } from "../stores/knowledgeStore";
 import { useSessionStore } from "../stores/sessionStore";
@@ -102,7 +102,8 @@ export function AgentPicker({
   const botsLoading = useBotStore((s) => s.botsLoading);
   const listBots = useBotStore((s) => s.listBots);
   const connected = useConnectionStore((s) => s.state === "connected");
-  const currentBot = useBotForSession(sessionId);
+  const directoryBot = useBotForSession(sessionId);
+  const currentBot = useSessionBotIdentity(sessionId);
   const currentId = pendingId ?? activeId;
   const knownPrimary = agents.some((agent) => agent.id === currentId);
   const requestedBots = useRef(false);
@@ -116,7 +117,7 @@ export function AgentPicker({
       knownPrimary ||
       agents.length === 0 ||
       !connected ||
-      currentBot ||
+      directoryBot ||
       botsLoading ||
       requestedBots.current
     ) {
@@ -124,7 +125,7 @@ export function AgentPicker({
     }
     requestedBots.current = true;
     listBots();
-  }, [knownPrimary, agents.length, connected, currentBot, botsLoading, listBots]);
+  }, [knownPrimary, agents.length, connected, directoryBot, botsLoading, listBots]);
 
   if (currentBot) {
     // Editing a bot identity is safe during a turn; only a missing bot record
@@ -134,7 +135,10 @@ export function AgentPicker({
         <button
           type="button"
           disabled={!connected}
-          onClick={() => setEditingBot(true)}
+          onClick={() => {
+            if (!directoryBot) listBots();
+            setEditingBot(true);
+          }}
           className={`${CTRL_BTN} min-w-[32px] max-w-[150px] shrink justify-start gap-1`}
           title={i18n.t("bot.edit")}
           aria-haspopup="dialog"
@@ -150,9 +154,9 @@ export function AgentPicker({
             {currentBot?.name ?? i18n.t("bot.title")}
           </span>
         </button>
-        {currentBot && editingBot ? (
+        {directoryBot && editingBot ? (
           <BotDialog
-            mode={{ kind: "edit", bot: currentBot }}
+            mode={{ kind: "edit", bot: directoryBot }}
             onClose={() => setEditingBot(false)}
           />
         ) : null}

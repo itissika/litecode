@@ -672,6 +672,10 @@ async fn bot_create_list_and_open_round_trip() {
     send(&mut ws, 3, "bot/open", json!({ "id": bot_id })).await;
     let (opened, _) = until_reply(&mut ws, 3).await;
     assert!(opened.get("error").is_none(), "open ok: {opened}");
+    env.state
+        .service
+        .set_session_title(&session_id, Some("Bot chat"))
+        .expect("make the bot session list-visible");
     assert_eq!(
         opened.pointer("/result/session_id").and_then(Value::as_str),
         Some(session_id.as_str())
@@ -794,6 +798,25 @@ async fn bot_create_list_and_open_round_trip() {
         Some("Renamed")
     );
 
+    send(&mut ws, 103, "session/list", json!({})).await;
+    let (session_list, _) = until_reply(&mut ws, 103).await;
+    let row = session_list
+        .pointer("/result/sessions")
+        .and_then(Value::as_array)
+        .expect("sessions")
+        .iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(session_id.as_str()))
+        .expect("bot session in list");
+    assert_eq!(
+        row.pointer("/bot/id").and_then(Value::as_str),
+        Some(bot_id.as_str())
+    );
+    assert_eq!(
+        row.pointer("/bot/name").and_then(Value::as_str),
+        Some("Renamed"),
+        "session/list derives the current bot name"
+    );
+
     send(&mut ws, 6, "bot/delete", json!({ "id": bot_id })).await;
     let (deleted, _) = until_reply(&mut ws, 6).await;
     assert!(deleted.get("error").is_none(), "delete ok: {deleted}");
@@ -823,5 +846,63 @@ async fn bot_create_list_and_open_round_trip() {
             .expect("settings")
             .agents
             .contains_key(&bot_id)
+    );
+
+    send(&mut ws, 104, "session/new", json!({})).await;
+    let (normal, _) = until_reply(&mut ws, 104).await;
+    let normal_id = normal
+        .pointer("/result/session_id")
+        .and_then(Value::as_str)
+        .expect("normal session")
+        .to_string();
+    env.state
+        .service
+        .set_session_title(&normal_id, Some("Normal chat"))
+        .expect("make normal session list-visible");
+    send(&mut ws, 105, "session/list", json!({})).await;
+    let (normal_list, _) = until_reply(&mut ws, 105).await;
+    let normal_row = normal_list
+        .pointer("/result/sessions")
+        .and_then(Value::as_array)
+        .expect("sessions")
+        .iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(normal_id.as_str()))
+        .expect("normal session row");
+    assert_eq!(
+        normal_row.get("bot"),
+        Some(&Value::Null),
+        "ordinary sessions must serialize bot: null"
+    );
+
+    let missing = env
+        .state
+        .bots
+        .create_user_bot("Missing", "", crate::bot::BotBody::default())
+        .await
+        .expect("missing bot");
+    env.state
+        .service
+        .delete_bot_session_tree(&|_: &str| {}, &missing.session_id)
+        .await
+        .expect("remove its session without touching the record");
+    send(&mut ws, 106, "session/list", json!({})).await;
+    let (missing_list, _) = until_reply(&mut ws, 106).await;
+    assert!(
+        missing_list
+            .pointer("/result/sessions")
+            .and_then(Value::as_array)
+            .expect("sessions")
+            .iter()
+            .all(|row| {
+                let id = row.get("id").and_then(Value::as_str);
+                id != Some(missing.session_id.as_str()) && id != Some(session_id.as_str())
+            }),
+        "missing/deleted bot sessions must not be synthesized into the list"
+    );
+    send(&mut ws, 107, "bot/open", json!({ "id": missing.id })).await;
+    let (missing_open, _) = until_reply(&mut ws, 107).await;
+    assert!(
+        missing_open.get("error").is_some(),
+        "missing session must report SessionMissing: {missing_open}"
     );
 }

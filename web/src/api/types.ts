@@ -456,6 +456,13 @@ export interface BotChanged {
   session_id?: string | null;
 }
 
+/** Response-time derived bot identity for one session; never a stored session field. */
+export interface SessionBotIdentity {
+  id: string;
+  name: string;
+  description?: string;
+}
+
 export interface SessionInfo {
   id: string;
   project: string;
@@ -471,6 +478,8 @@ export interface SessionInfo {
   status?: SessionStatus;
   turn: TurnSnapshot | null;
   agent_id: string;
+  /** Present only for a bot-owned session; ordinary sessions are null. */
+  bot?: SessionBotIdentity | null;
   model_id?: string | null;
   api_model_id: string;
   label?: string;

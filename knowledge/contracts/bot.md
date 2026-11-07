@@ -1,7 +1,7 @@
 ```node
 node : bot
 status : pending
-summary : Bot 是产品身份层：1:1 绑定普通 session，记录唯一正文权威；org 可见性按调用者位置，审批默认拒绝、ask_user 有超时，平台段只写规则。
+summary : Bot 是产品身份层：1:1 绑定普通 session，记录唯一身份/正文权威；org 可见性按调用者位置，审批默认拒绝、ask_user 自带统一超时，平台段只写规则，消费方统一从记录派生身份。
 ```
 
 # Bot 契约（阶段一锁定，pending）
@@ -10,12 +10,13 @@ summary : Bot 是产品身份层：1:1 绑定普通 session，记录唯一正文
 
 - 1 个 bot 只绑定 1 条普通 session，绑定在创建时确定。没有默认 session、备用 session、多 session。
 - bot 的 session 是普通 session：turn、事件、权限、取消、历史都走既有会话语义，不新增 session 类型。
-- bot 的 session 不能从普通会话面单独删除；删除 bot 才删除它的 session。session 缺失时明确报错，不在读时重建。
+- bot 的 session 不能从普通会话面单独删除；删除 bot 才删除它的 session。session 缺失时明确报错（SessionMissing），启动对账只报告、不自动删除 bot 记录；只有显式删除才移除记录，不在读时重建。
 - bot 是产品身份，不是 session 类型。ACP 只接普通 session；飞书绑定 bot，入站消息路由到 bot 的 session。
 
 ## 唯一权威
 
 - bot 记录是唯一权威，包含四类事实：身份（id / name / description）、正文（system_prompt / tools / allowed_subagents）、位置（无 / 文件夹 / 另一个 bot）、绑定（session id）。
+- 所有 session 消费方（会话列表、搜索、ACP/IM、UI）的 bot 身份都从 bot 记录派生；session 存储不保存第二份可编辑的 bot 名字；rename/delete 不重启生效。
 - 正文只有一份，存在 bot 记录里。settings 里没有隐藏的 bot profile，也没有第二份可编辑正文。
 - model 只属于 session；bot 记录不存 model。max_steps 是引擎级策略，不是 bot 配置项。
 
@@ -26,7 +27,7 @@ summary : Bot 是产品身份层：1:1 绑定普通 session，记录唯一正文
 - bot_create 创建即入职：新 bot 挂在调用者位置下，正文从调用者复制，工作区配额约束。
 - 删除 bot 时，直接子节点顶替它的位置（父是文件夹就进文件夹，是根就成根）。
 - bot 会话的 Permission/Approval Ask 默认拒绝，不弹权限卡，工具返回 denied 后 loop 继续；Allow/Deny 规则不变，不做 per-tool 矩阵。
-- bot 的 ask_user 有 60s 前台答复窗口；超时返回 no answer，loop 继续。交互回合和 auto-turn 共用同一策略，不复用已断开的 WS sink。
+- ask_user 的答复期限在工具本身：session 与 bot 同一条，统一默认值可配置；到点没答返回 no answer，loop 继续。真取消立即中止；UI 路由断开/无前台按 no answer，不误判成 turn 取消。bot 不设专属超时，只保留“Permission/Approval 默认拒绝、有前台时 ask_user 可问”的可用性策略；交互回合和 auto-turn 共用同一策略，不复用已断开的 WS sink。
 
 ## 位置与可见性
 

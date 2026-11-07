@@ -37,6 +37,8 @@ pub enum DeleteSessionError {
     AlreadyRunning,
     /// A descendant subagent session is busy; ids sorted.
     DescendantRunning { running_session_ids: Vec<String> },
+    /// The session belongs to a bot; only the bot lifecycle may delete it.
+    BotOwned { bot_id: String, bot_name: String },
     /// Anything else (not found, storage, ...).
     Other(LitecodeError),
 }
@@ -47,6 +49,12 @@ impl std::fmt::Display for DeleteSessionError {
             Self::AlreadyRunning => f.write_str("agent already running"),
             Self::DescendantRunning { .. } => {
                 f.write_str("cannot delete: a descendant subagent session is running")
+            }
+            Self::BotOwned { bot_id, bot_name } => {
+                write!(
+                    f,
+                    "bot '{bot_name}' ({bot_id}) owns this session; delete the bot instead"
+                )
             }
             Self::Other(e) => write!(f, "{e}"),
         }
@@ -71,10 +79,29 @@ pub struct DeletedSessions {
 /// root last). The subagent hub implements [`RemovedSessionCleanup`]
 /// (`purge_parent` + `forget_child`; impl lives in client_protocol because
 /// the session layer must not name the hub — architecture_layers).
-pub async fn delete_session_tree<C: RemovedSessionCleanup + ?Sized>(
+pub(crate) async fn delete_session_tree<C: RemovedSessionCleanup + ?Sized>(
     sessions: &Arc<SessionManager>,
     cleanup: &C,
     session_id: &str,
+) -> Result<DeletedSessions, DeleteSessionError> {
+    delete_session_tree_inner(sessions, cleanup, session_id, false).await
+}
+
+/// Bot-lifecycle delete. The bot service already checked the record and its
+/// ownership; this is the crate-private unchecked path.
+pub(crate) async fn delete_session_tree_for_bot<C: RemovedSessionCleanup + ?Sized>(
+    sessions: &Arc<SessionManager>,
+    cleanup: &C,
+    session_id: &str,
+) -> Result<DeletedSessions, DeleteSessionError> {
+    delete_session_tree_inner(sessions, cleanup, session_id, true).await
+}
+
+async fn delete_session_tree_inner<C: RemovedSessionCleanup + ?Sized>(
+    sessions: &Arc<SessionManager>,
+    cleanup: &C,
+    session_id: &str,
+    allow_bot: bool,
 ) -> Result<DeletedSessions, DeleteSessionError> {
     // List is SQLite; the exclusive lease needs an in-memory record.
     sessions
@@ -111,9 +138,12 @@ pub async fn delete_session_tree<C: RemovedSessionCleanup + ?Sized>(
             other => DeleteSessionError::Other(other),
         })?;
 
-    let removed = sessions
-        .remove_session(session_id)
-        .map_err(DeleteSessionError::Other)?;
+    let removed = if allow_bot {
+        sessions.remove_session_unchecked(session_id)
+    } else {
+        sessions.remove_session(session_id)
+    }
+    .map_err(DeleteSessionError::Other)?;
     // Explicit, idempotent cleanup for every removed id; the hub router also
     // purges on SessionRemoved, but must not be the only path (Lagged).
     for id in &removed {

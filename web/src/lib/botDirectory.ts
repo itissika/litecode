@@ -31,7 +31,7 @@ export function botFolderId(bot: BotInfo | undefined): string | null {
 /** Bot rows and their tab/editor/header all read this one value. */
 export function sessionDisplayTitle(
   session: { title?: string | null; preview?: string | null } | undefined,
-  bot: BotInfo | undefined,
+  bot: { name?: string } | null | undefined,
 ): string {
-  return bot?.name.trim() || sessionTitle(session);
+  return bot?.name?.trim() || sessionTitle(session);
 }

@@ -63,6 +63,36 @@ impl SessionService {
     pub fn new(sessions: Arc<SessionManager>) -> Self {
         Self { sessions }
     }
+
+    /// Shared identity query: which bot, if any, owns this ordinary session.
+    /// Session list/search, ACP/IM, and UI consumers use this one entry; the
+    /// derived index lives on the shared manager, so every facade sees the same
+    /// response-time answer.
+    pub fn bot_owner_for_session(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::session::SessionBotOwner> {
+        self.sessions.bot_owner_for_session(session_id)
+    }
+
+    pub(crate) fn replace_bot_owners(
+        &self,
+        owners: impl IntoIterator<Item = crate::session::SessionBotOwner>,
+    ) {
+        self.sessions.replace_bot_owners(owners);
+    }
+
+    pub(crate) fn upsert_bot_owner(&self, owner: crate::session::SessionBotOwner) {
+        self.sessions.upsert_bot_owner(owner);
+    }
+
+    pub(crate) fn remove_bot_owner(&self, session_id: &str) {
+        self.sessions.remove_bot_owner(session_id);
+    }
+
+    pub(crate) fn is_bot_id(&self, bot_id: &str) -> bool {
+        self.sessions.is_bot_id(bot_id)
+    }
 }
 
 mod conversation;

@@ -429,7 +429,17 @@ async fn post_retrieval_search(
         return open_error(StatusCode::BAD_REQUEST, "query is required".into());
     }
     match state.workspace_engines.human_search(&root, &body) {
-        Ok(data) => Json(ApiOk { ok: true, data }).into_response(),
+        Ok(mut data) => {
+            if let Some(page) = data.session_page.as_mut() {
+                for group in &mut page.groups {
+                    group.bot_name = state
+                        .service
+                        .bot_owner_for_session(&group.session_id)
+                        .map(|owner| owner.name);
+                }
+            }
+            Json(ApiOk { ok: true, data }).into_response()
+        }
         Err(e) => open_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }

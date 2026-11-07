@@ -1,10 +1,13 @@
 //! Agent `session_search` — a flat table over past session transcripts.
 
+use std::sync::Arc;
+
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::engines::session_search::{self, ContextWindowExclude};
 use crate::engines::{RetrievalFilters, WorkspaceEngines};
+use crate::session::SessionService;
 use crate::tool::Tool;
 use crate::tool::outcome::ToolOutcome;
 use crate::tool::trait_::ToolExecutionContext;
@@ -16,6 +19,8 @@ const VIRTUAL_TRANSCRIPT_NOTE: &str = "Hits are lines in the read-only virtual t
 
 pub struct SessionSearchTool {
     engines: WorkspaceEngines,
+    /// Optional shared owner lookup. Tests that only exercise ranking omit it.
+    owners: Option<Arc<SessionService>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -29,7 +34,18 @@ struct SessionSearchData {
 
 impl SessionSearchTool {
     pub fn new(engines: WorkspaceEngines) -> Self {
-        Self { engines }
+        Self {
+            engines,
+            owners: None,
+        }
+    }
+
+    /// Production constructor: enrich hits with the shared bot identity outlet.
+    pub fn with_owners(engines: WorkspaceEngines, owners: Arc<SessionService>) -> Self {
+        Self {
+            engines,
+            owners: Some(owners),
+        }
     }
 
     fn search_in_workspace(
@@ -89,10 +105,17 @@ impl SessionSearchTool {
             Err(e) => return ToolCallResult::error(e.to_string()),
         };
 
-        let table = match session_search::build_agent_table(reader, &bundle.ranked, limit) {
-            Ok(table) => table,
-            Err(e) => return ToolCallResult::error(e.to_string()),
+        let owners = self.owners.as_deref();
+        let bot_name = |session_id: &str| {
+            owners
+                .and_then(|owners| owners.bot_owner_for_session(session_id))
+                .map(|owner| owner.name)
         };
+        let table =
+            match session_search::build_agent_table(reader, &bundle.ranked, limit, &bot_name) {
+                Ok(table) => table,
+                Err(e) => return ToolCallResult::error(e.to_string()),
+            };
 
         let sync = crate::tools::sync_pct_for_workspace(&self.engines, Some(workspace_root));
         let truncated = table.total > table.hits.len();
@@ -246,8 +269,9 @@ impl SessionSearchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::TurnGuard;
     use crate::session::transcript_file;
-    use crate::session::{SessionData, WorkspaceWriteLease};
+    use crate::session::{SessionBotOwner, SessionData, SessionManager, WorkspaceWriteLease};
     use crate::types::ToolSignalLevel;
     use crate::types::user_text;
 
@@ -324,6 +348,66 @@ mod tests {
         let engines = WorkspaceEngines::new();
         engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
         SessionSearchTool::new(engines)
+    }
+
+    #[test]
+    fn hit_carries_derived_bot_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let session_id = seed_session(root, "BOT_NAME_TOKEN");
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
+        let manager = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            String::new(),
+        ));
+        let owner = SessionBotOwner {
+            session_id: session_id.clone(),
+            bot_id: "bot-1".into(),
+            name: "Researcher".into(),
+            description: "".into(),
+        };
+        manager.replace_bot_owners([owner.clone()]);
+        let tool = SessionSearchTool::with_owners(
+            engines,
+            Arc::new(SessionService::new(Arc::clone(&manager))),
+        );
+        let result = call_ok(
+            &tool,
+            root,
+            serde_json::json!({ "query": "BOT_NAME_TOKEN" }),
+            "",
+        );
+        let rows = hits(&result);
+        assert!(!rows.is_empty(), "{:?}", result.data);
+        assert_eq!(rows[0]["bot_name"], "Researcher");
+
+        let renamed = SessionBotOwner {
+            name: "Renamed".into(),
+            ..owner
+        };
+        manager.upsert_bot_owner(renamed);
+        let result = call_ok(
+            &tool,
+            root,
+            serde_json::json!({ "query": "BOT_NAME_TOKEN" }),
+            "",
+        );
+        let rows = hits(&result);
+        assert!(!rows.is_empty(), "{:?}", result.data);
+        assert_eq!(rows[0]["bot_name"], "Renamed");
+
+        manager.remove_bot_owner(&session_id);
+        let result = call_ok(
+            &tool,
+            root,
+            serde_json::json!({ "query": "BOT_NAME_TOKEN" }),
+            "",
+        );
+        let rows = hits(&result);
+        assert!(!rows.is_empty(), "{:?}", result.data);
+        assert!(rows[0].get("bot_name").is_none());
     }
 
     #[test]

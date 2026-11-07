@@ -171,6 +171,10 @@ pub struct SessionSearchHitRow {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionSearchGroup {
     pub session_id: String,
+    /// Filled by the serving layer from the shared bot-owner query; never
+    /// persisted or indexed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bot_name: Option<String>,
     pub created_time: i64,
     pub updated_time: i64,
     pub path: String,
@@ -639,6 +643,7 @@ fn push_hit(
     let ts = meta.get(&hit.session_id);
     groups.push(SessionSearchGroup {
         session_id: hit.session_id.clone(),
+        bot_name: None,
         created_time: ts.map(|t| t.created_at).unwrap_or(0),
         updated_time: ts.map(|t| t.updated_at).unwrap_or(0),
         path: transcript_file::virtual_path_for(&hit.session_id),
@@ -674,6 +679,9 @@ fn packed_page_text(groups: &[SessionSearchGroup]) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionTableHit {
     pub session: String,
+    /// Derived bot name for this session, if any. Never a stored session field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bot_name: Option<String>,
     pub age: String,
     pub line: u32,
     pub role: String,
@@ -697,6 +705,7 @@ pub fn build_agent_table(
     reader: &SessionDataReader,
     ranked: &[SessionTextHit],
     limit: usize,
+    bot_name: &dyn Fn(&str) -> Option<String>,
 ) -> Result<SessionTable> {
     let rows = dedup_chunks_to_rows(ranked);
     let hits = hydrate_hits(reader, &rows)?;
@@ -722,6 +731,7 @@ pub fn build_agent_table(
                 .unwrap_or_else(|| "unknown".to_string());
             SessionTableHit {
                 session,
+                bot_name: bot_name(&hit.session_id),
                 age,
                 line: hit.line,
                 role: hit.role.as_str().to_string(),

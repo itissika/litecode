@@ -102,7 +102,10 @@ fn instantiate_builtin_member(
                 .with_warm_hook(engines.warm_hook("websearch")),
         ),
         "code_search" => Arc::new(CodeSearchTool::new(workspace_engines.clone())),
-        "session_search" => Arc::new(SessionSearchTool::new(workspace_engines.clone())),
+        "session_search" => Arc::new(SessionSearchTool::with_owners(
+            workspace_engines.clone(),
+            Arc::new(SessionService::new(Arc::clone(sessions))),
+        )),
         "litecode_workspace" => Arc::new(LitecodeWorkspaceTool::new(
             runtime.clone(),
             Arc::clone(sessions),
@@ -348,15 +351,17 @@ fn subagent_tools(
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     for member in members {
         match member.id.as_str() {
-            "subagent_launch" => tools.push(Arc::new(SubagentLaunchTool::new(
-                runtime.clone(),
-                agent_id,
-                depth,
-                parent_cancel.clone(),
-                Arc::clone(&service),
-                parent_session_id.to_string(),
-            )
-            .with_profile(parent_profile.clone()))),
+            "subagent_launch" => tools.push(Arc::new(
+                SubagentLaunchTool::new(
+                    runtime.clone(),
+                    agent_id,
+                    depth,
+                    parent_cancel.clone(),
+                    Arc::clone(&service),
+                    parent_session_id.to_string(),
+                )
+                .with_profile(parent_profile.clone()),
+            )),
             "subagent_wait" => tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(&service)))),
             "subagent_stop" => tools.push(Arc::new(SubagentStopTool::new(Arc::clone(&service)))),
             "subagent_send" => tools.push(Arc::new(SubagentSendTool::new(
@@ -946,11 +951,7 @@ mod tests {
             .build()
             .unwrap();
         let bot = rt
-            .block_on(bots.create_user_bot(
-                "Snapshot",
-                "",
-                crate::bot::BotBody::default(),
-            ))
+            .block_on(bots.create_user_bot("Snapshot", "", crate::bot::BotBody::default()))
             .expect("bot");
         let engines = WorkspaceEngines::new();
         let ide = IdeBaseHandle::open(resolved.workspace_root(), Arc::new(engines.clone()))

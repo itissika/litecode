@@ -10,6 +10,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentProfile } from "../api/settings";
+import type { SessionInfo } from "../api/types";
 import { uploadMedia } from "../api/media";
 import { useBotStore } from "../stores/botStore";
 import { useConnectionStore } from "../stores/connectionStore";
@@ -63,6 +64,24 @@ const botProfile: AgentProfile = {
   tools: {},
   allowed_subagents: [],
 };
+
+function seedSessionRow(patch: Partial<SessionInfo> = {}) {
+  useSessionStore.setState({
+    sessions: [
+      {
+        id: "session-1",
+        project: "",
+        updated_at: 0,
+        preview: "",
+        running: false,
+        turn: null,
+        agent_id: "bot_b1",
+        api_model_id: "model-1",
+        ...patch,
+      },
+    ],
+  } as never);
+}
 
 function seedSession(sessionId: string) {
   useSessionStore.setState({
@@ -121,6 +140,7 @@ afterEach(() => {
   useToastStore.setState({ toasts: [] });
   useSessionStore.setState({
     byId: new Map(),
+    sessions: [],
     primaryAgents: [],
     availableModels: [],
   } as never);
@@ -429,6 +449,25 @@ describe("AgentPicker bots", () => {
     fireEvent.click(trigger);
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Edit bot")).toBeTruthy();
+  });
+
+  it("treats session.bot null as no bot even when the directory has a stale record", () => {
+    seedSessionRow({ bot: null });
+    useBotStore.setState({ bots: [researcher] });
+
+    render(<AgentChatInput sessionId="session-1" />);
+    expect(screen.queryByRole("button", { name: "Researcher" })).toBeNull();
+  });
+
+  it("labels from session.bot, not the stale directory name", () => {
+    seedSessionRow({ bot: { id: "b1", name: "Session identity" } });
+    useBotStore.setState({ bots: [researcher] });
+
+    render(<AgentChatInput sessionId="session-1" />);
+    expect(
+      screen.getByRole("button", { name: "Session identity" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Researcher" })).toBeNull();
   });
 });
 

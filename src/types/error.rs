@@ -27,6 +27,9 @@ pub enum LitecodeError {
     #[error("session not found: {0}")]
     SessionNotFound(String),
 
+    #[error("bot '{0}' owns this session")]
+    BotOwnedSession(String),
+
     #[error("tool not found: {0}")]
     ToolNotFound(String),
 

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   useConnectionStore,
+  sessionTitleBot,
   shouldIgnoreForwardedSubagentEvent,
 } from "./connectionStore";
 import { useMessageStore } from "./messageStore";
@@ -9,6 +10,24 @@ import { useSessionStore } from "./sessionStore";
 import { useTurnStore } from "./turnStore";
 import { useGitStore } from "./gitStore";
 import { useWorkspaceChangeStore } from "./workspaceChangeStore";
+
+describe("sessionTitleBot", () => {
+  const directory = { name: "Stale directory" };
+
+  it("treats bot:null as explicit no-bot, not a directory fallback", () => {
+    expect(sessionTitleBot({ bot: null }, directory)).toBeNull();
+  });
+
+  it("falls back only when the field is missing", () => {
+    expect(sessionTitleBot({}, directory)).toBe(directory);
+    expect(sessionTitleBot(undefined, directory)).toBe(directory);
+  });
+
+  it("prefers the session bot object", () => {
+    const bot = { id: "b1", name: "From session" };
+    expect(sessionTitleBot({ bot }, directory)).toBe(bot);
+  });
+});
 
 describe("shouldIgnoreForwardedSubagentEvent", () => {
   it("ignores turn/buffer/permission when parent_session_id is set", () => {

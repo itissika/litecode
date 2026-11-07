@@ -24,8 +24,22 @@ impl SessionService {
             .await
     }
 
+    /// Ordinary session identity switch. Rejects bot-owned sessions; only the
+    /// bot lifecycle / startup reconciliation may write its one mirror.
     pub(crate) fn set_agent_id(&self, session_id: &str, agent_id: String) -> Result<()> {
+        if let Some(owner) = self.bot_owner_for_session(session_id) {
+            return Err(crate::types::LitecodeError::BotOwnedSession(owner.bot_id));
+        }
+        let target_is_bot = self.is_bot_id(&agent_id);
+        if target_is_bot {
+            return Err(crate::types::LitecodeError::BotOwnedSession(agent_id));
+        }
         self.sessions.set_agent_id(session_id, agent_id)
+    }
+
+    /// Bot lifecycle write: bind the session's agent_id mirror to its bot id.
+    pub(crate) fn bind_bot_agent_id(&self, session_id: &str, bot_id: String) -> Result<()> {
+        self.sessions.set_agent_id(session_id, bot_id)
     }
 
     pub(crate) fn session_model_id(&self, session_id: &str) -> Option<String> {
@@ -77,11 +91,8 @@ impl SessionService {
         session_id: &str,
         default_primary: &str,
     ) -> Result<String> {
-        if let Some(bot) = runtime
-            .bots()
-            .and_then(|bots| bots.bot_for_session(session_id))
-        {
-            return Ok(bot.id);
+        if let Some(owner) = self.bot_owner_for_session(session_id) {
+            return Ok(owner.bot_id);
         }
         self.resolve_primary_agent(session_id, default_primary, &runtime.resolved)
     }
@@ -167,14 +178,36 @@ impl SessionService {
     }
 
     pub(crate) fn remove_session(&self, session_id: &str) -> Result<Vec<String>> {
+        if let Some(owner) = self.bot_owner_for_session(session_id) {
+            return Err(crate::types::LitecodeError::BotOwnedSession(owner.bot_id));
+        }
         self.sessions.remove_session(session_id)
     }
 
-    pub(crate) async fn delete_session_tree<C: RemovedSessionCleanup + ?Sized>(
+    /// Public session delete: bot-owned sessions are refused here, not only in
+    /// the websocket controller. The bot lifecycle uses
+    /// [`Self::delete_bot_session_tree`].
+    pub async fn delete_session_tree<C: RemovedSessionCleanup + ?Sized>(
         &self,
         cleanup: &C,
         session_id: &str,
     ) -> std::result::Result<DeletedSessions, DeleteSessionError> {
+        if let Some(owner) = self.bot_owner_for_session(session_id) {
+            return Err(DeleteSessionError::BotOwned {
+                bot_id: owner.bot_id,
+                bot_name: owner.name,
+            });
+        }
         crate::session::delete::delete_session_tree(&self.sessions, cleanup, session_id).await
+    }
+
+    /// Bot lifecycle delete. Only `BotService::delete` may use this.
+    pub(crate) async fn delete_bot_session_tree<C: RemovedSessionCleanup + ?Sized>(
+        &self,
+        cleanup: &C,
+        session_id: &str,
+    ) -> std::result::Result<DeletedSessions, DeleteSessionError> {
+        crate::session::delete::delete_session_tree_for_bot(&self.sessions, cleanup, session_id)
+            .await
     }
 }

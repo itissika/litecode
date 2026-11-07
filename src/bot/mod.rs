@@ -9,7 +9,7 @@ mod permission;
 mod resolve;
 mod service;
 
-pub use permission::{BOT_ASK_USER_TIMEOUT, BotPermissionSink, bot_permission_sink};
+pub use permission::{BotPermissionSink, bot_permission_sink};
 pub use resolve::{
     AgentResolution, BOT_MAX_STEPS, expand_builtin_prompt, platform_prompt,
     resolve_agent_for_session, step_max_for_session,

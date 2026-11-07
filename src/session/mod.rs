@@ -16,9 +16,10 @@ pub mod media;
 pub mod media_tokens;
 pub mod memory;
 pub mod model;
+pub mod owner;
 pub mod pending;
-pub mod snapshot;
 pub mod service;
+pub mod snapshot;
 pub mod snapshot_paths;
 pub mod store;
 pub mod surface;
@@ -41,7 +42,6 @@ pub use estimate::{
 pub use event::{EventDraft, EventLog, EventType, Seq, SessionEvent};
 pub use live::{LifecycleEvent, LiveTurn, TurnProgress};
 pub use manager::{CancelOutcome, FollowUpOutcome, SessionManager, SessionRecord};
-pub use service::SessionService;
 pub use media_tokens::{
     AUDIO_FALLBACK_TOKENS, FILE_FALLBACK_TOKENS, IMAGE_BASE_TOKENS, IMAGE_FALLBACK_TOKENS,
     IMAGE_TILE_TOKENS, VIDEO_FALLBACK_TOKENS, input_content_media_tokens,
@@ -50,6 +50,8 @@ pub use memory::{MemoryEntry, SessionMemory};
 pub use model::{
     CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION, SessionKind, SessionLogRow, SessionMeta,
 };
+pub use owner::SessionBotOwner;
+pub use service::SessionService;
 pub use store::{Session, SessionContextMeter, TranscriptRow};
 pub use surface::{
     Surface, SurfaceOp, derive_messages, derive_transcript_items, fold_surface,

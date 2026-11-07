@@ -1143,6 +1143,9 @@ pub async fn handle_jsonrpc(
                             true,
                             Some(serde_json::json!({ "running_session_ids": running_session_ids })),
                         ),
+                        Some(crate::session::delete::DeleteSessionError::BotOwned { .. }) => {
+                            (ErrorCode::InvalidRequest, false, None)
+                        }
                         Some(crate::session::delete::DeleteSessionError::Other(
                             crate::types::LitecodeError::SessionNotFound(_),
                         )) => (ErrorCode::SessionNotFound, false, None),
@@ -2328,13 +2331,7 @@ pub async fn run_session_loop(
         let closed_asks: Vec<(String, String, String)> = pending_asks
             .iter()
             .filter(|(_, ask)| ask.reply_tx.is_closed())
-            .map(|(request_id, ask)| {
-                (
-                    ask.session_id.clone(),
-                    request_id.clone(),
-                    ask.tool.clone(),
-                )
-            })
+            .map(|(request_id, ask)| (ask.session_id.clone(), request_id.clone(), ask.tool.clone()))
             .collect();
         for (sid, request_id, tool) in closed_asks {
             pending_asks.remove(&request_id);

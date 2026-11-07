@@ -76,6 +76,32 @@ describe("AgentTab title", () => {
     expect(screen.queryByText("NEW")).toBeNull();
   });
 
+  it("prefers the response-time session bot identity over the directory", () => {
+    seed({
+      title: "Old session title",
+      preview: "preview",
+      bot: { id: "b1", name: "Name from session/list" },
+    });
+    useBotStore.setState({ bots: [bot({ name: "Directory name" })] });
+    render(
+      <AgentTab {...panelProps({ sessionId: ID, sessionKind: "root" })} />,
+    );
+
+    expect(screen.getByText("Name from session/list")).toBeTruthy();
+    expect(screen.queryByText("Directory name")).toBeNull();
+  });
+
+  it("treats bot:null as an ordinary session even when the directory has a stale record", () => {
+    seed({ title: "Normal title", bot: null });
+    useBotStore.setState({ bots: [bot()] });
+    render(
+      <AgentTab {...panelProps({ sessionId: ID, sessionKind: "root" })} />,
+    );
+
+    expect(screen.getByText("Normal title")).toBeTruthy();
+    expect(screen.queryByText("Researcher")).toBeNull();
+  });
+
   it("names a bot session from the directory, never its latest message", () => {
     seed({ title: "Old session title", preview: "[from bot id=b1 name=Researcher]\nhi" });
     useBotStore.setState({ bots: [bot()] });

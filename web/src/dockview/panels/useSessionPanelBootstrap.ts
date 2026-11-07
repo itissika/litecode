@@ -5,7 +5,7 @@ import type { SessionInfo } from "../../api/types";
 import { releaseSessionTab } from "../../components/sessionTeardown";
 import {
   sessionDisplayTitle,
-  useBotForSession,
+  useSessionBotIdentity,
 } from "../../lib/botIdentity";
 import { useConnectionStore } from "../../stores/connectionStore";
 import { useSessionStore } from "../../stores/sessionStore";
@@ -74,6 +74,6 @@ export function useSessionPanelBootstrap(
   const session = useSessionStore((s) =>
     s.sessions.find((x) => x.id === sessionId),
   );
-  const bot = useBotForSession(sessionId);
+  const bot = useSessionBotIdentity(sessionId);
   return { isActive, session, title: sessionDisplayTitle(session, bot) };
 }

@@ -172,8 +172,8 @@ pub struct AskReply {
     pub selected: Vec<String>,
     /// ask_user submit: map question_id → answer.
     pub answers: HashMap<String, AskAnswer>,
-    /// The bot ask_user deadline elapsed (or no live frontend answered) without
-    /// a human reply. Distinct from a deliberate Skip (Deny).
+    /// The ask_user tool deadline elapsed (or no live frontend answered)
+    /// without a human reply. Distinct from a deliberate Skip (Deny).
     pub timed_out: bool,
 }
 

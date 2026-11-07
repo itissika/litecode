@@ -242,6 +242,16 @@ impl From<crate::bot::BotRecord> for BotInfo {
     }
 }
 
+/// Response-time derived bot identity for one session. Never persisted on the
+/// session row; the bot directory remains the authority.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionBotIdentity {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
 /// Element of SessionList.sessions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
@@ -265,6 +275,11 @@ pub struct SessionInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turn: Option<TurnSnapshot>,
     pub agent_id: String,
+    /// Present only when `SessionService::bot_owner_for_session` resolves one.
+    /// Ordinary sessions serialize `null`; no identity is synthesized from
+    /// `agent_id` or title.
+    #[serde(default)]
+    pub bot: Option<SessionBotIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     pub api_model_id: String,

@@ -77,6 +77,9 @@ impl SubagentDeleteTool {
                 "cannot delete: a descendant subagent session is running (descendant_running): {}",
                 running_session_ids.join(",")
             )),
+            Err(DeleteSessionError::BotOwned { bot_id, .. }) => ToolCallResult::error(format!(
+                "cannot delete: session '{child_id}' belongs to bot '{bot_id}'"
+            )),
             Err(DeleteSessionError::Other(error)) => {
                 ToolCallResult::error(format!("subagent_delete failed: {error}"))
             }

@@ -409,7 +409,10 @@ async fn remove_parent_cascades_child() {
         .open_child_session(&project, "reviewer", None, &parent_id, "call_del")
         .unwrap();
 
-    sessions.remove_session(&parent_id).unwrap();
+    SessionService::new(Arc::clone(&sessions))
+        .delete_session_tree(&|_: &str| {}, &parent_id)
+        .await
+        .expect("delete parent tree");
     assert!(sessions.data().meta_blocking(&parent_id).is_err());
     assert!(sessions.data().meta_blocking(&child_id).is_err());
 }
