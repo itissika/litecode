@@ -267,6 +267,36 @@ pub(crate) fn present_command_full(
     .into_call_result(format!("id: {id}\nexit_code: {shown}\n"))
 }
 
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    let output = || JobOutput {
+        stdout: "hello\n".into(),
+        stderr: String::new(),
+    };
+    // run, wait, and kill share CommandData. Their own paths set message and
+    // killed only sometimes, so the full state is a shape check, not an output
+    // every tool can produce.
+    let full = || {
+        present_command_full(
+            "01JCOMMANDJOB",
+            Some(0),
+            output(),
+            Some("note".into()),
+            Some(true),
+        )
+    };
+    let bare = || present_command_full("01JCOMMANDJOB", Some(0), output(), None, None);
+    ["run", "wait", "kill"]
+        .into_iter()
+        .map(|tool| DriftCase {
+            tool,
+            all_optional_present: full(),
+            all_optional_absent: bare(),
+        })
+        .collect()
+}
+
 /// Drops the snapshot waiter registered for one `wait` call.
 pub(crate) struct EndWait {
     jobs: Arc<AgentJobRegistry>,

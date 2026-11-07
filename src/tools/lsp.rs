@@ -18,8 +18,8 @@ use crate::config::path::strip_verbatim;
 use crate::engines::{EngineState, WorkspaceEngines};
 use crate::lsp::SharedLspHub;
 use crate::lsp::format::{
-    MAX_DIAGNOSTIC_ITEMS, MAX_LOCATIONS, MAX_SYMBOLS, extract_diagnostic_items,
-    extract_hover_markdown, extract_location_items, extract_symbol_items,
+    DiagnosticItem, LocationItem, MAX_DIAGNOSTIC_ITEMS, MAX_LOCATIONS, MAX_SYMBOLS, SymbolItem,
+    extract_diagnostic_items, extract_hover_markdown, extract_location_items, extract_symbol_items,
 };
 use crate::lsp::server::IndexReadiness;
 use crate::tool::Tool;
@@ -542,6 +542,38 @@ fn state_note(readiness: IndexReadiness) -> &'static str {
     }
 }
 
+/// Sole success shape for find_references, go_to_definition, and go_to_implementation.
+#[derive(serde::Serialize)]
+struct LocationsData {
+    locations: Vec<LocationItem>,
+    message: String,
+    state: &'static str,
+}
+
+/// Sole success shape for hover.
+#[derive(serde::Serialize)]
+struct HoverData {
+    markdown: String,
+    message: String,
+    state: &'static str,
+}
+
+/// Sole success shape for diagnostics.
+#[derive(serde::Serialize)]
+struct DiagnosticsData {
+    items: Vec<DiagnosticItem>,
+    message: String,
+    state: &'static str,
+}
+
+/// Sole success shape for document_symbol and workspace_symbol.
+#[derive(serde::Serialize)]
+struct SymbolsData {
+    symbols: Vec<SymbolItem>,
+    message: String,
+    state: &'static str,
+}
+
 fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCallResult {
     let mut locations = extract_location_items(&out.raw, roots);
     let truncated = locations.len() > MAX_LOCATIONS;
@@ -575,11 +607,11 @@ fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCall
         )
     };
     finish_with_state(
-        crate::tool::outcome::ok_data(serde_json::json!({
-            "locations": locations,
-            "message": message,
-            "state": out.readiness.as_str(),
-        })),
+        crate::tool::outcome::ok_data(LocationsData {
+            locations,
+            message,
+            state: out.readiness.as_str(),
+        }),
         out.readiness,
         out.content_modified,
     )
@@ -604,11 +636,11 @@ fn finish_hover(out: crate::lsp::LspToolOutput) -> ToolCallResult {
     };
     let markdown = if empty { String::new() } else { markdown };
     finish_with_state(
-        crate::tool::outcome::ok_data(serde_json::json!({
-            "markdown": markdown,
-            "message": message,
-            "state": out.readiness.as_str(),
-        })),
+        crate::tool::outcome::ok_data(HoverData {
+            markdown,
+            message,
+            state: out.readiness.as_str(),
+        }),
         out.readiness,
         out.content_modified,
     )
@@ -644,11 +676,11 @@ fn finish_diagnostics(out: crate::lsp::LspToolOutput, file_path: &str) -> ToolCa
         )
     };
     finish_with_state(
-        crate::tool::outcome::ok_data(serde_json::json!({
-            "items": items,
-            "message": message,
-            "state": out.readiness.as_str(),
-        })),
+        crate::tool::outcome::ok_data(DiagnosticsData {
+            items,
+            message,
+            state: out.readiness.as_str(),
+        }),
         out.readiness,
         out.content_modified,
     )
@@ -684,15 +716,106 @@ fn finish_symbols(
         format!("{} symbol(s).{}", symbols.len(), state_note(out.readiness))
     };
     finish_with_state(
-        crate::tool::outcome::ok_data(serde_json::json!({
-            "symbols": symbols,
-            "message": message,
-            "state": out.readiness.as_str(),
-        })),
+        crate::tool::outcome::ok_data(SymbolsData {
+            symbols,
+            message,
+            state: out.readiness.as_str(),
+        }),
         out.readiness,
         out.content_modified,
     )
 }
+/// Drift samples for the seven LSP tools. Each sample runs the production
+/// finisher on raw LSP JSON, so extraction and state wiring are exercised.
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::lsp::LspToolOutput;
+    use crate::tool::code_contract::DriftCase;
+    use serde_json::json;
+
+    let output = |raw: Value| LspToolOutput::new(String::new(), raw, false, IndexReadiness::Ready);
+    // A location with an end position sets end_line and end_character.
+    let located = json!([{
+        "uri": "file:///workspace/src/a.rs",
+        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 4}},
+    }]);
+    // Without an end position, both end fields are absent.
+    let bare = json!([{
+        "uri": "file:///workspace/src/a.rs",
+        "range": {"start": {"line": 0, "character": 0}},
+    }]);
+    // SymbolInformation rows carry a location, so path and end are present.
+    let symbol_information = json!([{
+        "name": "a",
+        "kind": 12,
+        "location": {
+            "uri": "file:///workspace/src/a.rs",
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 2, "character": 1}},
+        },
+    }]);
+    // DocumentSymbol rows carry no uri, so path and end are absent.
+    let document_symbol = json!([{
+        "name": "a",
+        "kind": 12,
+        "range": {"start": {"line": 0, "character": 0}},
+        "selectionRange": {"start": {"line": 0, "character": 0}},
+    }]);
+    let mut cases = Vec::new();
+    for tool in [
+        "go_to_definition",
+        "find_references",
+        "go_to_implementation",
+    ] {
+        cases.push(DriftCase {
+            tool,
+            all_optional_present: finish_locations(output(located.clone()), &[]),
+            all_optional_absent: finish_locations(output(bare.clone()), &[]),
+        });
+    }
+    cases.push(DriftCase {
+        tool: "hover",
+        // hover has no optional property, so both states use the same shape.
+        all_optional_present: finish_hover(output(json!({
+            "contents": {"kind": "markdown", "value": "fn a()"}
+        }))),
+        all_optional_absent: finish_hover(output(Value::Null)),
+    });
+    cases.push(DriftCase {
+        tool: "diagnostics",
+        // diagnostics has no optional property, so both states use the same shape.
+        all_optional_present: finish_diagnostics(
+            output(json!([{
+                "severity": 1,
+                "range": {"start": {"line": 0, "character": 0}},
+                "message": "unused",
+            }])),
+            "src/a.rs",
+        ),
+        all_optional_absent: finish_diagnostics(
+            output(json!([{
+                "severity": 4,
+                "range": {"start": {"line": 0, "character": 0}},
+                "message": "hint",
+            }])),
+            "src/a.rs",
+        ),
+    });
+    cases.push(DriftCase {
+        tool: "document_symbol",
+        all_optional_present: finish_symbols(output(symbol_information.clone()), false, &[]),
+        all_optional_absent: finish_symbols(output(document_symbol.clone()), false, &[]),
+    });
+    cases.push(DriftCase {
+        tool: "workspace_symbol",
+        // workspace_symbol drops rows without a path, so the tool cannot return the
+        // absent state. This sample runs the same finisher with path filtering off:
+        // a shape-only check of that state, not a reachable output.
+        all_optional_present: finish_symbols(output(symbol_information), true, &[]),
+        all_optional_absent: finish_symbols(output(document_symbol), false, &[]),
+    });
+    cases
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

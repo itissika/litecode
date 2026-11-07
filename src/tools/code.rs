@@ -723,15 +723,7 @@ async fn invoke_binding(
             Some(deadline),
         )
         .await;
-    let success = result.error.is_none()
-        && matches!(
-            result.level,
-            crate::types::ToolSignalLevel::Ok | crate::types::ToolSignalLevel::Warning
-        );
-    if success
-        && let Ok(program_value) = outcome::program_result(&result)
-        && let Err(error) = surface.validate_output(&tool_name, &program_value)
-    {
+    if let Some(error) = surface.output_violation(&tool_name, &result) {
         let mut invalid = ToolCallResult::error_with_kind(
             ToolErrorKind::Internal,
             format!("tool '{sdk_name}' returned data that does not match its JS contract: {error}"),

@@ -32,6 +32,37 @@ struct SessionSearchData {
     message: Option<String>,
 }
 
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    let hit = |bot_name: Option<&str>| session_search::SessionTableHit {
+        session: "s1".into(),
+        bot_name: bot_name.map(str::to_string),
+        age: "1m".into(),
+        line: 3,
+        role: "conversation".into(),
+        via: "lex".into(),
+        summary: "hello".into(),
+    };
+    vec![DriftCase {
+        tool: "session_search",
+        all_optional_present: ToolOutcome::ok(SessionSearchData {
+            hits: vec![hit(Some("bot"))],
+            total: 1,
+            truncated: false,
+            message: Some("note".into()),
+        })
+        .into_call_result(""),
+        all_optional_absent: ToolOutcome::ok(SessionSearchData {
+            hits: vec![hit(None)],
+            total: 1,
+            truncated: false,
+            message: None,
+        })
+        .into_call_result(""),
+    }]
+}
+
 impl SessionSearchTool {
     pub fn new(engines: WorkspaceEngines) -> Self {
         Self {

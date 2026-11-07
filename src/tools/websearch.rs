@@ -204,6 +204,29 @@ fn present_websearch(data: WebSearchData) -> ToolCallResult {
     ToolOutcome::ok(data).into_call_result("")
 }
 
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    let hit = || SearchHit {
+        title: "Example".into(),
+        url: "https://example.com/".into(),
+        snippet: "An example page.".into(),
+    };
+    vec![DriftCase {
+        tool: "websearch",
+        all_optional_present: present_websearch(WebSearchData {
+            query: Some("example".into()),
+            results: vec![hit()],
+            message: "Search note.".into(),
+        }),
+        all_optional_absent: present_websearch(WebSearchData {
+            query: None,
+            results: vec![hit()],
+            message: String::new(),
+        }),
+    }]
+}
+
 impl Tool for WebSearchTool {
     fn name(&self) -> &str {
         "websearch"

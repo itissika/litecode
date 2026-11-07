@@ -209,6 +209,24 @@ fn coded(code: &str, message: impl Into<String>) -> ToolCallResult {
     crate::tools::file_path::coded_error(code, message)
 }
 
+/// Sole success shape for glob.
+#[derive(serde::Serialize)]
+struct GlobData {
+    paths: Vec<String>,
+    message: String,
+}
+
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    // glob has no optional property, so both states share one shape.
+    vec![DriftCase {
+        tool: "glob",
+        all_optional_present: finish_glob(&["a.txt".to_string()], 1, true, Some("note")),
+        all_optional_absent: finish_glob(&["a.txt".to_string()], 5, false, None),
+    }]
+}
+
 fn finish_glob(hits: &[String], limit: usize, outside: bool, note: Option<&str>) -> ToolCallResult {
     let truncated = hits.len() > limit;
     let page_hits = if truncated {
@@ -241,10 +259,10 @@ fn finish_glob(hits: &[String], limit: usize, outside: bool, note: Option<&str>)
             message = format!("{message} {note}");
         }
     }
-    crate::tool::outcome::ok_data(serde_json::json!({
-        "paths": page_hits,
-        "message": message,
-    }))
+    crate::tool::outcome::ok_data(GlobData {
+        paths: page_hits,
+        message,
+    })
 }
 
 fn pattern_reaches_parent(pattern: &str) -> bool {

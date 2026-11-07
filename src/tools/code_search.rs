@@ -53,6 +53,39 @@ struct CodeSearchHit {
     snippet: String,
 }
 
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    let hit = |symbol: Option<&str>| CodeSearchHit {
+        path: "src/a.rs".into(),
+        anchor_line: 3,
+        start_line: 1,
+        end_line: 5,
+        symbol: symbol.map(str::to_string),
+        via: "both".into(),
+        dense_similarity: 0.9,
+        text: "fn a() {}".into(),
+        snippet: "fn a() {}".into(),
+    };
+    vec![DriftCase {
+        tool: "code_search",
+        all_optional_present: CodeSearchTool::present(
+            CodeSearchData {
+                hits: vec![hit(Some("a"))],
+                message: Some("note".into()),
+            },
+            String::new(),
+        ),
+        all_optional_absent: CodeSearchTool::present(
+            CodeSearchData {
+                hits: vec![hit(None)],
+                message: None,
+            },
+            String::new(),
+        ),
+    }]
+}
+
 impl CodeSearchData {
     fn success(hits: Vec<CodeSearchHit>, message: Option<String>) -> Self {
         Self { hits, message }

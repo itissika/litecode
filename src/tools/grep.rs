@@ -835,6 +835,25 @@ fn hits_data(hits: &[GrepHit], message: &str, truncated: bool, with_context: boo
     data
 }
 
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    let hit = GrepHit {
+        path: "a.txt".into(),
+        line: 1,
+        text: "alpha needle".into(),
+        before: Vec::new(),
+        after: Vec::new(),
+    };
+    let hits = std::slice::from_ref(&hit);
+    // Only truncated is optional for grep; message is always present.
+    vec![DriftCase {
+        tool: "grep",
+        all_optional_present: crate::tool::outcome::ok_data(hits_data(hits, "note", true, false)),
+        all_optional_absent: crate::tool::outcome::ok_data(hits_data(hits, "", false, false)),
+    }]
+}
+
 fn data_fits(data: &Value) -> bool {
     serde_json::to_string(data).is_ok_and(|serialized| {
         crate::session::count_text_tokens(&serialized) <= MAX_GREP_DATA_TOKENS

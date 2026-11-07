@@ -60,7 +60,38 @@ pub fn present_edit(result: EditResult) -> ToolCallResult {
     crate::tools::file_path::coded_error(code, result.message)
 }
 
+/// Sole success shape for apply_edits: one entry per requested edit.
+#[derive(Serialize)]
+struct ApplyEditsData {
+    results: Vec<EditResult>,
+}
+
 pub fn present_apply_edits(results: Vec<EditResult>) -> ToolCallResult {
     // Same as write success: empty content; batch facts in data.results[].message.
-    ToolOutcome::ok(serde_json::json!({ "results": results })).into_call_result("")
+    ToolOutcome::ok(ApplyEditsData { results }).into_call_result("")
+}
+
+/// Drift samples for the two edit tools. apply_edits states use one item each:
+/// a failure carries the optional reason, a success does not.
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    vec![
+        DriftCase {
+            tool: "edit",
+            // edit has no optional property, so both states use the same shape.
+            all_optional_present: present_edit(EditResult::success("a.txt", "Edited a.txt.")),
+            all_optional_absent: present_edit(EditResult::success("a.txt", "Edited a.txt.")),
+        },
+        DriftCase {
+            tool: "apply_edits",
+            all_optional_present: present_apply_edits(vec![
+                EditResult::failure("a.txt", "No match.").because("no_match"),
+            ]),
+            all_optional_absent: present_apply_edits(vec![EditResult::success(
+                "a.txt",
+                "Edited a.txt.",
+            )]),
+        },
+    ]
 }

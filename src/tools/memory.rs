@@ -8,10 +8,14 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use serde_json::{Value, json};
+use serde::Serialize;
+use serde_json::Value;
 
 use crate::session::manager::SessionManager;
-use crate::session::memory::{MEMORY_MAX_BATCH, MemoryEntry, MemoryReject, MemoryUpsertRequest};
+use crate::session::memory::{
+    MEMORY_MAX_BATCH, MEMORY_MAX_ENTRIES, MemoryDeleteResult, MemoryEntry, MemoryReject,
+    MemoryUpsertRequest, MemoryUpsertResult, SessionMemory,
+};
 use crate::tool::Tool;
 use crate::tool::outcome::ok_data;
 use crate::tool::trait_::ToolExecutionContext;
@@ -212,14 +216,7 @@ fn run_list(
         Ok(memory) => memory,
         Err(error) => return coded("io", format!("load session memory: {error}")),
     };
-    let entries: Vec<Value> = memory.entries.iter().map(entry_json).collect();
-    ok_data(json!({
-        "entries": entries,
-        "count": entries.len(),
-        "total": memory.entries.len(),
-        "limit": crate::session::memory::MEMORY_MAX_ENTRIES,
-        "total_chars": memory.total_chars(),
-    }))
+    ok_data(list_data(&memory))
 }
 
 fn run_upsert(
@@ -247,13 +244,7 @@ fn run_upsert(
             Ok(value) => value,
             Err(error) => return coded("io", format!("save session memory: {error}")),
         };
-    ok_data(json!({
-        "added": result.added,
-        "updated": result.updated,
-        "rejected": rejected_json(&result.rejected),
-        "count": memory.entries.len(),
-        "total_chars": memory.total_chars(),
-    }))
+    ok_data(upsert_data(&memory, result))
 }
 
 fn run_delete(
@@ -286,11 +277,7 @@ fn run_delete(
             Ok(value) => value,
             Err(error) => return coded("io", format!("save session memory: {error}")),
         };
-    ok_data(json!({
-        "deleted": result.deleted,
-        "rejected": rejected_json(&result.rejected),
-        "count": memory.entries.len(),
-    }))
+    ok_data(delete_data(&memory, result))
 }
 
 fn validate_upsert_input(input: &Value) -> std::result::Result<(), String> {
@@ -357,30 +344,163 @@ fn parse_upsert_requests(input: &Value) -> Vec<MemoryUpsertRequest> {
         .collect()
 }
 
-fn entry_json(entry: &MemoryEntry) -> Value {
-    json!({
-        "id": entry.id,
-        "text": entry.text,
-        "updated_at": entry.updated_at,
-    })
+/// Sole success shape for memory.list.
+#[derive(Debug, Serialize)]
+struct MemoryListData {
+    entries: Vec<MemoryEntryData>,
+    count: usize,
+    total: usize,
+    limit: usize,
+    total_chars: usize,
 }
 
-fn rejected_json(items: &[MemoryReject]) -> Value {
-    Value::Array(
-        items
-            .iter()
-            .map(|item| {
-                let mut value = json!({
-                    "index": item.index,
-                    "reason": item.reason,
-                });
-                if let Some(id) = &item.id {
-                    value["id"] = json!(id);
-                }
-                value
-            })
-            .collect(),
-    )
+/// Sole success shape for memory.upsert.
+#[derive(Debug, Serialize)]
+struct MemoryUpsertData {
+    added: Vec<String>,
+    updated: Vec<String>,
+    rejected: Vec<RejectedData>,
+    count: usize,
+    total_chars: usize,
+}
+
+/// Sole success shape for memory.delete.
+#[derive(Debug, Serialize)]
+struct MemoryDeleteData {
+    deleted: Vec<String>,
+    rejected: Vec<RejectedData>,
+    count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryEntryData {
+    id: String,
+    text: String,
+    updated_at: i64,
+}
+
+/// One rejected batch item. The id property is absent when the request carried none.
+#[derive(Debug, Serialize)]
+struct RejectedData {
+    index: usize,
+    reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+}
+
+fn list_data(memory: &SessionMemory) -> MemoryListData {
+    let entries: Vec<MemoryEntryData> = memory.entries.iter().map(entry_data).collect();
+    MemoryListData {
+        count: entries.len(),
+        total: memory.entries.len(),
+        limit: MEMORY_MAX_ENTRIES,
+        total_chars: memory.total_chars(),
+        entries,
+    }
+}
+
+fn upsert_data(memory: &SessionMemory, result: MemoryUpsertResult) -> MemoryUpsertData {
+    MemoryUpsertData {
+        added: result.added,
+        updated: result.updated,
+        rejected: rejected_data(&result.rejected),
+        count: memory.entries.len(),
+        total_chars: memory.total_chars(),
+    }
+}
+
+fn delete_data(memory: &SessionMemory, result: MemoryDeleteResult) -> MemoryDeleteData {
+    MemoryDeleteData {
+        deleted: result.deleted,
+        rejected: rejected_data(&result.rejected),
+        count: memory.entries.len(),
+    }
+}
+
+fn entry_data(entry: &MemoryEntry) -> MemoryEntryData {
+    MemoryEntryData {
+        id: entry.id.clone(),
+        text: entry.text.clone(),
+        updated_at: entry.updated_at,
+    }
+}
+
+fn rejected_data(items: &[MemoryReject]) -> Vec<RejectedData> {
+    items
+        .iter()
+        .map(|item| RejectedData {
+            index: item.index,
+            reason: item.reason,
+            id: item.id.clone(),
+        })
+        .collect()
+}
+
+/// Drift samples for the three memory tools. Each state comes from the same
+/// apply_* operation the tool runs, then the same data function the tool uses.
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    let mut memory = SessionMemory::default();
+    memory.entries.push(MemoryEntry {
+        id: "m1".into(),
+        text: "use pnpm".into(),
+        updated_at: 1,
+    });
+    memory.next_id = 2;
+
+    let mut upsert_present = SessionMemory::default();
+    let upsert_present_result = upsert_present.apply_upsert(
+        &[
+            MemoryUpsertRequest {
+                id: Some("m9".into()),
+                text: " ".into(),
+            },
+            MemoryUpsertRequest {
+                id: None,
+                text: "use pnpm".into(),
+            },
+        ],
+        1,
+    );
+    let mut upsert_absent = SessionMemory::default();
+    let upsert_absent_result = upsert_absent.apply_upsert(
+        &[
+            MemoryUpsertRequest {
+                id: None,
+                text: " ".into(),
+            },
+            MemoryUpsertRequest {
+                id: None,
+                text: "use pnpm".into(),
+            },
+        ],
+        1,
+    );
+
+    let mut delete_present = memory.clone();
+    let delete_present_result = delete_present.apply_delete(&["m1".to_string(), "m9".to_string()]);
+    let mut delete_absent = memory.clone();
+    let delete_absent_result = delete_absent.apply_delete(&["".to_string()]);
+
+    vec![
+        DriftCase {
+            tool: MEMORY_LIST_TOOL,
+            // memory.list has no optional property, so both states use the same shape.
+            all_optional_present: ok_data(list_data(&memory)),
+            all_optional_absent: ok_data(list_data(&memory)),
+        },
+        DriftCase {
+            tool: MEMORY_UPSERT_TOOL,
+            all_optional_present: ok_data(upsert_data(&upsert_present, upsert_present_result)),
+            all_optional_absent: ok_data(upsert_data(&upsert_absent, upsert_absent_result)),
+        },
+        DriftCase {
+            tool: MEMORY_DELETE_TOOL,
+            all_optional_present: ok_data(delete_data(&delete_present, delete_present_result)),
+            all_optional_absent: ok_data(delete_data(&delete_absent, delete_absent_result)),
+        },
+    ]
 }
 
 fn coded(code: &str, message: impl Into<String>) -> ToolCallResult {
@@ -407,6 +527,7 @@ fn code_surface_only() -> ToolCallResult {
 mod tests {
     use super::*;
     use crate::types::ToolSignalLevel;
+    use serde_json::json;
 
     fn ctx(session_id: &str) -> ToolExecutionContext {
         ToolExecutionContext {

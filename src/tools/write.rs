@@ -9,6 +9,14 @@ use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::ResourceKey;
 use crate::tools::lsp_feedback;
 
+/// Success facts for write. The message property is not a field here: it is
+/// added from the diagnostics that the local LSP and path-risk checks attach.
+#[derive(serde::Serialize)]
+struct WriteData {
+    file: crate::tool::outcome::FileRef,
+    created: bool,
+}
+
 pub struct WriteTool {
     ide: Option<Arc<crate::ide_base::IdeBaseHandle>>,
 }
@@ -36,10 +44,7 @@ impl WriteTool {
             raw_path,
         );
         let file = crate::tool::file_identity::file_ref(located, written);
-        let data = serde_json::json!({
-            "file": file,
-            "created": created,
-        });
+        let data = WriteData { file, created };
         let result = lsp_feedback::maybe_append_local_lsp_errors(
             self.ide.as_ref().map(|ide| ide.engines.as_ref()),
             &resolved.to_string_lossy(),
@@ -355,6 +360,36 @@ fn write_precondition(
 /// Check if the target path is a sensitive system location (workspace-only floor).
 pub fn is_sensitive_write_path(path: &str) -> bool {
     crate::permission::is_sensitive_system_path(path)
+}
+
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    let tool = WriteTool::new();
+    let workspace = tempfile::tempdir().expect("workspace root");
+    let outside = tempfile::tempdir().expect("outside root");
+    let run = |input: Value| {
+        let mut execution = tool.test_execution_context();
+        execution.workspace_root = workspace.path().to_path_buf();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime")
+            .block_on(tool.call_for_execution(input, execution))
+    };
+    vec![DriftCase {
+        tool: "write",
+        // Outside the workspace: file.abs and the path-risk message both appear.
+        all_optional_present: run(serde_json::json!({
+            "path": outside.path().join("outside.txt").to_string_lossy(),
+            "content": "hello",
+        })),
+        // Inside the workspace with no diagnostics: both are absent.
+        all_optional_absent: run(serde_json::json!({
+            "path": "inside.txt",
+            "content": "hello",
+        })),
+    }]
 }
 
 #[cfg(test)]

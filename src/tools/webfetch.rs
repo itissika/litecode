@@ -356,6 +356,28 @@ fn present_webfetch(data: WebFetchData) -> ToolCallResult {
     ToolOutcome::ok(data).into_call_result("")
 }
 
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    vec![DriftCase {
+        tool: "webfetch",
+        all_optional_present: present_webfetch(WebFetchData {
+            url: Some("https://example.com/".into()),
+            status: Some(200),
+            format: Some("markdown".into()),
+            body: Some("# Example".into()),
+            message: "Fetched.".into(),
+        }),
+        all_optional_absent: present_webfetch(WebFetchData {
+            url: None,
+            status: None,
+            format: None,
+            body: None,
+            message: "Fetch failed.".into(),
+        }),
+    }]
+}
+
 impl Tool for WebFetchTool {
     fn name(&self) -> &str {
         "webfetch"

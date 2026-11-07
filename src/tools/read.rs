@@ -403,6 +403,44 @@ fn past_eof_page(
     )
 }
 
+/// Sole success shape for read: one page of lines plus paging guidance.
+#[derive(serde::Serialize)]
+struct ReadData {
+    path: String,
+    start_line: usize,
+    lines: Vec<String>,
+    message: String,
+}
+
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    // read has no optional property, so both states share one shape.
+    vec![DriftCase {
+        tool: "read",
+        all_optional_present: finish_read(
+            "note.txt",
+            1,
+            vec!["alpha".into()],
+            1,
+            1,
+            "",
+            Some("note"),
+            vec![1],
+        ),
+        all_optional_absent: finish_read(
+            "note.txt",
+            1,
+            vec!["alpha".into()],
+            1,
+            1,
+            "",
+            None,
+            Vec::new(),
+        ),
+    }]
+}
+
 fn finish_read(
     path: &str,
     start_line: usize,
@@ -432,12 +470,12 @@ fn finish_read(
         parts.push(capped_note(&line_capped));
     }
     let message = parts.join(" ");
-    crate::tool::outcome::ok_data(serde_json::json!({
-        "path": path,
-        "start_line": start_line,
-        "lines": lines,
-        "message": message,
-    }))
+    crate::tool::outcome::ok_data(ReadData {
+        path: path.to_string(),
+        start_line,
+        lines,
+        message,
+    })
 }
 
 /// `Line 12 truncated to N chars.` / `Lines 3, 9, 40 (+2 more) truncated …`.
