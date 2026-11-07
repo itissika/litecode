@@ -20,6 +20,11 @@ const allSdkPath = path.join(generatedDir, "all-code-sdk.d.ts");
 const allPromptPath = path.join(generatedDir, "all-code-sdk.txt");
 const check = process.argv.includes("--check");
 
+/** Read one SDK source as LF: generated output must not depend on the checkout's EOL. */
+function readSdkSource(file) {
+  return fs.readFileSync(file, "utf8").replace(/\r\n?/g, "\n");
+}
+
 const suiteOrder = ["file", "search", "process", "web", "browser", "lsp", "memory"];
 const project = new Project({ tsConfigFilePath: tsconfigPath });
 const apiSource = project.getSourceFileOrThrow(apiPath);
@@ -251,13 +256,13 @@ function renderTsSdk(entries) {
   const deps = new Set();
   for (const tool of entries) for (const dep of tool.type_deps) deps.add(dep);
   const types = [...deps].sort().map((name) => typeDecls[name]).filter(Boolean).join("\n\n");
-  const preludeDts = fs.readFileSync(preludeDtsPath, "utf8").trim();
-  const libsDts = fs.readFileSync(libsDtsPath, "utf8").trim();
+  const preludeDts = readSdkSource(preludeDtsPath).trim();
+  const libsDts = readSdkSource(libsDtsPath).trim();
   return `${preludeDts}\n\n${libsDts}\n\n${types}\n\n${renderToolsInterface(entries)}\n\ndeclare const tools: Tools;\n`;
 }
 
 function renderPromptSdk(entries) {
-  const preludeMd = fs.readFileSync(preludeMdPath, "utf8").trim();
+  const preludeMd = readSdkSource(preludeMdPath).trim();
   return `${preludeMd}\n\n\`\`\`ts\n${renderTsSdk(entries)}\`\`\`\n`;
 }
 
@@ -274,9 +279,9 @@ const contract = {
 const fragments = {
   version: 1,
   sdk_hash: sdkHash,
-  prose: fs.readFileSync(preludeMdPath, "utf8").trim(),
-  declarations: fs.readFileSync(preludeDtsPath, "utf8").trim(),
-  libs: fs.readFileSync(libsDtsPath, "utf8").trim(),
+  prose: readSdkSource(preludeMdPath).trim(),
+  declarations: readSdkSource(preludeDtsPath).trim(),
+  libs: readSdkSource(libsDtsPath).trim(),
   types: typeDecls,
   tools: Object.fromEntries(
     Object.entries(tools).map(([name, tool]) => [
