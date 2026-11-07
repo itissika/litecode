@@ -252,6 +252,8 @@ type CodeSearchData = {
 type SessionSearchHit = {
   /** Shortest unique session handle, also accepted by `session_id`. */
   session: string;
+  /** Derived bot name for this session, if any. Never a stored session field. */
+  bot_name?: string;
   /** Relative age of the session's last update. */
   age: string;
   /** 1-based rendered transcript line of the hit. */

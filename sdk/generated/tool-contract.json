@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "66ad3bbc627ea3cb0a2e2c9ed5aaf3a52a8904ddb10c66b29344847f870059e3",
+  "sdk_hash": "ff3620ecff65d45a095164c409583fa9521791c71090f3750f254e8602ef17e5",
   "tools": {
     "apply_edits": {
       "path": [
@@ -698,6 +698,10 @@
                 "session": {
                   "type": "string",
                   "description": "Shortest unique session handle, also accepted by `session_id`."
+                },
+                "bot_name": {
+                  "type": "string",
+                  "description": "Derived bot name for this session, if any. Never a stored session field."
                 },
                 "age": {
                   "type": "string",
