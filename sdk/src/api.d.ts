@@ -21,7 +21,7 @@ type Location = {
 };
 
 type DiagnosticItem = {
-  /** Severity label supplied by the language server. */
+  /** Severity name mapped from the LSP number: Error, Warning, Information, Hint; Unknown for anything else. */
   severity: string;
   /** Source file path. */
   path: string;

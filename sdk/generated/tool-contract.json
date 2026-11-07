@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "26bca5122274e3da035123f41305fe9538b66e5ccd8e567e1708eb6f881cfbac",
+  "sdk_hash": "df240fbc7e285355df4c1e3aef0e7d71dacc46861fb630227001ec0d13a5c60d",
   "tools": {
     "apply_edits": {
       "path": [
@@ -1672,7 +1672,7 @@
               "properties": {
                 "severity": {
                   "type": "string",
-                  "description": "Severity label supplied by the language server."
+                  "description": "Severity name mapped from the LSP number: Error, Warning, Information, Hint; Unknown for anything else."
                 },
                 "path": {
                   "type": "string",
