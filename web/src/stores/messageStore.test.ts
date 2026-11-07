@@ -290,6 +290,19 @@ describe("messageStore seq map", () => {
     expect(slice.messages[0]!.seq).toBe(0);
   });
 
+  it("a queued batch carries every bot sender in it, once each", () => {
+    const sid = "s-queue-sources";
+    const bot = { kind: "bot" as const, id: "b1", name: "Sender" };
+    useMessageStore.getState().setPendingQueue(sid, [
+      { text: "one", sources: [bot] },
+      "plain",
+      { text: "two", sources: [bot] },
+    ]);
+    expect(
+      useMessageStore.getState().bySession.get(sid)?.pendingQueue,
+    ).toMatchObject({ joined: "one\n\nplain\n\ntwo", sources: [bot] });
+  });
+
   it("pending user also seals on a plan/execute row (mark replaces the bubble)", () => {
     const sid = "s-pend-plan";
     useMessageStore.getState().pushPendingUser(sid, {

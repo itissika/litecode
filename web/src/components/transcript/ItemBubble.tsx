@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { viewOf } from "../../lib/domView";
+import { useSessionBotIdentity } from "../../lib/botIdentity";
 
 import { isHumanUserRow, isTranscriptMarkRow } from "../../api/adapter";
 import type { HumanRow } from "../../api/types";
@@ -140,6 +141,7 @@ function ItemBubbleImpl({
   onMiniAnimationEnd: () => void;
 }) {
   const sessionSettings = useSessionStore((s) => s.byId.get(sessionId));
+  const botIdentity = useSessionBotIdentity(sessionId);
   const replayFromAnchor = useTurnStore((s) => s.replayFromAnchor);
   const replaying = useTurnStore(
     (s) => s.byId.get(sessionId)?.replaying ?? false,
@@ -225,7 +227,7 @@ function ItemBubbleImpl({
   );
 
   return (
-    <div className={isUser ? "py-4" : "py-2"}>
+    <div className={isUser ? (botMessage ? "py-2" : "py-4") : "py-2"}>
       {isUser ? (
         editing ? (
           <MiniChatPanel
@@ -276,6 +278,7 @@ function ItemBubbleImpl({
                 images: userImages,
                 settings: {
                   primaryId: sessionSettings?.activePrimary ?? "default",
+                  primaryFixed: botIdentity != null,
                   modelId: sessionSettings?.modelId ?? "",
                   thinkingTier: sessionSettings?.thinkingTier ?? "medium",
                   contextMode: sessionSettings?.contextMode ?? "standard",
@@ -286,8 +289,11 @@ function ItemBubbleImpl({
           >
             <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-(--_dk-accent-hover)" />
             <div className="min-w-0 flex-1">
-              {botMessage ? <BotSourceMark sources={botSources} /> : null}
-              {body}
+              {botMessage ? (
+                <BotSourceMark sources={botSources}>{body}</BotSourceMark>
+              ) : (
+                body
+              )}
             </div>
           </div>
         )

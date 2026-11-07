@@ -1,7 +1,7 @@
 import { memo, useLayoutEffect, useMemo, useRef, type CSSProperties, type RefObject } from "react";
 
 import type { HumanRow, PendingMessage } from "../api/types";
-import { botSourcesForRows } from "../lib/botMessage";
+import { botSourcesForRows, isBotSourced } from "../lib/botMessage";
 import { canRevertFiles, projectBubbles, withCompacting } from "../lib/transcriptProjection";
 import { useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
@@ -229,7 +229,14 @@ export const MessageList = memo(function MessageList({
                   <PendingQueueBubble
                     text={pendingQueue.joined}
                     images={pendingQueue.images}
-                    canRecall={!readOnly && pendingMessages.length > 0}
+                    sources={pendingQueue.sources}
+                    canRecall={
+                      !readOnly &&
+                      pendingMessages.length > 0 &&
+                      !pendingMessages.some((message) =>
+                        isBotSourced(message.sources),
+                      )
+                    }
                     onRecall={() => void recallPending?.(sessionId)}
                   />
                 </div>

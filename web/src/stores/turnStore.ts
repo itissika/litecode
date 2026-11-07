@@ -34,6 +34,7 @@ import { EMPTY_TOKEN_BREAKDOWN } from "../api/types";
 import { debugTrace } from "../lib/debugTrace";
 import { reconnectAfterFinish } from "../lib/llmReconnect";
 import { normalizeAskQuestions } from "../lib/askUser";
+import { isBotSourced } from "../lib/botMessage";
 import { useConnectionStore, attachSiblingStores } from "./connectionStore";
 import { appendComposerText } from "./composerDraft";
 import { useMessageStore, type TurnEndNotice } from "./messageStore";
@@ -236,6 +237,12 @@ interface ReplaySettings {
   modelId: string;
   thinkingTier: ThinkingTier;
   contextMode: ContextMode;
+  /**
+   * Bot-owned session: its identity is fixed by the bot record, so there is no
+   * agent to restore and `agent/set-primary` is skipped. Model, tier and context
+   * mode still restore.
+   */
+  primaryFixed?: boolean;
 }
 
 /**
@@ -585,6 +592,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
     recallPendingMessages: async (sessionId) => {
       const list = get().byId.get(sessionId)?.pendingMessages ?? [];
       if (list.length === 0) return false;
+      // A batch with a bot sender is not the person's to take back: the server
+      // keeps the bot's message, and the bubble wears its attribution.
+      if (list.some((message) => isBotSourced(message.sources))) return false;
       // Refill first: the text is the user's, and it must not be able to vanish
       // behind a failed round trip.
       appendComposerText(
@@ -600,8 +610,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       // bubble; the raced items are already durable, so they must not come back.
       const rest = get().byId.get(sessionId)?.pendingMessages ?? [];
       if (rest.length > 0) {
-        useMessageStore
-          .getState()
         useMessageStore.getState().setPendingQueue(sessionId, rest);
       }
       return removed.every(Boolean);
@@ -632,10 +640,12 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         patch(sessionId, { replaying: true });
         try {
           const ws = useConnectionStore.getState();
-          await ws.sendRpc("agent/set-primary", {
-            agent_id: settings.primaryId,
-            session_id: sessionId,
-          });
+          if (!settings.primaryFixed) {
+            await ws.sendRpc("agent/set-primary", {
+              agent_id: settings.primaryId,
+              session_id: sessionId,
+            });
+          }
           await ws.sendRpc("agent/set-model", {
             model_id: settings.modelId,
             session_id: sessionId,

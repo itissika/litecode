@@ -90,7 +90,11 @@ const turnState = {
       compacting: boolean;
       compactingAt: number | null;
       turnPhase: string | null;
-      pendingMessages: { id: string; text: string }[];
+      pendingMessages: {
+        id: string;
+        text: string;
+        sources?: { kind: "bot"; id: string; name: string }[];
+      }[];
     }
   >([
     [
@@ -140,9 +144,17 @@ vi.mock("../stores/editorStore", () => ({
     selector({ openFile: vi.fn() }),
 }));
 
+const sessionRows = vi.hoisted(() => ({
+  rows: [] as Record<string, unknown>[],
+}));
+
 vi.mock("../stores/sessionStore", () => ({
   useSessionStore: (selector: (state: Record<string, unknown>) => unknown) =>
-    selector({ project: "/test/project", byId: new Map() }),
+    selector({
+      project: "/test/project",
+      byId: new Map(),
+      sessions: sessionRows.rows,
+    }),
 }));
 
 const makeScrollRef = () => React.createRef<HTMLDivElement>();
@@ -531,6 +543,34 @@ describe("MessageList queued-batch in-flight bubble", () => {
     expect(turnState.recallPendingMessages).toHaveBeenCalledWith("session-1");
   });
 
+  it("renders a bot-sourced batch as the sender's mark and never recalls it", () => {
+    const sender = { kind: "bot" as const, id: "b1", name: "Sender" };
+    useMessageStore
+      .getState()
+      .setPendingQueue("session-1", [{ text: "from bot", sources: [sender] }]);
+    turnState.byId.get("session-1")!.pendingMessages = [
+      { id: "p1", text: "from bot", sources: [sender] },
+    ];
+    render(
+      <MessageList
+        messages={[]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+
+    expect(screen.getByTestId("bot-message-mark")).toBeTruthy();
+    expect(screen.queryByLabelText("Recall queued message")).toBeNull();
+    const bubble = document.querySelector("[data-pending-queue-bubble]");
+    expect(bubble?.hasAttribute("data-pending-bot")).toBe(true);
+    fireEvent.click(bubble as Element);
+    expect(turnState.recallPendingMessages).not.toHaveBeenCalled();
+  });
+
   it("settles the durable row in when it takes over from the in-flight batch", () => {
     useMessageStore.getState().setPendingQueue("session-1", ["steer"]);
     turnState.byId.get("session-1")!.pendingMessages = [
@@ -842,6 +882,59 @@ describe("MessageList reminder rows", () => {
     );
   });
 
+  it("carries primaryFixed in the edit snapshot only for a bot-owned session", () => {
+    const user: HumanRow = {
+      seq: 14,
+      kind: "item/user",
+      state: "final",
+      body: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "bot-owned ask" }],
+      },
+    };
+    const renderOnce = (onEditAnchor: (anchor: unknown) => void) =>
+      render(
+        <MessageList
+          messages={[user]}
+          loadingHistory={false}
+          canLoadMore={false}
+          onLoadMore={() => {}}
+          isRunning={false}
+          scrollRef={makeScrollRef()}
+          sessionId="session-1"
+          onEditAnchor={onEditAnchor}
+        />,
+      );
+
+    try {
+      sessionRows.rows = [
+        { id: "session-1", bot: { id: "bot-1", name: "架构师bot" } },
+      ];
+      const onBot = vi.fn();
+      const botView = renderOnce(onBot);
+      fireEvent.click(screen.getByText("bot-owned ask"));
+      expect(onBot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          settings: expect.objectContaining({ primaryFixed: true }),
+        }),
+      );
+      botView.unmount();
+
+      sessionRows.rows = [{ id: "session-1", bot: null }];
+      const onOrdinary = vi.fn();
+      renderOnce(onOrdinary);
+      fireEvent.click(screen.getByText("bot-owned ask"));
+      expect(onOrdinary).toHaveBeenCalledWith(
+        expect.objectContaining({
+          settings: expect.objectContaining({ primaryFixed: false }),
+        }),
+      );
+    } finally {
+      sessionRows.rows = [];
+    }
+  });
+
   it("marks a bot message from structured sources and keeps it read-only", () => {
     const onEditAnchor = vi.fn();
     const row: HumanRow = {
@@ -870,20 +963,22 @@ describe("MessageList reminder rows", () => {
       />,
     );
 
+    // Collapsed by default: the sender line replaces the message body.
     expect(screen.getByText("From Sender")).toBeTruthy();
-    expect(screen.getByText("ping")).toBeTruthy();
-    expect(screen.queryByText(/from bot id=/)).toBeNull();
-
-    fireEvent.click(screen.getByText("ping"));
-    expect(onEditAnchor).not.toHaveBeenCalled();
+    expect(screen.queryByText("ping")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /From Sender/ }));
+    expect(screen.getByText("ping")).toBeTruthy();
     expect(screen.getByText("b1")).toBeTruthy();
     expect(
       screen.getByText(
         "Bot message. Read-only: it cannot be edited, reverted, or deleted.",
       ),
     ).toBeTruthy();
+    expect(screen.queryByText(/from bot id=/)).toBeNull();
+
+    fireEvent.click(screen.getByText("ping"));
+    expect(onEditAnchor).not.toHaveBeenCalled();
   });
 
   it("recognizes a legacy bot envelope without structured sources", () => {
@@ -914,7 +1009,12 @@ describe("MessageList reminder rows", () => {
     );
 
     expect(screen.getByText("From Old Bot")).toBeTruthy();
+    expect(screen.queryByText("legacy")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /From Old Bot/ }));
     expect(screen.getByText("legacy")).toBeTruthy();
+    expect(screen.queryByText(/from bot id=/)).toBeNull();
+
     fireEvent.click(screen.getByText("legacy"));
     expect(onEditAnchor).not.toHaveBeenCalled();
   });

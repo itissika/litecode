@@ -24,11 +24,14 @@ import {
 } from "../api/settings";
 import { useSessionStore } from "../stores/sessionStore";
 import { useBotStore } from "../stores/botStore";
+import { useConnectionStore } from "../stores/connectionStore";
+import { useToastStore } from "../stores/toastStore";
 import { usePortalTarget } from "./ui/usePortalTarget";
 import { Select } from "./ui/Select";
 import { AgentProfileFields } from "./agent/AgentProfileFields";
 import { AgentToolsGrid, bindingFor } from "./agent/AgentToolsGrid";
 import { FieldLabel, TextInput } from "./ui/FormField";
+import { ModelSwitcher } from "./ModelSwitcher";
 import i18n from "../i18n";
 
 export type BotDialogMode =
@@ -97,6 +100,21 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
   const [error, setError] = useState<string | null>(null);
 
   const busy = editing ? isBusy(editing, sessions) : false;
+  // The bot record has no model field: the session owns it. Read the listed
+  // row first and prefer the live snapshot once that session is open.
+  const listedSessionModel = editing
+    ? (sessions.find((item) => item.id === editing.session_id)?.model_id ?? null)
+    : null;
+  const liveSessionModel = useSessionStore((s) =>
+    editing ? (s.byId.get(editing.session_id)?.modelId ?? null) : null,
+  );
+  const sessionModel = liveSessionModel ?? listedSessionModel;
+  // Create has no session yet, so the picker lives in a local draft. Edit uses
+  // the same draft but starts empty ("follow the session") and only sends a
+  // change on Save, keeping Cancel side-effect free.
+  const [modelDraft, setModelDraft] = useState<string | undefined>();
+  const modelId = modelDraft ?? sessionModel;
+  const modelChanged = modelDraft !== undefined && modelDraft !== sessionModel;
   const agents = useMemo(() => {
     if (primaryAgents.length > 0) return primaryAgents;
     return activePrimary ? [{ id: activePrimary, description: "" }] : [];
@@ -181,6 +199,10 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
+      // An open dropdown owns Escape: its window-level listener closes the
+      // menu. Closing the whole dialog here would skip that layer.
+      const doc = panelRef.current?.ownerDocument ?? document;
+      if (doc.querySelector("[data-dropdown-panel]")) return;
       event.preventDefault();
       onClose();
       return;
@@ -227,11 +249,29 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
         return;
       }
       const bot = await createBot(trimmed, description.trim(), body);
-      setSaving(false);
       if (!bot) {
+        setSaving(false);
         setError(i18n.t("bot.createFailed"));
         return;
       }
+      // `bot/create` cannot carry a model; the session is created with its
+      // seeded default. Apply the create-time draft as the first session knob.
+      if (modelDraft && bot.session_id) {
+        try {
+          await useConnectionStore.getState().sendRpc("agent/set-model", {
+            session_id: bot.session_id,
+            model_id: modelDraft,
+          });
+        } catch (reason) {
+          useToastStore.getState().showToast(
+            `${i18n.t("bot.modelCreateFailed")} ${
+              reason instanceof Error ? reason.message : ""
+            }`.trim(),
+            "error",
+          );
+        }
+      }
+      setSaving(false);
       onCreated?.(bot);
       onClose();
       return;
@@ -243,11 +283,30 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
       description: description.trim(),
       ...(busy ? {} : { body }),
     });
-    setSaving(false);
     if (!updated) {
+      setSaving(false);
       setError(i18n.t("bot.updateFailed"));
       return;
     }
+    // Same session knob as the composer. The draft is applied only after the
+    // identity update succeeds, so a failed rename does not move the model.
+    if (modelChanged && modelDraft && editing.session_id) {
+      try {
+        await useConnectionStore.getState().sendRpc("agent/set-model", {
+          session_id: editing.session_id,
+          model_id: modelDraft,
+        });
+      } catch (reason) {
+        setSaving(false);
+        setError(
+          `${i18n.t("bot.modelUpdateFailed")} ${
+            reason instanceof Error ? reason.message : ""
+          }`.trim(),
+        );
+        return;
+      }
+    }
+    setSaving(false);
     onClose();
   };
 
@@ -385,6 +444,23 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
                         </div>
                       </div>
                     )}
+                  </div>
+                </section>
+
+                <section className="space-y-2">
+                  <h3 className="settings-section-title">
+                    {i18n.t("bot.model")}
+                  </h3>
+                  <div className="settings-card space-y-2 p-3">
+                    <ModelSwitcher
+                      variant="field"
+                      modelId={modelId}
+                      onChange={setModelDraft}
+                      disabled={busy}
+                    />
+                    <p className="settings-field-hint">
+                      {i18n.t("bot.modelHint")}
+                    </p>
                   </div>
                 </section>
 

@@ -22,6 +22,8 @@ export interface MiniChatInputSettings {
   modelId: string;
   thinkingTier: ThinkingTier;
   contextMode: ContextMode;
+  /** Bot-owned session: replay must not try to restore its primary. */
+  primaryFixed?: boolean;
 }
 
 export function MiniChatInput({

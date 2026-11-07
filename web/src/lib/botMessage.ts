@@ -33,6 +33,13 @@ export function botSourcesForRows(rows: readonly HumanRow[]): MessageSource[] {
   return [];
 }
 
+/** A queue entry or row is bot-attributed once any bot sender is attached. */
+export function isBotSourced(
+  sources: readonly MessageSource[] | null | undefined,
+): boolean {
+  return (sources?.length ?? 0) > 0;
+}
+
 /** Remove the transport envelope from what the human reads. */
 export function stripBotEnvelope(text: string): string {
   return text.replace(LEGACY_BOT_LINE, "");

@@ -145,6 +145,30 @@ describe("turnStore convergence", () => {
     expect(useTurnStore.getState().byId.get(sessionId)?.replaying).toBe(false);
   });
 
+  it("skips agent/set-primary for a bot-owned session but still restores its settings", async () => {
+    const sessionId = "s-replay-bot";
+    const sendRpc = vi.fn(async (_method: string) => ({}));
+    useConnectionStore.setState({ sendRpc } as never);
+
+    await expect(
+      useTurnStore.getState().replayFromAnchor(sessionId, 2, "replacement", {
+        primaryId: "01BOTOWNEDID",
+        modelId: "model-1",
+        thinkingTier: "high",
+        contextMode: "max",
+        primaryFixed: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(sendRpc.mock.calls.map(([method]) => method)).toEqual([
+      "agent/set-model",
+      "agent/set-thinking-tier",
+      "agent/set-context-mode",
+      "session/revert-to-user-anchor",
+      "agent/run",
+    ]);
+  });
+
   it("reverts a live turn through the server instead of cancelling first", async () => {
     const sessionId = "s-replay-live";
     const sendRpc = vi.fn(async (_method: string) => ({}));
@@ -1808,6 +1832,38 @@ describe("turnStore queued (pending) messages", () => {
       useTurnStore.getState().recallPendingMessages(sessionId),
     ).resolves.toBe(false);
     expect(sendRpc).not.toHaveBeenCalled();
+  });
+
+  it("does not recall a batch that holds a bot sender", async () => {
+    const sessionId = "s-pending-bot";
+    const sendRpc = vi.fn(async () => ({ removed: true, pending_messages: [] }));
+    useConnectionStore.setState({ sendRpc } as never);
+    const recalled: string[] = [];
+    const unsubscribe = subscribeComposerAppend((target, text) => {
+      if (target === sessionId) recalled.push(text);
+    });
+    useTurnStore.getState().applyPendingMessages(sessionId, [
+      {
+        id: "p1",
+        text: "from bot",
+        sources: [{ kind: "bot", id: "b1", name: "Sender" }],
+      },
+      { id: "p2", text: "mine" },
+    ]);
+
+    await expect(
+      useTurnStore.getState().recallPendingMessages(sessionId),
+    ).resolves.toBe(false);
+    unsubscribe();
+
+    expect(recalled).toEqual([]);
+    expect(sendRpc).not.toHaveBeenCalled();
+    expect(
+      useTurnStore
+        .getState()
+        .byId.get(sessionId)
+        ?.pendingMessages.map((message) => message.id),
+    ).toEqual(["p1", "p2"]);
   });
 
   it("recall hands the whole batch back and clears the bubble", async () => {

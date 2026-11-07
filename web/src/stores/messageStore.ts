@@ -13,6 +13,7 @@ import type {
   BufferLoaded,
   HumanRow,
   Item,
+  MessageSource,
   SubagentBindingState,
   SubagentBound,
   WireBufferEvent,
@@ -43,6 +44,8 @@ export interface PendingQueueBubble {
   joined: string;
   /** Image refs concatenated in queue order. */
   images: string[];
+  /** Bot senders across the batch, once each. Non-empty: bot-attributed. */
+  sources: MessageSource[];
 }
 
 interface MessageSlice {
@@ -171,20 +174,35 @@ function sameImageList(images: string[], landed: Item | null): boolean {
   return images.join("\n") === (landed ? userImageRefs(landed).join("\n") : "");
 }
 
-function queueEntries(
-  batch: Array<string | { text: string; images?: string[] }>,
-): { texts: string[]; images: string[] } {
+/** One queued entry: a bare string, or text with its images and bot senders. */
+type QueueEntry = {
+  text: string;
+  images?: string[];
+  sources?: MessageSource[];
+};
+
+function queueEntries(batch: Array<string | QueueEntry>): {
+  texts: string[];
+  images: string[];
+  sources: MessageSource[];
+} {
   const texts: string[] = [];
   const images: string[] = [];
+  const sources: MessageSource[] = [];
   for (const entry of batch) {
     if (typeof entry === "string") {
       texts.push(entry);
     } else {
       texts.push(entry.text);
       images.push(...(entry.images ?? []));
+      for (const source of entry.sources ?? []) {
+        if (!sources.some((seen) => seen.id === source.id)) {
+          sources.push(source);
+        }
+      }
     }
   }
-  return { texts, images };
+  return { texts, images, sources };
 }
 
 function malformedSeq(ev: unknown): number | undefined {
@@ -313,7 +331,7 @@ interface MessageStore extends MessageState {
    */
   setPendingQueue: (
     sessionId: string,
-    batch: Array<string | { text: string; images?: string[] }> | null,
+    batch: Array<string | QueueEntry> | null,
   ) => void;
   /** Called when the settle animation has played (and only then). */
   clearLandedQueueSeq: (sessionId: string) => void;
@@ -495,17 +513,20 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         patch(sessionId, { pendingQueue: null });
         return;
       }
-      const { texts, images } = queueEntries(batch);
+      const { texts, images, sources } = queueEntries(batch);
       const joined = texts.join("\n\n");
+      const sourceIds = (list: readonly MessageSource[]) =>
+        list.map((source) => source.id).join("\n");
       if (
         slice.pendingQueue?.joined === joined &&
-        slice.pendingQueue.images.join("\n") === images.join("\n")
+        slice.pendingQueue.images.join("\n") === images.join("\n") &&
+        sourceIds(slice.pendingQueue.sources) === sourceIds(sources)
       ) {
         return;
       }
       // A new batch is a new arrival: whatever settled before is stale.
       patch(sessionId, {
-        pendingQueue: { texts, joined, images },
+        pendingQueue: { texts, joined, images, sources },
         landedQueueSeq: null,
       });
     },

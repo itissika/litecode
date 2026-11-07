@@ -59,6 +59,13 @@ beforeEach(() => {
         label: "Default",
         context_window: 128000,
       },
+      {
+        id: "main/alpha",
+        api_model_id: "alpha",
+        provider_id: "main",
+        label: "Alpha",
+        context_window: 128000,
+      },
     ],
     sessions: [],
   } as never);
@@ -78,7 +85,9 @@ describe("BotDialog", () => {
     vi.mocked(getAgent).mockResolvedValue(profile());
     vi.mocked(getAvailableTools).mockResolvedValue([]);
     const created = bot({ id: "b-new", name: "New bot" });
-    const sendRpc = vi.fn(async () => ({ bot: created }));
+    const sendRpc = vi.fn(async (_method: string, _params?: unknown) => ({
+      bot: created,
+    }));
     useConnectionStore.setState({ state: "connected", sendRpc } as never);
     const onCreated = vi.fn();
     const onClose = vi.fn();
@@ -107,6 +116,7 @@ describe("BotDialog", () => {
         },
       }),
     );
+    expect(sendRpc.mock.calls.map(([method]) => method)).toEqual(["bot/create"]);
     expect(onCreated).toHaveBeenCalledWith(created);
     expect(onClose).toHaveBeenCalled();
   });
@@ -152,6 +162,119 @@ describe("BotDialog", () => {
         }),
       ),
     );
+    expect(sendRpc.mock.calls.map(([method]) => method)).toEqual(["bot/update"]);
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("stages the model and applies it to the bot session on save", async () => {
+    vi.mocked(getAvailableTools).mockResolvedValue([]);
+    useSessionStore.setState({
+      sessions: [{ id: "s1", model_id: "main/default" }],
+    } as never);
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method === "bot/update") return { bot: bot({ name: "Renamed" }) };
+      return {};
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+    const onClose = vi.fn();
+
+    render(<BotDialog mode={{ kind: "edit", bot: bot() }} onClose={onClose} />);
+    await screen.findByRole("dialog");
+    await screen.findByLabelText("System prompt");
+    fireEvent.click(screen.getByRole("button", { name: "Default" }));
+    fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(sendRpc).toHaveBeenCalledWith("agent/set-model", {
+        session_id: "s1",
+        model_id: "main/alpha",
+      }),
+    );
+    expect(sendRpc.mock.calls.map(([method]) => method)).toEqual([
+      "bot/update",
+      "agent/set-model",
+    ]);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("applies a create-time model to the new bot session", async () => {
+    vi.mocked(getAgent).mockResolvedValue(profile());
+    vi.mocked(getAvailableTools).mockResolvedValue([]);
+    const created = bot({ id: "b-new", name: "New bot", session_id: "s-new" });
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method === "bot/create") return { bot: created };
+      return {};
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+    const onCreated = vi.fn();
+    const onClose = vi.fn();
+
+    render(
+      <BotDialog
+        mode={{ kind: "create" }}
+        onClose={onClose}
+        onCreated={onCreated}
+      />,
+    );
+    await screen.findByRole("dialog");
+    fireEvent.change(screen.getByLabelText("Bot name"), {
+      target: { value: "New bot" },
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText("System prompt")).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Select model" }));
+    fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create bot" }));
+
+    await waitFor(() =>
+      expect(sendRpc).toHaveBeenCalledWith("agent/set-model", {
+        session_id: "s-new",
+        model_id: "main/alpha",
+      }),
+    );
+    expect(sendRpc.mock.calls.map(([method]) => method)).toEqual([
+      "bot/create",
+      "agent/set-model",
+    ]);
+    expect(onCreated).toHaveBeenCalledWith(created);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("disables the model picker while the bot is running", async () => {
+    vi.mocked(getAvailableTools).mockResolvedValue([]);
+    useSessionStore.setState({
+      sessions: [{ id: "s1", model_id: "main/default", running: true }],
+    } as never);
+
+    render(<BotDialog mode={{ kind: "edit", bot: bot() }} onClose={vi.fn()} />);
+    await screen.findByRole("dialog");
+    await screen.findByLabelText("System prompt");
+    expect(
+      (screen.getByRole("button", { name: "Default" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  it("lets Escape close the model menu without closing the dialog", async () => {
+    vi.mocked(getAvailableTools).mockResolvedValue([]);
+    useSessionStore.setState({
+      sessions: [{ id: "s1", model_id: "main/default" }],
+    } as never);
+
+    render(<BotDialog mode={{ kind: "edit", bot: bot() }} onClose={vi.fn()} />);
+    await screen.findByRole("dialog");
+    await screen.findByLabelText("System prompt");
+    const trigger = screen.getByRole("button", { name: "Default" });
+    fireEvent.click(trigger);
+    expect(document.querySelector("[data-dropdown-panel]")).toBeTruthy();
+
+    fireEvent.keyDown(trigger, { key: "Escape" });
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    await waitFor(() =>
+      expect(document.querySelector("[data-dropdown-panel]")).toBeNull(),
+    );
   });
 });
