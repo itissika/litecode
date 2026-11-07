@@ -1927,17 +1927,24 @@ impl SessionManager {
     }
 
     /// Remove one queued message by id. Idempotent: `false` when the id was
-    /// already consumed or never existed.
+    /// already consumed or never existed. A bot-sourced entry is never removed
+    /// here: a bot's message is consumed by the turn, not withdrawn by a person.
     pub fn remove_pending_message(&self, session_id: &str, id: &str) -> bool {
         let mut records = self.records.lock().unwrap();
         let Some(record) = records.get_mut(session_id) else {
             return false;
         };
-        let before = record.pending_messages.len();
-        record.pending_messages.retain(|message| message.id != id);
-        if record.pending_messages.len() == before {
+        let Some(index) = record
+            .pending_messages
+            .iter()
+            .position(|message| message.id == id)
+        else {
+            return false;
+        };
+        if !record.pending_messages[index].sources.is_empty() {
             return false;
         }
+        record.pending_messages.remove(index);
         emit_pending_messages_locked(record);
         true
     }
@@ -5454,6 +5461,31 @@ mod pending_message_tests {
             Arc::new(TurnGuard::new()),
             String::new(),
         ))
+    }
+
+    #[tokio::test]
+    async fn bot_queued_message_is_not_withdrawable_by_a_person() {
+        let mgr = mgr();
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        let bot = mgr
+            .enqueue_user_input(
+                &sid,
+                crate::types::UserInput {
+                    text: "from the bot".to_string(),
+                    images: Vec::new(),
+                    sources: vec![crate::types::MessageSource::bot("b1", "Sender")],
+                },
+            )
+            .unwrap();
+        let mine = mgr.enqueue_pending_message(&sid, "mine").unwrap();
+
+        assert!(!mgr.remove_pending_message(&sid, &bot.id));
+        assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 2);
+
+        assert!(mgr.remove_pending_message(&sid, &mine.id));
+        let left = mgr.pending_messages_snapshot(&sid);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, bot.id);
     }
 
     #[tokio::test]
