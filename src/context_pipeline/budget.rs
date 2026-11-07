@@ -137,15 +137,6 @@ impl BudgetPolicy {
         self
     }
 
-    /// Compact LLM `max_output_tokens` for this window and keep-recent split.
-    pub fn compact_output_tokens(&self, configured: u32) -> u32 {
-        crate::context_pipeline::keep_recent::compact_output_tokens(
-            self.budget_limit(),
-            self.keep_recent_tokens,
-            configured,
-        )
-    }
-
     pub fn budget_limit(&self) -> usize {
         if self.context_window > 0 {
             self.context_window

@@ -1321,7 +1321,6 @@ impl<T> OptionalExt<T> for rusqlite::Result<T> {
     }
 }
 
-
 #[cfg(test)]
 mod workspace_usage_tests {
     use std::collections::BTreeMap;
@@ -1349,11 +1348,12 @@ mod workspace_usage_tests {
 
     fn manager_fixture() -> (TempDir, SessionManager, String) {
         let dir = TempDir::new().expect("tempdir");
-        let db_path = dir.path().join("sessions.db").to_string_lossy().into_owned();
-        let manager = SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            db_path.clone(),
-        );
+        let db_path = dir
+            .path()
+            .join("sessions.db")
+            .to_string_lossy()
+            .into_owned();
+        let manager = SessionManager::new_for_test(Arc::new(TurnGuard::new()), db_path.clone());
         (dir, manager, db_path)
     }
 
@@ -1387,10 +1387,7 @@ mod workspace_usage_tests {
             .data()
             .working_set_blocking(session_id)
             .expect("working set");
-        let expected_from = rows
-            .first()
-            .and_then(|row| row.log_seq)
-            .expect("seed row");
+        let expected_from = rows.first().and_then(|row| row.log_seq).expect("seed row");
         manager
             .mutate_blocking(SessionMutation::Compact {
                 session_id: session_id.to_string(),
@@ -1425,15 +1422,14 @@ mod workspace_usage_tests {
 
         let conn = open_readonly(Path::new(&db_path)).expect("read connection");
         let workspace = workspace_usage(&conn).expect("workspace usage");
-        assert_eq!(workspace.requests, 5, "three requests plus two summary calls");
+        assert_eq!(
+            workspace.requests, 5,
+            "three requests plus two summary calls"
+        );
         assert_eq!(workspace.totals.prompt_tokens, 860);
         assert_eq!(workspace.totals.completion_tokens, 40);
         assert_eq!(
-            workspace
-                .providers
-                .iter()
-                .map(provider_prompt)
-                .sum::<u64>(),
+            workspace.providers.iter().map(provider_prompt).sum::<u64>(),
             workspace.totals.prompt_tokens,
             "named and unknown provider buckets must reconcile with the header"
         );

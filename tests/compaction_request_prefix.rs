@@ -141,9 +141,10 @@ fn assert_same_main_envelope(main: &CapturedLlmRequest, compact: &CapturedLlmReq
         "compaction must inherit the main request thinking exactly"
     );
     assert_eq!(
-        compact.max_output_tokens, 8192,
-        "summary_cap must clamp to the model max_output"
+        compact.max_output_tokens, main.max_output_tokens,
+        "compaction must send the main binding max_output"
     );
+    assert_eq!(main.max_output_tokens, 8192);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

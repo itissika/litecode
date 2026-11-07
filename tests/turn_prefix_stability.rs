@@ -677,7 +677,10 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
     let baseline = ProviderPromptBaseline::default();
     baseline.record(8_500, u64::MAX);
     let mut request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
-    let max_output_tokens = request.max_output_tokens;
+    // This synthetic 10k window cannot carry the fixture model's 8192-output
+    // reserve (10k - 8k leaves no prompt). The compression logic is not what
+    // this test covers; use a small binding output so the input still fits.
+    let max_output_tokens = 1_024;
     common::set_compaction_request_capacity(
         &mut request,
         pipeline.context_window(),

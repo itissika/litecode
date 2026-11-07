@@ -3689,8 +3689,8 @@ impl Session {
             )));
         }
 
-        let (op, source_seqs) = replace_op_for_keep(&projection.surface, kept_from_seq)
-            .map_err(|error| {
+        let (op, source_seqs) =
+            replace_op_for_keep(&projection.surface, kept_from_seq).map_err(|error| {
                 LitecodeError::CompactionSurfaceChanged(format!(
                     "kept_from={kept_from_seq:?} is no longer a valid cut: {error}"
                 ))
@@ -4451,7 +4451,10 @@ mod tests {
             .commit_turn_delta_with_orphan_cleanup(&mut rows, &[], 3, "t1", &[])
             .unwrap();
         assert!(matches!(outcome, CommitDeltaOutcome::Discarded));
-        assert!(rows.is_empty(), "discard must reload the durable working set");
+        assert!(
+            rows.is_empty(),
+            "discard must reload the durable working set"
+        );
         let events = session.load_events().unwrap();
         assert!(
             events
@@ -4582,9 +4585,7 @@ mod tests {
         // while the summary is in flight must survive the checkpoint.
         session.insert_detail_rows(&[user_text("c")]).unwrap();
         let checkpoint = session
-            .apply_compact_checkpoint_checked(
-                "sum", Some(1), 10, None, 0, None, None, None,
-            )
+            .apply_compact_checkpoint_checked("sum", Some(1), 10, None, 0, None, None, None)
             .unwrap();
         let rows = session.load_working_set().unwrap();
         assert_eq!(rows[0].log_seq, Some(checkpoint as u64));
@@ -4596,14 +4597,9 @@ mod tests {
         // The same plan is now stale: its leading checkpoint and shadow start
         // both moved. This is a surface change, not a user cancel.
         let error = session
-            .apply_compact_checkpoint_checked(
-                "stale", Some(1), 10, None, 0, None, None, None,
-            )
+            .apply_compact_checkpoint_checked("stale", Some(1), 10, None, 0, None, None, None)
             .unwrap_err();
-        assert!(matches!(
-            error,
-            LitecodeError::CompactionSurfaceChanged(_)
-        ));
+        assert!(matches!(error, LitecodeError::CompactionSurfaceChanged(_)));
 
         // A cut that no longer exists is the same kind of failure.
         let error = session
@@ -4618,9 +4614,6 @@ mod tests {
                 None,
             )
             .unwrap_err();
-        assert!(matches!(
-            error,
-            LitecodeError::CompactionSurfaceChanged(_)
-        ));
+        assert!(matches!(error, LitecodeError::CompactionSurfaceChanged(_)));
     }
 }

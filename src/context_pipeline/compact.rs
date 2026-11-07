@@ -130,7 +130,11 @@ pub struct CompactionPlan {
     pub cut: usize,
     pub kept_from_seq: Seq,
     pub prior_checkpoint_seq: Option<Seq>,
-    pub summary_cap: u32,
+    /// Main binding `max_output`; the compact request and its input reserve use
+    /// this exact value.
+    pub output_cap: u32,
+    /// Quality ceiling for the final summary text only. Never a request cap.
+    pub summary_text_cap: u32,
     /// Tail seq the loop had when this cut froze. A reader draws the checkpoint
     /// here so everything the turn writes afterwards stays below it. Display
     /// only: the shadow range is still `kept_from_seq`.
@@ -227,7 +231,7 @@ fn build_summary_plan_from_input(
     input: &CompactionInput,
     budget: &BudgetPolicy,
     request: &CompactionRequestContext,
-    max_tokens: u32,
+    summary_text_cap: u32,
     trigger: CompactionTrigger,
 ) -> Option<CompactionPlan> {
     // Overflow sees the full surface + tail, but a checkpoint can only end on a
@@ -247,16 +251,14 @@ fn build_summary_plan_from_input(
     }
     .min(max_cut);
     let kept_from_seq = input.rows.get(cut).and_then(|row| row.log_seq)?;
-    let summary_cap = budget
-        .compact_output_tokens(max_tokens)
-        .min(request.max_output_tokens);
     Some(CompactionPlan {
         trigger,
         prefix_len: input.rows.len(),
         cut,
         kept_from_seq,
         prior_checkpoint_seq: input.prior_checkpoint_seq,
-        summary_cap,
+        output_cap: request.max_output_tokens,
+        summary_text_cap,
         at: input.last_seq,
     })
 }
@@ -267,7 +269,7 @@ fn select_compaction_method(
     input: &CompactionInput,
     budget: &BudgetPolicy,
     request: &CompactionRequestContext,
-    max_tokens: u32,
+    summary_text_cap: u32,
     trigger: CompactionTrigger,
     data_root: &std::path::Path,
 ) -> Result<Option<CompactionSelection>> {
@@ -299,7 +301,8 @@ fn select_compaction_method(
             }));
         }
     }
-    let Some(plan) = build_summary_plan_from_input(input, budget, request, max_tokens, trigger)
+    let Some(plan) =
+        build_summary_plan_from_input(input, budget, request, summary_text_cap, trigger)
     else {
         return Ok(None);
     };
@@ -610,7 +613,8 @@ async fn prepare_summary_commit(
     );
     let (summary, _review, summary_attempts) = match CompactPolicy::first_pass_compaction(
         request,
-        plan.summary_cap,
+        plan.output_cap,
+        plan.summary_text_cap,
         plan.cut,
         &input.rows,
         sessions,
@@ -940,15 +944,21 @@ async fn compact_input(
     cancel: &CancellationToken,
     trigger: CompactionTrigger,
     operation_id: &str,
-    max_tokens: u32,
+    summary_text_cap: u32,
     data_root: &std::path::Path,
     max_attempts: u8,
 ) -> Result<Option<CommittedCompaction>> {
     if cancel.is_cancelled() {
         return Err(LitecodeError::Canceled);
     }
-    let Some(selection) =
-        select_compaction_method(&input, budget, request, max_tokens, trigger, data_root)?
+    let Some(selection) = select_compaction_method(
+        &input,
+        budget,
+        request,
+        summary_text_cap,
+        trigger,
+        data_root,
+    )?
     else {
         return Ok(None);
     };
@@ -1275,6 +1285,10 @@ pub enum SummaryFailure {
         summary_tokens: usize,
         source_tokens: usize,
     },
+    TooLarge {
+        summary_tokens: usize,
+        cap_tokens: usize,
+    },
 }
 
 /// One total-attempt budget: first try plus one identical retry.
@@ -1299,6 +1313,16 @@ pub struct SummaryAcceptance;
 
 impl SummaryAcceptance {
     pub fn review(artifact: &SummaryArtifact, source_items: &[Item]) -> SummaryReview {
+        Self::review_with_text_cap(artifact, source_items, u32::MAX)
+    }
+
+    /// `text_cap` bounds the final summary text only; it is never a model
+    /// request `max_output_tokens`.
+    pub fn review_with_text_cap(
+        artifact: &SummaryArtifact,
+        source_items: &[Item],
+        text_cap: u32,
+    ) -> SummaryReview {
         let text = artifact.text.trim();
         let source_tokens = crate::session::estimate::compute_token_estimate(source_items).max(1);
         let summary_tokens = if text.is_empty() {
@@ -1323,6 +1347,12 @@ impl SummaryAcceptance {
             failures.push(SummaryFailure::NotSmaller {
                 summary_tokens,
                 source_tokens,
+            });
+        }
+        if summary_tokens > text_cap as usize {
+            failures.push(SummaryFailure::TooLarge {
+                summary_tokens,
+                cap_tokens: text_cap as usize,
             });
         }
 
@@ -1691,7 +1721,7 @@ impl CompactPolicy {
         sessions: &SessionManager,
         session_id: &str,
         request: &CompactionRequestContext,
-        max_tokens: u32,
+        summary_text_cap: u32,
         rows: &[WorkingRow],
     ) -> Result<Option<CompactionPlan>> {
         let in_progress = read_compaction_state_result(sessions, session_id)?.in_progress;
@@ -1702,22 +1732,24 @@ impl CompactPolicy {
             &input,
             budget,
             request,
-            max_tokens,
+            summary_text_cap,
             CompactionTrigger::Auto,
         ))
     }
 
     /// Compatibility/test entry for one sealed-prefix compaction.
     ///
-    /// Production episodes call the same `compact_input` core directly; this
-    /// wrapper only reattaches unpersisted test rows after the common rebuild.
+    /// `summary_text_cap` bounds accepted summary text only; the model request
+    /// cap always comes from `request.max_output_tokens`. Production episodes
+    /// call the same `compact_input` core directly; this wrapper only reattaches
+    /// unpersisted test rows after the common rebuild.
     #[allow(clippy::too_many_arguments)]
     pub async fn compact_transcript(
         budget: &BudgetPolicy,
         sessions: &SessionManager,
         session_id: &str,
         request: &CompactionRequestContext,
-        max_tokens: u32,
+        summary_text_cap: u32,
         prompt_baseline: &ProviderPromptBaseline,
         rows: &mut Vec<WorkingRow>,
         cancel: &CancellationToken,
@@ -1747,7 +1779,7 @@ impl CompactPolicy {
             cancel,
             trigger,
             &operation_id,
-            max_tokens,
+            summary_text_cap,
             data_root,
             max_attempts,
         )
@@ -1894,7 +1926,8 @@ impl CompactPolicy {
 
     async fn first_pass_compaction(
         request: &CompactionRequestContext,
-        max_tokens: u32,
+        output_cap: u32,
+        summary_text_cap: u32,
         cut: usize,
         rows: &[WorkingRow],
         sessions: &SessionManager,
@@ -1913,7 +1946,7 @@ impl CompactPolicy {
         // projected exactly as the main view would project it. `kept` stays in
         // the working set and never enters this request.
         let (prefix, omitted_history) =
-            match build_compaction_input(request, sessions, rows, cut, max_tokens) {
+            match build_compaction_input(request, sessions, rows, cut, output_cap) {
                 Ok(prefix) => prefix,
                 Err(error) => {
                     return Err(SummaryPassFailure { error, attempts: 0 });
@@ -1925,7 +1958,7 @@ impl CompactPolicy {
             let artifact = match Self::call_llm_compact_once_with_timeout(
                 request,
                 prefix.clone(),
-                max_tokens,
+                output_cap,
                 cancel,
                 COMPACT_REQUEST_TIMEOUT,
             )
@@ -1953,7 +1986,8 @@ impl CompactPolicy {
                 });
             }
 
-            let review = SummaryAcceptance::review(&artifact, &prefix);
+            let review =
+                SummaryAcceptance::review_with_text_cap(&artifact, &prefix, summary_text_cap);
             if review.accepted {
                 let mut artifact = artifact;
                 if omitted_history {
@@ -2009,7 +2043,7 @@ impl CompactPolicy {
     async fn call_llm_compact_once_with_timeout(
         request: &CompactionRequestContext,
         input: Vec<Item>,
-        max_tokens: u32,
+        output_cap: u32,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<SummaryArtifact> {
@@ -2019,7 +2053,7 @@ impl CompactPolicy {
 
         let session_id = request.session_id.as_str();
         let model = request.model.as_str();
-        let provider_request = request.build_model_request(input, max_tokens);
+        let provider_request = request.build_model_request(input, output_cap);
         let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<SummaryUsage>));
         let terminal_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<SummaryFinish>));
         let usage_cb = std::sync::Arc::clone(&usage_slot);
@@ -2126,7 +2160,7 @@ fn build_compaction_input(
     sessions: &SessionManager,
     rows: &[WorkingRow],
     cut: usize,
-    summary_cap: u32,
+    output_cap: u32,
 ) -> Result<(Vec<Item>, bool)> {
     let (turn_view, source_seqs, inherited_before_checkpoint, replacement_media) =
         if let Some(view) = CompactedView::from_working_rows(rows) {
@@ -2168,9 +2202,9 @@ fn build_compaction_input(
     // Keep its input under 80% of that limit, dropping the oldest whole user
     // turns first. Tool calls/outputs and assistant segments are never split
     // because the cut only lands on user-message boundaries.
-    let summary_cap = summary_cap as usize;
+    let output_cap = output_cap as usize;
     let fixed = ContextEnvelope::from_compaction_request(request)
-        .with_output_reserve(summary_cap)
+        .with_output_reserve(output_cap)
         .fixed_prompt_tokens()
         .saturating_add(crate::session::estimate::count_text_tokens(
             crate::config::global_db::COMPACTION_INSTRUCTION,
@@ -2178,7 +2212,7 @@ fn build_compaction_input(
     let physical = request
         .target
         .context_window_max
-        .saturating_sub(summary_cap)
+        .saturating_sub(output_cap)
         .max(1);
     let target = (physical.saturating_mul(4) / 5).max(1);
     let mut omitted = false;
@@ -3003,7 +3037,8 @@ max_output = 8192
             assistant_text("answer"),
         ];
 
-        let req = request.build_model_request(prefix.clone(), 20_480);
+        let output_cap = request.max_output_tokens;
+        let req = request.build_model_request(prefix.clone(), output_cap);
         assert_eq!(req.model, request.model);
         assert_eq!(req.instructions, request.instructions);
         assert_eq!(req.tools.len(), tools.len());
@@ -3016,7 +3051,7 @@ max_output = 8192
             item_text_preview(req.input.last().expect("instruction")),
             crate::llm::COMPACTION_INSTRUCTION
         );
-        assert_eq!(req.max_output_tokens, 20_480);
+        assert_eq!(req.max_output_tokens, output_cap);
         assert_eq!(req.thinking, request.thinking);
         assert_eq!(req.purpose, RequestPurpose::Compaction);
         assert_eq!(req.session_id.as_deref(), Some("s1"));
@@ -3471,6 +3506,55 @@ max_output = 8192
             crate::llm::COMPACTION_INSTRUCTION,
             "retry must reuse the exact same instruction"
         );
+    }
+
+    #[tokio::test]
+    async fn compact_request_uses_main_binding_max_output_and_reserves_it() {
+        let (sessions, sid, _) = open_seeded();
+        let huge: Vec<Item> = (0..3)
+            .map(|i| user_text(format!("huge-{i}-{}", "x".repeat(40_000))))
+            .collect();
+        sessions
+            .insert_detail_rows(&sid, &huge)
+            .expect("append huge history");
+        let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+
+        let provider = Arc::new(RetrySummaryProvider::new());
+        let mut request = compact_context(provider.clone());
+        // Main binding: 128k output on a 150k physical window. The old fixed
+        // 20,480 cap would leave a much larger prompt and break the sum below.
+        set_request_window(&mut request, 150_000, 128_000);
+        CompactPolicy::compact_transcript(
+            &BudgetPolicy::new(150_000).with_keep_recent_tokens(1),
+            &sessions,
+            &sid,
+            &request,
+            crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
+            &ProviderPromptBaseline::default(),
+            &mut rows,
+            &CancellationToken::new(),
+            CompactionTrigger::Auto,
+            Some("main-output-cap"),
+            &sessions.data_root_path(),
+            2,
+        )
+        .await
+        .expect("summary retry commits")
+        .expect("compaction commits");
+
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2, "one empty summary plus one retry");
+        for req in requests {
+            assert_eq!(
+                req.max_output_tokens, 128_000,
+                "compact must send the main binding max_output, not a fixed cap"
+            );
+            let input_tokens = crate::session::estimate::compute_token_estimate(&req.input);
+            assert!(
+                input_tokens + 128_000 <= 150_000,
+                "input={input_tokens} + output=128000 must fit the physical window"
+            );
+        }
     }
 
     async fn run_rejecting_summary(

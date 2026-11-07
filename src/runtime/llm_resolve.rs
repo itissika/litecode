@@ -33,8 +33,10 @@ impl TurnLlmBinding {
     /// Freeze the main request shape for a compaction call mode.
     ///
     /// The caller supplies the instructions and active tools from the same
-    /// turn; provider/model/target all come from this binding. No hidden
-    /// compaction binding is resolved here or anywhere downstream.
+    /// turn; provider/model/target all come from this binding. The context
+    /// window is the provider's physical ceiling: compaction does not inherit
+    /// the session's product context cap. No hidden compaction binding is
+    /// resolved here or anywhere downstream.
     pub fn compaction_context(
         &self,
         instructions: String,
@@ -45,7 +47,9 @@ impl TurnLlmBinding {
             provider: Arc::clone(&self.provider),
             api_key: self.api_key.clone(),
             model: self.api_model_id.clone(),
-            context_window: self.context_window,
+            // Compaction is its own request shape: it uses the provider's
+            // physical ceiling, not the session's product context cap.
+            context_window: self.model.context_window_max,
             target: Arc::clone(&self.model),
             thinking: crate::platform_knobs::ThinkingSpec::Tier(self.thinking_tier),
             max_output_tokens: self.max_tokens,
@@ -446,4 +450,80 @@ fn truncate_loc(text: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use std::future::Future;
+    use std::path::Path;
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+    use crate::llm::{LlmProvider, ModelRequest};
+    use crate::provider_catalog::ProviderCatalog;
+    use crate::types::{Item, Result, StreamEvents};
+
+    struct NoopProvider;
+
+    impl LlmProvider for NoopProvider {
+        fn endpoint(&self) -> &str {
+            "https://compact.invalid/v1"
+        }
+
+        fn box_clone(&self) -> Box<dyn LlmProvider> {
+            Box::new(Self)
+        }
+
+        fn complete_with_stream_events<'a>(
+            &'a self,
+            _request: &'a ModelRequest,
+            _api_key: &'a str,
+            _on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
+            _cancel: &'a CancellationToken,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    #[test]
+    fn compaction_context_uses_physical_window_and_main_max_output() {
+        let catalog = ProviderCatalog::parse(
+            r#"version = 1
+
+[[providers]]
+id = "p"
+name = "Provider"
+endpoint = "https://compact.invalid/v1"
+endpoint_type = "responses"
+
+[[models]]
+id = "m"
+provider_id = "p"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+"#,
+            Path::new("<compaction-context-test>"),
+        )
+        .expect("catalog");
+        let model = catalog.model("p/m").expect("model").clone();
+        let binding = TurnLlmBinding {
+            provider_id: model.provider_id.clone(),
+            model_ref: model.reference.clone(),
+            api_model_id: model.id.clone(),
+            // Session Standard mode deliberately keeps the product cap.
+            context_window: 256_000,
+            max_tokens: model.max_output,
+            thinking_tier: ThinkingTier::default(),
+            context_mode: ContextMode::Standard,
+            provider: Arc::new(NoopProvider),
+            api_key: "sk-test".into(),
+            model,
+        };
+
+        let compaction = binding.compaction_context("system".into(), Vec::new(), "s1".into());
+        assert_eq!(compaction.context_window, 1_000_000);
+        assert_eq!(compaction.max_output_tokens, 128_000);
+        assert_eq!(binding.context_window, 256_000);
+    }
+}

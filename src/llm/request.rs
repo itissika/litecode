@@ -40,14 +40,16 @@ pub struct CompactionRequestContext {
     pub api_key: String,
     /// Wire model id of the current main binding.
     pub model: String,
-    /// Effective context window of the current main binding.
+    /// Provider physical context ceiling for the compaction call. This is not
+    /// the session's product context cap.
     pub context_window: usize,
     /// Resolved main model, used for the same projection as the main view.
     pub target: Arc<ResolvedModel>,
     /// The main request's thinking intent. Both the inherited prefix replay
     /// and the compaction output-control shape must use this exact value.
     pub thinking: ThinkingSpec,
-    /// The main model's output ceiling. Requested summary caps are clamped to it.
+    /// The main model's output ceiling. The compact request sends exactly this
+    /// value and reserves the same amount on the input side.
     pub max_output_tokens: u32,
     pub instructions: String,
     pub tools: Vec<ToolDef>,

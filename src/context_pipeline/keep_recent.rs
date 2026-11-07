@@ -2,13 +2,14 @@
 //!
 //! Split: output reserve (next completion) comes off the window first; the
 //! remainder is history_budget. Keep-recent takes verbatim items up to
-//! `min(20k, window/4)` inside that budget; compact `max_output_tokens` gets
-//! the leftover. One LLM pass — no second-pass / aggressive rewrite.
+//! `min(20k, window/4)` inside that budget. The compact request separately
+//! reserves the main binding's `max_output`; this module does not size it.
+//! One LLM pass — no second-pass / aggressive rewrite.
 
 use crate::authority::responses::{Item, MessageItem};
 use crate::session::estimate::{autocompact_threshold, item_token_estimate};
 
-pub use super::limits::{COMPACT_MAX_OUTPUT_TOKENS, KEEP_RECENT_CAP};
+pub use super::limits::KEEP_RECENT_CAP;
 
 const OUTPUT_RESERVE_MIN: usize = 2_048;
 const MIN_SUMMARY_TOKENS: usize = 512;
@@ -30,7 +31,6 @@ pub fn output_reserve_tokens(context_window: usize) -> usize {
 }
 
 /// Post-compact history ceiling: under the 80% trigger and after output reserve.
-/// Keep-recent + compact `max_output_tokens` must fit in this.
 pub fn history_budget_tokens(context_window: usize) -> usize {
     let w = window_or_fallback(context_window);
     let threshold = autocompact_threshold(w);
@@ -47,17 +47,6 @@ pub fn default_keep_recent_tokens(context_window: usize) -> usize {
         .min(quarter)
         .min(hist.saturating_sub(MIN_SUMMARY_TOKENS))
         .max(1)
-}
-
-/// Main-model summary output cap: configured `max_tokens`, capped at
-/// [`COMPACT_MAX_OUTPUT_TOKENS`], then clipped to the leftover history budget.
-pub fn compact_output_tokens(context_window: usize, keep_recent: usize, configured: u32) -> u32 {
-    let configured = configured.min(COMPACT_MAX_OUTPUT_TOKENS) as usize;
-    let hist = history_budget_tokens(context_window);
-    let room = hist.saturating_sub(keep_recent).max(1);
-    let lo = MIN_SUMMARY_TOKENS.min(room);
-    let hi = room.max(lo);
-    configured.clamp(lo, hi) as u32
 }
 
 /// Find the cut index so `items[cut..]` is the keep-recent window.
@@ -207,10 +196,10 @@ mod tests {
     }
 
     #[test]
-    fn compact_split_fits_under_history_budget() {
+    fn keep_recent_plus_main_output_reserve_fits_under_history_budget() {
         for window in [8_000usize, 16_000, 32_000, 128_000, 200_000] {
             let keep = default_keep_recent_tokens(window);
-            let out = compact_output_tokens(window, keep, 4096) as usize;
+            let out = output_reserve_tokens(window);
             let hist = history_budget_tokens(window);
             assert!(
                 keep + out <= hist,

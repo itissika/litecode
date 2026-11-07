@@ -13,7 +13,8 @@ pub const MAX_PROMPT_RESERVE_TOKENS: usize = 16_384;
 /// Verbatim recent-window cap retained across compaction.
 pub const KEEP_RECENT_CAP: usize = 20_000;
 
-/// Hard ceiling for the main-model compaction summary call.
+/// Ceiling for the final compaction summary text. This is a quality gate on
+/// the produced text, never the model request's `max_output_tokens`.
 pub const COMPACT_MAX_OUTPUT_TOKENS: u32 = 20_480;
 
 /// Inclusive product floor for user-triggered compaction.
