@@ -324,6 +324,13 @@ fn project_with(
                 items: items.clone(),
             },
         ),
+        InternalEvent::MemoryUpdated { entries } => turn_event_ids(
+            session_id,
+            turn_id,
+            WireEvent::MemoryUpdated {
+                entries: entries.clone(),
+            },
+        ),
         InternalEvent::PlanChanged { active_plan_path } => turn_event_ids(
             session_id,
             turn_id,
@@ -1390,6 +1397,7 @@ pub fn buffer_snapshot(
         max_file_revert_seq: None,
         bash: None,
         todos: Vec::new(),
+        memory: Vec::new(),
         pending_messages: Vec::new(),
         active_plan_path: None,
         llm_reconnect: None,
@@ -1557,6 +1565,7 @@ mod wp186_pending_permissions_tests {
             max_file_revert_seq: None,
             bash: None,
             todos: Vec::new(),
+            memory: Vec::new(),
             pending_messages: Vec::new(),
             active_plan_path: None,
             llm_reconnect: None,
@@ -1568,6 +1577,14 @@ mod wp186_pending_permissions_tests {
     fn snapshot_always_serializes_pending_permissions_even_when_empty() {
         let v = serde_json::to_value(empty_snap()).unwrap();
         let arr = v.get("pending_permissions").expect("field must be present");
+        assert!(arr.is_array());
+        assert_eq!(arr.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn snapshot_always_serializes_memory_even_when_empty() {
+        let v = serde_json::to_value(empty_snap()).unwrap();
+        let arr = v.get("memory").expect("memory field must be present");
         assert!(arr.is_array());
         assert_eq!(arr.as_array().unwrap().len(), 0);
     }

@@ -7,6 +7,7 @@ import type {
   ReactNode,
 } from "react";
 import {
+  BrainIcon,
   CrosshairIcon,
   PlayIcon,
   StrategyIcon,
@@ -15,7 +16,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { normalizeToolFilePath } from "../api/adapter";
-import type { BashJob, HumanRow } from "../api/types";
+import type { BashJob, HumanRow, MemoryEntry } from "../api/types";
 import { readFile } from "../api/workspace";
 import {
   bashCallMetaByCallId,
@@ -41,8 +42,8 @@ type TodoItem = { id: string; content: string; status: TodoItemStatus };
 /** Icon-only capsule width; the expanded capsule receives remaining row space. */
 const CAPSULE_BASE_PX = 36;
 
-/** The four session-mount status families the line surfaces. */
-type CapsuleId = "terminal" | "subagent" | "plan" | "todo";
+/** The five session-mount status families the line surfaces. */
+type CapsuleId = "terminal" | "subagent" | "plan" | "todo" | "memory";
 
 /** Drag floor (px); a content-sized panel shorter than this keeps its own
  *  height as the floor. */
@@ -87,18 +88,20 @@ function isPlanBodyReady(md: string): boolean {
 
 const EMPTY_BASH_JOBS: BashJob[] = [];
 const EMPTY_TODO_ITEMS: TodoItem[] = [];
+const EMPTY_MEMORY_ENTRIES: MemoryEntry[] = [];
 
 /**
  * One resident row of session-mount status capsules (terminal / subagent /
- * plan / todo). All four capsules are always present — no appear/disappear —
+ * plan / todo / memory). All five capsules are always present — no appear/disappear —
  * and keep the same glass at every state (empty capsules are NOT dimmed). In
  * `variant="subagent"` (a child session's panel) the Workers capsule is not
- * rendered — a child cannot spawn children — so the row is three capsules, and
- * the two actions that only a human-owned session may fire (terminal Kill,
- * plan 执行计划) are hidden. Reveal / Open plan stay.
+ * rendered — a child cannot spawn children — and plan/todo/memory belong to
+ * the parent, so only the terminal capsule remains. The two actions that only
+ * a human-owned session may fire (terminal Kill, plan 执行计划) are hidden.
+ * Reveal / Open plan stay.
  *
  * Two-level expansion (user-fixed):
- *  1. Resident: four capsules never unmount; widths are adaptive with only
+ *  1. Resident: five capsules never unmount; widths are adaptive with only
  *     per-state min-widths (collapsed = icon floor, expanded = label floor).
  *  2. Level 1 — horizontal: exactly one capsule is inline-expanded at any
  *     time. The expanded capsule stretches to fill the row (width animated
@@ -188,6 +191,9 @@ export function SessionStatusLine({
   );
   const todoItems = useTurnStore(
     (s) => s.byId.get(sessionId)?.todoItems ?? EMPTY_TODO_ITEMS,
+  );
+  const memoryEntries = useTurnStore(
+    (s) => s.byId.get(sessionId)?.memoryEntries ?? EMPTY_MEMORY_ENTRIES,
   );
   const todoPending = useTurnStore(
     (s) => s.byId.get(sessionId)?.todoPending ?? 0,
@@ -535,6 +541,8 @@ export function SessionStatusLine({
         inProgress={todoInProgress}
         completed={todoCompleted}
       />
+    ) : (openId ?? closingId) === "memory" ? (
+      <MemoryPanelBody entries={memoryEntries} />
     ) : null;
 
   // The panel morphs from the owning capsule: transform-origin x is the
@@ -686,6 +694,31 @@ export function SessionStatusLine({
                 )
               }
               ariaLabel="Session plan"
+            />
+            <Capsule
+              id="memory"
+              open={openId === "memory"}
+              expanded={expandedId === "memory"}
+              onToggle={toggle}
+              onHoverStart={onHoverStart}
+              onHoverEnd={onHoverEnd}
+              icon={<BrainIcon size={14} weight="fill" aria-hidden />}
+              label="Memory"
+              detail={
+                memoryEntries.length > 0 ? (
+                  <span className="truncate">{memoryEntries[0]?.text}</span>
+                ) : (
+                  <span className="italic text-(--_dk-text-disabled)">
+                    No session memory
+                  </span>
+                )
+              }
+              count={memoryEntries.length}
+              ariaLabel={
+                "Session memory, " +
+                memoryEntries.length +
+                (memoryEntries.length === 1 ? " entry" : " entries")
+              }
             />
           </>
         )}
@@ -1175,6 +1208,35 @@ function TodoPanelBody({
             ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Read-only session memory. Entries are agent-written; the panel only looks. */
+function MemoryPanelBody({ entries }: { entries: MemoryEntry[] }) {
+  if (entries.length === 0) {
+    return <PanelEmpty>No session memory yet</PanelEmpty>;
+  }
+  return (
+    <div className="px-3 py-1 text-xs">
+      <div className="flex items-center justify-between py-1 text-(--_dk-text-muted)">
+        <span>Session memory</span>
+        <span className="shrink-0 font-mono text-dk-xs tabular-nums">
+          {entries.length}
+        </span>
+      </div>
+      <div className="space-y-1 py-1">
+        {entries.map((entry) => (
+          <div key={entry.id} className="flex items-start gap-2">
+            <span className="shrink-0 font-mono text-dk-xs text-(--_dk-text-muted)">
+              {entry.id}
+            </span>
+            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-(--_dk-text-secondary)">
+              {entry.text}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -26,6 +26,7 @@ import type {
   TurnEventEnvelope,
   TurnFinished,
   LlmReconnectNotice,
+  MemoryEntry,
   PermissionRequest,
   SessionSnapshot,
 } from "../api/types";
@@ -135,6 +136,8 @@ export interface TurnSlice {
     content: string;
     status: "pending" | "in_progress" | "completed";
   }[];
+  /** Session-scoped working memory. Full list from snapshot or memory_updated. */
+  memoryEntries: MemoryEntry[];
   activePlanPath: string | null;
   /**
    * Queued user messages for the live turn. Server-owned memory state: this
@@ -199,6 +202,7 @@ export const EMPTY_SLICE: TurnSlice = {
   todoInProgress: 0,
   todoCompleted: 0,
   todoItems: [],
+  memoryEntries: [],
   activePlanPath: null,
   pendingMessages: [],
   llmReconnect: null,
@@ -884,6 +888,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         case "todo_progress":
           patch(sessionId, todoPatchRetaining(current, te.event.items ?? []));
           return;
+        case "memory_updated":
+          patch(sessionId, { memoryEntries: te.event.entries ?? [] });
+          return;
         case "plan_changed":
           patch(sessionId, { activePlanPath: te.event.active_plan_path });
           return;
@@ -1232,6 +1239,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         ...billedFromSnapshot(snap),
         ...(snap.todos !== undefined
           ? todoPatchRetaining(getSlice(get().byId, sessionId), snap.todos)
+          : {}),
+        ...(snap.memory !== undefined
+          ? { memoryEntries: snap.memory }
           : {}),
         ...(snap.active_plan_path !== undefined
           ? { activePlanPath: snap.active_plan_path }

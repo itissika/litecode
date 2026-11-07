@@ -903,6 +903,59 @@ describe("turnStore convergence", () => {
     expect(slice.todoItems.map((t) => t.content)).toEqual(["ship", "later"]);
   });
 
+  it("applySnapshotMeter hydrates session memory entries", () => {
+    const sessionId = "s-memory-hydrate";
+    useTurnStore.getState().applySnapshotMeter(sessionId, {
+      ...snapshot(sessionId),
+      memory: [
+        { id: "m1", text: "prefers tabs", updated_at: 1 },
+        { id: "m2", text: "never force-push", updated_at: 2 },
+      ],
+    });
+    const slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.memoryEntries.map((entry) => entry.text)).toEqual([
+      "prefers tabs",
+      "never force-push",
+    ]);
+  });
+
+  it("memory_updated replaces the full list and clears on empty", () => {
+    const sessionId = "s-memory-live";
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            currentTurnId: "t1",
+            runState: "running",
+            memoryEntries: [{ id: "m1", text: "old", updated_at: 1 }],
+          },
+        ],
+      ]),
+    });
+    useTurnStore.getState().onTurnEvent({
+      session_id: sessionId,
+      turn_id: "t1",
+      event: {
+        type: "memory_updated",
+        entries: [{ id: "m2", text: "new", updated_at: 2 }],
+      },
+    });
+    expect(
+      useTurnStore.getState().byId.get(sessionId)?.memoryEntries,
+    ).toEqual([{ id: "m2", text: "new", updated_at: 2 }]);
+
+    useTurnStore.getState().onTurnEvent({
+      session_id: sessionId,
+      turn_id: "t1",
+      event: { type: "memory_updated", entries: [] },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.memoryEntries).toEqual(
+      [],
+    );
+  });
+
   it("hydrates and clears the active plan path from snapshots", () => {
     const sessionId = "s-plan";
     useTurnStore.getState().applySnapshotMeter(sessionId, {

@@ -169,19 +169,36 @@ afterEach(() => {
 });
 
 describe("SessionStatusLine — resident capsules", () => {
-  it("keeps all four capsules resident with no data (never appear/disappear)", () => {
+  it("keeps all five capsules resident with no data (never appear/disappear)", () => {
     render(<SessionStatusLine sessionId="s1" />);
     expect(screen.getByTestId("capsule-terminal")).toBeTruthy();
     expect(screen.getByTestId("capsule-subagent")).toBeTruthy();
     expect(screen.getByTestId("capsule-plan")).toBeTruthy();
     expect(screen.getByTestId("capsule-todo")).toBeTruthy();
+    expect(screen.getByTestId("capsule-memory")).toBeTruthy();
     // No panel is open until a capsule is clicked.
     expect(screen.queryByTestId("status-capsule-panel")).toBeNull();
   });
 
+  it("lists session memory entries in a read-only panel", () => {
+    seedTurn("s1", {
+      memoryEntries: [
+        { id: "m1", text: "prefers tabs", updated_at: 1 },
+        { id: "m2", text: "never force-push", updated_at: 2 },
+      ],
+    });
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-memory"));
+    const panel = screen.getByTestId("status-capsule-panel");
+    expect(panel.dataset.capsule).toBe("memory");
+    expect(within(panel).getByText("prefers tabs")).toBeTruthy();
+    expect(within(panel).getByText("never force-push")).toBeTruthy();
+    expect(within(panel).getByText("m1")).toBeTruthy();
+  });
+
   it("uses the Latest-button glass and never dims (no opacity / rounded-full)", () => {
     render(<SessionStatusLine sessionId="s1" />);
-    for (const id of ["terminal", "subagent", "plan", "todo"] as const) {
+    for (const id of ["terminal", "subagent", "plan", "todo", "memory"] as const) {
       const cls = screen.getByTestId(`capsule-${id}`).className;
       // composerCardClass glass: rounded-md + blurred translucent fill.
       expect(cls).toContain("rounded-md");
@@ -214,7 +231,7 @@ describe("SessionStatusLine — resident capsules", () => {
     // hide-by-ancestor until delay+duration (~300ms). Only the collapse
     // direction keeps it so the text stays on screen while fading out.
     expect(wrapper("todo").className).not.toContain("visibility");
-    for (const id of ["plan", "subagent", "terminal"] as const) {
+    for (const id of ["plan", "subagent", "terminal", "memory"] as const) {
       expect(hasToken(wrapper(id), "visible")).toBe(false);
       expect(hasToken(wrapper(id), "invisible")).toBe(true);
       expect(wrapper(id).className).toContain(
@@ -323,7 +340,7 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     expect(
       within(screen.getByTestId("capsule-todo")).getByText("Tasks"),
     ).toBeTruthy();
-    for (const id of ["plan", "subagent", "terminal"] as const) {
+    for (const id of ["plan", "subagent", "terminal", "memory"] as const) {
       expect(screen.getByTestId(`capsule-${id}`).dataset.expanded).toBe(
         "false",
       );
@@ -1564,7 +1581,7 @@ describe("SessionStatusLine — subagent roster panel (dock)", () => {
 });
 
 describe("SessionStatusLine — subagent variant", () => {
-  it("renders only the terminal capsule: plan/todo/Workers are all gone", () => {
+  it("renders only the terminal capsule: plan/todo/Workers/memory are all gone", () => {
     useSessionStore.setState({ sessions: [subagentSession()] } as never);
 
     render(<SessionStatusLine sessionId="s1" variant="subagent" />);
@@ -1573,6 +1590,7 @@ describe("SessionStatusLine — subagent variant", () => {
     expect(screen.queryByTestId("capsule-todo")).toBeNull();
     expect(screen.queryByTestId("capsule-plan")).toBeNull();
     expect(screen.queryByTestId("capsule-subagent")).toBeNull();
+    expect(screen.queryByTestId("capsule-memory")).toBeNull();
   });
 
   it("keeps the terminal reveal but drops Kill", () => {

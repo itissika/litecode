@@ -53,6 +53,13 @@ impl SessionService {
             .with_entry_task_state(session_id, |state| Ok(state.clone()))
     }
 
+    pub(crate) fn entry_memory(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::memory::SessionMemory> {
+        self.sessions.load_memory(session_id)
+    }
+
     // ── UI transport / buffer facts ───────────────────────────────────────
 
     pub(crate) fn entry_wire_seq_cursor(&self, session_id: &str) -> (i64, u64) {

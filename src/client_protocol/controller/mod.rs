@@ -506,6 +506,11 @@ impl Projection {
             .unwrap_or_default();
         snap.todos = task_state.todos;
         snap.active_plan_path = task_state.active_plan.map(|plan| plan.relative_path);
+        snap.memory = self
+            .service
+            .entry_memory(&self.session_id)
+            .map(|memory| memory.entries)
+            .unwrap_or_default();
         // Memory-only queue, but still part of the snapshot: a rebuilt panel
         // (subscribed while idle after a cancel) must see it.
         snap.pending_messages = self.service.pending_messages_snapshot(&self.session_id);

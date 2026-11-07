@@ -91,6 +91,27 @@ fn auto_compaction_is_visible_in_snapshot_with_one_revisioned_state() {
 }
 
 #[test]
+fn memory_updated_projects_the_full_list_on_the_turn_stream() {
+    let snap = sample_snapshot();
+    let msg = project::project(
+        &InternalEvent::MemoryUpdated {
+            entries: vec![litecode::session::memory::MemoryEntry {
+                id: "m1".into(),
+                text: "prefers tabs".into(),
+                updated_at: 7,
+            }],
+        },
+        &snap,
+    )
+    .unwrap();
+    assert_eq!(msg["method"], "agent/turn_event");
+    assert_eq!(msg["params"]["turn_id"], "t1");
+    assert_eq!(msg["params"]["event"]["type"], "memory_updated");
+    assert_eq!(msg["params"]["event"]["entries"][0]["id"], "m1");
+    assert_eq!(msg["params"]["event"]["entries"][0]["text"], "prefers tabs");
+}
+
+#[test]
 fn turn_finished_marks_a_failed_reconnect_retryable() {
     use litecode::llm::reconnect::{LlmReconnect, LlmReconnectPhase};
 

@@ -6,6 +6,7 @@ pub use crate::runtime::observer::{
     CompactionFailKind, CompactionPhase, CompactionStage, CompactionTrigger, TurnEndReason,
     TurnTokenStats,
 };
+use crate::session::memory::MemoryEntry;
 use crate::session::task_state::TodoItem;
 
 pub mod methods {
@@ -556,6 +557,10 @@ pub struct SessionSnapshot {
     /// not rewrite this column; the panel must not wait for the next turn event.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub todos: Vec<TodoItem>,
+    /// Session-scoped working memory. Always present (including empty) so a
+    /// snapshot can clear entries deleted while the panel was closed.
+    #[serde(default)]
+    pub memory: Vec<MemoryEntry>,
     /// Queued user messages for the live turn (memory-only, never persisted).
     /// Full authority list on every snapshot so a rebuilt panel still sees it;
     /// absent = empty.
@@ -723,6 +728,9 @@ pub enum WireEvent {
         in_progress: usize,
         completed: usize,
         items: Vec<TodoItem>,
+    },
+    MemoryUpdated {
+        entries: Vec<MemoryEntry>,
     },
     PlanChanged {
         active_plan_path: Option<String>,

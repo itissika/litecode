@@ -589,6 +589,13 @@ export interface CompactionState {
     | null;
 }
 
+/** One session-scoped working-memory entry (read-only UI projection). */
+export interface MemoryEntry {
+  id: string;
+  text: string;
+  updated_at?: number;
+}
+
 export interface SessionSnapshot {
   session_id: string;
   project: string;
@@ -638,6 +645,8 @@ export interface SessionSnapshot {
     status: "pending" | "in_progress" | "completed";
     priority?: string | null;
   }[];
+  /** Session-scoped working memory (reconnect hydrate; always sent by new servers). */
+  memory?: MemoryEntry[];
   /** Workspace-relative Markdown file for the session's active plan. */
   active_plan_path?: string | null;
   /**
@@ -957,6 +966,7 @@ export type WireEvent =
         priority?: string | null;
       }[];
     }
+  | { type: "memory_updated"; entries: MemoryEntry[] }
   | { type: "plan_changed"; active_plan_path: string | null }
   | { type: "phase_changed"; phase: TurnPhase; step: number }
   | { type: "step_started"; step: number; step_max: number }

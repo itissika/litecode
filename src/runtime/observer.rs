@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::llm::reconnect::LlmReconnect;
+use crate::session::memory::MemoryEntry;
 use crate::session::task_state::TodoItem;
 
 /// L1 failure category; mapped to wire error codes in `client_protocol::project`.
@@ -194,6 +195,11 @@ pub enum InternalEvent {
         in_progress: usize,
         completed: usize,
         items: Vec<TodoItem>,
+    },
+    /// Full session-scoped memory list after a tool write. Live turn event;
+    /// snapshots carry the same list on reconnect / turn completion.
+    MemoryUpdated {
+        entries: Vec<MemoryEntry>,
     },
     /// Session-scoped active-plan pointer changed during tool execution.
     PlanChanged {
