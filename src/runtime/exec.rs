@@ -1372,6 +1372,11 @@ impl AgentRuntime {
             self.turn_llm.max_tokens,
         );
         let producers = self.llm_input_producers(&item_seqs);
+        // The fixed prefix this request mints under. Recorded in its header so a
+        // later turn can tell a signature minted under another prompt or tool
+        // set apart, even when provider and model are unchanged.
+        let (instructions_digest, tools_digest) =
+            crate::llm::fixed_prefix_digests(instructions, &tool_schemas);
         let mut input = input;
         let rebased_true_count = rebased.iter().filter(|flag| **flag).count() as u32;
         // One semantic gate. The port decides what this target may receive and
@@ -1383,6 +1388,10 @@ impl AgentRuntime {
             &self.turn_llm.model,
             crate::platform_knobs::ThinkingSpec::Tier(self.turn_llm.thinking_tier),
             !tool_schemas.is_empty(),
+            Some(crate::llm::FixedPrefix {
+                instructions_digest: &instructions_digest,
+                tools_digest: &tools_digest,
+            }),
         );
         if let Some(block) = report.blocked {
             return Err(crate::types::LitecodeError::Config(format!(
@@ -1398,7 +1407,8 @@ impl AgentRuntime {
         let reasoning_wholly_omitted = 0u32;
         // Origin is an append-only control-plane row written before the request:
         // items this request produces inherit its provider.
-        let origin_seq = self.record_request_origin(&context_envelope)?;
+        let origin_seq =
+            self.record_request_origin(&context_envelope, &instructions_digest, &tools_digest)?;
         tracing::info!(
             target: "litecode.debug.llm_request",
             session_id = %self.session_id,
@@ -1492,6 +1502,8 @@ impl AgentRuntime {
     fn record_request_origin(
         &self,
         context_envelope: &ContextEnvelope,
+        instructions_digest: &str,
+        tools_digest: &str,
     ) -> Result<crate::session::event::Seq> {
         let turn_id = self.context_pipeline.current_turn_id().ok_or_else(|| {
             crate::types::LitecodeError::Llm(
@@ -1507,6 +1519,10 @@ impl AgentRuntime {
             "provider_id": self.turn_llm.provider_id,
             "model_ref": self.turn_llm.model_ref,
             "context_envelope": context_envelope,
+            // Fixed-prefix identity, so replay can prove a signature was minted
+            // under this exact prompt and tool list.
+            "instructions_digest": instructions_digest,
+            "tools_digest": tools_digest,
         });
         self.sessions
             .append_request_origin(&self.session_id, &record)

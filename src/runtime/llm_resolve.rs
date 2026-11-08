@@ -102,8 +102,23 @@ pub fn ensure_session_model(
     }
     let model_ref = seed_model_ref(resolved, agent_id)?;
     if current.as_deref() != Some(model_ref.as_str()) {
-        match sessions.set_session_model_id(session_id, Some(model_ref.clone())) {
-            Ok(()) => tracing::info!(
+        // Repairing an unrunnable model is still a model change: it lands in the
+        // same writer transaction that moves the column and appends
+        // `model/changed`, so the change has one durable explanation. Replay
+        // itself reads producers from `request/header`, never this row — the
+        // event exists so the turn's model is not silently different from the
+        // one the session started on.
+        let record = serde_json::json!({
+            "schema": 1,
+            "from": current,
+            "to": model_ref.clone(),
+            "at_seq": sessions.entry_wire_seq_cursor(session_id).0.max(0) as u64,
+            "report": null,
+            // Not a person's switch: the stored model stopped being runnable.
+            "reason": "auto_unavailable",
+        });
+        match sessions.set_session_model_with_change(session_id, Some(model_ref.clone()), &record) {
+            Ok(_) => tracing::info!(
                 session_id,
                 model_ref = %model_ref,
                 "auto-assigned a runnable model to a session whose model could not run"
@@ -202,6 +217,8 @@ pub(crate) fn producers_from_origins(
                     provider_id: field("provider_id").unwrap_or_default(),
                     endpoint_type: field("endpoint_type"),
                     model_ref: field("model_ref"),
+                    instructions_digest: field("instructions_digest"),
+                    tools_digest: field("tools_digest"),
                 },
             )
         })
@@ -257,6 +274,10 @@ pub(crate) fn preview_session_model(
         // The agent loop offers tools; a target that cannot take them cannot
         // be a session model. This is the same predicate the request uses.
         true,
+        // A preview has no request prefix to compare against: it estimates the
+        // switch cost, and the next turn re-runs this policy with its real
+        // instructions and tool list.
+        None,
     );
     report.projected_parts = projected;
     Ok(SwitchPreview {

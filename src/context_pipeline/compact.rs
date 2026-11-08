@@ -2249,6 +2249,10 @@ fn build_compaction_input(
             .unwrap_or_default(),
         &input_seqs,
     );
+    // The summarizer sends its own instructions and tool list, so it mints
+    // under its own fixed prefix.
+    let (instructions_digest, tools_digest) =
+        crate::llm::fixed_prefix_digests(&request.instructions, &request.tools);
     let report = crate::llm::port::port(
         &mut input,
         &producers,
@@ -2256,6 +2260,10 @@ fn build_compaction_input(
         request.target.as_ref(),
         request.thinking,
         !request.tools.is_empty(),
+        Some(crate::llm::FixedPrefix {
+            instructions_digest: &instructions_digest,
+            tools_digest: &tools_digest,
+        }),
     );
     if let Some(block) = report.blocked {
         return Err(LitecodeError::Config(format!(

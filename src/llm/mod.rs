@@ -22,7 +22,9 @@ pub use request::{
 /// reasoning id, ciphertext only to the provider, protocol, and model that
 /// minted it, summary replay drops reasoning any other provider produced, and
 /// a rewritten Messages prefix drops the signature minted against that prefix.
-pub(crate) use replay_compat::{ItemProducer, producers_for_seqs};
+pub(crate) use replay_compat::{
+    FixedPrefix, ItemProducer, fixed_prefix_digests, producers_for_seqs,
+};
 
 /// Replay primitives are exercised directly by their own unit tests. The
 /// production path reaches them only through `port`.

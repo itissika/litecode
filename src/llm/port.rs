@@ -17,7 +17,9 @@
 //!   guarantee the codec's preconditions without naming a vendor.
 
 use crate::authority::responses::{Item, ReasoningItem, ReasoningItemContent, SummaryPart};
-use crate::llm::replay_compat::{ItemProducer, strip_foreign_ciphertext, strip_rebased_signatures};
+use crate::llm::replay_compat::{
+    FixedPrefix, ItemProducer, strip_foreign_ciphertext, strip_rebased_signatures,
+};
 use crate::platform_knobs::ThinkingSpec;
 use crate::provider_catalog::{EndpointKind, ReasoningReplay, ResolvedModel};
 
@@ -102,7 +104,9 @@ pub(crate) fn profile_for(target: &ResolvedModel) -> PortProfile {
 /// Filter one request view for \`target\`.
 ///
 /// \`producers\` and \`rebased\` are parallel to \`items\` (same contract as the
-/// replay rules). The function mutates \`items\` in place and returns what it
+/// replay rules). \`prefix\` is the target request's instructions and tool
+/// digests; \`None\` means the caller has no request prefix (the switch preview)
+/// and only the provider/protocol/model rule applies. The function mutates \`items\` in place and returns what it
 /// did. A blocked target leaves \`items\` untouched: the caller must abort.
 pub(crate) fn port(
     items: &mut Vec<Item>,
@@ -111,6 +115,7 @@ pub(crate) fn port(
     target: &ResolvedModel,
     thinking: ThinkingSpec,
     has_tools: bool,
+    prefix: Option<FixedPrefix<'_>>,
 ) -> PortReport {
     let mut report = PortReport {
         items_in: items.len() as u32,
@@ -131,6 +136,7 @@ pub(crate) fn port(
         &target.provider_id,
         endpoint_type,
         &target.reference,
+        prefix,
     )
     .ciphertexts_stripped as u32;
 

@@ -757,6 +757,53 @@ async fn manual_compaction_works_without_the_hidden_compaction_agent() {
     );
 }
 
+/// Replay reads producers from this row, so the fixed-prefix identity has to be
+/// on it: without the digests a signature minted under another prompt or tool
+/// set would look like this request's own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn request_header_records_the_fixed_prefix_digests() {
+    let fixture = SessionDataFixture::new();
+    let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
+    let sessions = Arc::new(fixture.manager());
+    let provider = Arc::new(RecordingProvider::new(vec![vec![
+        common::assistant_text_item("hello", "msg_hello"),
+    ]]));
+    let captured = Arc::clone(&provider);
+    let mut ctrl = controller(Arc::clone(&sessions), fixture.dir.path(), provider);
+
+    ctrl.start_turn(
+        &sid,
+        UserInput::text("hi"),
+        common::test_auto_approve_sink(),
+        "turn-prefix-digest",
+        false,
+    )
+    .await
+    .expect("start turn");
+    wait_until(
+        || captured.captured().len() >= 1 && !sessions.is_turn_running_blocking(&sid),
+        "main request",
+    )
+    .await;
+
+    let origins = sessions.request_origins(&sid).expect("request origins");
+    let (_, header) = origins.last().expect("a recorded request header");
+    for key in ["instructions_digest", "tools_digest"] {
+        let digest = header[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("{key} must be recorded: {header}"));
+        assert_eq!(
+            digest.len(),
+            64,
+            "{key} must be a sha256 hex digest: {digest}"
+        );
+        assert!(
+            digest.chars().all(|c| c.is_ascii_hexdigit()),
+            "{key}: {digest}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manual_compaction_repairs_a_stale_session_model_like_launch_turn() {
     let fixture = SessionDataFixture::new();
@@ -798,6 +845,16 @@ async fn manual_compaction_repairs_a_stale_session_model_like_launch_turn() {
         Some(common::TEST_PRIMARY_MODEL_REF),
         "manual compaction must repair the sticky model with ensure_session_model"
     );
+    // The repair is a model change, so it must leave the same durable row a
+    // person's switch does: the column and `model/changed` in one transaction.
+    let events = sessions.data().events_blocking(&sid).expect("events");
+    let change = events
+        .iter()
+        .find(|event| matches!(event.event_type, EventType::ModelChanged))
+        .expect("a repaired model must be explained by model/changed");
+    assert_eq!(change.data["to"], common::TEST_PRIMARY_MODEL_REF);
+    assert_eq!(change.data["from"], "test/model-that-was-removed");
+    assert_eq!(change.data["reason"], "auto_unavailable");
     let compact = captured
         .captured()
         .into_iter()

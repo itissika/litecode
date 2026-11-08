@@ -722,6 +722,8 @@ endpoint_type = "responses"
                     provider_id: target.provider_id.clone(),
                     endpoint_type: Some("responses".into()),
                     model_ref: Some(target.reference.clone()),
+                    instructions_digest: None,
+                    tools_digest: None,
                 })
             })
             .collect();
@@ -730,6 +732,8 @@ endpoint_type = "responses"
             provider_id: "other".into(),
             endpoint_type: Some("responses".into()),
             model_ref: Some("other/model".into()),
+            instructions_digest: None,
+            tools_digest: None,
         });
         producers[2] = producers[1].clone();
         let session_copy = request.input.clone();
@@ -741,6 +745,7 @@ endpoint_type = "responses"
             target,
             ThinkingSpec::Off,
             false,
+            None,
         );
         assert_eq!(report.reasoning_dropped, 2, "{report:?}");
         let body = request_body(&codec, &request);
