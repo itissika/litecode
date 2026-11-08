@@ -131,13 +131,18 @@ fn member(id: &str) -> MemberSpec {
     MemberSpec { id: id.to_string() }
 }
 
-fn builtin_surface(id: &str) -> CallSurface {
-    match id {
-        "read" | "grep" | "glob" | "write" | "edit" | "apply_edits" | "run" | "wait" | "kill"
-        | "webfetch" | "websearch" | "memory" | "code_search" | BROWSER_CARD_ID => {
-            CallSurface::Code
-        }
-        _ => CallSurface::Direct,
+/// Surface of a builtin card, derived from the generated contract the runtime
+/// tools are built against. A card id is either a tool name (`session_search`)
+/// or a suite that groups tool names (`memory`), so the members decide and no
+/// hand-written list can fall behind the tool set.
+fn builtin_surface(members: &[&str]) -> CallSurface {
+    let code = members
+        .iter()
+        .any(|member| crate::tool::code_contract::builtin_sdk_path(member).is_some());
+    if code {
+        CallSurface::Code
+    } else {
+        CallSurface::Direct
     }
 }
 
@@ -207,7 +212,7 @@ fn push_builtin(
             } else {
                 PermissionSurface::Fixed
             },
-            surface: builtin_surface(id),
+            surface: builtin_surface(members),
             label: None,
         },
     );
@@ -529,6 +534,38 @@ mod tests {
             suite: suite.map(str::to_string),
             output_schema: None,
         }
+    }
+
+    /// A card is a view over runtime tools, so its surface must be theirs. This
+    /// is the regression for a hand-written list that missed a tool.
+    #[test]
+    fn every_card_surface_matches_the_runtime_tools_it_covers() {
+        let catalog = capability_catalog(&resolved());
+        let runtime = crate::tool::registry::builtin_code_surface_tools();
+        let mut checked = 0;
+        for card in &catalog.capabilities {
+            for member in card.member_ids() {
+                let Some(tool) = runtime.iter().find(|tool| tool.name() == member) else {
+                    continue;
+                };
+                assert_eq!(
+                    tool.surface(),
+                    crate::tool::ToolSurface::Code,
+                    "{member} is a code tool"
+                );
+                assert_eq!(
+                    card.surface,
+                    CallSurface::Code,
+                    "card '{}' covers code tool '{member}'",
+                    card.id
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 20,
+            "the cross-check must see the builtin code tools, saw {checked}"
+        );
     }
 
     #[test]

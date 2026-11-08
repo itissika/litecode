@@ -988,7 +988,11 @@ null"
         // The host keeps its own sink. This one is the direct-call sink.
         let direct_asked = Arc::clone(&sink.calls);
 
-        for name in ["read", "glob", "grep"] {
+        for (name, path) in [
+            ("read", "file.read"),
+            ("glob", "file.glob"),
+            ("grep", "file.grep"),
+        ] {
             let result = execute(
                 &hosted,
                 name,
@@ -999,7 +1003,7 @@ null"
             .await;
             assert!(
                 result.content.contains(&format!(
-                    "`{name}` is only available as tools.{name} inside run_code"
+                    "`{name}` is only available as tools.{path} inside run_code"
                 )),
                 "{name}: {}",
                 result.content
@@ -1529,7 +1533,7 @@ mod edit_write {
         );
         let sink = RecordingPermissionSink::from_reply(true, false);
         let asked = Arc::clone(&sink.calls);
-        for name in ["edit", "write"] {
+        for (name, path) in [("edit", "file.edit"), ("write", "file.write")] {
             let result = execute(
                 &hosted,
                 "phase3",
@@ -1541,7 +1545,7 @@ mod edit_write {
             .await;
             assert!(
                 result.content.contains(&format!(
-                    "`{name}` is only available as tools.{name} inside run_code"
+                    "`{name}` is only available as tools.{path} inside run_code"
                 )),
                 "{name}: {}",
                 result.content

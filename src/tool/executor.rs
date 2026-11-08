@@ -889,11 +889,16 @@ fn surface_or_missing(
     )
 }
 
+/// The caller should have used the SDK path, not the runtime name: `read` is
+/// `tools.file.read`, and `memory.list` is `tools.memory.list` (its runtime
+/// name already is its path).
 fn code_route_message(name: &str) -> String {
-    if is_js_identifier(name) {
-        format!("`{name}` is only available as tools.{name} inside run_code")
+    let path =
+        crate::tool::code_contract::builtin_sdk_path(name).unwrap_or_else(|| name.to_string());
+    if path.split('.').all(is_js_identifier) {
+        format!("`{name}` is only available as tools.{path} inside run_code")
     } else {
-        let key = serde_json::to_string(name).unwrap_or_else(|_| "\"\"".to_string());
+        let key = serde_json::to_string(&path).unwrap_or_else(|_| "\"\"".to_string());
         format!("`{name}` is only available as tools[{key}] inside run_code")
     }
 }

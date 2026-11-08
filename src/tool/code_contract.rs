@@ -168,6 +168,17 @@ fn validate_builtins(contract: &ToolContract, fragments: &SdkFragments) -> Resul
     Ok(())
 }
 
+/// The JS SDK path of one built-in code tool (`read` -> `file.read`). This is
+/// the same table `bindings` is built from, so a message that names the path a
+/// caller should have used cannot drift from the SDK the caller actually sees.
+pub fn builtin_sdk_path(name: &str) -> Option<String> {
+    builtins()
+        .fragments
+        .tools
+        .get(name)
+        .map(|fragment| fragment.path.join("."))
+}
+
 /// Input schema for one built-in code tool, derived from the JS/TS contract.
 pub fn builtin_input_schema(name: &str) -> Option<Value> {
     builtins()
