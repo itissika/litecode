@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "df240fbc7e285355df4c1e3aef0e7d71dacc46861fb630227001ec0d13a5c60d",
+  "sdk_hash": "6f21116c292596eff76ef4d8534a660513e755a5dc692f6df3b4a57be5f4aa7e",
   "tools": {
     "apply_edits": {
       "path": [
@@ -2399,6 +2399,10 @@
                 },
                 "id": {
                   "type": "string"
+                },
+                "detail": {
+                  "type": "string",
+                  "description": "Which limit the reason names, and by how much this item misses it."
                 }
               },
               "required": [
@@ -2581,6 +2585,10 @@
                 },
                 "id": {
                   "type": "string"
+                },
+                "detail": {
+                  "type": "string",
+                  "description": "Which limit the reason names, and by how much this item misses it."
                 }
               },
               "required": [

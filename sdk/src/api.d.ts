@@ -384,6 +384,8 @@ type RejectedItem = {
   /** empty_text | text_too_long | invalid_id | unknown_id | limit_exceeded. */
   reason: string;
   id?: string;
+  /** Which limit the reason names, and by how much this item misses it. */
+  detail?: string;
 };
 
 type MemoryListData = {

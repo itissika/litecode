@@ -60,6 +60,9 @@ pub struct MemoryReject {
     pub index: usize,
     pub id: Option<String>,
     pub reason: &'static str,
+    /// What the reason alone cannot say: which limit was hit and by how much.
+    /// `reason` stays the stable wire value; this is the human-readable half.
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,6 +76,19 @@ pub struct MemoryUpsertResult {
 pub struct MemoryDeleteResult {
     pub deleted: Vec<String>,
     pub rejected: Vec<MemoryReject>,
+}
+
+/// Why an id that is not in the session cannot be updated or deleted.
+fn unknown_id_detail(id: &str) -> String {
+    format!("no memory entry with id `{id}`; memory.list shows the current ids")
+}
+
+/// The character-limit half of a `limit_exceeded` rejection, with real numbers.
+fn total_chars_detail(new_total: usize) -> String {
+    format!(
+        "this would reach {new_total} chars; the limit is {MEMORY_MAX_TOTAL_CHARS} — shorten it by at least {} chars or delete an entry",
+        new_total - MEMORY_MAX_TOTAL_CHARS
+    )
 }
 
 impl SessionMemory {
@@ -115,6 +131,7 @@ impl SessionMemory {
                     index,
                     id: request.id.clone(),
                     reason: "empty_text",
+                    detail: None,
                 });
                 continue;
             }
@@ -123,6 +140,10 @@ impl SessionMemory {
                     index,
                     id: request.id.clone(),
                     reason: "text_too_long",
+                    detail: Some(format!(
+                        "entry is {text_len} chars; the limit is {MEMORY_MAX_TEXT_CHARS} chars — shorten it by at least {} chars",
+                        text_len - MEMORY_MAX_TEXT_CHARS
+                    )),
                 });
                 continue;
             }
@@ -135,6 +156,7 @@ impl SessionMemory {
                             index,
                             id: None,
                             reason: "invalid_id",
+                            detail: None,
                         });
                         continue;
                     }
@@ -148,6 +170,7 @@ impl SessionMemory {
                         index,
                         id: Some(id.to_string()),
                         reason: "unknown_id",
+                        detail: Some(unknown_id_detail(id)),
                     });
                     continue;
                 };
@@ -158,6 +181,7 @@ impl SessionMemory {
                         index,
                         id: Some(id.to_string()),
                         reason: "limit_exceeded",
+                        detail: Some(total_chars_detail(new_total)),
                     });
                     continue;
                 }
@@ -180,6 +204,7 @@ impl SessionMemory {
                         index,
                         id: None,
                         reason: "limit_exceeded",
+                        detail: Some(total_chars_detail(new_total)),
                     });
                     continue;
                 }
@@ -193,10 +218,21 @@ impl SessionMemory {
             if self.entries.len() >= MEMORY_MAX_ENTRIES
                 || self.total_chars() + text_len > MEMORY_MAX_TOTAL_CHARS
             {
+                // Entries first: with the table full, freeing characters alone
+                // would not make room for another entry.
+                let detail = if self.entries.len() >= MEMORY_MAX_ENTRIES {
+                    format!(
+                        "the session already holds {} entries (limit {MEMORY_MAX_ENTRIES}); delete an old entry before adding another",
+                        self.entries.len()
+                    )
+                } else {
+                    total_chars_detail(self.total_chars() + text_len)
+                };
                 result.rejected.push(MemoryReject {
                     index,
                     id: None,
                     reason: "limit_exceeded",
+                    detail: Some(detail),
                 });
                 continue;
             }
@@ -224,6 +260,7 @@ impl SessionMemory {
                     index,
                     id: None,
                     reason: "invalid_id",
+                    detail: None,
                 });
                 continue;
             }
@@ -235,6 +272,7 @@ impl SessionMemory {
                     index,
                     id: Some(id.to_string()),
                     reason: "unknown_id",
+                    detail: Some(unknown_id_detail(id)),
                 });
             }
         }
@@ -339,6 +377,66 @@ mod tests {
         assert_eq!(result.rejected.len(), 1);
         assert_eq!(result.rejected[0].reason, "limit_exceeded");
     }
+    #[test]
+    fn rejections_name_the_limit_and_the_real_numbers() {
+        // Entries full: the detail says how many exist and what frees a slot.
+        let mut memory = SessionMemory::default();
+        let batch: Vec<_> = (0..MEMORY_MAX_ENTRIES)
+            .map(|i| upsert(&format!("entry {i}")))
+            .collect();
+        assert_eq!(
+            memory.apply_upsert(&batch, 1).added.len(),
+            MEMORY_MAX_ENTRIES
+        );
+        let result = memory.apply_upsert(&[upsert("one more")], 2);
+        let rejected = &result.rejected[0];
+        assert_eq!(rejected.reason, "limit_exceeded");
+        let detail = rejected.detail.as_deref().expect("detail");
+        assert!(
+            detail.contains(&format!("{} entries", MEMORY_MAX_ENTRIES)),
+            "{detail}"
+        );
+        assert!(
+            detail.contains(&format!("limit {MEMORY_MAX_ENTRIES}")),
+            "{detail}"
+        );
+        assert!(detail.to_lowercase().contains("delete"), "{detail}");
+
+        // Total characters: the detail carries the projected total and overflow.
+        let mut memory = SessionMemory::default();
+        let batch: Vec<_> = (0..20).map(|i| upsert(&format!("{i:0>200}"))).collect();
+        memory.apply_upsert(&batch, 1);
+        let result = memory.apply_upsert(&[upsert(&"y".repeat(200))], 2);
+        let rejected = &result.rejected[0];
+        assert_eq!(rejected.reason, "limit_exceeded");
+        let detail = rejected.detail.as_deref().expect("detail");
+        assert!(
+            detail.contains(&format!("reach {}", MEMORY_MAX_TOTAL_CHARS + 200)),
+            "{detail}"
+        );
+        assert!(
+            detail.contains(&format!("limit is {MEMORY_MAX_TOTAL_CHARS}")),
+            "{detail}"
+        );
+        assert!(detail.contains("at least 200 chars"), "{detail}");
+
+        // One entry over the per-entry cap.
+        let mut memory = SessionMemory::default();
+        let long = "x".repeat(MEMORY_MAX_TEXT_CHARS + 5);
+        let result = memory.apply_upsert(&[upsert(&long)], 1);
+        let rejected = &result.rejected[0];
+        assert_eq!(rejected.reason, "text_too_long");
+        let detail = rejected.detail.as_deref().expect("detail");
+        assert!(
+            detail.contains(&format!("{} chars", MEMORY_MAX_TEXT_CHARS + 5)),
+            "{detail}"
+        );
+        assert!(
+            detail.contains(&format!("limit is {MEMORY_MAX_TEXT_CHARS}")),
+            "{detail}"
+        );
+        assert!(detail.contains("at least 5 chars"), "{detail}");
+    }
 
     #[test]
     fn delete_reports_unknown_ids_and_keeps_the_rest() {
@@ -348,6 +446,14 @@ mod tests {
         assert_eq!(result.deleted, ["m1"]);
         assert_eq!(result.rejected.len(), 2);
         assert_eq!(result.rejected[0].reason, "unknown_id");
+        assert!(
+            result.rejected[0]
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("no memory entry with id `m9`")),
+            "{:?}",
+            result.rejected[0].detail
+        );
         assert_eq!(result.rejected[1].reason, "invalid_id");
         assert_eq!(memory.entries.len(), 1);
         assert_eq!(memory.entries[0].id, "m2");

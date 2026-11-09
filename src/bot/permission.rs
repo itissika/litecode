@@ -3,8 +3,8 @@
 //! A bot is an unattended product identity: an approval card would wait for a
 //! human who may not be there. Bot sessions therefore deny Permission and
 //! Approval prompts immediately (the loop gets an ordinary denied tool result).
-//! ask_user stays answerable from the foreground; its deadline lives in the
-//! ask_user tool, shared with ordinary sessions. This is a sink policy, not a
+//! ask_user stays answerable from the foreground and waits like any other
+//! question. This is a sink policy, not a
 //! per-tool permission matrix; the core engine and its Allow/Deny/Ask
 //! evaluation are unchanged.
 
@@ -95,7 +95,6 @@ mod tests {
         let questions = [question()];
         let prompt = AskPrompt::ask_user("ask_user", "ask", "", &questions);
         let reply = sink.ask(&prompt, &cancel);
-        assert!(!reply.timed_out);
         assert!(matches!(reply.outcome, AskOutcome::Allow { .. }));
         assert_eq!(reply.answers["q"].selected, vec!["a"]);
         assert_eq!(inner.calls.lock().unwrap().len(), 1);
@@ -110,7 +109,6 @@ mod tests {
         let prompt = AskPrompt::ask_user("ask_user", "ask", "", &questions);
         let reply = sink.ask(&prompt, &cancel);
         assert_eq!(reply.outcome, AskOutcome::Aborted);
-        assert!(!reply.timed_out, "the tool owns the no-answer policy");
         assert_eq!(inner.calls.lock().unwrap().len(), 1);
     }
 }

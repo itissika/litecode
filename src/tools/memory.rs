@@ -386,6 +386,8 @@ struct RejectedData {
     reason: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
 }
 
 fn list_data(memory: &SessionMemory) -> MemoryListData {
@@ -432,6 +434,7 @@ fn rejected_data(items: &[MemoryReject]) -> Vec<RejectedData> {
             index: item.index,
             reason: item.reason,
             id: item.id.clone(),
+            detail: item.detail.clone(),
         })
         .collect()
 }
@@ -449,19 +452,31 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
     });
     memory.next_id = 2;
 
+    // The "all optional present" state must carry every optional field on the
+    // rejection itself: an existing id plus a limit that pushes it over.
     let mut upsert_present = SessionMemory::default();
-    let upsert_present_result = upsert_present.apply_upsert(
-        &[
-            MemoryUpsertRequest {
-                id: Some("m9".into()),
-                text: " ".into(),
-            },
-            MemoryUpsertRequest {
-                id: None,
-                text: "use pnpm".into(),
-            },
-        ],
+    upsert_present.apply_upsert(
+        &[MemoryUpsertRequest {
+            id: None,
+            text: "h".repeat(100),
+        }],
         1,
+    );
+    upsert_present.apply_upsert(
+        &(0..20)
+            .map(|i| MemoryUpsertRequest {
+                id: None,
+                text: format!("{i:0>195}"),
+            })
+            .collect::<Vec<_>>(),
+        1,
+    );
+    let upsert_present_result = upsert_present.apply_upsert(
+        &[MemoryUpsertRequest {
+            id: Some("m1".into()),
+            text: "y".repeat(200),
+        }],
+        2,
     );
     let mut upsert_absent = SessionMemory::default();
     let upsert_absent_result = upsert_absent.apply_upsert(

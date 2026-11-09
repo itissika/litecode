@@ -43,21 +43,29 @@ pub fn apply_emergency_cap(content: String) -> String {
         estimated_tokens,
         "tool output exceeds token cap — circuit breaker fired"
     );
-    let preview = crate::types::utf8::prefix_utf8(&content, EMERGENCY_PREVIEW_CHARS);
-    let has_more = content.len() > EMERGENCY_PREVIEW_CHARS;
+    // Head and tail share the same preview budget the old head-only cut used;
+    // the marker between them says how much is missing, so the two slices never
+    // read as adjacent text.
+    let head_budget = EMERGENCY_PREVIEW_CHARS / 2;
+    let tail_budget = EMERGENCY_PREVIEW_CHARS - head_budget;
+    let head = crate::types::utf8::prefix_utf8(&content, head_budget);
+    let tail = crate::types::utf8::suffix_utf8(&content, tail_budget);
+    let omitted = content.len() - head.len() - tail.len();
     format!(
         "<persisted-output>\n\
          Output exceeded token budget (~{et} tokens, {ch} chars).  \
          Full output not shown. Re-run with narrower parameters.\n\
          \n\
-         Preview (first {preview_ch} chars):\n\n\
-         {preview}{ellipsis}\n\
+         Preview (first {head_bytes} bytes + last {tail_bytes} bytes):\n\n\
+         {head}\n\n... [omitted {omitted} bytes] ...\n\n{tail}\n\
          </persisted-output>",
         et = estimated_tokens,
         ch = content.len(),
-        preview_ch = EMERGENCY_PREVIEW_CHARS,
-        preview = preview,
-        ellipsis = if has_more { "\n..." } else { "" },
+        head_bytes = head.len(),
+        tail_bytes = tail.len(),
+        head = head,
+        tail = tail,
+        omitted = omitted,
     )
 }
 
@@ -228,10 +236,16 @@ fn spill_content_if_needed(body: String, data_root: &Path, threshold: usize) -> 
     fs::create_dir_all(&blob_dir)?;
     let blob_path = blob_dir.join(format!("{blob_id}.txt"));
     fs::write(&blob_path, body.as_bytes())?;
+    // The same 500-byte preview budget as before, split between both ends so a
+    // spilled result still shows how it finishes.
     let preview_len = 500.min(original_len);
-    let preview = crate::types::utf8::prefix_utf8(&body, preview_len);
+    let head_budget = preview_len / 2;
+    let tail_budget = preview_len - head_budget;
+    let head = crate::types::utf8::prefix_utf8(&body, head_budget);
+    let tail = crate::types::utf8::suffix_utf8(&body, tail_budget);
+    let omitted = original_len - head.len() - tail.len();
     Ok(format!(
-        "{BLOB_PREFIX}{blob_id}]\n{preview}... [spilled, {original_len} bytes total]",
+        "{BLOB_PREFIX}{blob_id}]\n{head}\n\n... [omitted {omitted} bytes] ...\n\n{tail}... [spilled, {original_len} bytes total]",
     ))
 }
 
@@ -282,4 +296,99 @@ pub fn resolve_single_blob(body: &str, blob_dir: &Path) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    /// The two ends of the emergency preview, split by the omission marker.
+    fn capped_preview(capped: &str) -> (&str, &str) {
+        let body = capped.split("bytes):\n\n").nth(1).expect("preview body");
+        let (head, rest) = body
+            .split_once("\n\n... [omitted")
+            .expect("omission marker");
+        let tail = rest.split_once("] ...\n\n").expect("marker end").1;
+        (
+            head,
+            tail.strip_suffix("\n</persisted-output>").unwrap_or(tail),
+        )
+    }
+
+    fn spilled_preview(spilled: &str) -> (&str, &str) {
+        let body = spilled.split_once("]\n").expect("blob header").1;
+        let (head, rest) = body
+            .split_once("\n\n... [omitted")
+            .expect("omission marker");
+        let tail = rest.split_once("] ...\n\n").expect("marker end").1;
+        let tail = tail.split_once("... [spilled,").expect("spill tail").0;
+        (head, tail)
+    }
+
+    #[test]
+    fn emergency_cap_keeps_both_ends_and_names_the_gap() {
+        let content = format!(
+            "HEAD-MARKER{}{}TAIL-MARKER",
+            "x".repeat(EMERGENCY_HARD_CAP_CHARS),
+            "y".repeat(32)
+        );
+        let omitted = content.len() - EMERGENCY_PREVIEW_CHARS;
+        let capped = apply_emergency_cap(content);
+
+        assert!(capped.contains("HEAD-MARKER"), "{capped}");
+        assert!(capped.contains("TAIL-MARKER"), "{capped}");
+        assert!(
+            capped.contains("Preview (first 1000 bytes + last 1000 bytes):"),
+            "the label must describe what is actually shown: {capped}"
+        );
+        assert!(
+            capped.contains(&format!("omitted {omitted} bytes")),
+            "{capped}"
+        );
+        let (head, tail) = capped_preview(&capped);
+        assert_eq!(
+            head.len() + tail.len(),
+            EMERGENCY_PREVIEW_CHARS,
+            "the preview budget must not grow"
+        );
+        assert!(head.starts_with("HEAD-MARKER"));
+        assert!(tail.ends_with("TAIL-MARKER"));
+    }
+
+    #[test]
+    fn spill_keeps_both_ends_and_names_the_gap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let body = format!("HEAD{}TAIL", "z".repeat(5_000));
+        let omitted = body.len() - 500;
+        let spilled = spill_content_if_needed(body, dir.path(), 1_000).expect("spill");
+
+        assert!(spilled.starts_with(BLOB_PREFIX), "{spilled}");
+        assert!(spilled.contains("HEAD"));
+        assert!(spilled.contains("TAIL"));
+        assert!(
+            spilled.contains(&format!("omitted {omitted} bytes")),
+            "{spilled}"
+        );
+        assert!(
+            spilled.contains(&format!("{} bytes total", 5008)),
+            "{spilled}"
+        );
+        let (head, tail) = spilled_preview(&spilled);
+        assert_eq!(
+            head.len() + tail.len(),
+            500,
+            "the preview budget must not grow"
+        );
+        assert!(head.starts_with("HEAD"));
+        assert!(tail.ends_with("TAIL"));
+    }
+
+    #[test]
+    fn both_previews_cut_on_utf8_boundaries() {
+        let content = format!("头{}🚀{}尾", "中".repeat(200_000), "🙂".repeat(200_000));
+        let capped = apply_emergency_cap(content);
+        assert!(capped.contains('头') && capped.contains('尾'));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let body = format!("头{}🚀{}尾", "中".repeat(5_000), "🙂".repeat(5_000));
+        let spilled = spill_content_if_needed(body, dir.path(), 1_000).expect("spill");
+        assert!(spilled.contains('头') && spilled.contains('尾'));
+    }
+}

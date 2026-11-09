@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -16,35 +16,14 @@ use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
 
-/// Default deadline for one ask_user card. Session and bot turns share it.
-pub const DEFAULT_ASK_USER_TIMEOUT: Duration = Duration::from_secs(60);
-/// Optional process-wide override in seconds. Never per bot.
-pub const ASK_USER_TIMEOUT_ENV: &str = "LITECODE_ASK_USER_TIMEOUT_SECS";
-
 pub struct AskUserTool {
     permission_sink: Mutex<Option<Arc<dyn PermissionSink>>>,
-    timeout: Duration,
 }
 
 impl AskUserTool {
     pub fn new() -> Self {
-        let timeout = std::env::var(ASK_USER_TIMEOUT_ENV)
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .filter(|seconds| *seconds > 0)
-            .map(Duration::from_secs)
-            .unwrap_or(DEFAULT_ASK_USER_TIMEOUT);
         Self {
             permission_sink: Mutex::new(None),
-            timeout,
-        }
-    }
-
-    /// Test/embedding override. This is a tool-level policy, never per bot.
-    pub fn with_timeout(timeout: Duration) -> Self {
-        Self {
-            permission_sink: Mutex::new(None),
-            timeout,
         }
     }
 
@@ -140,13 +119,10 @@ impl Tool for AskUserTool {
         })
     }
 
+    /// Direct call path: there is no turn token to cancel, so only an answer or
+    /// a dead bridge ends the wait. The runtime path goes through `execute`.
     fn call_inner(&self, input: Value) -> ToolCallResult {
-        self.run(
-            &input,
-            &CancellationToken::new(),
-            self.permission_sink(),
-            self.timeout,
-        )
+        self.run(&input, &CancellationToken::new(), self.permission_sink())
     }
 
     fn execute(
@@ -156,8 +132,7 @@ impl Tool for AskUserTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let sink = self.permission_sink();
         let cancel = execution.cancel.clone();
-        let timeout = self.timeout;
-        Box::pin(async move { self.run(&input, &cancel, sink, timeout) })
+        Box::pin(async move { self.run(&input, &cancel, sink) })
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
@@ -289,7 +264,6 @@ impl AskUserTool {
         input: &Value,
         cancel: &CancellationToken,
         sink: Option<Arc<dyn PermissionSink>>,
-        timeout: Duration,
     ) -> ToolCallResult {
         let questions = match parse_questions(input) {
             Ok(q) if !q.is_empty() => q,
@@ -315,15 +289,9 @@ impl AskUserTool {
         };
 
         let prompt = AskPrompt::ask_user("ask_user", "ask", summary, &questions);
-        let reply = ask_with_timeout(sink, &prompt, cancel, timeout);
+        let reply = ask_and_wait(sink, &prompt, cancel);
         if cancel.is_cancelled() {
             return ToolCallResult::error("ask_user aborted (turn cancelled)");
-        }
-        if reply.timed_out {
-            return ToolCallResult::ok(format!(
-                "User did not answer within {} seconds (no answer).",
-                timeout.as_secs()
-            ));
         }
         match reply.outcome {
             // A stale/dead UI route is no foreground human, not a tool failure.
@@ -340,19 +308,20 @@ impl AskUserTool {
     }
 }
 
+/// No answer reached the tool: the bridge thread could not start, or its
+/// channel closed. Same class as a stale route — aborted, never a silent Deny.
 fn no_answer() -> AskReply {
-    let mut reply = AskReply::from_outcome(AskOutcome::Deny);
-    reply.timed_out = true;
-    reply
+    AskReply::from_outcome(AskOutcome::Aborted)
 }
 
-/// The deadline belongs to ask_user, not to a bot sink or the turn executor.
-/// A real turn cancellation wins over the deadline; a stale route is no answer.
-fn ask_with_timeout(
+/// Wait for the human: an answer, a turn cancellation, or a dead bridge.
+///
+/// There is no deadline. A question nobody has answered yet is not a result,
+/// and a bot turn is allowed to wait for the person it asked.
+fn ask_and_wait(
     sink: Arc<dyn PermissionSink>,
     prompt: &AskPrompt<'_>,
     cancel: &CancellationToken,
-    timeout: Duration,
 ) -> AskReply {
     if cancel.is_cancelled() {
         return AskReply::from_outcome(AskOutcome::Aborted);
@@ -374,18 +343,13 @@ fn ask_with_timeout(
         return no_answer();
     }
 
-    let deadline = Instant::now() + timeout;
+    // The 25 ms tick only makes cancellation responsive; it is not a deadline.
     loop {
         if cancel.is_cancelled() {
             local_cancel.cancel();
             return AskReply::from_outcome(AskOutcome::Aborted);
         }
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            local_cancel.cancel();
-            return no_answer();
-        }
-        match rx.recv_timeout(left.min(Duration::from_millis(25))) {
+        match rx.recv_timeout(Duration::from_millis(25)) {
             Ok(reply) => {
                 if cancel.is_cancelled() {
                     local_cancel.cancel();
@@ -399,7 +363,7 @@ fn ask_with_timeout(
     }
 }
 
-/// Owned copy for the timeout worker, which outlives the borrowed prompt.
+/// Owned copy for the answer worker, which outlives the borrowed prompt.
 struct OwnedPrompt {
     tool: String,
     rule_id: String,
@@ -495,39 +459,6 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    struct TimedOutSink;
-
-    impl PermissionSink for TimedOutSink {
-        fn ask(&self, _prompt: &AskPrompt<'_>, _cancel: &CancellationToken) -> AskReply {
-            let mut reply = AskReply::from_outcome(AskOutcome::Deny);
-            reply.timed_out = true;
-            reply
-        }
-    }
-
-    #[test]
-    fn timeout_is_a_successful_no_answer_result() {
-        let tool = AskUserTool::new();
-        let input = serde_json::json!({
-            "questions": [{
-                "id": "q",
-                "prompt": "pick",
-                "options": [
-                    { "id": "a", "label": "A" },
-                    { "id": "b", "label": "B" }
-                ]
-            }]
-        });
-        let result = tool.run(
-            &input,
-            &CancellationToken::new(),
-            Some(Arc::new(TimedOutSink)),
-            DEFAULT_ASK_USER_TIMEOUT,
-        );
-        assert!(result.error.is_none());
-        assert!(result.content.contains("did not answer"));
-    }
-
     fn questions_input() -> Value {
         serde_json::json!({
             "questions": [{
@@ -576,7 +507,7 @@ mod tests {
         sink: Arc<dyn PermissionSink>,
         cancel: &CancellationToken,
     ) -> ToolCallResult {
-        tool.run(&questions_input(), cancel, Some(sink), tool.timeout)
+        tool.run(&questions_input(), cancel, Some(sink))
     }
 
     fn never_answer() -> (Arc<NeverAnswer>, Arc<AtomicBool>) {
@@ -589,33 +520,62 @@ mod tests {
         )
     }
 
+    /// No answer is not a result: the call keeps waiting, for a session and for
+    /// a bot alike. Only cancellation ends it (the bot sink has no extra clock).
     #[test]
-    fn timeout_is_shared_by_session_and_bot_sinks() {
-        for (label, sink) in [
-            ("session", {
-                let (sink, cancelled) = never_answer();
-                assert!(!cancelled.load(Ordering::Acquire));
-                sink as Arc<dyn PermissionSink>
-            }),
-            ("bot", {
-                let (sink, cancelled) = never_answer();
-                assert!(!cancelled.load(Ordering::Acquire));
-                Arc::new(crate::bot::BotPermissionSink::new(sink)) as Arc<dyn PermissionSink>
-            }),
-        ] {
-            let tool = AskUserTool::with_timeout(Duration::from_millis(30));
-            let result = run_tool(&tool, sink, &CancellationToken::new());
-            assert!(result.error.is_none(), "{label}: {result:?}");
+    fn an_unanswered_question_waits_until_the_turn_is_cancelled() {
+        for bot in [false, true] {
+            let (sink, sink_cancelled) = never_answer();
+            let sink: Arc<dyn PermissionSink> = if bot {
+                Arc::new(crate::bot::BotPermissionSink::new(sink))
+            } else {
+                sink
+            };
+            let tool = Arc::new(AskUserTool::new());
+            let cancel = CancellationToken::new();
+            let worker = {
+                let tool = Arc::clone(&tool);
+                let cancel = cancel.clone();
+                std::thread::spawn(move || run_tool(&tool, sink, &cancel))
+            };
+            std::thread::sleep(Duration::from_millis(200));
             assert!(
-                result.content.contains("did not answer"),
-                "{label}: {result:?}"
+                !worker.is_finished(),
+                "bot={bot}: an unanswered ask_user must keep waiting"
+            );
+            cancel.cancel();
+            let result = worker.join().expect("worker");
+            assert!(result.error.is_some(), "bot={bot}: {result:?}");
+            assert!(
+                sink_cancelled.load(Ordering::Acquire),
+                "bot={bot}: the waiting sink must be released"
             );
         }
     }
 
+    /// A bridge that disappears without answering is aborted, not denied.
+    #[test]
+    fn a_dead_bridge_is_aborted_not_denied() {
+        struct PanickingSink;
+
+        impl PermissionSink for PanickingSink {
+            fn ask(&self, _prompt: &AskPrompt<'_>, _cancel: &CancellationToken) -> AskReply {
+                panic!("ask bridge thread died")
+            }
+        }
+
+        let tool = AskUserTool::new();
+        let result = run_tool(&tool, Arc::new(PanickingSink), &CancellationToken::new());
+        assert!(result.error.is_none(), "{result:?}");
+        assert!(
+            result.content.contains("no foreground session"),
+            "{result:?}"
+        );
+    }
+
     #[test]
     fn stale_route_is_a_successful_no_answer() {
-        let tool = AskUserTool::with_timeout(Duration::from_millis(30));
+        let tool = AskUserTool::new();
         let result = run_tool(&tool, Arc::new(StaleSink), &CancellationToken::new());
         assert!(result.error.is_none(), "{result:?}");
         assert!(result.content.contains("no foreground session"));
@@ -639,8 +599,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
             child.cancel();
         });
-        let tool = AskUserTool::with_timeout(Duration::from_secs(5));
-        let started = Instant::now();
+        let tool = AskUserTool::new();
+        let started = std::time::Instant::now();
         let result = run_tool(&tool, sink, &cancel);
         assert!(result.error.is_some(), "{result:?}");
         assert!(
@@ -656,12 +616,7 @@ mod tests {
     #[test]
     fn no_sink_is_a_tool_error() {
         let tool = AskUserTool::new();
-        let result = tool.run(
-            &questions_input(),
-            &CancellationToken::new(),
-            None,
-            DEFAULT_ASK_USER_TIMEOUT,
-        );
+        let result = tool.run(&questions_input(), &CancellationToken::new(), None);
         assert!(result.error.is_some());
         assert!(
             result
@@ -682,7 +637,7 @@ mod tests {
         );
         let mut recording = RecordingPermissionSink::new(AskOutcome::Allow { always: false });
         recording.answers = answers;
-        let tool = AskUserTool::with_timeout(Duration::from_secs(5));
+        let tool = AskUserTool::new();
         let result = run_tool(&tool, Arc::new(recording), &CancellationToken::new());
         assert!(result.error.is_none(), "{result:?}");
         assert!(result.content.contains("selected: A (a)"));
