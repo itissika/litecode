@@ -124,7 +124,39 @@ commit alone does not describe the binary, so such a row cannot be reproduced
 from the repository alone. Rebuild from a clean checkout before quoting a
 number.
 
-The source tree is a sparse checkout of the same commit as the Windows
-workspace: only the crate's inputs, `sdk/generated` and `eval/harbor` are
-materialised, so the working tree stays small while `HEAD`, branch and clean
-status still describe exactly what was built.
+A results table should quote exactly three fields from `build-info.json`:
+`commit`, `branch`, `dirty`. `source_tree` is a local debugging aid — a
+filesystem path that stops meaning anything on another machine — so it stays
+out of the table.
+
+The source tree is a **sparse checkout**: only the crate's inputs,
+`sdk/generated` and `eval/harbor` are materialised, so the tree stays small
+while `HEAD`, branch and status still describe exactly what was built. One
+consequence is worth saying out loud: **a clean `git status` here does not mean
+the worktree is complete** — it means the materialised paths match the commit.
+This tree is for building and packaging the eval binary, not a general
+workspace; `git checkout -- .` will not restore files that were never
+materialised.
+
+## 6. When HEAD moves
+
+The tree is a clone of the Windows checkout, so it has to be told when that
+checkout advances. One command, either source:
+
+```bash
+# straight from the Windows checkout, as WSL sees it
+eval/harbor/sync-source.sh /mnt/e/<drive>/litecode
+
+# or from a bundle, for a machine that cannot read /mnt
+git -C <windows> bundle create head.bundle refs/heads/refactor/js-first-tool-contract
+eval/harbor/sync-source.sh head.bundle
+```
+
+The script fetches the branch the tree is on and fast-forwards to it; it prints
+the new commit and warns if the working tree is dirty (which would make the next
+`build-info.json` say `dirty: true`). Then rebuild, and the new
+`build-info.json` carries the new commit:
+
+```bash
+bash eval/harbor/build.sh
+```
