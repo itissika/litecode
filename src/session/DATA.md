@@ -103,7 +103,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 |---|---|
 | Live / 线投影 | `TurnId`、相位、是否在跑、compacting、bash jobs、权限、token 统计 |
 | 目录投影 | `api_model_id`、`label`、`context_window` |
-| SessionEvent | 换过的模型/工具集（`request/header`、`request/context`）、用户切换模型（`model/changed`）、回合起止 |
+| SessionEvent | 换过的模型/工具集（`request/header`）、回合起止 |
 | 派生 | `max_seq`（active tail）、文件撤回锚点、FTS、meter |
 | 不抄 | Codex `WorldState`、Guardian、Realtime、fork 线程 id、`memory_mode` |
 
@@ -172,12 +172,12 @@ AgentView/projector 在读取边界把它展开成唯一形状：
 | `reminder/env` | Diff | 隐藏 | 工作目录、系统、日期（精确到日）、时区相对脊骨上同 kind 最新一行变了 |
 | `reminder/tasks` | Restore | 隐藏 | 脊骨以 `compacted` 开头、压缩后还没有这个 kind、待办或活动计划非空 |
 | `reminder/background` | Restore | 隐藏 | 同上，仍在跑的 bash 或子会话计数非空 |
-| `reminder/plan_changed` | Diff（按 revision） | 隐藏 | 磁盘 revision 与 `active_plan.revision` 不一致，且脊骨上没有同 path+revision 的这类行 |
+| `reminder/plan_changed` | **已停写** | 隐藏 | 不再产生新行；仍是可读 kind，老行按原 body 渲染（曾按磁盘 revision 与 `active_plan.revision` 的 Diff 写出） |
 | `reminder/files_changed` | Event | 隐藏 | 外部改了本会话跟踪的文件。只列路径，不带内容 |
 | `reminder/bash_exit` | Event | 切痕「后台终端退出」 | 后台 `run` 作业**进程退出**（不等 stdout/stderr 读完，孙进程仍持管道时也照发）。`wait` 或 `kill` 已消费的通知不进这里 |
 | `reminder/subagent_settled` | Event | 切痕「子会话结束」 | 后台子会话回合结束 |
 | `reminder/custom_tool_settled` | Event | 切痕「后台自定义工具结束」 | 后台自定义工具任务结束。结果经 mailbox 在请求缝隙写入，不发明 FunctionCallOutput |
-| `reminder/mentions` | 附着（非 seam Restore） | 隐藏 | 人键入 user 消息后立即写：展开消息里引用的知识节点/符号快照；压缩后不自动恢复；同快照仍在活面上则不重复写 |
+| `reminder/mentions` | **已停写** | 隐藏 | 不再产生新行；仍是可读 kind，老行按原 body 渲染（曾是消息引用的知识节点/符号快照附着） |
 | `reminder/knowledge_status` | Diff（按 class） | 隐藏 | 人键入 user 消息后附着知识库 class 提示；没有 enabled 节点不写（pending / disabled 视同空库，它们的问题也不计入）；只统计 enabled 节点上的错误，没有错误则报 enabled 数量；活面上同 class 不重复写 |
 
 隐藏行仍然下发，带 `hidden: true`，seq 游标保持连续。可见性只在 Rust 的 `ReminderKind::visibility` 声明；前端只认 `hidden`。
@@ -205,8 +205,6 @@ bash 退出、子会话结束和后台自定义工具结束不再在 auto-turn �
 | `turn/start` | `{ turn }` |
 | `turn/end` | `{ turn, reason: completed \| cancelled \| error \| max_steps \| hook_blocked }` |
 | `request/header` | `{ provider, model, thinking_tier?, context_mode?, … }` 当时调用绑定（DSH `EpochHeader.config`） |
-| `request/context` | 当时系统提示、工具集等装配快照 |
-| `model/changed` | `{ from, to, at_seq, report }` 用户切换；`report` 是 port 预算的丢弃/投影计数。与 `sessions.model_id` 在同一 writer 事务提交，即便下一轮未发生也保留 |
 
 ### 不是 kind
 

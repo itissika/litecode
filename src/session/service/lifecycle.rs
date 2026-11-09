@@ -46,14 +46,12 @@ impl SessionService {
         self.sessions.session_model_id(session_id)
     }
 
-    pub(crate) fn set_session_model_with_change(
+    pub(crate) fn set_session_model_id(
         &self,
         session_id: &str,
         model_id: Option<String>,
-        record: &serde_json::Value,
-    ) -> Result<Seq> {
-        self.sessions
-            .set_session_model_with_change(session_id, model_id, record)
+    ) -> Result<()> {
+        self.sessions.set_session_model_id(session_id, model_id)
     }
 
     pub(crate) fn set_thinking_tier(

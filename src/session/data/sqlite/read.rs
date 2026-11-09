@@ -871,7 +871,7 @@ mod conversation_rows_tests {
     use crate::types::user_text;
 
     /// Only user/assistant rows are conversation. A control row such as
-    /// `model/changed` must not make an empty session look like one.
+    /// `turn/start` must not make an empty session look like one.
     #[test]
     fn control_rows_do_not_count_as_conversation() {
         let dir = TempDir::new().expect("tempdir");
@@ -886,12 +886,12 @@ mod conversation_rows_tests {
         data.shutdown();
 
         // The data layer has no public `append event` path; poke the row the
-        // writer would have produced for a model switch.
+        // writer produces for a turn start.
         let conn = rusqlite::Connection::open(&db).expect("rw");
         conn.execute(
             "INSERT INTO transcript_items
                 (session_id, seq, item_type, kind, body, token_estimate, created_at, event_type, surface_op)
-             VALUES (?1, 0, 'model/changed', 'model/changed', '{}', 0, 0, 'model/changed', '')",
+             VALUES (?1, 0, 'turn/start', 'turn/start', '{\"turn\":\"turn-1\"}', 0, 0, 'turn/start', '')",
             rusqlite::params![control_only],
         )
         .expect("control row");
@@ -982,7 +982,7 @@ fn list_session_ids(conn: &Connection) -> Result<Vec<String>> {
 
 /// 1 when the session has at least one user or assistant item row.
 ///
-/// Control rows (`model/changed`, `turn/start`, reminders) are not content:
+/// Control rows (`turn/start`, reminders) are not content:
 /// they must not make an otherwise empty session look like a conversation.
 fn has_conversation_rows(conn: &Connection, session_id: &str) -> Result<i64> {
     conn.query_row(

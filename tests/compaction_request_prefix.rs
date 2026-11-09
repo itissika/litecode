@@ -845,16 +845,6 @@ async fn manual_compaction_repairs_a_stale_session_model_like_launch_turn() {
         Some(common::TEST_PRIMARY_MODEL_REF),
         "manual compaction must repair the sticky model with ensure_session_model"
     );
-    // The repair is a model change, so it must leave the same durable row a
-    // person's switch does: the column and `model/changed` in one transaction.
-    let events = sessions.data().events_blocking(&sid).expect("events");
-    let change = events
-        .iter()
-        .find(|event| matches!(event.event_type, EventType::ModelChanged))
-        .expect("a repaired model must be explained by model/changed");
-    assert_eq!(change.data["to"], common::TEST_PRIMARY_MODEL_REF);
-    assert_eq!(change.data["from"], "test/model-that-was-removed");
-    assert_eq!(change.data["reason"], "auto_unavailable");
     let compact = captured
         .captured()
         .into_iter()

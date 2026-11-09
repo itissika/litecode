@@ -72,10 +72,6 @@ pub fn view_from_spine(nodes: &[(u64, SpineNode)]) -> SpineReminderView {
 pub struct TaskFacts {
     pub todos: Vec<TodoSnap>,
     pub active_plan: Option<PlanPointer>,
-    /// On-disk hash when the active plan file exists.
-    pub plan_disk_revision: Option<String>,
-    /// Revision the session last authored or acknowledged.
-    pub plan_seen_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -118,9 +114,6 @@ pub fn sync(ctx: &SeamCtx, view: &SpineReminderView, facts: &Facts) -> Vec<Remin
         out.push(reminder);
     }
     if let Some(reminder) = sources::background(view, &facts.background) {
-        out.push(reminder);
-    }
-    if let Some(reminder) = sources::plan_changed(view, &facts.tasks) {
         out.push(reminder);
     }
     if let Some(reminder) = sources::files_changed(&facts.changed_paths) {
@@ -176,6 +169,13 @@ mod tests {
             first
                 .iter()
                 .any(|reminder| reminder.kind() == ReminderKind::Tasks)
+        );
+        // The plan-changed source is gone: an active plan never writes a row.
+        assert!(
+            first
+                .iter()
+                .all(|reminder| reminder.kind() != ReminderKind::PlanChanged),
+            "{first:?}"
         );
         view.kinds_after_compacted.insert(ReminderKind::Tasks);
         let second = sync(&ctx(), &view, &facts);

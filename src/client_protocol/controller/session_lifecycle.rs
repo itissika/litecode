@@ -796,25 +796,8 @@ impl SessionController {
             }
             return Ok(());
         }
-        // State and history share one writer transaction: either the model
-        // changes and the switch row exists, or neither change lands.
-        let record = serde_json::json!({
-            "schema": 1,
-            "from": previous,
-            "to": model_id,
-            "at_seq": preview.at_seq,
-            "report": {
-                "items_in": preview.report.items_in,
-                "items_out": preview.report.items_out,
-                "reasoning_dropped": preview.report.reasoning_dropped,
-                "ciphertext_stripped": preview.report.ciphertext_stripped,
-                "signatures_stripped": preview.report.signatures_stripped,
-                "projected_parts": preview.report.projected_parts,
-            }
-        });
-        let change_seq = self
-            .service
-            .set_session_model_with_change(session_id, Some(model_id.to_string()), &record)
+        self.service
+            .set_session_model_id(session_id, Some(model_id.to_string()))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         tracing::info!(
             target: "litecode.debug.model_switch",
@@ -822,7 +805,6 @@ impl SessionController {
             from = %previous,
             to = %model_id,
             at_seq = preview.at_seq,
-            change_seq,
             items_in = preview.report.items_in,
             items_out = preview.report.items_out,
             reasoning_dropped = preview.report.reasoning_dropped,
@@ -958,7 +940,7 @@ pub(crate) async fn build_session_list(
         // child must be visible after reconnect). A root is listed only when
         // the sidebar can show something: a user title / folder, preview
         // text, a live turn, or a real conversation row. Control rows such as
-        // `model/changed` are not content — see `SessionListRow::is_listed`.
+        // `turn/start` are not content — see `SessionListRow::is_listed`.
         let running = service.is_turn_running(&row.id).await;
         let status = service
             .status(&row.id)

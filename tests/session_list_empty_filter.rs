@@ -3,7 +3,7 @@
 //! Reinstall / reopen is a writer shutdown + new `SessionData` (WAL recover, blob GC
 //! on open). Each case leaves durable SQLite rows, then lists through a fresh manager.
 //! Assertions are the user contract: a session with conversation rows must stay listed,
-//! and a control-only row (`model/changed`) must not fabricate one.
+//! and a control-only row (`turn/start`) must not fabricate one.
 //! A red test is a reproduced hide.
 
 mod common;
@@ -135,16 +135,20 @@ async fn control_row_only_session_stays_hidden() {
         let sid = data
             .create_session("/proj", "default", None)
             .expect("create");
-        let mgr = SessionManager::from_data(Arc::new(TurnGuard::new()), Arc::clone(&data));
-        mgr.set_session_model_with_change(
-            &sid,
-            Some("p/next".into()),
-            &serde_json::json!({"schema": 1, "from": null, "to": "p/next", "at_seq": 0}),
-        )
-        .expect("model change row");
         data.shutdown();
         sid
     };
+    // The data layer has no public append-event path; poke the row a turn
+    // writes and prove a control-only session is not content.
+    env.poke(|conn| {
+        conn.execute(
+            "INSERT INTO transcript_items
+                (session_id, seq, item_type, kind, body, token_estimate, created_at, event_type, surface_op)
+             VALUES (?1, 0, 'turn/start', 'turn/start', '{\"turn\":\"turn-1\"}', 0, 0, 'turn/start', '')",
+            rusqlite::params![sid],
+        )
+        .expect("control row");
+    });
     assert_hidden_after_reopen(&env, &sid, "control-only root").await;
 
     // User claims the row: a title must outrank the missing preview.

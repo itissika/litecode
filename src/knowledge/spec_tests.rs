@@ -327,15 +327,6 @@ fn ref_status(content: &Content, ref_key: &str) -> (String, Value) {
     (hit.status.to_string(), json!(hit.args))
 }
 
-fn mention_text(ws: &Path, text: &str) -> String {
-    crate::reminder::mentions::build(ws, text, &Default::default())
-        .map(|reminder| match reminder {
-            crate::reminder::Reminder::Mentions(body) => body.text,
-            _ => String::new(),
-        })
-        .unwrap_or_default()
-}
-
 /// B4 + KR-READ-1: one read policy. A file over 10 MiB exists (file refs are
 /// fine) but symbol and range refs are `unreadable_file`, and the mention
 /// snapshot says the same.
@@ -372,13 +363,6 @@ fn oversized_and_binary_files_are_unreadable_everywhere() {
         ref_status(&content, "range:src/cap.txt\x005").0,
         "ok",
         "exactly 10 MiB is readable"
-    );
-
-    // WP-050 T8: keep one mention-text sample; reason asserts above cover branches.
-    let text = mention_text(ws, "[@ file=\"src/big.rs\" symbol=\"fn alpha\"]");
-    assert!(
-        text.contains("is not a readable text file (larger than 10 MiB)"),
-        "{text}"
     );
 }
 

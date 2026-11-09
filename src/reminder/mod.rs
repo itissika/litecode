@@ -7,7 +7,6 @@ mod engine;
 mod file_tracker;
 mod kinds;
 pub mod knowledge_status;
-pub mod mentions;
 pub mod migrate;
 mod sources;
 

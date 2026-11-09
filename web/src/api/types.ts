@@ -309,7 +309,7 @@ export interface PlanExecuteLogRow extends LogRowEnvelope {
 }
 
 interface ControlLogRow extends LogRowEnvelope {
-  kind: "turn/start" | "turn/end" | "request/header" | "request/context";
+  kind: "turn/start" | "turn/end" | "request/header";
   body: Record<string, unknown>;
 }
 

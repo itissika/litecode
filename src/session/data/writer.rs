@@ -21,7 +21,7 @@ use super::sqlite::conn::SharedDb;
 use super::sqlite::folders;
 use super::sqlite::ops;
 use super::sqlite::read;
-use super::sqlite::session::{ApplyOutcome, CommitDeltaOutcome, Session, SessionApply};
+use super::sqlite::session::{ApplyOutcome, CommitDeltaOutcome, Session};
 
 pub const WRITER_QUEUE_CAPACITY: usize = 256;
 
@@ -1516,34 +1516,17 @@ fn dispatch(state: &mut WriterRuntime, mutation: SessionMutation) -> Result<Comm
             expected_revision,
             operation_id,
             model_id,
-            event,
         } => {
-            let appended_seq = {
+            {
                 let session = ensure_live(state, &session_id)?;
                 session.set_model_id(model_id.as_deref())?;
-                match event {
-                    Some(event) => match session.apply(SessionApply::Append(event))? {
-                        ApplyOutcome::Appended(seq) => Some(seq),
-                        _ => {
-                            return Err(LitecodeError::SessionStorage(
-                                "set model event append returned a non-append outcome".into(),
-                            ));
-                        }
-                    },
-                    None => None,
-                }
-            };
-            let (outcome, journal) = match appended_seq {
-                Some(seq) => (CommitKind::Appended { seq }, ops::JournalWrite::Full),
-                None => (CommitKind::MetaUpdated, ops::JournalWrite::ReceiptOnly),
-            };
-            bump_receipt_with_journal(
+            }
+            bump_receipt_receipt_only(
                 state,
                 &session_id,
                 &operation_id.0,
                 expected_revision,
-                outcome,
-                journal,
+                CommitKind::MetaUpdated,
             )
         }
         SessionMutation::SetThinkingTier {

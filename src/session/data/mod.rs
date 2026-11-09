@@ -477,7 +477,7 @@ impl SessionData {
     /// Whether the session has any `item/user` or `item/assistant` row.
     ///
     /// The sidebar's list visibility uses this only for rows with no preview
-    /// text: control rows such as `model/changed` must not count as content.
+    /// text: control rows such as `turn/start` must not count as content.
     pub fn has_conversation_rows_blocking(&self, session_id: &str) -> Result<bool> {
         match self.read_blocking(SessionRead::HasConversationRows {
             session_id: session_id.to_string(),

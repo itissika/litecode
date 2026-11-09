@@ -323,6 +323,7 @@ async fn set_session_model_persists_selectable_catalog_ref() {
     let _ = ctrl.take_outgoing_for(&sid);
 
     let revision_before_switch = sessions.data().revision_blocking(&sid).expect("revision");
+    let rows_before_switch = sessions.data().events_blocking(&sid).expect("events").len();
     ctrl.set_session_model(&sid, common::TEST_ALT_MODEL_REF)
         .expect("set model");
     assert_eq!(
@@ -338,14 +339,11 @@ async fn set_session_model_persists_selectable_catalog_ref() {
         revision_before_switch + 1,
         "one model switch must commit state and history in one revision"
     );
-    let model_changes_after_first_switch = sessions
-        .data()
-        .events_blocking(&sid)
-        .expect("events")
-        .into_iter()
-        .filter(|event| event.event_type == litecode::session::EventType::ModelChanged)
-        .count();
-    assert_eq!(model_changes_after_first_switch, 1);
+    assert_eq!(
+        sessions.data().events_blocking(&sid).expect("events").len(),
+        rows_before_switch,
+        "a switch moves the column without appending a log row"
+    );
 
     // Re-selecting the current model is a no-op: no duplicate control-plane
     // row and no revision bump.
@@ -357,16 +355,10 @@ async fn set_session_model_persists_selectable_catalog_ref() {
         revision_after_first_switch,
         "same-model selection must not mutate the session"
     );
-    let model_changes_after_repeat = sessions
-        .data()
-        .events_blocking(&sid)
-        .expect("events")
-        .into_iter()
-        .filter(|event| event.event_type == litecode::session::EventType::ModelChanged)
-        .count();
     assert_eq!(
-        model_changes_after_repeat, model_changes_after_first_switch,
-        "same-model selection must not append model/changed"
+        sessions.data().events_blocking(&sid).expect("events").len(),
+        rows_before_switch,
+        "same-model selection must not append a row"
     );
 
     // A reference the catalog does not declare is refused on the wire and never

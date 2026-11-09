@@ -26,14 +26,7 @@ pub enum EventType {
     PlanExecute,
     TurnStart,
     TurnEnd,
-    StepStart,
-    StepEnd,
-    AssistantChunk,
     RequestHeader,
-    RequestContext,
-    /// A user-visible model switch. Control-plane: records who switched to
-    /// what, when, and what the port said the transcript would lose.
-    ModelChanged,
     Unknown(String),
 }
 
@@ -61,12 +54,7 @@ impl EventType {
             "plan/execute" => Self::PlanExecute,
             "turn/start" => Self::TurnStart,
             "turn/end" => Self::TurnEnd,
-            "step/start" => Self::StepStart,
-            "step/end" => Self::StepEnd,
-            "assistant/chunk" => Self::AssistantChunk,
             "request/header" => Self::RequestHeader,
-            "request/context" => Self::RequestContext,
-            "model/changed" => Self::ModelChanged,
             other => {
                 if let Some(kind) = ReminderKind::parse_wire(other) {
                     Self::Reminder(kind)
@@ -88,12 +76,7 @@ impl EventType {
             Self::PlanExecute => "plan/execute",
             Self::TurnStart => "turn/start",
             Self::TurnEnd => "turn/end",
-            Self::StepStart => "step/start",
-            Self::StepEnd => "step/end",
-            Self::AssistantChunk => "assistant/chunk",
             Self::RequestHeader => "request/header",
-            Self::RequestContext => "request/context",
-            Self::ModelChanged => "model/changed",
             Self::Unknown(s) => s.as_str(),
         }
     }
@@ -128,14 +111,7 @@ impl EventType {
 
     /// Control-plane kinds are stored as SessionEvent rows but never enter the spine.
     pub fn is_control_plane(&self) -> bool {
-        matches!(
-            self,
-            Self::TurnStart
-                | Self::TurnEnd
-                | Self::RequestHeader
-                | Self::RequestContext
-                | Self::ModelChanged
-        )
+        matches!(self, Self::TurnStart | Self::TurnEnd | Self::RequestHeader)
     }
 }
 

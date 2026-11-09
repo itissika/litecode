@@ -1011,13 +1011,6 @@ impl AgentRuntime {
             .sessions
             .with_entry_task_state(&self.session_id, |state| Ok(state.clone()))
             .unwrap_or_default();
-        let plan_disk_revision = task_state.active_plan.as_ref().and_then(|plan| {
-            let path = self
-                .sessions
-                .plan_dir_path()
-                .join(format!("{}.md", plan.slug));
-            crate::session::task_state::plan_file_revision(&path)
-        });
         stages.mark("task_state_and_plan");
         let counts = self.sessions.child_counts(&self.session_id);
         stages.mark("child_counts");
@@ -1159,11 +1152,6 @@ impl AgentRuntime {
                     relative_path: plan.relative_path.clone(),
                     slug: plan.slug.clone(),
                 }),
-                plan_disk_revision,
-                plan_seen_revision: task_state
-                    .active_plan
-                    .as_ref()
-                    .and_then(|plan| plan.revision.clone()),
             },
             memory: MemoryFacts {
                 entries: memory
@@ -1341,8 +1329,8 @@ impl AgentRuntime {
         });
         // Every current code is debug-only: a switch or a foreign strip is
         // evidence for the log, not a reason to interrupt the user. If a code
-        // ever becomes user-visible, route it through the durable
-        // `model/changed` report instead of reviving a toast here.
+        // ever becomes user-visible, give it a durable row of its own instead
+        // of reviving a toast here.
     }
 
     pub(crate) fn build_model_request(

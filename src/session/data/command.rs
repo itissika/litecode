@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::session::data::sqlite::session::{
     ProviderUsageRollup, ProviderUsageSeries, SessionApply, SessionContextMeter,
 };
-use crate::session::event::{EventDraft, Seq};
+use crate::session::event::Seq;
 use crate::session::memory::SessionMemory;
 use crate::session::task_state::TaskReminders;
 use crate::session::working::WorkingRow;
@@ -70,9 +70,9 @@ impl SessionListRow {
     /// user-claimed row (title / folder), something to render (preview text),
     /// or a live turn.
     ///
-    /// Control-only rows (`model/changed`, `turn/start`, reminders) have none
-    /// of these; [`Self::is_listed`] adds the one durable check that can still
-    /// prove the user talked to the session.
+    /// Control-only rows (`turn/start`, reminders) have none of these;
+    /// [`Self::is_listed`] adds the one durable check that can still prove the
+    /// user talked to the session.
     pub fn is_listed_by_projection(&self, running: bool, busy: bool) -> bool {
         self.parent_session_id.is_some()
             || running
@@ -346,8 +346,6 @@ pub enum SessionMutation {
         expected_revision: u64,
         operation_id: MutationId,
         model_id: Option<String>,
-        /// Optional control-plane event committed with the model state change.
-        event: Option<EventDraft>,
     },
     SetThinkingTier {
         session_id: String,
@@ -626,7 +624,7 @@ pub enum SessionRead {
         session_id: String,
     },
     /// Whether the session has any `item/user` or `item/assistant` row.
-    /// Control rows (`model/changed`, reminders) do not count.
+    /// Control rows (`turn/start`, reminders) do not count.
     HasConversationRows {
         session_id: String,
     },

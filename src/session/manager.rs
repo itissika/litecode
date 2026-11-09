@@ -3513,43 +3513,14 @@ impl SessionManager {
 
     /// Persist sticky session model catalog id. Does not touch `agent_id`.
     pub fn set_session_model_id(&self, session_id: &str, model_id: Option<String>) -> Result<()> {
-        self.set_session_model_id_inner(session_id, model_id, None)?;
+        self.set_session_model_id_inner(session_id, model_id)?;
         Ok(())
-    }
-
-    /// Atomically persist the session model and its control-plane switch event.
-    ///
-    /// The model column and `model/changed` row share one writer transaction,
-    /// so a failed event append rolls the model change back too.
-    pub fn set_session_model_with_change(
-        &self,
-        session_id: &str,
-        model_id: Option<String>,
-        record: &serde_json::Value,
-    ) -> Result<crate::session::event::Seq> {
-        let event = EventDraft {
-            time: chrono::Utc::now().timestamp_millis(),
-            event_type: EventType::ModelChanged,
-            data: record.clone(),
-            surface_op: None,
-            source_seqs: None,
-            ignorable: false,
-            state: crate::session::model::LogState::Final,
-        };
-        let receipt = self.set_session_model_id_inner(session_id, model_id, Some(event))?;
-        match receipt.outcome {
-            crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
-            other => Err(LitecodeError::InvalidSessionEvent(format!(
-                "set_session_model_with_change: unexpected commit outcome {other:?}"
-            ))),
-        }
     }
 
     fn set_session_model_id_inner(
         &self,
         session_id: &str,
         model_id: Option<String>,
-        event: Option<EventDraft>,
     ) -> Result<crate::session::data::command::CommitReceipt> {
         let normalized = model_id
             .as_deref()
@@ -3562,7 +3533,6 @@ impl SessionManager {
             expected_revision: expected,
             operation_id: MutationId::new(),
             model_id: normalized.clone(),
-            event,
         })?;
         if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
             record.model_id = normalized;
@@ -4042,64 +4012,6 @@ impl SessionManager {
         Ok(seq)
     }
 
-    /// Snapshot digests of mention citations still on the model-visible surface.
-    ///
-    /// A compacted reminder is no longer on that surface, so its digest is not
-    /// returned and a later citation attaches the snapshot again.
-    fn live_mention_digests(&self, session_id: &str) -> HashMap<String, String> {
-        let Ok(events) = self.data.events_blocking(session_id) else {
-            return HashMap::new();
-        };
-        let Ok(surface) = crate::session::fold_surface(&events) else {
-            return HashMap::new();
-        };
-        let by_seq: HashMap<_, _> = events.iter().map(|event| (event.seq, event)).collect();
-        let mut delivered = HashMap::new();
-        for seq in &surface.nodes {
-            let Some(event) = by_seq.get(seq) else {
-                continue;
-            };
-            let EventType::Reminder(crate::reminder::ReminderKind::Mentions) = &event.event_type
-            else {
-                continue;
-            };
-            let Ok(crate::reminder::Reminder::Mentions(body)) =
-                serde_json::from_value(event.data.clone())
-            else {
-                continue;
-            };
-            for citation in body.refs {
-                if let Some(digest) = citation.digest {
-                    delivered.insert(citation.key, digest);
-                }
-            }
-        }
-        delivered
-    }
-
-    /// Write `reminder/mentions` for text that was just stored as a user row.
-    ///
-    /// Citations whose snapshot still matches one on the live surface are omitted.
-    pub fn append_mentions_for(
-        &self,
-        session_id: &str,
-        workspace: &std::path::Path,
-        user_text: &str,
-    ) {
-        let mut stages = crate::telemetry::latency::Stages::new("mentions", None);
-        let digests = self.live_mention_digests(session_id);
-        stages.mark("live_mention_digests");
-        let built = crate::reminder::mentions::build(workspace, user_text, &digests);
-        stages.mark("build");
-        let Some(reminder) = built else {
-            return;
-        };
-        if let Err(error) = self.append_reminder(session_id, &reminder) {
-            tracing::warn!(%error, "mentions reminder was not saved");
-        }
-        stages.mark("append");
-    }
-
     /// Write `reminder/knowledge_status` after a human message.
     ///
     /// A library with no enabled node writes nothing. The same class still on
@@ -4419,10 +4331,10 @@ fn turn_step_from_stream(
 mod request_origin_tests {
     use super::*;
 
-    /// A switch is durable and control-plane: state and history share one
-    /// revision, it never becomes model input, and it is not a request origin.
+    /// A switch moves only the column: it advances the revision once, appends
+    /// no log row, never becomes model input, and is not a request origin.
     #[test]
-    fn model_change_commits_state_and_control_plane_row_together() {
+    fn model_change_moves_only_the_column() {
         let manager = SessionManager::ephemeral_registry();
         let session_id = manager
             .open_session_sync("", "default", None)
@@ -4434,15 +4346,14 @@ mod request_origin_tests {
             .data()
             .revision_blocking(&session_id)
             .expect("revision");
-        let record = serde_json::json!({
-            "schema": 1,
-            "from": "p/a",
-            "to": "p/b",
-            "at_seq": 0,
-            "report": { "reasoning_dropped": 3, "projected_parts": 1 },
-        });
-        let seq = manager
-            .set_session_model_with_change(&session_id, Some("p/b".into()), &record)
+        let rows_before = manager
+            .data()
+            .events_blocking(&session_id)
+            .expect("events")
+            .len();
+
+        manager
+            .set_session_model_id(&session_id, Some("p/b".into()))
             .expect("switch commits");
 
         assert_eq!(
@@ -4458,18 +4369,16 @@ mod request_origin_tests {
             "one user action must advance the session revision once"
         );
         let events = manager.data().events_blocking(&session_id).expect("events");
-        let row = events
-            .iter()
-            .find(|event| event.event_type == EventType::ModelChanged)
-            .expect("durable switch row");
-        assert_eq!(row.seq, seq);
-        assert_eq!(row.data["to"], "p/b");
-        assert_eq!(row.data["report"]["reasoning_dropped"], 3);
+        assert_eq!(
+            events.len(),
+            rows_before,
+            "a switch writes the column, not a log row"
+        );
 
         let messages = crate::session::surface::derive_messages(&events).expect("derive");
         assert!(
             messages.is_empty(),
-            "a switch record must never reach the model: {messages:?}"
+            "a switch must never reach the model: {messages:?}"
         );
         assert!(
             manager.request_origins(&session_id).unwrap().is_empty(),
@@ -4478,7 +4387,7 @@ mod request_origin_tests {
     }
 
     #[test]
-    fn failed_model_change_rolls_back_state_and_event_together() {
+    fn failed_model_change_rolls_back_the_column() {
         let manager = SessionManager::ephemeral_registry();
         let session_id = manager
             .open_session_sync("", "default", None)
@@ -4490,34 +4399,20 @@ mod request_origin_tests {
             .data()
             .revision_blocking(&session_id)
             .expect("revision");
-        let record = serde_json::json!({
-            "schema": 1,
-            "from": "p/a",
-            "to": "p/b",
-            "at_seq": 0,
-            "report": { "reasoning_dropped": 0 },
-        });
 
         manager
             .data()
             .hooks()
             .inject(crate::session::FaultKind::BeforeCommit);
         let error = manager
-            .set_session_model_with_change(&session_id, Some("p/b".into()), &record)
+            .set_session_model_id(&session_id, Some("p/b".into()))
             .expect_err("injected commit failure must fail the switch");
         assert!(error.to_string().contains("before commit"), "{error}");
 
         assert_eq!(
             manager.session_model_id(&session_id).as_deref(),
             Some("p/a"),
-            "the model change must roll back with the event"
-        );
-        let events = manager.data().events_blocking(&session_id).expect("events");
-        assert!(
-            !events
-                .iter()
-                .any(|event| event.event_type == EventType::ModelChanged),
-            "no switch row may survive a rolled-back model change"
+            "a switch that fails before commit must not move the column"
         );
         assert_eq!(
             manager

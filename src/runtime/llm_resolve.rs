@@ -102,22 +102,7 @@ pub fn ensure_session_model(
     }
     let model_ref = seed_model_ref(resolved, agent_id)?;
     if current.as_deref() != Some(model_ref.as_str()) {
-        // Repairing an unrunnable model is still a model change: it lands in the
-        // same writer transaction that moves the column and appends
-        // `model/changed`, so the change has one durable explanation. Replay
-        // itself reads producers from `request/header`, never this row — the
-        // event exists so the turn's model is not silently different from the
-        // one the session started on.
-        let record = serde_json::json!({
-            "schema": 1,
-            "from": current,
-            "to": model_ref.clone(),
-            "at_seq": sessions.entry_wire_seq_cursor(session_id).0.max(0) as u64,
-            "report": null,
-            // Not a person's switch: the stored model stopped being runnable.
-            "reason": "auto_unavailable",
-        });
-        match sessions.set_session_model_with_change(session_id, Some(model_ref.clone()), &record) {
+        match sessions.set_session_model_id(session_id, Some(model_ref.clone())) {
             Ok(_) => tracing::info!(
                 session_id,
                 model_ref = %model_ref,
