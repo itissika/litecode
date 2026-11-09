@@ -3877,13 +3877,20 @@ impl SessionManager {
         }
     }
 
-    /// `(seq, body)` of every recorded request origin, oldest first.
+    /// `(seq, body)` of the request origins that can attribute one item window,
+    /// oldest first: the headers inside `[from_seq, through_seq]` plus the newest
+    /// header before `from_seq`. Nothing else can be any window item's newest
+    /// predecessor, so reading the rest of the session would be waste.
     pub fn request_origins(
         &self,
         session_id: &str,
+        from_seq: crate::session::event::Seq,
+        through_seq: crate::session::event::Seq,
     ) -> crate::types::Result<Vec<(crate::session::event::Seq, serde_json::Value)>> {
         match self.data.read_blocking(SessionRead::RequestOrigins {
             session_id: session_id.to_string(),
+            from_seq: from_seq.min(i64::MAX as u64) as i64,
+            through_seq: through_seq.min(i64::MAX as u64) as i64,
         })? {
             ReadValue::RequestOrigins(rows) => Ok(rows
                 .into_iter()
@@ -4381,7 +4388,10 @@ mod request_origin_tests {
             "a switch must never reach the model: {messages:?}"
         );
         assert!(
-            manager.request_origins(&session_id).unwrap().is_empty(),
+            manager
+                .request_origins(&session_id, 0, 0)
+                .unwrap()
+                .is_empty(),
             "a switch is not a request origin"
         );
     }

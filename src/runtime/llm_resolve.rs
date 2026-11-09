@@ -179,10 +179,30 @@ fn binding_from_ref(
     })
 }
 
+/// The seq interval a batch of items spans, or `None` when no item carries a
+/// durable seq.
+///
+/// This is the only window the producer map needs: every item's newest header
+/// is either inside its own interval or is the single header just before it.
+pub(crate) fn item_seq_window(
+    item_seqs: &[Option<crate::session::event::Seq>],
+) -> Option<(crate::session::event::Seq, crate::session::event::Seq)> {
+    let mut window: Option<(crate::session::event::Seq, crate::session::event::Seq)> = None;
+    for seq in item_seqs.iter().flatten() {
+        window = Some(match window {
+            None => (*seq, *seq),
+            Some((lo, hi)) => (lo.min(*seq), hi.max(*seq)),
+        });
+    }
+    window
+}
+
 /// Read the producer of each item from durable request headers.
 ///
 /// One definition shared by the request builder and the switch preview, so a
-/// preview and the next turn cannot disagree about who produced what.
+/// preview and the next turn cannot disagree about who produced what. The
+/// caller passes the window's origins; this function does not care how many
+/// headers the session has.
 pub(crate) fn producers_from_origins(
     origins: Vec<(crate::session::event::Seq, serde_json::Value)>,
     item_seqs: &[Option<crate::session::event::Seq>],
@@ -244,7 +264,12 @@ pub(crate) fn preview_session_model(
     let seqs: Vec<Option<crate::session::event::Seq>> =
         rows.iter().map(|row| row.log_seq).collect();
     let mut items: Vec<Item> = crate::session::working::project_items(&rows);
-    let origins = sessions.request_origins(session_id).unwrap_or_default();
+    let origins = match item_seq_window(&seqs) {
+        Some((from_seq, through_seq)) => sessions
+            .request_origins(session_id, from_seq, through_seq)
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
     let producers = producers_from_origins(origins, &seqs);
     let rebased = vec![false; items.len()];
     let projected = project_llm_input_for_model(&mut items, target.as_ref());

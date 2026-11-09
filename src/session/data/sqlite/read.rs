@@ -148,9 +148,16 @@ pub fn execute(
                 crate::session::surface::spine_reminder_view(&events)?,
             ))
         }
-        SessionRead::RequestOrigins { session_id } => Ok(ReadValue::RequestOrigins(
-            request_origins(conn, &session_id)?,
-        )),
+        SessionRead::RequestOrigins {
+            session_id,
+            from_seq,
+            through_seq,
+        } => Ok(ReadValue::RequestOrigins(request_origins(
+            conn,
+            &session_id,
+            from_seq,
+            through_seq,
+        )?)),
         SessionRead::ProviderUsageRollup { session_id } => Ok(ReadValue::ProviderUsageRollup(
             provider_usage_rollup(conn, &session_id)?,
         )),
@@ -586,23 +593,54 @@ fn request_model(body: &str) -> Option<String> {
         .map(|model| model.to_string())
 }
 
-fn request_origins(conn: &Connection, session_id: &str) -> Result<Vec<(i64, serde_json::Value)>> {
+/// Request origins that can attribute one working-set window.
+///
+/// An item's producer is the newest `request/header` at or before its seq. For
+/// every item in `[from_seq, through_seq]` that header is either inside the
+/// window or is the newest header before it, so these two reads are the whole
+/// answer. The previous version read every header of the session on every step;
+/// the cost now follows the window, not the history.
+fn request_origins(
+    conn: &Connection,
+    session_id: &str,
+    from_seq: i64,
+    through_seq: i64,
+) -> Result<Vec<(i64, serde_json::Value)>> {
+    let parse = |body: Option<String>| {
+        body.as_deref()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let mut origins = Vec::new();
+    // The one predecessor. `ORDER BY seq DESC LIMIT 1` stops at the previous
+    // request, so it walks one step's rows, not the session.
+    let predecessor = match conn.query_row(
+        "SELECT seq, body FROM transcript_items
+         WHERE session_id = ?1 AND event_type = 'request/header' AND seq < ?2
+         ORDER BY seq DESC LIMIT 1",
+        rusqlite::params![session_id, from_seq],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+    ) {
+        Ok(row) => Some(row),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(error) => return Err(error.into()),
+    };
+    if let Some((seq, body)) = predecessor {
+        origins.push((seq, parse(body)));
+    }
     let mut stmt = conn.prepare(
         "SELECT seq, body FROM transcript_items
          WHERE session_id = ?1 AND event_type = 'request/header'
+           AND seq >= ?2 AND seq <= ?3
          ORDER BY seq ASC",
     )?;
-    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
-    })?;
-    let mut origins = Vec::new();
+    let rows = stmt.query_map(
+        rusqlite::params![session_id, from_seq, through_seq],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+    )?;
     for row in rows {
         let (seq, body) = row?;
-        let value = body
-            .as_deref()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-            .unwrap_or(serde_json::Value::Null);
-        origins.push((seq, value));
+        origins.push((seq, parse(body)));
     }
     Ok(origins)
 }
@@ -1521,5 +1559,171 @@ mod workspace_usage_tests {
         assert_eq!(workspace.providers.len(), 1);
         assert_eq!(workspace.providers[0].provider_id, None);
         assert_eq!(provider_prompt(&workspace.providers[0]), 42);
+    }
+}
+
+#[cfg(test)]
+mod producer_window_tests {
+    use tempfile::TempDir;
+
+    use super::request_origins;
+    use crate::runtime::llm_resolve::{item_seq_window, producers_from_origins};
+    use crate::session::{SessionData, WorkspaceWriteLease};
+
+    fn header(provider: &str, model: &str) -> String {
+        serde_json::json!({
+            "schema": 1,
+            "provider_id": provider,
+            "endpoint_type": "responses",
+            "model_ref": model,
+            "instructions_digest": format!("{provider}-instructions"),
+            "tools_digest": format!("{provider}-tools"),
+        })
+        .to_string()
+    }
+
+    fn insert_row(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+        seq: i64,
+        event_type: &str,
+        body: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO transcript_items
+                (session_id, seq, item_type, kind, body, token_estimate, created_at, event_type, surface_op)
+             VALUES (?1, ?2, ?3, ?3, ?4, 0, 0, ?3, '')",
+            rusqlite::params![session_id, seq, event_type, body],
+        )
+        .expect("row");
+    }
+
+    /// The query this window replaces: every header of the session.
+    fn full_origins(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+    ) -> Vec<(i64, serde_json::Value)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT seq, body FROM transcript_items
+                 WHERE session_id = ?1 AND event_type = 'request/header'
+                 ORDER BY seq ASC",
+            )
+            .expect("prepare");
+        let rows = stmt
+            .query_map(rusqlite::params![session_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .expect("query");
+        rows.map(|row| {
+            let (seq, body) = row.expect("row");
+            let value = body
+                .as_deref()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+                .unwrap_or(serde_json::Value::Null);
+            (seq, value)
+        })
+        .collect()
+    }
+
+    fn mapped(
+        origins: &[(i64, serde_json::Value)],
+        seqs: &[Option<u64>],
+    ) -> Vec<Option<crate::llm::ItemProducer>> {
+        producers_from_origins(
+            origins
+                .iter()
+                .map(|(seq, body)| (*seq as u64, body.clone()))
+                .collect(),
+            seqs,
+        )
+    }
+
+    #[test]
+    fn the_window_maps_every_item_exactly_like_the_full_history() {
+        let dir = TempDir::new().expect("tempdir");
+        let lease = WorkspaceWriteLease::acquire(dir.path()).expect("lease");
+        let db = dir.path().join("sessions.db");
+        let (sid, bare) = {
+            let data = SessionData::open(&lease, &db).expect("open");
+            let sid = data.create_session("/p", "default", None).expect("create");
+            let bare = data
+                .create_session("/p", "default", None)
+                .expect("create bare");
+            data.shutdown();
+            (sid, bare)
+        };
+
+        let conn = rusqlite::Connection::open(&db).expect("rw");
+        // Three producers in one session: model switches sit between them.
+        insert_row(&conn, &sid, 5, "request/header", &header("alpha", "a/one"));
+        insert_row(&conn, &sid, 15, "request/header", &header("beta", "b/two"));
+        insert_row(
+            &conn,
+            &sid,
+            40,
+            "request/header",
+            &header("alpha", "a/three"),
+        );
+        for seq in [6, 10, 14, 16, 20, 39, 41, 45, 60] {
+            insert_row(&conn, &sid, seq, "item/user", "{}");
+        }
+        // A session with no headers at all: an old log.
+        for seq in [1, 2, 3] {
+            insert_row(&conn, &bare, seq, "item/user", "{}");
+        }
+
+        let seqs: Vec<Option<u64>> = [6, 10, 14, 16, 20, 39, 41, 45, 60]
+            .into_iter()
+            .map(Some)
+            .collect();
+        assert_eq!(item_seq_window(&seqs), Some((6, 60)));
+
+        // Every window a caller can hand over: a single step, a span with no
+        // header inside (relies on the predecessor), a compaction boundary that
+        // starts inside the previous producer span, and the whole log.
+        for (from, through) in [
+            (6u64, 6u64),
+            (14, 20),
+            (16, 39),
+            (30, 45),
+            (41, 60),
+            (6, 60),
+        ] {
+            let in_window: Vec<Option<u64>> = seqs
+                .iter()
+                .copied()
+                .filter(|seq| seq.is_some_and(|seq| seq >= from && seq <= through))
+                .collect();
+            let full = mapped(&full_origins(&conn, &sid), &in_window);
+            let windowed = mapped(
+                &request_origins(&conn, &sid, from as i64, through as i64).expect("window read"),
+                &in_window,
+            );
+            assert_eq!(
+                windowed, full,
+                "window {from}..={through} must map every item exactly like the full history"
+            );
+        }
+
+        // The window is bounded: one predecessor, plus the headers inside it.
+        assert_eq!(full_origins(&conn, &sid).len(), 3);
+        assert_eq!(request_origins(&conn, &sid, 16, 39).expect("read").len(), 1);
+        assert_eq!(request_origins(&conn, &sid, 30, 45).expect("read").len(), 2);
+        assert_eq!(request_origins(&conn, &sid, 41, 60).expect("read").len(), 1);
+
+        // A log with no headers maps every item to none instead of failing.
+        assert!(
+            request_origins(&conn, &bare, 1, 3)
+                .expect("bare read")
+                .is_empty()
+        );
+        assert_eq!(
+            mapped(&[], &[Some(1), Some(3)]),
+            vec![None, None],
+            "no header means no producer, not an error"
+        );
+        // No durable seqs means no window and no read at all.
+        assert_eq!(item_seq_window(&[None, None]), None);
     }
 }

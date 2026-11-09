@@ -2243,12 +2243,15 @@ fn build_compaction_input(
         }
     }
 
-    let producers = crate::runtime::llm_resolve::producers_from_origins(
-        sessions
-            .request_origins(&request.session_id)
+    // The summarizer attributes only the段 it is about to summarize, so the
+    // window is that段, not the whole log.
+    let origins = match crate::runtime::llm_resolve::item_seq_window(&input_seqs) {
+        Some((from_seq, through_seq)) => sessions
+            .request_origins(&request.session_id, from_seq, through_seq)
             .unwrap_or_default(),
-        &input_seqs,
-    );
+        None => Vec::new(),
+    };
+    let producers = crate::runtime::llm_resolve::producers_from_origins(origins, &input_seqs);
     // The summarizer sends its own instructions and tool list, so it mints
     // under its own fixed prefix.
     let (instructions_digest, tools_digest) =

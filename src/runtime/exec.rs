@@ -1470,19 +1470,23 @@ impl AgentRuntime {
     }
 
     /// The provider that produced each input item, through its durable seq and the
-    /// session's `request/header` rows. Unreadable history degrades to "unknown".
-    /// Ciphertext replay then drops only the ciphertext. Summary replay drops the
-    /// reasoning item: that host requires an id this provider minted.
+    /// session's `request/header` rows. Only the window these items span is read;
+    /// an older header can never be a newer item's predecessor. Unreadable history
+    /// degrades to "unknown": ciphertext replay then drops only the ciphertext,
+    /// and summary replay drops the reasoning item, because that host requires an
+    /// id this provider minted.
     fn llm_input_producers(
         &self,
         item_seqs: &[Option<crate::session::event::Seq>],
     ) -> Vec<Option<crate::llm::ItemProducer>> {
-        crate::runtime::llm_resolve::producers_from_origins(
-            self.sessions
-                .request_origins(&self.session_id)
+        let origins = match crate::runtime::llm_resolve::item_seq_window(item_seqs) {
+            Some((from_seq, through_seq)) => self
+                .sessions
+                .request_origins(&self.session_id, from_seq, through_seq)
                 .unwrap_or_default(),
-            item_seqs,
-        )
+            None => Vec::new(),
+        };
+        crate::runtime::llm_resolve::producers_from_origins(origins, item_seqs)
     }
 
     /// Append the request boundary before sending, so the next durable Item row

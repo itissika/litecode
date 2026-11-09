@@ -654,11 +654,15 @@ pub enum SessionRead {
     SearchableKeys {
         session_id: Option<String>,
     },
-    /// `request/header` control-plane rows: `(seq, body)` per recorded request.
-    /// The body is the request's origin record — the only durable answer to
-    /// "which service minted the items in this turn/step".
+    /// `request/header` rows that can attribute one working-set window: every
+    /// header in `[from_seq, through_seq]` plus the newest header before
+    /// `from_seq`. The body is the request's origin record — the only durable
+    /// answer to "which service minted the items in this turn/step". Outside
+    /// that range a header cannot be any window item's newest predecessor.
     RequestOrigins {
         session_id: String,
+        from_seq: i64,
+        through_seq: i64,
     },
     /// Recorded provider bills on `request/header` rows. Empty when none exist.
     ProviderUsageRollup {

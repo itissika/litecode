@@ -786,7 +786,9 @@ async fn request_header_records_the_fixed_prefix_digests() {
     )
     .await;
 
-    let origins = sessions.request_origins(&sid).expect("request origins");
+    let origins = sessions
+        .request_origins(&sid, 0, u64::MAX)
+        .expect("request origins");
     let (_, header) = origins.last().expect("a recorded request header");
     for key in ["instructions_digest", "tools_digest"] {
         let digest = header[key]

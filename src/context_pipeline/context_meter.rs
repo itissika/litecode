@@ -359,7 +359,7 @@ pub fn latest_persisted_envelope(
     session_id: &str,
 ) -> Option<ContextEnvelope> {
     sessions
-        .request_origins(session_id)
+        .request_origins(session_id, 0, u64::MAX)
         .ok()?
         .into_iter()
         .rev()
