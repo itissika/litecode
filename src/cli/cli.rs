@@ -2,7 +2,7 @@
 //! The CLI is NOT the target interaction path; the Electron client is.
 //! This module exists for development convenience and may be removed in a future version.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -15,7 +15,9 @@ use tracing_subscriber::util::SubscriberInitExt;
 use crate::client_protocol::connection::{ConnectionHandle, SessionRequest};
 use crate::client_protocol::controller::SessionController;
 use crate::client_protocol::project::{IncomingWire, classify_incoming};
-use crate::client_protocol::protocol::{JsonRpcRequestEnvelope, WireEvent};
+use crate::client_protocol::protocol::{
+    JsonRpcRequestEnvelope, TurnEndReason, TurnTokenStats, WireEvent,
+};
 use crate::config::{ConfigManager, ResolvedConfig, SettingsWriter, cli_turn_guard};
 use crate::runtime::RuntimeHandle;
 use crate::types::LitecodeError;
@@ -38,6 +40,14 @@ struct Cli {
 
     #[arg(long, global = true, default_value = "default")]
     agent: String,
+
+    /// Approve every permission gate this run without asking.
+    ///
+    /// A run whose stdin is not a terminal refuses instead of prompting; this
+    /// flag is how a headless run (script, container, evaluator) may act.
+    /// Off by default: an interactive run still asks.
+    #[arg(long, short = 'y', global = true)]
+    yes: bool,
 
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     prompt: Vec<String>,
@@ -173,6 +183,112 @@ fn setup_logging(
     tracing::info!("log dir: {}", logs_dir.display());
     tracing::info!("log file: {}", log_path.display());
     Ok(guard)
+}
+
+/// How this run answers the human gates on the permission path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnswerPolicy {
+    /// Read the terminal. Only chosen when stdin is one.
+    Prompt,
+    /// `--yes`: approve every gate, never read stdin.
+    Approve,
+    /// No terminal and no `--yes`: refuse every gate, never read stdin.
+    Refuse,
+}
+
+/// The whole decision: a terminal asks, `--yes` approves, anything else refuses.
+///
+/// A run with neither cannot answer, so it must not block on a read that will
+/// never complete — and it must not pretend a human said yes either.
+fn answer_policy(yes: bool, stdin_is_terminal: bool) -> AnswerPolicy {
+    if yes {
+        AnswerPolicy::Approve
+    } else if stdin_is_terminal {
+        AnswerPolicy::Prompt
+    } else {
+        AnswerPolicy::Refuse
+    }
+}
+
+/// One answer to a human gate, in the shape `agent/permission` expects.
+#[derive(Debug, Default, PartialEq)]
+struct GateAnswer {
+    approved: bool,
+    always: bool,
+    free_text: Option<String>,
+    answers: std::collections::HashMap<String, crate::permission::AskAnswer>,
+}
+
+/// What a run answers when nobody is asked.
+///
+/// `Permission` and `Approval` guard a tool, so `--yes` allows them. `ask_user`
+/// is a question, not a grant: no policy can answer it, so it is declined
+/// rather than guessed at.
+fn auto_answer(policy: AnswerPolicy, kind: crate::permission::AskKind) -> GateAnswer {
+    match (policy, kind) {
+        (
+            AnswerPolicy::Approve,
+            crate::permission::AskKind::Permission | crate::permission::AskKind::Approval,
+        ) => GateAnswer {
+            approved: true,
+            ..GateAnswer::default()
+        },
+        _ => GateAnswer::default(),
+    }
+}
+
+/// Why a gate was decided without a human, for the cases that must be said out
+/// loud. Nothing is returned for a plain `--yes` allow: the flag itself is the
+/// statement, and a tool-loop turn would repeat the line per call.
+fn auto_refusal(
+    policy: AnswerPolicy,
+    kind: crate::permission::AskKind,
+    tool: &str,
+) -> Option<String> {
+    match (policy, kind) {
+        (AnswerPolicy::Approve, crate::permission::AskKind::AskUser) => Some(format!(
+            "[litecode] declined {tool}: a question needs a human, and --yes cannot answer one"
+        )),
+        (AnswerPolicy::Refuse, _) => Some(format!(
+            "[litecode] denied {tool}: stdin is not a terminal and --yes was not given"
+        )),
+        _ => None,
+    }
+}
+
+/// Ask the terminal, in the kind's own shape. Only reached with a TTY.
+fn answer_from_terminal(
+    kind: crate::permission::AskKind,
+    tool: &str,
+    summary: &str,
+    questions: &[crate::permission::AskQuestion],
+) -> GateAnswer {
+    match kind {
+        crate::permission::AskKind::AskUser => {
+            let (approved, answers) = ask_cli_ask_user(summary, questions);
+            GateAnswer {
+                approved,
+                answers,
+                ..GateAnswer::default()
+            }
+        }
+        crate::permission::AskKind::Approval => {
+            let (approved, free_text) = ask_cli_approval(tool, summary);
+            GateAnswer {
+                approved,
+                free_text,
+                ..GateAnswer::default()
+            }
+        }
+        crate::permission::AskKind::Permission => {
+            let (approved, always) = ask_cli_permission(tool, summary);
+            GateAnswer {
+                approved,
+                always,
+                ..GateAnswer::default()
+            }
+        }
+    }
 }
 
 fn ask_cli_permission(tool: &str, summary: &str) -> (bool, bool) {
@@ -362,12 +478,89 @@ fn ask_cli_ask_user(
     }
 }
 
+/// Provider usage in the four fields the session meter keeps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RunTokens {
+    prompt: u64,
+    completion: u64,
+    cache_hit: u64,
+    cache_miss: u64,
+}
+
+impl RunTokens {
+    fn from_stats(stats: &TurnTokenStats) -> Self {
+        Self {
+            prompt: stats.prompt_tokens,
+            completion: stats.completion_tokens,
+            cache_hit: stats.cache_hit_tokens,
+            cache_miss: stats.cache_miss_tokens,
+        }
+    }
+
+    /// `self - base`, saturating: a total that appears to go backwards means the
+    /// row was reset, not that this run spent negative tokens.
+    fn since(self, base: Self) -> Self {
+        Self {
+            prompt: self.prompt.saturating_sub(base.prompt),
+            completion: self.completion.saturating_sub(base.completion),
+            cache_hit: self.cache_hit.saturating_sub(base.cache_hit),
+            cache_miss: self.cache_miss.saturating_sub(base.cache_miss),
+        }
+    }
+}
+
+/// One turn as the run sees it: what it said, how it ended, and what it cost.
+struct TurnRun {
+    final_text: String,
+    reason: TurnEndReason,
+    error: Option<String>,
+    /// Usage of the turn's last request (the number the UI shows on a turn).
+    last_request: RunTokens,
+    /// Session meter at turn end, when the frame carries one.
+    session_total: Option<RunTokens>,
+    /// This run's share of the meter — set by `CliConversation::run_turn`.
+    tokens: RunTokens,
+    elapsed: std::time::Duration,
+}
+
+impl TurnRun {
+    /// Exit status of a headless run: only a turn that reached its own end is a
+    /// success. Cancelled, out of steps, or failed all are not.
+    fn require_completed(&self) -> anyhow::Result<()> {
+        match self.reason {
+            TurnEndReason::Completed => Ok(()),
+            TurnEndReason::Cancelled => anyhow::bail!("turn cancelled"),
+            TurnEndReason::MaxSteps => anyhow::bail!("turn stopped at the step limit"),
+            TurnEndReason::Error => anyhow::bail!(
+                "turn failed: {}",
+                self.error.as_deref().unwrap_or("no error message")
+            ),
+        }
+    }
+}
+
+/// The one line a headless run leaves behind, so its cost is readable without
+/// opening the UI. stderr keeps stdout the answer.
+fn print_run_report(run: &TurnRun) {
+    let tokens = run.tokens;
+    eprintln!(
+        "[litecode] {} in {:.1}s — tokens prompt={} completion={} cache_hit={} cache_miss={}",
+        run.reason.as_log_reason(),
+        run.elapsed.as_secs_f64(),
+        tokens.prompt,
+        tokens.completion,
+        tokens.cache_hit,
+        tokens.cache_miss,
+    );
+}
+
 /// Run one agent turn with streaming output to stdout via the wire connection loop.
 fn run_turn_streaming(
     rt: &tokio::runtime::Runtime,
     conn: &mut ConnectionHandle,
     prompt: &str,
-) -> anyhow::Result<String> {
+    policy: AnswerPolicy,
+) -> anyhow::Result<TurnRun> {
     conn.request_tx
         .send(SessionRequest::JsonRpc(JsonRpcRequestEnvelope {
             jsonrpc: "2.0".into(),
@@ -429,46 +622,49 @@ fn run_turn_streaming(
                     } else {
                         questions
                     };
-                    let (approved, always, free_text, selected, answers) = match kind {
-                        crate::permission::AskKind::AskUser => {
-                            let (approved, answers) = ask_cli_ask_user(&summary, &questions);
-                            (approved, false, None, Vec::new(), answers)
+                    let answer = match policy {
+                        AnswerPolicy::Prompt => {
+                            answer_from_terminal(kind, &tool, &summary, &questions)
                         }
-                        crate::permission::AskKind::Approval => {
-                            let (approved, free_text) = ask_cli_approval(&tool, &summary);
-                            (
-                                approved,
-                                false,
-                                free_text,
-                                Vec::new(),
-                                std::collections::HashMap::new(),
-                            )
-                        }
-                        crate::permission::AskKind::Permission => {
-                            let (approved, always) = ask_cli_permission(&tool, &summary);
-                            (
-                                approved,
-                                always,
-                                None,
-                                Vec::new(),
-                                std::collections::HashMap::new(),
-                            )
+                        policy => {
+                            if let Some(why) = auto_refusal(policy, kind, &tool) {
+                                eprintln!("{why}");
+                            }
+                            auto_answer(policy, kind)
                         }
                     };
                     conn.request_tx
                         .send(SessionRequest::PermissionGrant {
                             request_id,
                             tool,
-                            approved,
-                            always,
-                            free_text,
-                            selected,
-                            answers,
+                            approved: answer.approved,
+                            always: answer.always,
+                            free_text: answer.free_text,
+                            selected: Vec::new(),
+                            answers: answer.answers,
                         })
                         .map_err(|_| anyhow::anyhow!("connection closed"))?;
                 }
-                IncomingWire::TurnFinished { final_text, .. } => {
-                    return Ok(final_text.unwrap_or_default());
+                IncomingWire::TurnFinished {
+                    reason,
+                    final_text,
+                    error,
+                    turn_token_stats,
+                    cumulative_token_stats,
+                    ..
+                } => {
+                    return Ok(TurnRun {
+                        final_text: final_text.unwrap_or_default(),
+                        reason,
+                        error: error.map(|e| e.message),
+                        last_request: turn_token_stats
+                            .as_ref()
+                            .map(RunTokens::from_stats)
+                            .unwrap_or_default(),
+                        session_total: cumulative_token_stats.as_ref().map(RunTokens::from_stats),
+                        tokens: RunTokens::default(),
+                        elapsed: std::time::Duration::ZERO,
+                    });
                 }
                 IncomingWire::OperationFailed(msg) => anyhow::bail!("{}", msg),
                 IncomingWire::Ignored => {}
@@ -536,6 +732,8 @@ struct CliConversation {
     rt: tokio::runtime::Runtime,
     conn: ConnectionHandle,
     _lease: crate::session::WorkspaceWriteLease,
+    /// Session meter when the session opened, so a turn's tokens are its own.
+    baseline: RunTokens,
 }
 
 impl CliConversation {
@@ -568,6 +766,19 @@ impl CliConversation {
             .worker_threads(2)
             .build()?;
         let session_id = rt.block_on(service.open_session(project, agent_id, model_id))?;
+        // The run's tokens are the session meter's move across it. A run is a
+        // fresh session today, but the delta is what makes the number "this
+        // run" rather than "this session", and it reuses the same rows the UI
+        // reads instead of adding a counter.
+        let baseline = service
+            .meter(&session_id)
+            .map(|meter| RunTokens {
+                prompt: meter.cum_prompt_tokens,
+                completion: meter.cum_completion_tokens,
+                cache_hit: meter.cum_cache_hit_tokens,
+                cache_miss: meter.cum_cache_miss_tokens,
+            })
+            .unwrap_or_default();
         let mut controller = SessionController::with_service(runtime, service)?;
         let conn = rt.block_on(async {
             controller.subscribe(&session_id).await;
@@ -577,16 +788,30 @@ impl CliConversation {
             rt,
             conn,
             _lease: lease,
+            baseline,
         })
     }
 
-    fn run_turn(&mut self, prompt: &str) -> anyhow::Result<String> {
-        run_turn_streaming(&self.rt, &mut self.conn, prompt)
+    fn run_turn(&mut self, prompt: &str, policy: AnswerPolicy) -> anyhow::Result<TurnRun> {
+        let started = std::time::Instant::now();
+        let mut run = run_turn_streaming(&self.rt, &mut self.conn, prompt, policy)?;
+        run.elapsed = started.elapsed();
+        run.tokens = match run.session_total {
+            Some(total) => {
+                let metered = total.since(self.baseline);
+                self.baseline = total;
+                metered
+            }
+            // No meter on the frame (older host): the last request is the only
+            // usage there is.
+            None => run.last_request,
+        };
+        Ok(run)
     }
 }
 
 /// Run an interactive REPL loop via the wire connection.
-fn run_interactive(session: &mut CliConversation) -> anyhow::Result<()> {
+fn run_interactive(session: &mut CliConversation, policy: AnswerPolicy) -> anyhow::Result<()> {
     println!("\n--- interactive mode (type /help for commands) ---");
 
     loop {
@@ -594,8 +819,11 @@ fn run_interactive(session: &mut CliConversation) -> anyhow::Result<()> {
         std::io::stdout().flush()?;
 
         let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).is_err() {
-            break;
+        // 0 bytes is EOF, not an error: a terminal that closes must end the
+        // loop instead of re-prompting forever on a read that never fills.
+        match std::io::stdin().read_line(&mut input) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
         }
         let input = input.trim();
 
@@ -618,9 +846,9 @@ fn run_interactive(session: &mut CliConversation) -> anyhow::Result<()> {
             _ => {}
         }
 
-        let result = session.run_turn(input)?;
+        let run = session.run_turn(input, policy)?;
 
-        if !result.is_empty() {
+        if !run.final_text.is_empty() {
             println!();
         }
     }
@@ -676,6 +904,13 @@ pub fn run() -> anyhow::Result<()> {
             }
         }
         return Ok(());
+    }
+
+    // A run with no prompt and no terminal has nothing to read: fail here,
+    // before loading config, instead of opening a REPL that can never prompt.
+    let stdin_is_terminal = std::io::stdin().is_terminal();
+    if cli.prompt.is_empty() && !stdin_is_terminal {
+        anyhow::bail!("nothing to run: pass a prompt, or use a terminal for the REPL");
     }
 
     let resolved = load_runtime_bundle_from_cli(&cli)?;
@@ -783,16 +1018,29 @@ pub fn run() -> anyhow::Result<()> {
         .filter(|s| !s.is_empty());
     let mut cli_session = CliConversation::open(runtime, &project, &agent_id, model_id.as_deref())?;
 
+    let policy = answer_policy(cli.yes, stdin_is_terminal);
+    if policy == AnswerPolicy::Approve {
+        eprintln!("[litecode] --yes: approving every permission gate for this run");
+    }
+
     if !cli.prompt.is_empty() {
         let prompt = cli.prompt.join(" ");
-        let result = cli_session.run_turn(&prompt)?;
+        let run = cli_session.run_turn(&prompt, policy)?;
 
-        if !result.is_empty() {
+        if !run.final_text.is_empty() {
             println!();
+        }
+
+        // Without a terminal the one prompt is the whole process: report what
+        // it cost and leave with its status, instead of opening a REPL that has
+        // nothing to read.
+        if !stdin_is_terminal {
+            print_run_report(&run);
+            return run.require_completed();
         }
     }
 
-    run_interactive(&mut cli_session)?;
+    run_interactive(&mut cli_session, policy)?;
 
     Ok(())
 }
@@ -829,5 +1077,186 @@ mod tests {
             }
             _ => panic!("expected app-mcp"),
         }
+    }
+
+    use crate::permission::AskKind;
+
+    #[test]
+    fn answer_policy_asks_only_where_a_human_can_answer() {
+        assert_eq!(answer_policy(false, true), AnswerPolicy::Prompt);
+        assert_eq!(answer_policy(true, true), AnswerPolicy::Approve);
+        assert_eq!(answer_policy(false, false), AnswerPolicy::Refuse);
+        // Nothing on stdin to wait for, so --yes is the only way to run.
+        assert_eq!(answer_policy(true, false), AnswerPolicy::Approve);
+    }
+
+    #[test]
+    fn yes_allows_the_gates_that_guard_a_tool() {
+        for kind in [AskKind::Permission, AskKind::Approval] {
+            let answer = auto_answer(AnswerPolicy::Approve, kind);
+            assert!(
+                answer.approved,
+                "{kind:?} guards a tool and --yes allows it"
+            );
+            // A headless run records no durable grant: it approves this call.
+            assert!(!answer.always, "{kind:?} must not write a session grant");
+            assert!(answer.free_text.is_none());
+            assert!(answer.answers.is_empty());
+        }
+        let refused = auto_answer(AnswerPolicy::Refuse, AskKind::Permission);
+        assert!(!refused.approved, "no terminal and no --yes is a deny");
+        assert!(!refused.always);
+    }
+
+    #[test]
+    fn ask_user_is_never_answered_without_a_human() {
+        for policy in [AnswerPolicy::Approve, AnswerPolicy::Refuse] {
+            let answer = auto_answer(policy, AskKind::AskUser);
+            assert!(!answer.approved, "a question is not a grant");
+            assert!(answer.answers.is_empty(), "no answer may be fabricated");
+        }
+    }
+
+    #[test]
+    fn a_denial_always_says_why_an_allow_does_not_need_to() {
+        let denied = auto_refusal(AnswerPolicy::Refuse, AskKind::Permission, "bash")
+            .expect("a headless denial must be announced");
+        assert!(denied.contains("--yes"), "{denied}");
+        let unanswerable = auto_refusal(AnswerPolicy::Approve, AskKind::AskUser, "ask_user")
+            .expect("declining a question must be announced");
+        assert!(unanswerable.contains("needs a human"), "{unanswerable}");
+        assert!(auto_refusal(AnswerPolicy::Approve, AskKind::Permission, "bash").is_none());
+        assert!(auto_refusal(AnswerPolicy::Prompt, AskKind::Permission, "bash").is_none());
+    }
+
+    fn run_ending(reason: TurnEndReason, error: Option<&str>) -> TurnRun {
+        TurnRun {
+            final_text: String::new(),
+            reason,
+            error: error.map(str::to_string),
+            last_request: RunTokens::default(),
+            session_total: None,
+            tokens: RunTokens::default(),
+            elapsed: std::time::Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn only_a_completed_turn_exits_zero() {
+        run_ending(TurnEndReason::Completed, None)
+            .require_completed()
+            .expect("a completed turn is a success");
+        assert!(
+            run_ending(TurnEndReason::Cancelled, None)
+                .require_completed()
+                .is_err()
+        );
+        assert!(
+            run_ending(TurnEndReason::MaxSteps, None)
+                .require_completed()
+                .is_err()
+        );
+        let failed = run_ending(TurnEndReason::Error, Some("upstream exploded"))
+            .require_completed()
+            .expect_err("an error turn is not a success");
+        assert!(failed.to_string().contains("upstream exploded"), "{failed}");
+    }
+
+    #[test]
+    fn tokens_are_the_meter_delta_and_never_go_negative() {
+        let before = RunTokens {
+            prompt: 10,
+            completion: 2,
+            cache_hit: 4,
+            cache_miss: 6,
+        };
+        let after = RunTokens {
+            prompt: 30,
+            completion: 7,
+            cache_hit: 9,
+            cache_miss: 21,
+        };
+        assert_eq!(
+            after.since(before),
+            RunTokens {
+                prompt: 20,
+                completion: 5,
+                cache_hit: 5,
+                cache_miss: 15,
+            }
+        );
+        // A reset meter row must not report negative spending.
+        assert_eq!(before.since(after), RunTokens::default());
+    }
+
+    #[test]
+    fn turn_finished_carries_the_usage_a_headless_run_reports() {
+        let frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "agent/turn_finished",
+            "params": {
+                "session_id": "s1",
+                "turn_id": "t1",
+                "reason": "completed",
+                "final_text": "done",
+                "turn_token_stats": {
+                    "prompt_tokens": 10, "completion_tokens": 2,
+                    "cache_hit_tokens": 4, "cache_miss_tokens": 6
+                },
+                "snapshot": { "cumulative_token_stats": {
+                    "prompt_tokens": 30, "completion_tokens": 7,
+                    "cache_hit_tokens": 9, "cache_miss_tokens": 21
+                }}
+            }
+        });
+        let IncomingWire::TurnFinished {
+            reason,
+            final_text,
+            turn_token_stats,
+            cumulative_token_stats,
+            ..
+        } = classify_incoming(&frame)
+        else {
+            panic!("expected turn_finished");
+        };
+        assert_eq!(reason, TurnEndReason::Completed);
+        assert_eq!(final_text.as_deref(), Some("done"));
+        assert_eq!(
+            RunTokens::from_stats(&turn_token_stats.expect("last request usage")),
+            RunTokens {
+                prompt: 10,
+                completion: 2,
+                cache_hit: 4,
+                cache_miss: 6,
+            }
+        );
+        assert_eq!(
+            RunTokens::from_stats(&cumulative_token_stats.expect("session meter")),
+            RunTokens {
+                prompt: 30,
+                completion: 7,
+                cache_hit: 9,
+                cache_miss: 21,
+            }
+        );
+    }
+
+    #[test]
+    fn a_frame_without_a_meter_reports_no_session_total() {
+        let frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "agent/turn_finished",
+            "params": { "session_id": "s1", "turn_id": "t1", "reason": "cancelled" }
+        });
+        let IncomingWire::TurnFinished {
+            reason,
+            cumulative_token_stats,
+            ..
+        } = classify_incoming(&frame)
+        else {
+            panic!("expected turn_finished");
+        };
+        assert_eq!(reason, TurnEndReason::Cancelled);
+        assert!(cumulative_token_stats.is_none());
     }
 }

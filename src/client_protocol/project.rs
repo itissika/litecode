@@ -1119,6 +1119,10 @@ pub enum IncomingWire {
         reason: TurnEndReason,
         final_text: Option<String>,
         error: Option<StructuredError>,
+        /// Provider usage of this turn's last request, off the frame.
+        turn_token_stats: Option<TurnTokenStats>,
+        /// The session meter at turn end (`snapshot.cumulative_token_stats`).
+        cumulative_token_stats: Option<TurnTokenStats>,
     },
     OperationFailed(String),
     Ignored,
@@ -1254,12 +1258,21 @@ pub fn classify_incoming(msg: &serde_json::Value) -> IncomingWire {
                 let error = params
                     .get("error")
                     .and_then(|v| serde_json::from_value(v.clone()).ok());
+                let turn_token_stats = params
+                    .get("turn_token_stats")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                let cumulative_token_stats = params
+                    .get("snapshot")
+                    .and_then(|snapshot| snapshot.get("cumulative_token_stats"))
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
                 return IncomingWire::TurnFinished {
                     session_id,
                     turn_id,
                     reason,
                     final_text,
                     error,
+                    turn_token_stats,
+                    cumulative_token_stats,
                 };
             }
             IncomingWire::Ignored
