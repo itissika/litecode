@@ -94,3 +94,37 @@ The usage line looks like
 
 and the adapter parses it into `AgentContext`, so Harbor reports the same
 numbers in its own summary.
+
+## 5. Which commit did this row run?
+
+Every artifact carries its provenance. The tree that builds must be a git
+checkout, and `build.sh` writes `bin/build-info.json` next to the binary:
+
+```json
+{
+  "commit": "830cfc4a8b740b7265fc4fdb0928e97c3ed2a84b",
+  "branch": "refactor/js-first-tool-contract",
+  "dirty": false,
+  "built_at": "2026-11-10T04:12:00Z",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "source_tree": "/home/sika/build/litecode-src"
+}
+```
+
+Checking a row against the source you think it ran:
+
+```bash
+git -C ~/build/litecode-src rev-parse HEAD      # must equal build-info.json commit
+git -C ~/build/litecode-src status --porcelain  # empty => "dirty": false is real
+python3 -c 'import json;print(json.load(open("eval/harbor/bin/build-info.json"))["commit"])'
+```
+
+`dirty: true` means the working tree had uncommitted changes at build time: the
+commit alone does not describe the binary, so such a row cannot be reproduced
+from the repository alone. Rebuild from a clean checkout before quoting a
+number.
+
+The source tree is a sparse checkout of the same commit as the Windows
+workspace: only the crate's inputs, `sdk/generated` and `eval/harbor` are
+materialised, so the working tree stays small while `HEAD`, branch and clean
+status still describe exactly what was built.
