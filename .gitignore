@@ -87,3 +87,6 @@ nul
 
 # local rustup mirror
 .litecode/ops/.toolchain/
+
+# Built Linux binary for the eval adapter (built by eval/harbor/build.sh)
+eval/harbor/bin/
