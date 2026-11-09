@@ -105,6 +105,18 @@ pub struct ProviderUsageRollup {
 }
 
 impl ProviderUsageRollup {
+    /// The newest bill only. Occupancy prices one request's prompt, so the
+    /// totals fields here describe just that bill and must not be read as
+    /// session totals.
+    pub fn from_latest(seq: u64, usage: ProviderUsage) -> Self {
+        Self {
+            latest_seq: Some(seq),
+            latest: Some(usage.clone()),
+            billed_tokens: usage.billed(),
+            request_count: 1,
+        }
+    }
+
     pub fn from_rows(rows: impl IntoIterator<Item = (i64, ProviderUsage)>) -> Self {
         let mut rollup = Self::default();
         for (seq, usage) in rows {

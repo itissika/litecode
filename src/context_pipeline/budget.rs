@@ -296,4 +296,66 @@ mod tests {
         );
         assert!(occupancy_bill_from(&empty, Some(8), 0, &rollup, &meter).is_none());
     }
+
+    /// Occupancy reads only the newest bill now. For every retirement rule the
+    /// one-row rollup must price the prompt exactly like the full rollup did.
+    #[test]
+    fn the_latest_bill_prices_occupancy_exactly_like_the_full_rollup() {
+        use crate::session::store::ProviderUsage;
+
+        let bill = |prompt: u64| ProviderUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 7,
+            cache_hit_tokens: 1,
+            cache_miss_tokens: prompt - 1,
+        };
+        let full = ProviderUsageRollup::from_rows([(2, bill(100)), (7, bill(300)), (9, bill(500))]);
+        let latest = ProviderUsageRollup::from_latest(9, bill(500));
+        let meter = SessionContextMeter {
+            prompt_tokens: 42,
+            ..SessionContextMeter::default()
+        };
+
+        let baseline = ProviderPromptBaseline::default();
+        for (compacted, rewrite) in [
+            (None, 0u64),
+            (Some(10), 0), // compact newer than the newest bill: retired
+            (Some(9), 0),  // equal seq: not retired
+            (None, 9),     // rewrite at the bill's seq: retired
+            (None, 5),     // rewrite older: the bill survives
+            (Some(7), 0),
+        ] {
+            assert_eq!(
+                occupancy_bill_from(&baseline, compacted, rewrite, &full, &meter),
+                occupancy_bill_from(&baseline, compacted, rewrite, &latest, &meter),
+                "compacted={compacted:?} rewrite={rewrite}"
+            );
+        }
+
+        // A live baseline outranks both; an invalidated one falls through to the
+        // persisted read, which must still agree.
+        baseline.record(9_000, 4);
+        assert_eq!(
+            occupancy_bill_from(&baseline, None, 0, &full, &meter),
+            occupancy_bill_from(&baseline, None, 0, &latest, &meter)
+        );
+        baseline.invalidate();
+        assert_eq!(
+            occupancy_bill_from(&baseline, None, 0, &full, &meter),
+            occupancy_bill_from(&baseline, None, 0, &latest, &meter)
+        );
+
+        // No bill at all: the meter is the fallback, and a surface rewrite still
+        // refuses to resurrect it.
+        let empty = ProviderUsageRollup::default();
+        let fallback =
+            occupancy_bill_from(&ProviderPromptBaseline::default(), None, 0, &empty, &meter)
+                .expect("meter fallback");
+        assert_eq!(fallback.prompt_tokens, 42);
+        assert_eq!(fallback.covered_seq, None);
+        assert!(
+            occupancy_bill_from(&ProviderPromptBaseline::default(), None, 10, &empty, &meter)
+                .is_none()
+        );
+    }
 }

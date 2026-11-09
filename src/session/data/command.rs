@@ -664,7 +664,18 @@ pub enum SessionRead {
         from_seq: i64,
         through_seq: i64,
     },
+    /// The newest recorded bill on a `request/header` row. Occupancy only needs
+    /// this one: a bill is a point measurement of the prompt, not a sum.
+    LatestProviderBill {
+        session_id: String,
+    },
+    /// The newest `request/header` body that carries a `context_envelope`. A
+    /// cold snapshot needs the last assembled request shape, not the history.
+    LatestRequestEnvelope {
+        session_id: String,
+    },
     /// Recorded provider bills on `request/header` rows. Empty when none exist.
+    /// Totals-only: the occupancy path must not read this.
     ProviderUsageRollup {
         session_id: String,
     },
@@ -748,6 +759,10 @@ pub enum ReadValue {
     /// each LLM request, used to decide whether a replayed item identity still
     /// belongs to the endpoint being called.
     RequestOrigins(Vec<(i64, serde_json::Value)>),
+    /// `(seq, usage)` of the newest billed `request/header`, or `None`.
+    ProviderBill(Option<(i64, crate::session::store::ProviderUsage)>),
+    /// The newest `request/header` body carrying a `context_envelope`.
+    RequestEnvelope(Option<serde_json::Value>),
     ProviderUsageRollup(ProviderUsageRollup),
     ProviderUsageSeries(ProviderUsageSeries),
     WorkspaceUsage(crate::session::store::WorkspaceUsage),

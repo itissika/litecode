@@ -158,6 +158,12 @@ pub fn execute(
             from_seq,
             through_seq,
         )?)),
+        SessionRead::LatestProviderBill { session_id } => Ok(ReadValue::ProviderBill(
+            latest_provider_bill(conn, &session_id)?,
+        )),
+        SessionRead::LatestRequestEnvelope { session_id } => Ok(ReadValue::RequestEnvelope(
+            latest_request_envelope(conn, &session_id)?,
+        )),
         SessionRead::ProviderUsageRollup { session_id } => Ok(ReadValue::ProviderUsageRollup(
             provider_usage_rollup(conn, &session_id)?,
         )),
@@ -200,6 +206,65 @@ fn load_events_range(
     data_root: &std::path::Path,
 ) -> Result<Vec<SessionEvent>> {
     session::load_events_range_on(conn, session_id, from, to, data_root)
+}
+
+/// The newest `request/header` that actually carries a bill.
+///
+/// Occupancy prices the prompt of the request that produced the current
+/// context, so the newest bill is the whole answer. `provider_usage IS NOT
+/// NULL` matters: the newest header may be an aborted request that never got
+/// one, and the bill before it is still the last measured prompt.
+fn latest_provider_bill(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<(i64, session::ProviderUsage)>> {
+    let row = match conn.query_row(
+        "SELECT seq, provider_usage FROM transcript_items
+         WHERE session_id = ?1
+           AND event_type = 'request/header'
+           AND provider_usage IS NOT NULL
+         ORDER BY seq DESC LIMIT 1",
+        rusqlite::params![session_id],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    ) {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let (seq, raw) = row;
+    // A malformed bill is not a bill: report "none" so the caller falls back to
+    // the meter instead of pricing the prompt with junk.
+    Ok(serde_json::from_str::<session::ProviderUsage>(&raw)
+        .ok()
+        .map(|usage| (seq, usage)))
+}
+
+/// The newest `request/header` body that carries a `context_envelope`.
+///
+/// A cold snapshot anchors its local estimate to the last request the server
+/// actually assembled. `json_valid` keeps a malformed body from failing the
+/// read; it is simply skipped, exactly like the old in-memory scan did.
+fn latest_request_envelope(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<serde_json::Value>> {
+    let row = match conn.query_row(
+        "SELECT body FROM transcript_items
+         WHERE session_id = ?1
+           AND event_type = 'request/header'
+           AND json_valid(body)
+           AND json_extract(body, '$.context_envelope') IS NOT NULL
+         ORDER BY seq DESC LIMIT 1",
+        rusqlite::params![session_id],
+        |row| Ok(row.get::<_, Option<String>>(0)?),
+    ) {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(row
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok()))
 }
 
 /// `request/header` rows for one session, oldest first.
@@ -246,37 +311,44 @@ pub(super) fn provider_usage_series(
     // Bills live on two row kinds: the `request/header` of a turn request, and
     // the `compacted` checkpoint a summarizer request produced. Both are real
     // provider spend, so both belong in the series and in the totals.
-    let mut stmt = conn.prepare(
-        "SELECT seq, turn_id, created_at, body, event_type, provider_usage
-         FROM transcript_items
+    //
+    // Two reads with one job each. Totals still fold every bill (W8 moves them to
+    // the meter); the sample walks back only `limit` rows, so a long session no
+    // longer materialises its whole bill list to draw the last few points.
+    // One pass covers both totals and the compaction marks the chart draws:
+    // they read the same rows, so a second scan would buy nothing.
+    let mut total_stmt = conn.prepare(
+        "SELECT seq, created_at, event_type, provider_usage FROM transcript_items
          WHERE session_id = ?1
-           AND event_type IN ('request/header', 'compacted')
-           AND provider_usage IS NOT NULL
-         ORDER BY seq ASC",
+           AND (event_type = 'compacted'
+                OR (event_type = 'request/header' AND provider_usage IS NOT NULL))",
     )?;
-    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+    let total_rows = total_stmt.query_map(rusqlite::params![session_id], |row| {
         Ok((
             row.get::<_, i64>(0)?,
-            row.get::<_, Option<String>>(1)?,
-            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
             row.get::<_, Option<String>>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, String>(5)?,
         ))
     })?;
-
-    let mut bills = Vec::new();
     let mut totals = session::ProviderUsage {
         prompt_tokens: 0,
         completion_tokens: 0,
         cache_hit_tokens: 0,
         cache_miss_tokens: 0,
     };
-    for row in rows {
-        let (seq, turn_id, at_ms, body, event_type, raw) = row?;
+    let mut requests = 0u64;
+    let mut compactions = Vec::new();
+    for row in total_rows {
+        let (seq, at_ms, event_type, usage) = row?;
+        if event_type == "compacted" {
+            compactions.push(session::ProviderUsageMark { seq, at_ms });
+        }
+        let Some(raw) = usage else { continue };
         let Ok(usage) = serde_json::from_str::<session::ProviderUsage>(&raw) else {
             continue;
         };
+        requests += 1;
         totals.prompt_tokens = totals.prompt_tokens.saturating_add(usage.prompt_tokens);
         totals.completion_tokens = totals
             .completion_tokens
@@ -287,55 +359,57 @@ pub(super) fn provider_usage_series(
         totals.cache_miss_tokens = totals
             .cache_miss_tokens
             .saturating_add(usage.cache_miss_tokens);
+    }
+    let truncated = requests > limit as u64;
+
+    let mut sample_stmt = conn.prepare(
+        "SELECT seq, turn_id, created_at, body, event_type, provider_usage
+         FROM transcript_items
+         WHERE session_id = ?1
+           AND event_type IN ('request/header', 'compacted')
+           AND provider_usage IS NOT NULL
+         ORDER BY seq DESC LIMIT ?2",
+    )?;
+    let sample_rows =
+        sample_stmt.query_map(rusqlite::params![session_id, limit as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })?;
+    let mut samples = Vec::new();
+    for row in sample_rows {
+        let (seq, turn_id, at_ms, body, event_type, raw) = row?;
+        let Ok(usage) = serde_json::from_str::<session::ProviderUsage>(&raw) else {
+            continue;
+        };
         let kind = if event_type == "compacted" {
             session::ProviderUsageKind::Compaction
         } else {
             session::ProviderUsageKind::Request
         };
-        bills.push((seq, turn_id.unwrap_or_default(), at_ms, body, kind, usage));
-    }
-
-    let requests = bills.len() as u64;
-    let truncated = bills.len() > limit;
-    if truncated {
-        bills.drain(0..bills.len() - limit);
-    }
-    let samples = bills
-        .into_iter()
-        .map(
-            |(seq, turn_id, at_ms, body, kind, usage)| session::ProviderUsageSample {
-                seq,
-                turn_id,
-                at_ms,
-                prompt: usage.prompt_tokens,
-                completion: usage.completion_tokens,
-                hit: usage.cache_hit_tokens,
-                miss: usage.cache_miss_tokens,
-                kind,
-                // A checkpoint body is a summary, not a request header: no model.
-                model: match kind {
-                    session::ProviderUsageKind::Request => body.as_deref().and_then(request_model),
-                    session::ProviderUsageKind::Compaction => None,
-                },
+        samples.push(session::ProviderUsageSample {
+            seq,
+            turn_id: turn_id.unwrap_or_default(),
+            at_ms,
+            prompt: usage.prompt_tokens,
+            completion: usage.completion_tokens,
+            hit: usage.cache_hit_tokens,
+            miss: usage.cache_miss_tokens,
+            kind,
+            // A checkpoint body is a summary, not a request header: no model.
+            model: match kind {
+                session::ProviderUsageKind::Request => body.as_deref().and_then(request_model),
+                session::ProviderUsageKind::Compaction => None,
             },
-        )
-        .collect();
-
-    let mut stmt = conn.prepare(
-        "SELECT seq, created_at FROM transcript_items
-         WHERE session_id = ?1 AND event_type = 'compacted'
-         ORDER BY seq ASC",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
-        Ok(session::ProviderUsageMark {
-            seq: row.get(0)?,
-            at_ms: row.get(1)?,
-        })
-    })?;
-    let mut compactions = Vec::new();
-    for row in rows {
-        compactions.push(row?);
+        });
     }
+    // Read newest-first so the LIMIT keeps the tail; the chart draws oldest-first.
+    samples.reverse();
 
     Ok(session::ProviderUsageSeries {
         samples,
@@ -1725,5 +1799,213 @@ mod producer_window_tests {
         );
         // No durable seqs means no window and no read at all.
         assert_eq!(item_seq_window(&[None, None]), None);
+    }
+}
+
+#[cfg(test)]
+mod provider_usage_series_tests {
+    use std::sync::Arc;
+
+    use tempfile::TempDir;
+
+    use super::provider_usage_series;
+    use crate::config::TurnGuard;
+    use crate::session::data::sqlite::conn::open_readonly;
+    use crate::session::manager::SessionManager;
+    use crate::session::store::{
+        ProviderUsage, ProviderUsageKind, ProviderUsageSample, ProviderUsageSeries,
+    };
+
+    fn usage(prompt: u64) -> ProviderUsage {
+        ProviderUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 1,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: prompt,
+        }
+    }
+
+    fn insert_bill(conn: &rusqlite::Connection, sid: &str, seq: i64, kind: &str, prompt: u64) {
+        let body = if kind == "request/header" {
+            serde_json::json!({ "model": "test/model" })
+        } else {
+            serde_json::json!({ "summary": "s" })
+        };
+        conn.execute(
+            "INSERT INTO transcript_items
+                (session_id, seq, item_type, kind, body, token_estimate, created_at, event_type, surface_op, provider_usage)
+             VALUES (?1, ?2, ?3, ?3, ?4, 0, ?2, ?3, '', ?5)",
+            rusqlite::params![
+                sid,
+                seq,
+                kind,
+                body.to_string(),
+                serde_json::to_string(&usage(prompt)).unwrap()
+            ],
+        )
+        .expect("bill row");
+    }
+
+    /// The implementation this change replaces: read every bill, fold the totals,
+    /// keep the last sample window. Rebuilt here so the test compares two
+    /// algorithms instead of restating one.
+    fn old_series(conn: &rusqlite::Connection, sid: &str, limit: i64) -> ProviderUsageSeries {
+        let limit = limit.clamp(1, 400) as usize;
+        let mut stmt = conn
+            .prepare(
+                "SELECT seq, turn_id, created_at, body, event_type, provider_usage
+                 FROM transcript_items
+                 WHERE session_id = ?1
+                   AND event_type IN ('request/header', 'compacted')
+                   AND provider_usage IS NOT NULL
+                 ORDER BY seq ASC",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map(rusqlite::params![sid], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .unwrap();
+        let mut bills = Vec::new();
+        let mut totals = ProviderUsage::default();
+        for row in rows {
+            let (seq, turn_id, at_ms, body, event_type, raw) = row.unwrap();
+            let Ok(usage) = serde_json::from_str::<ProviderUsage>(&raw) else {
+                continue;
+            };
+            totals.prompt_tokens = totals.prompt_tokens.saturating_add(usage.prompt_tokens);
+            totals.completion_tokens = totals
+                .completion_tokens
+                .saturating_add(usage.completion_tokens);
+            totals.cache_hit_tokens = totals
+                .cache_hit_tokens
+                .saturating_add(usage.cache_hit_tokens);
+            totals.cache_miss_tokens = totals
+                .cache_miss_tokens
+                .saturating_add(usage.cache_miss_tokens);
+            let kind = if event_type == "compacted" {
+                ProviderUsageKind::Compaction
+            } else {
+                ProviderUsageKind::Request
+            };
+            bills.push((seq, turn_id.unwrap_or_default(), at_ms, body, kind, usage));
+        }
+        let requests = bills.len() as u64;
+        let truncated = bills.len() > limit;
+        if truncated {
+            bills.drain(0..bills.len() - limit);
+        }
+        let samples = bills
+            .into_iter()
+            .map(
+                |(seq, turn_id, at_ms, body, kind, usage)| ProviderUsageSample {
+                    seq,
+                    turn_id,
+                    at_ms,
+                    prompt: usage.prompt_tokens,
+                    completion: usage.completion_tokens,
+                    hit: usage.cache_hit_tokens,
+                    miss: usage.cache_miss_tokens,
+                    kind,
+                    model: match kind {
+                        ProviderUsageKind::Request => {
+                            body.as_deref().and_then(super::request_model)
+                        }
+                        ProviderUsageKind::Compaction => None,
+                    },
+                },
+            )
+            .collect();
+        let mut mark_stmt = conn
+            .prepare(
+                "SELECT seq, created_at FROM transcript_items
+                 WHERE session_id = ?1 AND event_type = 'compacted'
+                 ORDER BY seq ASC",
+            )
+            .unwrap();
+        let compactions = mark_stmt
+            .query_map(rusqlite::params![sid], |row| {
+                Ok(crate::session::store::ProviderUsageMark {
+                    seq: row.get(0)?,
+                    at_ms: row.get(1)?,
+                })
+            })
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        ProviderUsageSeries {
+            samples,
+            compactions,
+            truncated,
+            totals,
+            requests,
+        }
+    }
+
+    #[test]
+    fn the_tail_sample_and_totals_match_the_full_history_for_every_limit() {
+        let dir = TempDir::new().expect("tempdir");
+        let db = dir.path().join("sessions.db");
+        let db_path = db.to_string_lossy().into_owned();
+        let manager = SessionManager::new_for_test(Arc::new(TurnGuard::new()), db_path.clone());
+        let interleaved = manager
+            .open_session_sync("/p", "default", None)
+            .expect("session");
+        let plain = manager
+            .open_session_sync("/p", "default", None)
+            .expect("session");
+        let empty = manager
+            .open_session_sync("/p", "default", None)
+            .expect("session");
+
+        let conn = rusqlite::Connection::open(&db).expect("rw");
+        // Request and summarizer bills interleaved, so a tail limit can split a pair.
+        for (seq, kind, prompt) in [
+            (1, "request/header", 100),
+            (2, "compacted", 10),
+            (3, "request/header", 200),
+            (4, "compacted", 20),
+            (5, "request/header", 300),
+            (6, "compacted", 30),
+        ] {
+            insert_bill(&conn, &interleaved, seq, kind, prompt);
+        }
+        // An old session that never compacted.
+        for (seq, prompt) in [(1, 7), (2, 11), (3, 13)] {
+            insert_bill(&conn, &plain, seq, "request/header", prompt);
+        }
+        drop(conn);
+
+        let ro = open_readonly(&db).expect("readonly");
+        for sid in [&interleaved, &plain, &empty] {
+            for limit in [1i64, 2, 3, 4, 5, 6, 7, 400] {
+                assert_eq!(
+                    provider_usage_series(&ro, sid, limit).expect("series"),
+                    old_series(&ro, sid, limit),
+                    "session {sid} limit {limit}"
+                );
+            }
+        }
+
+        // The tail is the newest bills, drawn oldest-first, with totals still
+        // covering every bill.
+        let series = provider_usage_series(&ro, &interleaved, 2).expect("series");
+        assert_eq!(
+            series.samples.iter().map(|s| s.seq).collect::<Vec<_>>(),
+            vec![5, 6]
+        );
+        assert_eq!(series.samples[0].kind, ProviderUsageKind::Request);
+        assert_eq!(series.samples[1].kind, ProviderUsageKind::Compaction);
+        assert!(series.truncated);
+        assert_eq!(series.requests, 6);
+        assert_eq!(series.totals.prompt_tokens, 660);
+        assert_eq!(series.compactions.len(), 3);
     }
 }

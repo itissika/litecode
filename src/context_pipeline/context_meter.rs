@@ -19,6 +19,7 @@ use crate::session::estimate::{
     count_text_tokens,
 };
 use crate::session::manager::SessionManager;
+use crate::session::store::ProviderUsageRollup;
 use crate::session::working::WorkingRow;
 use crate::types::{Item, LitecodeError, Result};
 
@@ -337,7 +338,12 @@ pub fn persisted_occupancy_bill(
     let meta = sessions.data().meta_blocking(session_id).ok();
     let compacted_seq = meta.as_ref().and_then(|meta| meta.compacted_seq);
     let surface_rewrite_seq = meta.as_ref().map_or(0, |meta| meta.surface_rewrite_seq);
-    let rollup = sessions.provider_usage_rollup(session_id)?;
+    // Latest bill, not the rollup: occupancy is a point measurement of the
+    // prompt, and the rollup would scan every header of the session.
+    let rollup = match sessions.latest_provider_bill(session_id)? {
+        Some((seq, usage)) => ProviderUsageRollup::from_latest(seq, usage),
+        None => ProviderUsageRollup::default(),
+    };
     let meter = sessions
         .data()
         .meter_blocking(session_id)
@@ -358,14 +364,8 @@ pub fn latest_persisted_envelope(
     sessions: &SessionManager,
     session_id: &str,
 ) -> Option<ContextEnvelope> {
-    sessions
-        .request_origins(session_id, 0, u64::MAX)
-        .ok()?
-        .into_iter()
-        .rev()
-        .find_map(|(_, body)| {
-            serde_json::from_value::<ContextEnvelope>(body.get("context_envelope")?.clone()).ok()
-        })
+    let body = sessions.latest_request_envelope(session_id).ok()??;
+    serde_json::from_value::<ContextEnvelope>(body.get("context_envelope")?.clone()).ok()
 }
 
 /// Single persisted-session measurement used by manual eligibility and the UI

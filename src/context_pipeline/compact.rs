@@ -2243,8 +2243,8 @@ fn build_compaction_input(
         }
     }
 
-    // The summarizer attributes only the段 it is about to summarize, so the
-    // window is that段, not the whole log.
+    // The summarizer attributes only the segment it is about to summarize, so
+    // the window is that segment, not the whole log.
     let origins = match crate::runtime::llm_resolve::item_seq_window(&input_seqs) {
         Some((from_seq, through_seq)) => sessions
             .request_origins(&request.session_id, from_seq, through_seq)

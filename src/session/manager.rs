@@ -3902,6 +3902,43 @@ impl SessionManager {
         }
     }
 
+    /// `(seq, usage)` of the newest billed `request/header`, if any.
+    ///
+    /// Occupancy is a point measurement, so it needs exactly this row. Reading
+    /// the whole rollup here would make every step scan the session's history.
+    pub fn latest_provider_bill(
+        &self,
+        session_id: &str,
+    ) -> crate::types::Result<Option<(crate::session::event::Seq, ProviderUsage)>> {
+        match self.data.read_blocking(SessionRead::LatestProviderBill {
+            session_id: session_id.to_string(),
+        })? {
+            ReadValue::ProviderBill(row) => {
+                Ok(row.map(|(seq, usage)| (seq.max(0) as crate::session::event::Seq, usage)))
+            }
+            _ => Err(crate::types::LitecodeError::SessionStorage(
+                "unexpected latest provider bill read".into(),
+            )),
+        }
+    }
+
+    /// The newest `request/header` body that carries a `context_envelope`.
+    pub fn latest_request_envelope(
+        &self,
+        session_id: &str,
+    ) -> crate::types::Result<Option<serde_json::Value>> {
+        match self
+            .data
+            .read_blocking(SessionRead::LatestRequestEnvelope {
+                session_id: session_id.to_string(),
+            })? {
+            ReadValue::RequestEnvelope(body) => Ok(body),
+            _ => Err(crate::types::LitecodeError::SessionStorage(
+                "unexpected latest request envelope read".into(),
+            )),
+        }
+    }
+
     /// Store one request's provider bill on its header row.
     ///
     /// The update names only `provider_usage`. A missing row, a non-header seq,
@@ -4389,7 +4426,7 @@ mod request_origin_tests {
         );
         assert!(
             manager
-                .request_origins(&session_id, 0, 0)
+                .request_origins(&session_id, 0, u64::MAX)
                 .unwrap()
                 .is_empty(),
             "a switch is not a request origin"
