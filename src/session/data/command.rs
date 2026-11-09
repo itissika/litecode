@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::session::data::sqlite::session::{
-    ProviderUsageRollup, ProviderUsageSeries, SessionApply, SessionContextMeter,
+    ProviderUsageSeries, SessionApply, SessionContextMeter,
 };
 use crate::session::event::Seq;
 use crate::session::memory::SessionMemory;
@@ -674,9 +674,9 @@ pub enum SessionRead {
     LatestRequestEnvelope {
         session_id: String,
     },
-    /// Recorded provider bills on `request/header` rows. Empty when none exist.
-    /// Totals-only: the occupancy path must not read this.
-    ProviderUsageRollup {
+    /// Whether the session has any stored bill. A presence probe: an all-zero
+    /// usage is still a real bill, so `cum_* != 0` is not a substitute.
+    HasProviderBills {
         session_id: String,
     },
     /// Last `limit` bills for the usage chart, plus whole-session totals.
@@ -763,7 +763,6 @@ pub enum ReadValue {
     ProviderBill(Option<(i64, crate::session::store::ProviderUsage)>),
     /// The newest `request/header` body carrying a `context_envelope`.
     RequestEnvelope(Option<serde_json::Value>),
-    ProviderUsageRollup(ProviderUsageRollup),
     ProviderUsageSeries(ProviderUsageSeries),
     WorkspaceUsage(crate::session::store::WorkspaceUsage),
     SpineReminders(crate::reminder::SpineReminderView),

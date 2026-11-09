@@ -8,7 +8,7 @@ use crate::types::{LitecodeError, Result};
 
 use super::conn::BUSY_TIMEOUT;
 
-pub const USER_VERSION: i32 = 8;
+pub const USER_VERSION: i32 = 9;
 
 // Additive side columns (`title`, `folder_id`, `memory_json`) are migrated
 // below, after this gate, so old databases must not list them here.
@@ -298,6 +298,9 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
     if user_version(conn)? < 8 {
         migrate_dirty_sessions_v8(conn)?;
     }
+    if user_version(conn)? < 9 {
+        migrate_session_totals_v9(conn)?;
+    }
     conn.execute_batch(&format!("PRAGMA user_version={USER_VERSION};"))?;
     Ok(())
 }
@@ -337,6 +340,50 @@ fn migrate_dirty_sessions_v8(conn: &Connection) -> Result<()> {
         "INSERT OR IGNORE INTO session_dirty (session_id, change_id)
          SELECT DISTINCT session_id, ?1 FROM session_change_log",
         rusqlite::params![seed],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// v9 makes `cum_*` the single session total: the sum of every stored bill,
+/// compaction checkpoints included.
+///
+/// Absolute assignment, not an increment, so running it twice changes nothing
+/// and a database whose totals drifted for any reason is repaired. It runs on
+/// startup, after the meter table exists, inside one transaction; the version
+/// only advances once that transaction committed.
+fn migrate_session_totals_v9(conn: &Connection) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    // A meter row may hold a figure from the old turn-end accumulation that no
+    // bill supports; rebuild every total from the bills themselves.
+    tx.execute(
+        "UPDATE session_context_meter
+         SET cum_prompt_tokens = 0, cum_completion_tokens = 0,
+             cum_cache_hit_tokens = 0, cum_cache_miss_tokens = 0",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO session_context_meter (
+             session_id, cum_prompt_tokens, cum_completion_tokens,
+             cum_cache_hit_tokens, cum_cache_miss_tokens, updated_at)
+         SELECT session_id,
+                COALESCE(SUM(json_extract(provider_usage, '$.prompt_tokens')), 0),
+                COALESCE(SUM(json_extract(provider_usage, '$.completion_tokens')), 0),
+                COALESCE(SUM(json_extract(provider_usage, '$.cache_hit_tokens')), 0),
+                COALESCE(SUM(json_extract(provider_usage, '$.cache_miss_tokens')), 0),
+                CAST(strftime('%s', 'now') AS INTEGER) * 1000
+         FROM transcript_items
+         WHERE event_type IN ('request/header', 'compacted')
+           AND provider_usage IS NOT NULL
+           AND json_valid(provider_usage)
+         GROUP BY session_id
+         ON CONFLICT(session_id) DO UPDATE SET
+             cum_prompt_tokens = excluded.cum_prompt_tokens,
+             cum_completion_tokens = excluded.cum_completion_tokens,
+             cum_cache_hit_tokens = excluded.cum_cache_hit_tokens,
+             cum_cache_miss_tokens = excluded.cum_cache_miss_tokens,
+             updated_at = excluded.updated_at",
+        [],
     )?;
     tx.commit()?;
     Ok(())
@@ -629,6 +676,117 @@ fn migrate_meter_table(conn: &Connection) -> Result<()> {
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    /// v9 rebuilds every session total from the bills — compaction checkpoints
+    /// included — and running it a second time changes nothing.
+    #[test]
+    fn v9_backfills_session_totals_from_bills_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+
+        let bill = |prompt: u64, completion: u64| {
+            serde_json::json!({
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "cache_hit_tokens": 0,
+                "cache_miss_tokens": prompt,
+            })
+            .to_string()
+        };
+        for (sid, seq, kind, usage) in [
+            ("a", 1, "request/header", bill(100, 5)),
+            ("a", 2, "compacted", bill(10, 1)),
+            ("b", 1, "request/header", bill(7, 2)),
+            ("c", 1, "request/header", "{not-json".to_string()),
+        ] {
+            conn.execute(
+                "INSERT INTO transcript_items
+                    (session_id, seq, item_type, kind, body, token_estimate, created_at, event_type, surface_op, provider_usage)
+                 VALUES (?1, ?2, ?3, ?3, '{}', 0, 0, ?3, '', ?4)",
+                rusqlite::params![sid, seq, kind, usage],
+            )
+            .unwrap();
+        }
+        // A stale running total from the old turn-end accumulation, and a row
+        // with no bills behind it at all.
+        conn.execute(
+            "INSERT INTO session_context_meter (session_id, cum_prompt_tokens, cum_completion_tokens)
+             VALUES ('a', 999, 999)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_context_meter (session_id, cum_prompt_tokens) VALUES ('d', 5)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_context_meter (session_id, cum_prompt_tokens) VALUES ('c', 5)",
+            [],
+        )
+        .unwrap();
+
+        migrate_session_totals_v9(&conn).unwrap();
+        assert_eq!(totals_of(&conn, "a"), (110, 6));
+        let updated_at: i64 = conn
+            .query_row(
+                "SELECT updated_at FROM session_context_meter WHERE session_id = 'a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            updated_at > 0,
+            "the backfill must stamp the migration time, not 1970"
+        );
+        assert_eq!(totals_of(&conn, "b"), (7, 2));
+        assert_eq!(
+            totals_of(&conn, "d"),
+            (0, 0),
+            "a row with no bills must not keep the old total"
+        );
+        assert_eq!(
+            totals_of(&conn, "c"),
+            (0, 0),
+            "an unreadable bill is not a bill"
+        );
+
+        let first = all_totals(&conn);
+        migrate_session_totals_v9(&conn).unwrap();
+        assert_eq!(first, all_totals(&conn), "the backfill must be idempotent");
+    }
+
+    fn totals_of(conn: &Connection, session_id: &str) -> (i64, i64) {
+        conn.query_row(
+            "SELECT cum_prompt_tokens, cum_completion_tokens
+             FROM session_context_meter WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    fn all_totals(conn: &Connection) -> Vec<(String, i64, i64, i64, i64)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_id, cum_prompt_tokens, cum_completion_tokens,
+                        cum_cache_hit_tokens, cum_cache_miss_tokens
+                 FROM session_context_meter ORDER BY session_id",
+            )
+            .unwrap();
+        stmt.query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect()
+    }
 
     #[test]
     fn existing_session_db_adds_result_data_column() {

@@ -812,7 +812,6 @@ describe("turnStore convergence", () => {
     useTurnStore.getState().applySnapshotMeter(sessionId, snapshot(sessionId));
     let slice = useTurnStore.getState().byId.get(sessionId)!;
     expect(slice.sessionBilledTokens).toBeNull();
-    expect(slice.billedRequestCount).toBe(0);
 
     useTurnStore.getState().onTurnStarted({
       session_id: sessionId,
@@ -846,16 +845,13 @@ describe("turnStore convergence", () => {
     });
     slice = useTurnStore.getState().byId.get(sessionId)!;
     expect(slice.sessionBilledTokens).toBe(170);
-    expect(slice.billedRequestCount).toBe(2);
 
     useTurnStore.getState().applySnapshotMeter(sessionId, {
       ...snapshot(sessionId),
       provider_billed_tokens: 140,
-      provider_billed_requests: 2,
     });
     slice = useTurnStore.getState().byId.get(sessionId)!;
     expect(slice.sessionBilledTokens).toBe(140);
-    expect(slice.billedRequestCount).toBe(2);
   });
 
   it("applySnapshotMeter without stats leaves prompt truth absent", () => {

@@ -124,7 +124,6 @@ export interface TurnSlice {
   sessionPromptTokens: number;
   /** Recorded round-trip tokens (prompt + completion). Null until a bill exists. */
   sessionBilledTokens: number | null;
-  billedRequestCount: number;
   sessionCompletionTokens: number;
   sessionCacheHitTokens: number;
   sessionCacheMissTokens: number;
@@ -156,16 +155,9 @@ export function emptySlice(): TurnSlice {
 
 function billedFromSnapshot(snap: SessionSnapshot): {
   sessionBilledTokens: number | null;
-  billedRequestCount: number;
 } {
-  const count = snap.provider_billed_requests ?? 0;
-  if (count <= 0 || snap.provider_billed_tokens == null) {
-    return { sessionBilledTokens: null, billedRequestCount: 0 };
-  }
-  return {
-    sessionBilledTokens: snap.provider_billed_tokens,
-    billedRequestCount: count,
-  };
+  // The token field is its own presence signal: a session with bills has a sum.
+  return { sessionBilledTokens: snap.provider_billed_tokens ?? null };
 }
 
 export const EMPTY_SLICE: TurnSlice = {
@@ -194,7 +186,6 @@ export const EMPTY_SLICE: TurnSlice = {
   lastTurnCacheMissTokens: 0,
   sessionPromptTokens: 0,
   sessionBilledTokens: null,
-  billedRequestCount: 0,
   sessionCompletionTokens: 0,
   sessionCacheHitTokens: 0,
   sessionCacheMissTokens: 0,
@@ -969,7 +960,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           (slice.sessionBilledTokens ?? 0) +
           metaUpdate.promptTokens +
           metaUpdate.completionTokens;
-        mapped.billedRequestCount = (slice.billedRequestCount ?? 0) + 1;
       }
 
       updated.set(sessionId, { ...slice, ...mapped });

@@ -908,24 +908,13 @@ pub(crate) fn resolve_occupancy_bill(
     let meta = sessions.data().meta_blocking(session_id).ok();
     let compacted_seq = meta.as_ref().and_then(|meta| meta.compacted_seq);
     let surface_rewrite_seq = meta.as_ref().map_or(0, |meta| meta.surface_rewrite_seq);
-    // Latest bill, not the rollup: occupancy is one request's prompt.
-    let rollup = sessions
-        .latest_provider_bill(session_id)
-        .ok()
-        .flatten()
-        .map(|(seq, usage)| crate::session::store::ProviderUsageRollup::from_latest(seq, usage))
-        .unwrap_or_default();
+    // Latest bill only: occupancy is one request's prompt.
+    let latest = sessions.latest_provider_bill(session_id).ok().flatten();
     let meter = sessions
         .data()
         .meter_blocking(session_id)
         .unwrap_or_default();
-    occupancy_bill_from(
-        baseline,
-        compacted_seq,
-        surface_rewrite_seq,
-        &rollup,
-        &meter,
-    )
+    occupancy_bill_from(baseline, compacted_seq, surface_rewrite_seq, latest, &meter)
 }
 
 /// A streamed item already owns a row; the commit that follows must find it.

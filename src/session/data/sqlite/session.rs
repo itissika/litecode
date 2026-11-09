@@ -95,43 +95,6 @@ impl ProviderUsage {
     }
 }
 
-/// Every recorded request bill for one session, oldest first folded in.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ProviderUsageRollup {
-    pub latest_seq: Option<u64>,
-    pub latest: Option<ProviderUsage>,
-    pub billed_tokens: u64,
-    pub request_count: u64,
-}
-
-impl ProviderUsageRollup {
-    /// The newest bill only. Occupancy prices one request's prompt, so the
-    /// totals fields here describe just that bill and must not be read as
-    /// session totals.
-    pub fn from_latest(seq: u64, usage: ProviderUsage) -> Self {
-        Self {
-            latest_seq: Some(seq),
-            latest: Some(usage.clone()),
-            billed_tokens: usage.billed(),
-            request_count: 1,
-        }
-    }
-
-    pub fn from_rows(rows: impl IntoIterator<Item = (i64, ProviderUsage)>) -> Self {
-        let mut rollup = Self::default();
-        for (seq, usage) in rows {
-            if seq < 0 {
-                continue;
-            }
-            rollup.billed_tokens = rollup.billed_tokens.saturating_add(usage.billed());
-            rollup.request_count = rollup.request_count.saturating_add(1);
-            rollup.latest_seq = Some(seq as u64);
-            rollup.latest = Some(usage);
-        }
-        rollup
-    }
-}
-
 /// What kind of provider call paid a bill.
 ///
 /// A summarizer request is billed exactly like a turn request; it just has no
@@ -243,16 +206,17 @@ pub struct WorkspaceUsage {
 
 /// Prompt the occupancy ring may show.
 ///
-/// A recorded bill is that prompt while the request is still the latest context.
-/// A compact checkpoint with a higher seq retires it, even if the meter row still
-/// holds the pre-compact figures. No bill at all falls back to the meter.
+/// `latest` is the newest bill (`seq`, usage) — occupancy is a point
+/// measurement of the prompt, never a sum. A compact checkpoint with a higher
+/// seq retires it, even if the meter row still holds the pre-compact figures. No
+/// bill at all falls back to the meter.
 pub fn occupancy_usage(
-    rollup: &ProviderUsageRollup,
+    latest: Option<(u64, ProviderUsage)>,
     compacted_seq: Option<u64>,
     surface_rewrite_seq: u64,
     meter: &SessionContextMeter,
 ) -> Option<ProviderUsage> {
-    if let (Some(seq), Some(usage)) = (rollup.latest_seq, rollup.latest.clone()) {
+    if let Some((seq, usage)) = latest {
         let compacted_retired = compacted_seq.is_some_and(|compacted| compacted > seq);
         let rewritten_retired = surface_rewrite_seq > 0 && seq <= surface_rewrite_seq;
         if compacted_retired || rewritten_retired {
@@ -2188,27 +2152,25 @@ impl Session {
         load_context_meter_on(self.conn(), &self.id)
     }
 
-    /// Upsert last-known **provider** usage for this session.
+    /// Upsert the **last request** figures for this session.
+    ///
+    /// `cum_*` has exactly one owner — the bill write — so this statement never
+    /// names those columns on conflict and a fresh row starts them at zero. Turn
+    /// end calls it with the last request's usage only, and writes nothing at all
+    /// when the turn saw no provider usage.
     pub fn save_context_meter(&self, meter: &SessionContextMeter) -> Result<()> {
         let now = chrono::Utc::now().timestamp_millis();
         self.conn()
             .execute(
                 "INSERT INTO session_context_meter (
                     session_id, prompt_tokens, completion_tokens,
-                    cache_hit_tokens, cache_miss_tokens,
-                    cum_prompt_tokens, cum_completion_tokens,
-                    cum_cache_hit_tokens, cum_cache_miss_tokens,
-                    updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                    cache_hit_tokens, cache_miss_tokens, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(session_id) DO UPDATE SET
                     prompt_tokens = excluded.prompt_tokens,
                     completion_tokens = excluded.completion_tokens,
                     cache_hit_tokens = excluded.cache_hit_tokens,
                     cache_miss_tokens = excluded.cache_miss_tokens,
-                    cum_prompt_tokens = excluded.cum_prompt_tokens,
-                    cum_completion_tokens = excluded.cum_completion_tokens,
-                    cum_cache_hit_tokens = excluded.cum_cache_hit_tokens,
-                    cum_cache_miss_tokens = excluded.cum_cache_miss_tokens,
                     updated_at = excluded.updated_at",
                 rusqlite::params![
                     self.id,
@@ -2216,10 +2178,6 @@ impl Session {
                     meter.completion_tokens as i64,
                     meter.cache_hit_tokens as i64,
                     meter.cache_miss_tokens as i64,
-                    meter.cum_prompt_tokens as i64,
-                    meter.cum_completion_tokens as i64,
-                    meter.cum_cache_hit_tokens as i64,
-                    meter.cum_cache_miss_tokens as i64,
                     now,
                 ],
             )
@@ -2227,17 +2185,68 @@ impl Session {
         Ok(())
     }
 
-    /// Fill `provider_usage` on one `request/header` row. A non-header seq, a
-    /// missing row, or a column that already has a value changes nothing.
-    /// Does not touch body, kind, or state.
+    /// Fill `provider_usage` on one `request/header` row and add it to the
+    /// session totals in the same transaction.
+    ///
+    /// The `provider_usage IS NULL` guard makes the write idempotent, so only the
+    /// call that actually stored the bill may advance `cum_*`: a repeated call
+    /// changes no row and adds nothing. The increment happens in the database
+    /// (`cum_* = cum_* + ?`), never as a read-modify-write of the whole row.
     pub fn record_provider_usage(&self, seq: Seq, usage_json: &str) -> Result<()> {
-        self.conn().execute(
+        let usage: ProviderUsage = serde_json::from_str(usage_json)
+            .map_err(|e| LitecodeError::SessionStorage(format!("provider usage parse: {e}")))?;
+        // The bill and its totals commit together. The writer already opened a
+        // transaction for this mutation; this method is public, so it does not
+        // assume that: outside a transaction it opens and commits its own, and
+        // inside one it joins the caller's.
+        let conn = self.conn();
+        let own_tx = if conn.is_autocommit() {
+            Some(conn.unchecked_transaction()?)
+        } else {
+            None
+        };
+        let written = conn.execute(
             "UPDATE transcript_items
              SET provider_usage = ?1
              WHERE session_id = ?2 AND seq = ?3
                AND event_type = 'request/header'
                AND provider_usage IS NULL",
             rusqlite::params![usage_json, self.id, seq as i64],
+        )?;
+        if written == 1 {
+            Self::add_cum_usage_tx(conn, &self.id, &usage)?;
+        }
+        if let Some(tx) = own_tx {
+            tx.commit()?;
+        }
+        Ok(())
+    }
+
+    /// Add one bill to the session totals inside the caller's transaction.
+    ///
+    /// Every writer that stores a bill calls this exactly once for that bill:
+    /// the request header and the compaction checkpoint alike. Totals are
+    /// derived state of the bills, so they move in the same commit.
+    fn add_cum_usage_tx(conn: &Connection, session_id: &str, usage: &ProviderUsage) -> Result<()> {
+        conn.execute(
+            "INSERT INTO session_context_meter (
+                session_id, cum_prompt_tokens, cum_completion_tokens,
+                cum_cache_hit_tokens, cum_cache_miss_tokens, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(session_id) DO UPDATE SET
+                cum_prompt_tokens = cum_prompt_tokens + excluded.cum_prompt_tokens,
+                cum_completion_tokens = cum_completion_tokens + excluded.cum_completion_tokens,
+                cum_cache_hit_tokens = cum_cache_hit_tokens + excluded.cum_cache_hit_tokens,
+                cum_cache_miss_tokens = cum_cache_miss_tokens + excluded.cum_cache_miss_tokens,
+                updated_at = excluded.updated_at",
+            rusqlite::params![
+                session_id,
+                usage.prompt_tokens as i64,
+                usage.completion_tokens as i64,
+                usage.cache_hit_tokens as i64,
+                usage.cache_miss_tokens as i64,
+                chrono::Utc::now().timestamp_millis(),
+            ],
         )?;
         Ok(())
     }
@@ -3751,6 +3760,9 @@ impl Session {
                 "UPDATE transcript_items SET provider_usage = ?1 WHERE session_id = ?2 AND seq = ?3",
                 rusqlite::params![serde_json::to_string(usage)?, self.id, seq as i64],
             )?;
+            // The checkpoint row is the summarizer bill's only home; the session
+            // totals move with it, inside the writer's transaction.
+            Self::add_cum_usage_tx(tx, &self.id, usage)?;
         }
         if projection.surface.nodes.contains(&seq) {
             projection.payloads_by_seq.insert(
@@ -4627,5 +4639,59 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(error, LitecodeError::CompactionSurfaceChanged(_)));
+    }
+    /// Called outside the writer (autocommit), the bill and its total still
+    /// commit as one unit and the connection is left clean.
+    #[test]
+    fn record_provider_usage_commits_its_own_transaction_outside_the_writer() {
+        use crate::session::event::EventType;
+        use crate::session::model::LogState;
+
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let seq = match session
+            .apply(SessionApply::Append(EventDraft {
+                time: 0,
+                event_type: EventType::RequestHeader,
+                data: serde_json::json!({ "schema": 1 }),
+                surface_op: None,
+                source_seqs: None,
+                ignorable: false,
+                state: LogState::Final,
+            }))
+            .unwrap()
+        {
+            ApplyOutcome::Appended(seq) => seq,
+            _ => panic!("a request header must append a row"),
+        };
+        assert!(
+            session.conn().is_autocommit(),
+            "the direct call is the autocommit path this test covers"
+        );
+
+        let usage = ProviderUsage {
+            prompt_tokens: 12,
+            ..ProviderUsage::default()
+        };
+        session
+            .record_provider_usage(seq, &serde_json::to_string(&usage).unwrap())
+            .unwrap();
+
+        assert!(
+            session.conn().is_autocommit(),
+            "the method must not leave its transaction open"
+        );
+        let (stored, cum): (Option<String>, i64) = session
+            .conn()
+            .query_row(
+                "SELECT t.provider_usage, m.cum_prompt_tokens
+                 FROM transcript_items t
+                 JOIN session_context_meter m ON m.session_id = t.session_id
+                 WHERE t.session_id = ?1 AND t.seq = ?2",
+                rusqlite::params![session.id, seq as i64],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(stored.is_some(), "the bill is durable");
+        assert_eq!(cum, 12, "and so is the total it moved");
     }
 }

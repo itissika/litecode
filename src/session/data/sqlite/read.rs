@@ -164,9 +164,9 @@ pub fn execute(
         SessionRead::LatestRequestEnvelope { session_id } => Ok(ReadValue::RequestEnvelope(
             latest_request_envelope(conn, &session_id)?,
         )),
-        SessionRead::ProviderUsageRollup { session_id } => Ok(ReadValue::ProviderUsageRollup(
-            provider_usage_rollup(conn, &session_id)?,
-        )),
+        SessionRead::HasProviderBills { session_id } => {
+            Ok(ReadValue::Count(has_provider_bills(conn, &session_id)?))
+        }
         SessionRead::ProviderUsageSeries { session_id, limit } => Ok(
             ReadValue::ProviderUsageSeries(provider_usage_series(conn, &session_id, limit)?),
         ),
@@ -267,36 +267,48 @@ fn latest_request_envelope(
         .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok()))
 }
 
-/// `request/header` rows for one session, oldest first.
+/// Whether any bill exists, without reading or parsing one.
 ///
-/// `body` is the request's origin record. A row whose body is absent or not JSON
-/// is skipped rather than failing the read: this is a compatibility input, and an
-/// unreadable header must degrade to "origin unknown", never to a broken turn.
-fn provider_usage_rollup(
-    conn: &Connection,
-    session_id: &str,
-) -> Result<session::ProviderUsageRollup> {
-    let mut stmt = conn.prepare(
-        "SELECT seq, provider_usage FROM transcript_items
-         WHERE session_id = ?1
-           AND event_type = 'request/header'
-           AND provider_usage IS NOT NULL
-         ORDER BY seq ASC",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-    })?;
-    let mut parsed = Vec::new();
-    for row in rows {
-        let (seq, raw) = row?;
-        let Ok(usage) = serde_json::from_str::<session::ProviderUsage>(&raw) else {
-            continue;
-        };
-        parsed.push((seq, usage));
-    }
-    Ok(session::ProviderUsageRollup::from_rows(parsed))
+/// `LIMIT 1` stops at the first billed row. Presence is its own fact: a stored
+/// bill whose usage is all zeros must still count as a bill.
+fn has_provider_bills(conn: &Connection, session_id: &str) -> Result<i64> {
+    conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM transcript_items
+             WHERE session_id = ?1
+               AND event_type IN ('request/header', 'compacted')
+               AND provider_usage IS NOT NULL
+             LIMIT 1
+         )",
+        rusqlite::params![session_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
+/// The session's stored totals (cum_*), read as a provider-usage record.
+///
+/// One row, no history: the meter is the only place a session total lives.
+fn session_meter_totals(conn: &Connection, session_id: &str) -> Result<session::ProviderUsage> {
+    let row: Option<(i64, i64, i64, i64)> = conn
+        .query_row(
+            "SELECT cum_prompt_tokens, cum_completion_tokens,
+                    cum_cache_hit_tokens, cum_cache_miss_tokens
+             FROM session_context_meter WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        Some((prompt, completion, hit, miss)) => session::ProviderUsage {
+            prompt_tokens: prompt.max(0) as u64,
+            completion_tokens: completion.max(0) as u64,
+            cache_hit_tokens: hit.max(0) as u64,
+            cache_miss_tokens: miss.max(0) as u64,
+        },
+        None => session::ProviderUsage::default(),
+    })
+}
 /// One session's provider bills in transcript order, for the usage chart.
 ///
 /// `limit` bounds only the returned sample window; `totals` always covers every
@@ -331,12 +343,6 @@ pub(super) fn provider_usage_series(
             row.get::<_, Option<String>>(3)?,
         ))
     })?;
-    let mut totals = session::ProviderUsage {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        cache_hit_tokens: 0,
-        cache_miss_tokens: 0,
-    };
     let mut requests = 0u64;
     let mut compactions = Vec::new();
     for row in total_rows {
@@ -344,22 +350,13 @@ pub(super) fn provider_usage_series(
         if event_type == "compacted" {
             compactions.push(session::ProviderUsageMark { seq, at_ms });
         }
-        let Some(raw) = usage else { continue };
-        let Ok(usage) = serde_json::from_str::<session::ProviderUsage>(&raw) else {
-            continue;
-        };
-        requests += 1;
-        totals.prompt_tokens = totals.prompt_tokens.saturating_add(usage.prompt_tokens);
-        totals.completion_tokens = totals
-            .completion_tokens
-            .saturating_add(usage.completion_tokens);
-        totals.cache_hit_tokens = totals
-            .cache_hit_tokens
-            .saturating_add(usage.cache_hit_tokens);
-        totals.cache_miss_tokens = totals
-            .cache_miss_tokens
-            .saturating_add(usage.cache_miss_tokens);
+        if usage.is_some() {
+            requests += 1;
+        }
     }
+    // Totals are the session meter's cum_* values: every bill adds itself there
+    // in the transaction that stores it, so the chart never sums history itself.
+    let totals = session_meter_totals(conn, session_id)?;
     let truncated = requests > limit as u64;
 
     let mut sample_stmt = conn.prepare(
@@ -1825,6 +1822,19 @@ mod provider_usage_series_tests {
         }
     }
 
+    /// The migrated meter row: totals are Σ bills, so seeding them here makes
+    /// the fixture look like a database the v9 backfill already touched.
+    fn seed_meter(conn: &rusqlite::Connection, sid: &str, prompt: u64, completion: u64) {
+        conn.execute(
+            "INSERT INTO session_context_meter
+                (session_id, cum_prompt_tokens, cum_completion_tokens,
+                 cum_cache_hit_tokens, cum_cache_miss_tokens)
+             VALUES (?1, ?2, ?3, 0, ?2)",
+            rusqlite::params![sid, prompt as i64, completion as i64],
+        )
+        .expect("meter row");
+    }
+
     fn insert_bill(conn: &rusqlite::Connection, sid: &str, seq: i64, kind: &str, prompt: u64) {
         let body = if kind == "request/header" {
             serde_json::json!({ "model": "test/model" })
@@ -1981,6 +1991,9 @@ mod provider_usage_series_tests {
         for (seq, prompt) in [(1, 7), (2, 11), (3, 13)] {
             insert_bill(&conn, &plain, seq, "request/header", prompt);
         }
+        // Totals are the meter's; Σ bills is what the backfill writes there.
+        seed_meter(&conn, &interleaved, 660, 6);
+        seed_meter(&conn, &plain, 31, 3);
         drop(conn);
 
         let ro = open_readonly(&db).expect("readonly");

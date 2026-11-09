@@ -626,8 +626,6 @@ export interface SessionSnapshot {
   cumulative_token_stats?: TurnTokenStats | null;
   /** Sum of prompt+completion over recorded requests. Absent means "-". */
   provider_billed_tokens?: number | null;
-  /** Those requests. Average round-trip is the sum divided by this count. */
-  provider_billed_requests?: number | null;
   thinking_tier?: ThinkingTier;
   context_mode?: ContextMode;
   /**

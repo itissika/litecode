@@ -527,8 +527,6 @@ pub struct AgentRuntime {
     pub(crate) current_step: Arc<AtomicU64>,
     /// Last LLM request usage only (replaced each call — never turn-summed).
     pub(crate) turn_token_stats: TurnTokenStats,
-    /// Σ every LLM request's usage in the current turn (feeds session cum_* meter).
-    pub(crate) turn_usage_totals: TurnTokenStats,
     /// Stored parameters for deferred build_tool_list (async MCP schema fetch).
     build_tool_params: Option<Arc<BuildToolParams>>,
     /// In-flight turn-start snapshot_track (parallel with first LLM). Joined
@@ -673,7 +671,6 @@ impl AgentRuntime {
             prompt_usage_baseline: ProviderPromptBaseline::default(),
             current_step: Arc::new(AtomicU64::new(0)),
             turn_token_stats: TurnTokenStats::default(),
-            turn_usage_totals: TurnTokenStats::default(),
             build_tool_params: Some(build_tool_params),
             pending_snapshot_track: Mutex::new(None),
             latency_turn_start: None,
@@ -819,38 +816,17 @@ impl AgentRuntime {
         // Last LLM request usage only (`turn_token_stats` — never turn-summed).
         // Persist provider truth only; never invent occupancy from local estimates.
         // No usage this turn → leave prior meter untouched (truth-or-absent).
-        // Session-total accumulators (cum_*) add this turn's Σ (`turn_usage_totals`),
-        // not just the last request — multi-step tool loops must not under-count.
+        // `cum_*` is not this writer's business: every bill adds itself to the
+        // session totals in the transaction that stores it, so adding the turn's
+        // Σ here again would count every request twice.
         let stats = std::mem::take(&mut self.turn_token_stats);
-        let turn_totals = std::mem::take(&mut self.turn_usage_totals);
         if stats.has_provider_usage() {
-            let previous = self
-                .sessions
-                .data()
-                .meter_blocking(&self.session_id)
-                .unwrap_or_default();
-            // Prefer turn_totals (Σ every request); fall back to last-request stats
-            // if totals were somehow empty while stats still hold truth.
-            let add = if turn_totals.has_provider_usage() {
-                &turn_totals
-            } else {
-                &stats
-            };
             let meter = crate::session::SessionContextMeter {
                 prompt_tokens: stats.prompt_tokens,
                 completion_tokens: stats.completion_tokens,
                 cache_hit_tokens: stats.cache_hit_tokens,
                 cache_miss_tokens: stats.cache_miss_tokens,
-                cum_prompt_tokens: previous.cum_prompt_tokens.saturating_add(add.prompt_tokens),
-                cum_completion_tokens: previous
-                    .cum_completion_tokens
-                    .saturating_add(add.completion_tokens),
-                cum_cache_hit_tokens: previous
-                    .cum_cache_hit_tokens
-                    .saturating_add(add.cache_hit_tokens),
-                cum_cache_miss_tokens: previous
-                    .cum_cache_miss_tokens
-                    .saturating_add(add.cache_miss_tokens),
+                ..Default::default()
             };
             if let Err(e) = self.sessions.save_context_meter(&self.session_id, &meter) {
                 tracing::warn!(
@@ -1157,7 +1133,6 @@ impl AgentRuntime {
 
         // Fresh per-turn meters (defensive if a prior turn exited without finalize).
         self.turn_token_stats = TurnTokenStats::default();
-        self.turn_usage_totals = TurnTokenStats::default();
 
         self.emit_internal(InternalEvent::TurnStarted {
             turn_id: turn_id.to_string(),

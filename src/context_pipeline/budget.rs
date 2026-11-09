@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::session::store::{ProviderUsageRollup, SessionContextMeter, occupancy_usage};
+use crate::session::store::{SessionContextMeter, occupancy_usage};
 
 /// Provider-reported prompt usage tied to the request header seq that opened it.
 ///
@@ -72,7 +72,7 @@ pub fn occupancy_bill_from(
     baseline: &ProviderPromptBaseline,
     compacted_seq: Option<u64>,
     surface_rewrite_seq: u64,
-    rollup: &ProviderUsageRollup,
+    latest: Option<(u64, crate::session::store::ProviderUsage)>,
     meter: &SessionContextMeter,
 ) -> Option<OccupancyBill> {
     // A mechanical prune changed the prefix after the last bill. The persisted
@@ -93,13 +93,17 @@ pub fn occupancy_bill_from(
             covered_seq: Some(seq),
         });
     }
-    let usage = occupancy_usage(rollup, compacted_seq, surface_rewrite_seq, meter)?;
+    let covered_seq = latest
+        .as_ref()
+        .map(|(seq, _)| *seq)
+        .filter(|seq| !retired(*seq));
+    let usage = occupancy_usage(latest, compacted_seq, surface_rewrite_seq, meter)?;
     if usage.prompt_tokens == 0 {
         return None;
     }
     Some(OccupancyBill {
         prompt_tokens: usage.prompt_tokens,
-        covered_seq: rollup.latest_seq.filter(|seq| !retired(*seq)),
+        covered_seq,
     })
 }
 
@@ -184,7 +188,7 @@ mod tests {
 
         let baseline = ProviderPromptBaseline::default();
         baseline.record(9_000, 4);
-        let rollup = ProviderUsageRollup::from_rows([(
+        let latest = Some((
             4,
             ProviderUsage {
                 prompt_tokens: 9_000,
@@ -192,23 +196,23 @@ mod tests {
                 cache_hit_tokens: 0,
                 cache_miss_tokens: 9_000,
             },
-        )]);
+        ));
         let meter = SessionContextMeter {
             prompt_tokens: 9_000,
             ..SessionContextMeter::default()
         };
-        assert!(occupancy_bill_from(&baseline, None, 0, &rollup, &meter).is_some());
+        assert!(occupancy_bill_from(&baseline, None, 0, latest.clone(), &meter).is_some());
 
         baseline.invalidate();
         assert!(baseline.is_invalidated());
         assert!(
-            occupancy_bill_from(&baseline, None, 0, &rollup, &meter).is_none(),
-            "a pruned prefix must not be priced with the old bill or rollup"
+            occupancy_bill_from(&baseline, None, 0, latest.clone(), &meter).is_none(),
+            "a pruned prefix must not be priced with the old bill"
         );
 
         baseline.record(3_000, 12);
         assert!(!baseline.is_invalidated());
-        let fresh = occupancy_bill_from(&baseline, None, 0, &rollup, &meter).unwrap();
+        let fresh = occupancy_bill_from(&baseline, None, 0, latest, &meter).unwrap();
         assert_eq!(fresh.prompt_tokens, 3_000);
         assert_eq!(fresh.covered_seq, Some(12));
     }
@@ -219,7 +223,7 @@ mod tests {
 
         let baseline = ProviderPromptBaseline::default();
         baseline.record(9_000, 4);
-        let rollup = ProviderUsageRollup::from_rows([(
+        let latest = Some((
             4,
             ProviderUsage {
                 prompt_tokens: 9_000,
@@ -227,37 +231,30 @@ mod tests {
                 cache_hit_tokens: 0,
                 cache_miss_tokens: 9_000,
             },
-        )]);
+        ));
         let meter = SessionContextMeter {
             prompt_tokens: 9_000,
             ..SessionContextMeter::default()
         };
         // No rewrite: the bill is valid.
-        assert!(occupancy_bill_from(&baseline, None, 0, &rollup, &meter).is_some());
+        assert!(occupancy_bill_from(&baseline, None, 0, latest.clone(), &meter).is_some());
         // Bill header seq 4 <= rewrite seq 10: both the live baseline and the
-        // persisted rollup are retired, forcing a local-envelope measurement.
+        // stored bill are retired, forcing a local-envelope measurement.
         assert!(
-            occupancy_bill_from(&baseline, None, 10, &rollup, &meter).is_none(),
+            occupancy_bill_from(&baseline, None, 10, latest.clone(), &meter).is_none(),
             "latest_seq <= surface_rewrite_seq must invalidate the bill"
         );
         // A bill recorded after the rewrite is valid again.
         baseline.record(3_000, 12);
-        let fresh = occupancy_bill_from(&baseline, None, 10, &rollup, &meter).unwrap();
+        let fresh = occupancy_bill_from(&baseline, None, 10, latest, &meter).unwrap();
         assert_eq!(fresh.prompt_tokens, 3_000);
         assert_eq!(fresh.covered_seq, Some(12));
 
-        // Without a seq-bearing rollup, a meter-only fallback cannot prove it
-        // postdates the rewrite, so it must not resurrect old prompt counts.
-        let empty_rollup = ProviderUsageRollup::default();
+        // A meter-only fallback cannot prove it postdates the rewrite, so it must
+        // not resurrect old prompt counts.
         assert!(
-            occupancy_bill_from(
-                &ProviderPromptBaseline::default(),
-                None,
-                10,
-                &empty_rollup,
-                &meter,
-            )
-            .is_none()
+            occupancy_bill_from(&ProviderPromptBaseline::default(), None, 10, None, &meter,)
+                .is_none()
         );
     }
 
@@ -267,7 +264,7 @@ mod tests {
 
         let baseline = ProviderPromptBaseline::default();
         baseline.record(9_000, 4);
-        let rollup = ProviderUsageRollup::from_rows([(
+        let latest = Some((
             4,
             ProviderUsage {
                 prompt_tokens: 9_000,
@@ -275,32 +272,31 @@ mod tests {
                 cache_hit_tokens: 0,
                 cache_miss_tokens: 9_000,
             },
-        )]);
+        ));
         let meter = SessionContextMeter {
             prompt_tokens: 9_000,
             ..SessionContextMeter::default()
         };
         assert_eq!(
-            occupancy_bill_from(&baseline, None, 0, &rollup, &meter)
+            occupancy_bill_from(&baseline, None, 0, latest.clone(), &meter)
                 .unwrap()
                 .prompt_tokens,
             9_000
         );
-        assert!(occupancy_bill_from(&baseline, Some(8), 0, &rollup, &meter).is_none());
+        assert!(occupancy_bill_from(&baseline, Some(8), 0, latest.clone(), &meter).is_none());
         let empty = ProviderPromptBaseline::default();
         assert_eq!(
-            occupancy_bill_from(&empty, None, 0, &rollup, &meter)
+            occupancy_bill_from(&empty, None, 0, latest.clone(), &meter)
                 .unwrap()
                 .covered_seq,
             Some(4)
         );
-        assert!(occupancy_bill_from(&empty, Some(8), 0, &rollup, &meter).is_none());
+        assert!(occupancy_bill_from(&empty, Some(8), 0, latest, &meter).is_none());
     }
 
-    /// Occupancy reads only the newest bill now. For every retirement rule the
-    /// one-row rollup must price the prompt exactly like the full rollup did.
+    /// Occupancy prices one bill: the newest one, under every retirement rule.
     #[test]
-    fn the_latest_bill_prices_occupancy_exactly_like_the_full_rollup() {
+    fn occupancy_prices_the_newest_bill_or_falls_back_to_the_meter() {
         use crate::session::store::ProviderUsage;
 
         let bill = |prompt: u64| ProviderUsage {
@@ -309,52 +305,43 @@ mod tests {
             cache_hit_tokens: 1,
             cache_miss_tokens: prompt - 1,
         };
-        let full = ProviderUsageRollup::from_rows([(2, bill(100)), (7, bill(300)), (9, bill(500))]);
-        let latest = ProviderUsageRollup::from_latest(9, bill(500));
+        let latest = Some((9u64, bill(500)));
         let meter = SessionContextMeter {
             prompt_tokens: 42,
             ..SessionContextMeter::default()
         };
-
         let baseline = ProviderPromptBaseline::default();
-        for (compacted, rewrite) in [
-            (None, 0u64),
-            (Some(10), 0), // compact newer than the newest bill: retired
-            (Some(9), 0),  // equal seq: not retired
-            (None, 9),     // rewrite at the bill's seq: retired
-            (None, 5),     // rewrite older: the bill survives
-            (Some(7), 0),
+
+        for (compacted, rewrite, expected) in [
+            (None, 0u64, Some((500, Some(9)))),
+            (Some(10), 0, None),                // compact newer than the bill
+            (Some(9), 0, Some((500, Some(9)))), // equal seq is not retired
+            (None, 9, None),                    // rewrite at the bill's seq
+            (None, 5, Some((500, Some(9)))),    // older rewrite keeps the bill
+            (Some(7), 0, Some((500, Some(9)))),
         ] {
-            assert_eq!(
-                occupancy_bill_from(&baseline, compacted, rewrite, &full, &meter),
-                occupancy_bill_from(&baseline, compacted, rewrite, &latest, &meter),
-                "compacted={compacted:?} rewrite={rewrite}"
-            );
+            let got = occupancy_bill_from(&baseline, compacted, rewrite, latest.clone(), &meter)
+                .map(|bill| (bill.prompt_tokens, bill.covered_seq));
+            assert_eq!(got, expected, "compacted={compacted:?} rewrite={rewrite}");
         }
 
-        // A live baseline outranks both; an invalidated one falls through to the
-        // persisted read, which must still agree.
+        // A live baseline outranks the stored bill; an invalidated one forces the
+        // local envelope instead of resurrecting the old prompt.
         baseline.record(9_000, 4);
-        assert_eq!(
-            occupancy_bill_from(&baseline, None, 0, &full, &meter),
-            occupancy_bill_from(&baseline, None, 0, &latest, &meter)
-        );
+        let live = occupancy_bill_from(&baseline, None, 0, latest.clone(), &meter).unwrap();
+        assert_eq!((live.prompt_tokens, live.covered_seq), (9_000, Some(4)));
         baseline.invalidate();
-        assert_eq!(
-            occupancy_bill_from(&baseline, None, 0, &full, &meter),
-            occupancy_bill_from(&baseline, None, 0, &latest, &meter)
-        );
+        assert!(occupancy_bill_from(&baseline, None, 0, latest, &meter).is_none());
 
         // No bill at all: the meter is the fallback, and a surface rewrite still
         // refuses to resurrect it.
-        let empty = ProviderUsageRollup::default();
         let fallback =
-            occupancy_bill_from(&ProviderPromptBaseline::default(), None, 0, &empty, &meter)
+            occupancy_bill_from(&ProviderPromptBaseline::default(), None, 0, None, &meter)
                 .expect("meter fallback");
         assert_eq!(fallback.prompt_tokens, 42);
         assert_eq!(fallback.covered_seq, None);
         assert!(
-            occupancy_bill_from(&ProviderPromptBaseline::default(), None, 10, &empty, &meter)
+            occupancy_bill_from(&ProviderPromptBaseline::default(), None, 10, None, &meter)
                 .is_none()
         );
     }

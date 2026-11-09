@@ -110,9 +110,6 @@ pub struct Projection {
     pub last_turn_token_stats: Option<crate::client_protocol::protocol::TurnTokenStats>,
     /// Session-total provider usage (Σ per-request); feeds whole-session hit rate.
     pub cumulative_token_stats: Option<crate::client_protocol::protocol::TurnTokenStats>,
-    /// Sum of recorded round-trip bills. `None` until the first stored request.
-    pub provider_billed_tokens: Option<u64>,
-    pub provider_billed_requests: u64,
     /// Cached from snapshot patch files; see [`snapshot::max_file_revert_seq`].
     pub max_file_revert_seq: Option<i64>,
     pub deferred: VecDeque<SessionRequest>,
@@ -362,9 +359,7 @@ impl Projection {
         };
         let context_tokens_estimate = context_meter.used_tokens;
         let meter = service.meter(&session_id).unwrap_or_default();
-        let rollup = service
-            .provider_usage_rollup(&session_id)
-            .unwrap_or_default();
+        let latest_bill = service.latest_provider_bill(&session_id).ok().flatten();
         let meta = service.meta(&session_id).ok();
         let compacted_seq = meta.as_ref().and_then(|meta| meta.compacted_seq);
         let surface_rewrite_seq = meta.as_ref().map_or(0, |meta| meta.surface_rewrite_seq);
@@ -372,7 +367,7 @@ impl Projection {
         // prompt. A later checkpoint or mechanical prune retires it. No bill yet
         // keeps the meter row.
         let last_turn_token_stats = crate::session::store::occupancy_usage(
-            &rollup,
+            latest_bill,
             compacted_seq,
             surface_rewrite_seq,
             &meter,
@@ -383,12 +378,7 @@ impl Projection {
             cache_hit_tokens: usage.cache_hit_tokens,
             cache_miss_tokens: usage.cache_miss_tokens,
         });
-        let provider_billed_requests = rollup.request_count;
-        let provider_billed_tokens = if provider_billed_requests == 0 {
-            None
-        } else {
-            Some(rollup.billed_tokens)
-        };
+
         // Session-total accumulators ride the same meter row; absent on legacy rows
         // until the next usage-bearing turn writes them (cum starts at 0).
         let cumulative_token_stats = Some(crate::client_protocol::protocol::TurnTokenStats {
@@ -421,8 +411,6 @@ impl Projection {
             last_estimate_incremental: false,
             last_turn_token_stats,
             cumulative_token_stats,
-            provider_billed_tokens,
-            provider_billed_requests,
             max_file_revert_seq: None,
             deferred: VecDeque::new(),
             forward_task: None,
@@ -492,12 +480,22 @@ impl Projection {
             project::compaction_state_wire(&self.service.compaction_state(&self.session_id)),
         );
         snap.context_token_breakdown = self.context_token_breakdown.clone();
-        if self.provider_billed_requests == 0 {
-            snap.provider_billed_tokens = None;
-            snap.provider_billed_requests = None;
+        // Totals are the session meter's `cum_*`: every bill adds itself there in
+        // the transaction that stores it. Presence is its own probe — an all-zero
+        // bill is still a bill, so `cum_* != 0` would lie.
+        let session_meter = self.service.meter(&self.session_id).unwrap_or_default();
+        if self
+            .service
+            .has_provider_bills(&self.session_id)
+            .unwrap_or(false)
+        {
+            snap.provider_billed_tokens = Some(
+                session_meter
+                    .cum_prompt_tokens
+                    .saturating_add(session_meter.cum_completion_tokens),
+            );
         } else {
-            snap.provider_billed_tokens = Some(self.provider_billed_tokens.unwrap_or(0));
-            snap.provider_billed_requests = Some(self.provider_billed_requests);
+            snap.provider_billed_tokens = None;
         }
         snap.max_file_revert_seq = self.max_file_revert_seq;
         let task_state = self
@@ -929,13 +927,6 @@ impl Projection {
                 cum.completion_tokens = cum.completion_tokens.saturating_add(*completion_tokens);
                 cum.cache_hit_tokens = cum.cache_hit_tokens.saturating_add(*cache_hit_tokens);
                 cum.cache_miss_tokens = cum.cache_miss_tokens.saturating_add(*cache_miss_tokens);
-                let billed = prompt_tokens.saturating_add(*completion_tokens);
-                self.provider_billed_tokens = Some(
-                    self.provider_billed_tokens
-                        .unwrap_or(0)
-                        .saturating_add(billed),
-                );
-                self.provider_billed_requests = self.provider_billed_requests.saturating_add(1);
             }
             crate::runtime::observer::InternalEvent::TurnCompleted {
                 turn_id: _,

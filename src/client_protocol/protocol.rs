@@ -538,9 +538,6 @@ pub struct SessionSnapshot {
     /// bill. Absent when none have been recorded — the ring shows "-".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_billed_tokens: Option<u64>,
-    /// How many of those requests. Average round-trip is the sum divided by this.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_billed_requests: Option<u64>,
     #[serde(default = "default_thinking_tier")]
     pub thinking_tier: String,
     #[serde(default = "default_context_mode")]

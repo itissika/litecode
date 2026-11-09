@@ -1541,7 +1541,6 @@ impl AgentRuntime {
         let provider = &self.turn_llm.provider;
         let api_key = &self.turn_llm.api_key;
         let stats = &mut self.turn_token_stats;
-        let totals = &mut self.turn_usage_totals;
         let prompt_usage_baseline = &self.prompt_usage_baseline;
         let covered_seq = origin_seq;
         let meter_context_window = self.turn_llm.context_window;
@@ -1592,13 +1591,6 @@ impl AgentRuntime {
                         if let Ok(mut slot) = usage_slot_cb.lock() {
                             *slot = Some(recorded);
                         }
-                        // Turn-total Σ — every request in this tool loop (session cum_*).
-                        totals.prompt_tokens = totals.prompt_tokens.saturating_add(prompt);
-                        totals.completion_tokens =
-                            totals.completion_tokens.saturating_add(completion);
-                        totals.cache_hit_tokens = totals.cache_hit_tokens.saturating_add(cache_hit);
-                        totals.cache_miss_tokens =
-                            totals.cache_miss_tokens.saturating_add(cache_miss);
                         // Provider truth covers items at or before this request header.
                         // The next step estimates only rows persisted after it.
                         prompt_usage_baseline.record(prompt, covered_seq);

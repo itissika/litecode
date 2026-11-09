@@ -91,11 +91,20 @@ impl SessionService {
         self.sessions.data().meter_blocking(session_id)
     }
 
-    pub(crate) fn provider_usage_rollup(
+    pub(crate) fn latest_provider_bill(
         &self,
         session_id: &str,
-    ) -> Result<crate::session::data::sqlite::session::ProviderUsageRollup> {
-        self.sessions.provider_usage_rollup(session_id)
+    ) -> Result<
+        Option<(
+            crate::session::event::Seq,
+            crate::session::store::ProviderUsage,
+        )>,
+    > {
+        self.sessions.latest_provider_bill(session_id)
+    }
+
+    pub(crate) fn has_provider_bills(&self, session_id: &str) -> Result<bool> {
+        self.sessions.has_provider_bills(session_id)
     }
 
     pub(crate) fn compaction_state(&self, session_id: &str) -> CompactionStateSnapshot {

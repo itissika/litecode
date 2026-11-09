@@ -21,8 +21,7 @@ use crate::session::event::{EventDraft, EventType};
 use crate::session::live::{LifecycleEvent, TurnProgress};
 use crate::session::memory::SessionMemory;
 use crate::session::store::{
-    ProviderUsage, ProviderUsageRollup, ProviderUsageSeries, Session, SessionApply,
-    SessionContextMeter, WorkspaceUsage,
+    ProviderUsage, ProviderUsageSeries, Session, SessionApply, SessionContextMeter, WorkspaceUsage,
 };
 use crate::session::task_state::{TaskReminders, prune_stale_active_plan};
 use crate::types::{LitecodeError, Result};
@@ -3962,14 +3961,17 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Bills already stored on this session's request headers, oldest first.
-    pub fn provider_usage_rollup(&self, session_id: &str) -> Result<ProviderUsageRollup> {
-        match self.data.read_blocking(SessionRead::ProviderUsageRollup {
+    /// Whether this session has stored any provider bill.
+    ///
+    /// Presence, not a sum: an all-zero bill is still a bill, so callers must not
+    /// infer "no bills" from `cum_* == 0`.
+    pub fn has_provider_bills(&self, session_id: &str) -> Result<bool> {
+        match self.data.read_blocking(SessionRead::HasProviderBills {
             session_id: session_id.to_string(),
         })? {
-            ReadValue::ProviderUsageRollup(rollup) => Ok(rollup),
+            ReadValue::Count(count) => Ok(count > 0),
             _ => Err(LitecodeError::SessionStorage(
-                "unexpected provider usage rollup".into(),
+                "unexpected provider bill presence read".into(),
             )),
         }
     }
@@ -5262,6 +5264,10 @@ mod usage_series_tests {
         assert_eq!(all.samples[4].prompt, 1_004);
         assert_eq!(all.samples[4].hit, 900);
         assert_eq!(all.samples[4].miss, 104, "hit + miss is the prompt");
+        // The chart total is the meter's, not a fresh sum over the bills.
+        let meter = manager.data().meter_blocking(&session_id).expect("meter row");
+        assert_eq!(all.totals.prompt_tokens, meter.cum_prompt_tokens);
+        assert_eq!(all.totals.completion_tokens, meter.cum_completion_tokens);
         assert_eq!(all.totals.prompt_tokens, 5_010);
         assert_eq!(all.totals.completion_tokens, 50);
         assert_eq!(all.totals.cache_hit_tokens, 4_500);
@@ -5997,6 +6003,152 @@ mod stream_checkpoint_retry_tests {
         assert!(
             body.contains("after"),
             "the retried batch must persist the newest streamed content: {body}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cum_usage_tests {
+    use super::*;
+
+    fn usage(prompt: u64) -> ProviderUsage {
+        ProviderUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 1,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: prompt,
+        }
+    }
+
+    fn meter(manager: &SessionManager, session_id: &str) -> SessionContextMeter {
+        manager
+            .data()
+            .meter_blocking(session_id)
+            .expect("meter row")
+    }
+
+    /// A bill advances the session totals exactly once, and a bill whose turn
+    /// never finished (the old under-count) still counts.
+    #[test]
+    fn a_bill_advances_the_totals_once_and_survives_an_unfinished_turn() {
+        let manager = SessionManager::ephemeral_registry();
+        let session_id = manager
+            .open_session_sync("", "default", None)
+            .expect("session opens");
+        let header = manager
+            .append_request_origin(&session_id, &serde_json::json!({ "schema": 1 }))
+            .expect("header");
+
+        manager
+            .record_provider_usage(&session_id, header, &usage(100))
+            .expect("bill");
+        assert_eq!(meter(&manager, &session_id).cum_prompt_tokens, 100);
+
+        // A retry of the same write must not count the bill twice.
+        manager
+            .record_provider_usage(&session_id, header, &usage(100))
+            .expect("retry is a no-op");
+        assert_eq!(
+            meter(&manager, &session_id).cum_prompt_tokens,
+            100,
+            "the stored bill may advance the totals only once"
+        );
+
+        // Interruption: a second bill lands and the turn never writes turn/end.
+        let header = manager
+            .append_request_origin(&session_id, &serde_json::json!({ "schema": 1 }))
+            .expect("header");
+        manager
+            .record_provider_usage(&session_id, header, &usage(50))
+            .expect("bill");
+        assert_eq!(
+            meter(&manager, &session_id).cum_prompt_tokens,
+            150,
+            "a bill outside a finished turn is still a bill"
+        );
+    }
+
+    /// Turn end writes the last request's figures and nothing else: the totals
+    /// already include every bill of the turn, so adding the turn's sum here
+    /// would count a multi-step turn twice.
+    #[test]
+    fn turn_end_does_not_touch_the_totals() {
+        let manager = SessionManager::ephemeral_registry();
+        let session_id = manager
+            .open_session_sync("", "default", None)
+            .expect("session opens");
+        for prompt in [100u64, 200] {
+            let header = manager
+                .append_request_origin(&session_id, &serde_json::json!({ "schema": 1 }))
+                .expect("header");
+            manager
+                .record_provider_usage(&session_id, header, &usage(prompt))
+                .expect("bill");
+        }
+        assert_eq!(meter(&manager, &session_id).cum_prompt_tokens, 300);
+
+        manager
+            .save_context_meter(
+                &session_id,
+                &SessionContextMeter {
+                    prompt_tokens: 200,
+                    completion_tokens: 1,
+                    ..SessionContextMeter::default()
+                },
+            )
+            .expect("turn end meter");
+        let m = meter(&manager, &session_id);
+        assert_eq!(
+            m.prompt_tokens, 200,
+            "the last request wins the last-turn row"
+        );
+        assert_eq!(
+            m.cum_prompt_tokens, 300,
+            "turn end must not add the turn's requests again"
+        );
+    }
+
+    /// The summarizer call is a provider request like any other; its bill rides
+    /// the checkpoint row and belongs to the totals.
+    #[test]
+    fn a_compaction_bill_lands_in_the_totals() {
+        use crate::session::data::command::{MutationId, SessionMutation};
+
+        let manager = SessionManager::ephemeral_registry();
+        let session_id = manager
+            .open_session_sync("", "default", None)
+            .expect("session opens");
+        manager
+            .data()
+            .insert_items(&session_id, &[crate::types::user_text("seed")])
+            .expect("seed row");
+        let expected_from = manager
+            .data()
+            .working_set_blocking(&session_id)
+            .expect("working set")
+            .first()
+            .and_then(|row| row.log_seq)
+            .expect("seed seq");
+
+        manager
+            .mutate_blocking(SessionMutation::Compact {
+                session_id: session_id.clone(),
+                operation_id: MutationId::new(),
+                summary: "summary".into(),
+                token_estimate: 1,
+                kept_from: None,
+                at: None,
+                expected_prior_checkpoint: None,
+                expected_from,
+                usage: Some(usage(70)),
+                provider_id: Some("p".into()),
+            })
+            .expect("compaction bill");
+
+        assert_eq!(
+            meter(&manager, &session_id).cum_prompt_tokens,
+            70,
+            "the summarizer call is billed into the same totals"
         );
     }
 }
