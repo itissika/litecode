@@ -42,9 +42,9 @@ use crate::types::Result;
 /// until its codec exists, and every kind has exactly one factory here.
 pub(crate) fn build(model: Arc<ResolvedModel>) -> Result<Box<dyn LlmProvider>> {
     match model.endpoint_type {
-        EndpointKind::Responses => Ok(Box::new(responses::ResponsesCodec::new(model)?)),
-        EndpointKind::ChatCompletions => Ok(Box::new(chat::ChatCompletionsCodec::new(model)?)),
-        EndpointKind::Messages => Ok(Box::new(messages::MessagesCodec::new(model)?)),
+        EndpointKind::Responses => Ok(Box::new(responses::ResponsesCodec::new(model))),
+        EndpointKind::ChatCompletions => Ok(Box::new(chat::ChatCompletionsCodec::new(model))),
+        EndpointKind::Messages => Ok(Box::new(messages::MessagesCodec::new(model))),
     }
 }
 

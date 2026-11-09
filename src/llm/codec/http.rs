@@ -1,5 +1,6 @@
-//! Shared HTTP substrate for every codec: client shape, cancellable send with
-//! bounded retry, and transport diagnostics.
+//! Shared HTTP substrate for every codec: cancellable send with bounded retry
+//! and transport diagnostics. The connection itself belongs to
+//! [`crate::llm::http_runtime`], which outlives every turn.
 //!
 //! Codec selection lives in [`super`]; the streaming contract that keeps
 //! [`crate::types::StreamEvents`] ordered lives in
@@ -8,19 +9,6 @@
 use crate::llm::reconnect::{LlmReconnect, LlmReconnectPhase};
 use crate::types::{LitecodeError, Result};
 use tokio_util::sync::CancellationToken;
-
-/// Build an HTTP client safe to share across short-lived agent runtimes.
-///
-/// Agent turns run on per-turn Tokio runtimes. Keeping an idle pooled
-/// connection after its originating runtime exits leaves Hyper's dispatcher
-/// task unavailable to the next turn (`DispatchGone`). Disable idle pooling;
-/// an active stream remains unaffected.
-pub(super) fn llm_http_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .pool_max_idle_per_host(0)
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .build()?)
-}
 
 /// First backoff for a transient failure while opening a stream.
 const RETRY_BASE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
@@ -340,9 +328,15 @@ mod tests {
 
     use super::*;
 
+    /// These tests drive `send_cancellable` on the test's own runtime, so they
+    /// use a plain client instead of the shared runtime's pool.
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder().build().expect("test client")
+    }
+
     #[tokio::test]
     async fn send_cancellable_returns_canceled_when_token_fires() {
-        let client = llm_http_client().unwrap();
+        let client = test_client();
         let cancel = CancellationToken::new();
         cancel.cancel();
         let result = send_cancellable(
@@ -370,7 +364,7 @@ mod tests {
             }
         });
 
-        let client = llm_http_client().unwrap();
+        let client = test_client();
         let response = send_cancellable(
             client
                 .post(format!("http://{address}/responses"))
@@ -402,7 +396,7 @@ mod tests {
                 .unwrap();
         });
 
-        let client = llm_http_client().unwrap();
+        let client = test_client();
         let response = send_cancellable(
             client
                 .post(format!("http://{address}/responses"))
@@ -444,7 +438,7 @@ mod tests {
             }
         });
         let (sink, notices) = collect_notices();
-        let client = llm_http_client().unwrap();
+        let client = test_client();
         let response = crate::llm::reconnect::scope(sink, async move {
             send_cancellable(
                 client
@@ -493,7 +487,7 @@ mod tests {
             cancel_sleep.cancel();
         });
         let (sink, notices) = collect_notices();
-        let client = llm_http_client().unwrap();
+        let client = test_client();
         let result = crate::llm::reconnect::scope(sink, async move {
             send_cancellable(
                 client

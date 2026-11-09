@@ -5,6 +5,7 @@
 //! providers themselves are data.
 
 mod codec;
+pub mod http_runtime;
 pub(crate) mod port;
 mod provider;
 pub mod reconnect;

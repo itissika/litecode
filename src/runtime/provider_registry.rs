@@ -2,7 +2,9 @@
 //!
 //! Codecs are built from a resolved catalog model and never hold credentials, so
 //! a key change does not invalidate the cache and a cache key can never leak a
-//! secret.
+//! secret. A codec also holds no connection pool: every request goes through the
+//! process-wide [`crate::llm::http_runtime`], which keys its clients on routing
+//! identity.
 
 use std::collections::HashMap;
 use std::sync::Arc;

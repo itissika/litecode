@@ -13,6 +13,7 @@ use serde_json::{Map, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::authority::responses::{FunctionCallOutput, Item, MessageItem};
+use crate::llm::http_runtime::{self, RouteKey};
 use crate::llm::provider::LlmProvider;
 use crate::llm::request::ModelRequest;
 use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
@@ -21,8 +22,7 @@ use crate::types::{LitecodeError, Result, StreamEvents};
 
 use super::chat_synth::ChatSynth;
 use super::http::{
-    EmptyStreamAction, ReconnectBudget, llm_http_client, on_broken_stream, preserve_partial,
-    send_cancellable,
+    EmptyStreamAction, ReconnectBudget, on_broken_stream, preserve_partial, send_cancellable,
 };
 use super::sse::{SseLineReader, check_event_stream_content_type, sse_data_payload};
 use super::stream_contract::{
@@ -31,16 +31,16 @@ use super::stream_contract::{
 use super::{apply_auth, error_prefix, render_headers, user_agent};
 
 pub(crate) struct ChatCompletionsCodec {
-    client: Client,
+    route: RouteKey,
     model: Arc<ResolvedModel>,
 }
 
 impl ChatCompletionsCodec {
-    pub(crate) fn new(model: Arc<ResolvedModel>) -> Result<Self> {
-        Ok(Self {
-            client: llm_http_client()?,
+    pub(crate) fn new(model: Arc<ResolvedModel>) -> Self {
+        Self {
+            route: RouteKey::of(&model),
             model,
-        })
+        }
     }
 
     /// Vendor effort literal for this platform intent, if the model takes one.
@@ -174,12 +174,12 @@ impl ChatCompletionsCodec {
 
     fn request(
         &self,
+        client: &Client,
         body: &Value,
         api_key: &str,
         session_id: Option<&str>,
     ) -> reqwest::RequestBuilder {
-        let mut builder = self
-            .client
+        let mut builder = client
             .post(&self.model.request_url)
             .header("accept", "text/event-stream")
             .header("user-agent", user_agent());
@@ -201,255 +201,281 @@ impl LlmProvider for ChatCompletionsCodec {
 
     fn box_clone(&self) -> Box<dyn LlmProvider> {
         Box::new(Self {
-            client: self.client.clone(),
+            route: self.route.clone(),
             model: Arc::clone(&self.model),
         })
-    }
-
-    fn clone_for_isolated_runtime(&self) -> Box<dyn LlmProvider> {
-        match Self::new(Arc::clone(&self.model)) {
-            Ok(codec) => Box::new(codec),
-            Err(_) => self.box_clone(),
-        }
     }
 
     fn complete_with_stream_events<'a>(
         &'a self,
         request: &'a ModelRequest,
         api_key: &'a str,
-        mut on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
+        on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
         cancel: &'a CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
+        let codec = Self {
+            route: self.route.clone(),
+            model: Arc::clone(&self.model),
+        };
+        let request = request.clone();
+        let api_key = api_key.to_string();
+        let cancel = cancel.clone();
         Box::pin(async move {
-            let body = self.encode_body(request, true)?;
-            let dump = super::wire_dump::Capture::start(
-                "chat",
-                &self.model.request_url,
-                request.session_id.as_deref(),
-                &body,
-            );
-            let prefix = error_prefix(&self.model);
-            let model = request.model.clone();
-            let ingest = |value: &Value,
-                          synth: &mut ChatSynth,
-                          gate: &mut StreamContractGate,
-                          acc: &mut StreamItemAccumulator,
-                          on_event: &mut Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>|
-             -> Result<Option<Vec<Item>>> {
-                let mut events = Vec::new();
-                synth.ingest_chunk(value, &mut events);
-                let mut last = None;
-                for event in events {
-                    if let Some(items) = forward_stream_event(gate, acc, event, on_event)? {
-                        last = Some(items);
-                    }
+            let runtime = http_runtime::global()?;
+            runtime
+                .complete(
+                    &self.route,
+                    on_event,
+                    &cancel,
+                    move |client, sink, token| async move {
+                        codec
+                            .stream_body(&client, &request, &api_key, sink, &token)
+                            .await
+                    },
+                )
+                .await
+        })
+    }
+}
+
+impl ChatCompletionsCodec {
+    /// One whole call: send, headers, and the SSE body. It runs as a task on the
+    /// shared HTTP runtime, so the connection outlives the turn that asked.
+    async fn stream_body<'a>(
+        &'a self,
+        client: &Client,
+        request: &ModelRequest,
+        api_key: &str,
+        mut on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<Item>> {
+        let body = self.encode_body(request, true)?;
+        let dump = super::wire_dump::Capture::start(
+            "chat",
+            &self.model.request_url,
+            request.session_id.as_deref(),
+            &body,
+        );
+        let prefix = error_prefix(&self.model);
+        let model = request.model.clone();
+        let ingest = |value: &Value,
+                      synth: &mut ChatSynth,
+                      gate: &mut StreamContractGate,
+                      acc: &mut StreamItemAccumulator,
+                      on_event: &mut Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>|
+         -> Result<Option<Vec<Item>>> {
+            let mut events = Vec::new();
+            synth.ingest_chunk(value, &mut events);
+            let mut last = None;
+            for event in events {
+                if let Some(items) = forward_stream_event(gate, acc, event, on_event)? {
+                    last = Some(items);
                 }
-                Ok(last)
+            }
+            Ok(last)
+        };
+
+        let mut budget = ReconnectBudget::new();
+        'open: loop {
+            let resp = send_cancellable(
+                self.request(client, &body, api_key, request.session_id.as_deref()),
+                cancel,
+                "opening Chat Completions event stream",
+                &mut budget,
+            )
+            .await?;
+            if let Some(dump) = &dump {
+                dump.status(resp.status().as_u16());
+            }
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                if let Some(dump) = &dump {
+                    dump.error_body(&text);
+                }
+                return Err(LitecodeError::Llm(format!(
+                    "{prefix}: HTTP {status}: {text}"
+                )));
+            }
+            let resp = match check_event_stream_content_type(resp).await {
+                Ok(resp) => resp,
+                Err(error) => match on_broken_stream(&mut budget, cancel, false).await? {
+                    EmptyStreamAction::Retry => continue 'open,
+                    EmptyStreamAction::GiveUp => return Err(error),
+                },
             };
 
-            let mut budget = ReconnectBudget::new();
-            'open: loop {
-                let resp = send_cancellable(
-                    self.request(&body, api_key, request.session_id.as_deref()),
-                    cancel,
-                    "opening Chat Completions event stream",
-                    &mut budget,
-                )
-                .await?;
-                if let Some(dump) = &dump {
-                    dump.status(resp.status().as_u16());
-                }
+            let mut terminal_items: Option<Vec<Item>> = None;
+            let mut reader = SseLineReader::new();
+            let mut stream = resp.bytes_stream();
+            let mut gate = StreamContractGate::new();
+            let mut acc = StreamItemAccumulator::new();
+            let mut synth = ChatSynth::new();
+            let mut cancelled = cancel.is_cancelled();
 
-                if !resp.status().is_success() {
-                    let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
-                    if let Some(dump) = &dump {
-                        dump.error_body(&text);
+            while !cancelled {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        cancelled = true;
+                        break;
                     }
-                    return Err(LitecodeError::Llm(format!(
-                        "{prefix}: HTTP {status}: {text}"
-                    )));
-                }
-                let resp = match check_event_stream_content_type(resp).await {
-                    Ok(resp) => resp,
-                    Err(error) => match on_broken_stream(&mut budget, cancel, false).await? {
-                        EmptyStreamAction::Retry => continue 'open,
-                        EmptyStreamAction::GiveUp => return Err(error),
-                    },
-                };
-
-                let mut terminal_items: Option<Vec<Item>> = None;
-                let mut reader = SseLineReader::new();
-                let mut stream = resp.bytes_stream();
-                let mut gate = StreamContractGate::new();
-                let mut acc = StreamItemAccumulator::new();
-                let mut synth = ChatSynth::new();
-                let mut cancelled = cancel.is_cancelled();
-
-                while !cancelled {
-                    tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => {
-                            cancelled = true;
-                            break;
-                        }
-                        chunk = stream.next() => {
-                            let Some(chunk) = chunk else { break; };
-                            let chunk = match chunk {
-                                Ok(chunk) => chunk,
-                                Err(error) => {
-                                    let failure = super::http::interrupted_stream_error(
-                                        "reading Chat Completions event stream",
-                                        &error,
-                                        &acc,
-                                    );
-                                    match on_broken_stream(&mut budget, cancel, !acc.is_empty())
-                                        .await?
-                                    {
-                                        EmptyStreamAction::Retry => continue 'open,
-                                        EmptyStreamAction::GiveUp => return Err(preserve_partial(failure, &acc)),
-                                    }
-                                }
-                            };
-                            let lines = match reader.feed(&chunk) {
-                                Ok(lines) => lines,
-                                Err(error) => {
-                                    match on_broken_stream(&mut budget, cancel, !acc.is_empty())
-                                        .await?
-                                    {
-                                        EmptyStreamAction::Retry => continue 'open,
-                                        EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
-                                    }
-                                }
-                            };
-                            for line in lines {
-                                if let Some(dump) = &dump {
-                                    dump.line(&line);
-                                }
-                                let Some(data) = sse_data_payload(&line) else {
-                                    continue;
-                                };
-                                if data.trim() == "[DONE]" {
-                                    continue;
-                                }
-                                let value: Value = match serde_json::from_str(data) {
-                                    Ok(value) => value,
-                                    Err(error) => {
-                                        let error = LitecodeError::Llm(format!(
-                                            "{prefix}: Chat SSE JSON: {error}; payload={data}"
-                                        ));
-                                        match on_broken_stream(
-                                            &mut budget,
-                                            cancel,
-                                            !acc.is_empty(),
-                                        )
-                                        .await?
-                                        {
-                                            EmptyStreamAction::Retry => continue 'open,
-                                            EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
-                                        }
-                                    }
-                                };
-                                if let Some(items) = ingest(&value, &mut synth, &mut gate, &mut acc, &mut on_event)? {
-                                    terminal_items = Some(items);
-                                }
-                                if cancel.is_cancelled() {
-                                    cancelled = true;
-                                    break;
+                    chunk = stream.next() => {
+                        let Some(chunk) = chunk else { break; };
+                        let chunk = match chunk {
+                            Ok(chunk) => chunk,
+                            Err(error) => {
+                                let failure = super::http::interrupted_stream_error(
+                                    "reading Chat Completions event stream",
+                                    &error,
+                                    &acc,
+                                );
+                                match on_broken_stream(&mut budget, cancel, !acc.is_empty())
+                                    .await?
+                                {
+                                    EmptyStreamAction::Retry => continue 'open,
+                                    EmptyStreamAction::GiveUp => return Err(preserve_partial(failure, &acc)),
                                 }
                             }
-                        }
-                    }
-                }
-
-                if !cancelled {
-                    let tail = match reader.finish() {
-                        Ok(line) => line,
-                        Err(error) => {
-                            match on_broken_stream(&mut budget, cancel, !acc.is_empty()).await? {
-                                EmptyStreamAction::Retry => continue 'open,
-                                EmptyStreamAction::GiveUp => {
-                                    return Err(preserve_partial(error, &acc));
+                        };
+                        let lines = match reader.feed(&chunk) {
+                            Ok(lines) => lines,
+                            Err(error) => {
+                                match on_broken_stream(&mut budget, cancel, !acc.is_empty())
+                                    .await?
+                                {
+                                    EmptyStreamAction::Retry => continue 'open,
+                                    EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
                                 }
                             }
-                        }
-                    };
-                    if let Some(line) = tail {
-                        if let Some(dump) = &dump {
-                            dump.line(&line);
-                        }
-                        if let Some(data) = sse_data_payload(&line)
-                            && data.trim() != "[DONE]"
-                        {
+                        };
+                        for line in lines {
+                            if let Some(dump) = &dump {
+                                dump.line(&line);
+                            }
+                            let Some(data) = sse_data_payload(&line) else {
+                                continue;
+                            };
+                            if data.trim() == "[DONE]" {
+                                continue;
+                            }
                             let value: Value = match serde_json::from_str(data) {
                                 Ok(value) => value,
                                 Err(error) => {
                                     let error = LitecodeError::Llm(format!(
                                         "{prefix}: Chat SSE JSON: {error}; payload={data}"
                                     ));
-                                    match on_broken_stream(&mut budget, cancel, !acc.is_empty())
-                                        .await?
+                                    match on_broken_stream(
+                                        &mut budget,
+                                        cancel,
+                                        !acc.is_empty(),
+                                    )
+                                    .await?
                                     {
                                         EmptyStreamAction::Retry => continue 'open,
-                                        EmptyStreamAction::GiveUp => {
-                                            return Err(preserve_partial(error, &acc));
-                                        }
+                                        EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
                                     }
                                 }
                             };
-                            if let Some(items) =
-                                ingest(&value, &mut synth, &mut gate, &mut acc, &mut on_event)?
-                            {
+                            if let Some(items) = ingest(&value, &mut synth, &mut gate, &mut acc, &mut on_event)? {
                                 terminal_items = Some(items);
                             }
-                        }
-                    }
-                    if terminal_items.is_none() {
-                        // Chat chunks never carry a Responses terminal event.
-                        let mut events = synth.finish_events(&model)?;
-                        let mut last = None;
-                        for event in events.drain(..) {
-                            if let Some(items) =
-                                forward_stream_event(&mut gate, &mut acc, event, &mut on_event)?
-                            {
-                                last = Some(items);
+                            if cancel.is_cancelled() {
+                                cancelled = true;
+                                break;
                             }
                         }
-                        if last.is_some() {
-                            terminal_items = last;
-                        }
                     }
-                }
-
-                if let Some(report) = synth.seam_report() {
-                    // The vendor ended a thinking block mid-token and streamed the
-                    // rest as `content`. Items stay a faithful copy of the stream;
-                    // this line is the evidence trail for a vendor report.
-                    tracing::warn!(
-                        session = request.session_id.as_deref().unwrap_or_default(),
-                        model = %model,
-                        glued = report.glued,
-                        reasoning_resumed = report.resumed,
-                        samples = ?report.samples,
-                        "chat stream split reasoning and content mid-stream"
-                    );
-                }
-
-                if cancelled {
-                    return resolve_stream_outcome(terminal_items, &acc, true);
-                }
-                match resolve_stream_outcome(terminal_items, &acc, false) {
-                    Ok(items) => return Ok(items),
-                    Err(error) if acc.is_empty() => {
-                        match on_broken_stream(&mut budget, cancel, false).await? {
-                            EmptyStreamAction::Retry => continue 'open,
-                            EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
-                        }
-                    }
-                    Err(error) => return Err(error),
                 }
             }
-        })
+
+            if !cancelled {
+                let tail = match reader.finish() {
+                    Ok(line) => line,
+                    Err(error) => {
+                        match on_broken_stream(&mut budget, cancel, !acc.is_empty()).await? {
+                            EmptyStreamAction::Retry => continue 'open,
+                            EmptyStreamAction::GiveUp => {
+                                return Err(preserve_partial(error, &acc));
+                            }
+                        }
+                    }
+                };
+                if let Some(line) = tail {
+                    if let Some(dump) = &dump {
+                        dump.line(&line);
+                    }
+                    if let Some(data) = sse_data_payload(&line)
+                        && data.trim() != "[DONE]"
+                    {
+                        let value: Value = match serde_json::from_str(data) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                let error = LitecodeError::Llm(format!(
+                                    "{prefix}: Chat SSE JSON: {error}; payload={data}"
+                                ));
+                                match on_broken_stream(&mut budget, cancel, !acc.is_empty()).await?
+                                {
+                                    EmptyStreamAction::Retry => continue 'open,
+                                    EmptyStreamAction::GiveUp => {
+                                        return Err(preserve_partial(error, &acc));
+                                    }
+                                }
+                            }
+                        };
+                        if let Some(items) =
+                            ingest(&value, &mut synth, &mut gate, &mut acc, &mut on_event)?
+                        {
+                            terminal_items = Some(items);
+                        }
+                    }
+                }
+                if terminal_items.is_none() {
+                    // Chat chunks never carry a Responses terminal event.
+                    let mut events = synth.finish_events(&model)?;
+                    let mut last = None;
+                    for event in events.drain(..) {
+                        if let Some(items) =
+                            forward_stream_event(&mut gate, &mut acc, event, &mut on_event)?
+                        {
+                            last = Some(items);
+                        }
+                    }
+                    if last.is_some() {
+                        terminal_items = last;
+                    }
+                }
+            }
+
+            if let Some(report) = synth.seam_report() {
+                // The vendor ended a thinking block mid-token and streamed the
+                // rest as `content`. Items stay a faithful copy of the stream;
+                // this line is the evidence trail for a vendor report.
+                tracing::warn!(
+                    session = request.session_id.as_deref().unwrap_or_default(),
+                    model = %model,
+                    glued = report.glued,
+                    reasoning_resumed = report.resumed,
+                    samples = ?report.samples,
+                    "chat stream split reasoning and content mid-stream"
+                );
+            }
+
+            if cancelled {
+                return resolve_stream_outcome(terminal_items, &acc, true);
+            }
+            match resolve_stream_outcome(terminal_items, &acc, false) {
+                Ok(items) => return Ok(items),
+                Err(error) if acc.is_empty() => {
+                    match on_broken_stream(&mut budget, cancel, false).await? {
+                        EmptyStreamAction::Retry => continue 'open,
+                        EmptyStreamAction::GiveUp => return Err(preserve_partial(error, &acc)),
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 }
 
@@ -535,7 +561,7 @@ headers = { "x-opencode-session" = "{{session_id}}" }
             PROVIDER.replace("ENDPOINT", "https://opencode.ai/zen/v1")
         );
         let catalog = ProviderCatalog::parse(&text, Path::new("t.toml")).unwrap();
-        ChatCompletionsCodec::new(Arc::clone(catalog.model("zen/m").unwrap())).unwrap()
+        ChatCompletionsCodec::new(Arc::clone(catalog.model("zen/m").unwrap()))
     }
 
     fn tool(name: &str) -> ToolDef {
@@ -713,7 +739,7 @@ headers = { "x-opencode-session" = "{{session_id}}" }
             PROVIDER.replace("ENDPOINT", &format!("http://{address}/v1"))
         );
         let catalog = ProviderCatalog::parse(&text, Path::new("t.toml")).unwrap();
-        ChatCompletionsCodec::new(Arc::clone(catalog.model("zen/m").unwrap())).unwrap()
+        ChatCompletionsCodec::new(Arc::clone(catalog.model("zen/m").unwrap()))
     }
 
     fn chunk(delta: Value) -> String {
