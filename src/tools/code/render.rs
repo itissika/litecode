@@ -1,18 +1,18 @@
 //! Model-facing text for one `run_code` execution.
 //!
-//! Default agent view: head, optional logs, optional partial results (failed
-//! runs only), optional result. Result: uniformly shaped object arrays render
-//! as `[N]{a,b}:` tables (columns in first-seen key order, a key a row omits
-//! renders as an empty cell); non-string values render as compact JSON. A
-//! result string or log line that is itself one JSON value is lexically
-//! compacted; other strings stay verbatim. Partial calls and the final result
-//! share
-//! [`RESULT_TOKEN_BUDGET`] cl100k tokens; structured values degrade
-//! structurally, while over-budget strings keep both a head and a tail
-//! (WP-210 C). Logs keep their head within [`SUCCESS_LOGS_TOKEN_BUDGET`] on
-//! success and their tail within [`FAILURE_LOGS_TOKEN_BUDGET`] on failure.
-//! [`RUN_CODE_VIEW_MAX_BYTES`] remains the hard byte fallback shared by logs
-//! and result. Cuts land on UTF-8 boundaries, and every omission marker says
+//! The view is a header, then **one ordered stream**: console lines and the
+//! program's return value in the order they happened, the value last. There is
+//! no `logs:` half and no `result:` half, and exactly one token budget
+//! ([`RUN_CODE_VIEW_TOKENS`]) covers the whole stream. On failure the header is
+//! followed by a brief of the calls that already settled, then the same stream.
+//!
+//! Uniformly shaped object arrays render as `[N]{a,b}:` tables (columns in
+//! first-seen key order, a key a row omits renders as an empty cell); other
+//! values render as compact JSON. A log line or value string that is itself one
+//! JSON value is lexically compacted; other strings stay verbatim. Structured
+//! values degrade structurally, while over-budget strings keep both a head and
+//! a tail (WP-210 C). [`RUN_CODE_VIEW_MAX_BYTES`] remains the hard byte
+//! fallback. Cuts land on UTF-8 boundaries, and every omission marker says
 //! whether the token budget or the byte cap caused it. This module does not
 //! emit a JSON copy of the run.
 
@@ -22,12 +22,15 @@ use serde_json::Value;
 
 use crate::ptc::{FailureKind, ResourceKind, SourceLocation};
 use crate::session::transcript_file::RUN_CODE_SESSION_NOTE;
-use crate::types::utf8::{prefix_utf8, suffix_utf8};
+use crate::types::utf8::prefix_utf8;
 
 /// Hard cap for the model-facing `run_code` view, including omission notes.
 pub const RUN_CODE_VIEW_MAX_BYTES: usize = 65_536;
+/// The one cl100k budget for the whole output stream. Omission markers count
+/// against it. There is deliberately no second budget: the return value is just
+/// the last entry and competes with the console lines for the same tokens.
+pub const RUN_CODE_VIEW_TOKENS: usize = 10_000;
 
-const RESERVE_BYTES: usize = 512;
 const HEADER_CAP: usize = 1024;
 const HEAD_MESSAGE_CAP: usize = 240;
 
@@ -53,16 +56,44 @@ pub(super) struct UncaughtToolError {
     pub summary: String,
 }
 
+/// A one-line summary of one call's facts.
+///
+/// The call is the anchor, not a line of output: the program may return only a
+/// slice of a result, or none of it, and the facts are still true. The bridge
+/// computes this when the call settles.
+pub(super) struct CallReminder {
+    /// Call sequence number, matching the numbering used elsewhere in the view.
+    pub seq: u64,
+    /// Dotted tool name as the program sees it (\`file.read\`).
+    pub tool: String,
+    /// Rendered by this module from the call's result fields.
+    pub text: String,
+}
+
+/// One reminder takes one line, at most this many characters, and is charged to
+/// the same token budget as the stream.
+const REMINDER_MAX_CHARS: usize = 120;
+/// Marks a renderer-generated summary: without it a reminder reads exactly like
+/// the program printing a bare string, or like a returned value.
+const REMINDER_MARK: &str = "↳ ";
+
+/// One entry of the stream as the renderer sees it.
+pub(super) enum EntryView {
+    Text { level: String, text: String },
+    Value(Value),
+}
+
 /// Facts the renderer needs. Built from the in-memory execution report.
 pub(super) struct RunReport {
-    pub logs: Vec<(String, String)>,
-    pub value: Option<Value>,
+    /// Console text and, last, the return value — in the order they happened.
+    pub entries: Vec<EntryView>,
+    /// One-line summaries, one per call that has facts; see [`CallReminder`].
+    pub reminders: Vec<CallReminder>,
     pub failure_text: Option<String>,
     pub failure_kind: Option<FailureKind>,
     pub resource: Option<ResourceKind>,
     pub timeout_ms: u64,
     pub duration_ms: u64,
-    pub output_limited: bool,
     pub calls: Vec<LedgerSnap>,
     pub calls_omitted: usize,
     /// Settled ok/fail per tool (human/FE aggregate; not rendered into content).
@@ -84,85 +115,421 @@ pub(super) struct RunReport {
 }
 
 pub(super) fn render_model_view(report: &RunReport) -> String {
-    let fixed = vec![render_header_block(report)];
-    let succeeded = report.failure_kind.is_none();
-    let logs = if succeeded {
-        render_success_logs(&report.logs, SUCCESS_LOGS_TOKEN_BUDGET)
-    } else {
-        render_failure_logs(
-            &report.logs,
-            FAILURE_LOGS_TOKEN_BUDGET,
-            report.output_limited,
-        )
-    };
-
-    // Partial calls and the final return value are two windows onto one
-    // result budget. Keep a small reserve for the final result when both are
-    // present, then spend exactly what the partial block did not use.
-    let partial_budget = if report.value.is_some() {
-        RESULT_TOKEN_BUDGET.saturating_sub(FINAL_RESULT_RESERVE_TOKENS)
-    } else {
-        RESULT_TOKEN_BUDGET
-    };
-    let partial = render_partial_results(report, partial_budget);
-    let partial_tokens = partial.as_deref().map(count_tokens).unwrap_or(0);
-    let mut final_budget = RESULT_TOKEN_BUDGET.saturating_sub(partial_tokens);
-    let mut result_body = report
-        .value
-        .as_ref()
-        .map(|value| budget_value(value, final_budget))
-        .filter(|body| !body.is_empty());
-    // BPE counts are not perfectly additive at section boundaries. Measure the
-    // rendered partial+final result area and shrink the final value until the
-    // whole area fits the single shared result budget.
-    loop {
-        let candidate = result_body.as_ref().map(|body| format!("result:\n{body}"));
-        let combined = match (&partial, &candidate) {
-            (Some(partial), Some(result)) => format!("{partial}\n\n{result}"),
-            (Some(partial), None) => partial.clone(),
-            (None, Some(result)) => result.clone(),
-            (None, None) => String::new(),
-        };
-        let used = count_tokens(&combined);
-        if used <= RESULT_TOKEN_BUDGET || final_budget == 0 {
-            break;
-        }
-        final_budget = final_budget.saturating_sub((used - RESULT_TOKEN_BUDGET).max(1));
-        result_body = report
-            .value
-            .as_ref()
-            .map(|value| budget_value(value, final_budget))
-            .filter(|body| !body.is_empty());
+    let header = render_header_block(report);
+    // One budget covers everything the model sees: header, manifest, stream.
+    let mut budget = RUN_CODE_VIEW_TOKENS.saturating_sub(count_tokens(&header));
+    let manifest = render_completed_calls(report);
+    if let Some(manifest) = &manifest {
+        budget = budget.saturating_sub(count_tokens(manifest));
     }
-    let result = result_body.as_ref().map(|body| format!("result:\n{body}"));
-
-    let mut text = assemble(&fixed, &logs, &partial, &result);
+    let output_limited = report.failure_kind == Some(FailureKind::OutputLimit);
+    // Reminders describe calls, so they follow the stream and share its budget.
+    let reminders = render_reminder_lines(&report.reminders, budget / 4);
+    let stream = render_stream(
+        &report.entries,
+        budget.saturating_sub(count_tokens(&reminders)),
+        output_limited,
+    );
+    let mut sections = vec![header];
+    sections.extend(manifest);
+    if !stream.is_empty() {
+        sections.push(stream);
+    }
+    if !reminders.is_empty() {
+        sections.push(reminders);
+    }
+    let text = sections.join("\n\n");
     if text.len() <= RUN_CODE_VIEW_MAX_BYTES {
         return text;
     }
-
-    // The token budgets normally fit in 64KB, but byte-heavy content can
-    // still trip the byte cap. Logs and result sections keep distinct token
-    // budgets while sharing this final byte ceiling.
-    text = byte_fallback(&fixed, logs, partial, result_body.as_deref());
-    text
+    // Byte-heavy content can still trip the cap after the token budget passed.
+    byte_cut(&text, RUN_CODE_VIEW_MAX_BYTES)
 }
 
-/// Shared cl100k budget for partial results plus the final returned result.
-/// Omission notices count against this cap.
-pub const RESULT_TOKEN_BUDGET: usize = 10_000;
-/// Token budget for logs on a failed run (the tail is kept).
-pub const FAILURE_LOGS_TOKEN_BUDGET: usize = 3_000;
-/// Token budget for logs on a successful run (the head is kept, WP-210 D/Q5).
-pub const SUCCESS_LOGS_TOKEN_BUDGET: usize = 3_000;
-/// Keep enough shared result budget for the final value when partial calls are
-/// also present. The partial block gets the rest.
-const FINAL_RESULT_RESERVE_TOKENS: usize = 512;
+
 /// Program frames shown under a runtime exception (WP-210 B/Q3).
 const STACK_FRAMES: usize = 5;
-/// Maximum bytes the log section keeps before the final byte cap fills the
-/// result side.
-const LOGS_FALLBACK_CAP: usize = 16 * 1024;
+
+/// Appended to the last stream line when the run stopped on the output cap.
+const OUTPUT_LIMIT_MARK: &str = " [output limit reached]";
+
+
+/// Failed run: the calls that already settled, one line each, no section title.
+///
+/// A program that stopped at call N must still see what 1..N-1 did — a write that
+/// already landed is not undone by the failure. Compressed to tool, outcome and a
+/// one-line digest.
+fn render_completed_calls(report: &RunReport) -> Option<String> {
+    if report.failure_kind.is_none() || did_not_start(report) {
+        return None;
+    }
+    let settled: Vec<&LedgerSnap> = report
+        .calls
+        .iter()
+        .filter(|call| call.brief.is_some())
+        .collect();
+    if settled.is_empty() {
+        return None;
+    }
+    let mut lines = Vec::with_capacity(settled.len());
+    for call in settled {
+        let status = if call.state.starts_with("error") {
+            match &call.error_code {
+                Some(code) => format!("failed({code})"),
+                None => "failed".to_string(),
+            }
+        } else if call.state == "cancelled" {
+            "cancelled".to_string()
+        } else {
+            "ok".to_string()
+        };
+        let brief = call.brief.as_deref().unwrap_or("");
+        let summary = if call.summary.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", call.summary)
+        };
+        lines.push(format!(
+            "#{} {}{summary} → {status}: {brief}",
+            call.seq, call.tool
+        ));
+    }
+    let hidden = call_total(report).saturating_sub(report.calls.len());
+    if hidden > 0 {
+        lines.push(format!("… {hidden} more"));
+    }
+    Some(lines.join("\n"))
+}
+
+/// Final byte-cap cut: both ends survive and the middle says why.
+fn byte_cut(text: &str, cap: usize) -> String {
+    if text.len() <= cap {
+        return text.to_string();
+    }
+    let head = crate::types::utf8::prefix_utf8(text, cap * 2 / 3).to_string();
+    let tail = crate::types::utf8::suffix_utf8(text, cap / 4).to_string();
+    let omitted = text.len().saturating_sub(head.len() + tail.len());
+    format!("{head}\n… [truncated by byte cap: {omitted} bytes omitted] …\n{tail}")
+}
+
+/// Summaries for one settled call, keyed by the tool that produced it.
+///
+/// This is the only place that writes reminder wording: tools produce fields,
+/// and the renderer turns a (tool, field) pair into one line. The tool name is
+/// the identity — a result shape could belong to any of several tools.
+pub(super) fn reminders_for_call(tool: &str, value: &Value) -> Vec<String> {
+    let Some(object) = value.as_object() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    match tool {
+        "file.read" => read_reminders(object, &mut out),
+        "file.glob" => glob_reminders(object, &mut out),
+        "file.grep" => grep_reminders(object, &mut out),
+        tool if tool.starts_with("lsp.") => lsp_reminders(tool, object, &mut out),
+        _ => {}
+    }
+    out
+}
+
+/// LSP results carry an index state; `partial` and `unknown` are different
+/// facts and must not collapse into one sentence.
+fn lsp_reminders(
+    tool: &str,
+    object: &serde_json::Map<String, Value>,
+    out: &mut Vec<String>,
+) {
+    let subject = match tool {
+        "lsp.hover" => "hover information",
+        "lsp.diagnostics" => "diagnostics",
+        "lsp.document_symbol" | "lsp.workspace_symbol" => "symbols",
+        _ => "locations",
+    };
+    let state = object.get("state").and_then(Value::as_str).unwrap_or("");
+    let empty = match tool {
+        "lsp.hover" => object
+            .get("markdown")
+            .and_then(Value::as_str)
+            .is_none_or(|markdown| markdown.trim().is_empty()),
+        "lsp.diagnostics" => object
+            .get("items")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty),
+        "lsp.document_symbol" | "lsp.workspace_symbol" => object
+            .get("symbols")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty),
+        _ => object
+            .get("locations")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty),
+    };
+    let line = match (empty, state) {
+        (true, "ok") => format!("no {subject} reported; the index is ready, so this is a real miss"),
+        (true, "partial") => format!(
+            "no {subject} reported; the index is still building, so this is not a confirmed miss"
+        ),
+        (true, _) => format!(
+            "no {subject} reported; the index state is unknown, so this is not a confirmed miss"
+        ),
+        (false, "partial") => "results may be incomplete; the index is still building".to_string(),
+        (false, "unknown") => "results may be incomplete; the index state is unknown".to_string(),
+        (false, _) => return,
+    };
+    out.push(line);
+}
+
+fn read_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
+    let start_line = object.get("start_line").and_then(Value::as_u64).unwrap_or(0);
+    let total_lines = object
+        .get("total_lines")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let lines = object.get("lines").and_then(Value::as_array);
+    let shown = lines.map_or(0, Vec::len) as u64;
+    let skipped = object
+        .get("skipped_in_context")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if skipped > 0 {
+        out.push(format!(
+            "{skipped} lines were left out because they are already in your context"
+        ));
+    }
+    if lines.is_some_and(Vec::is_empty) && start_line > total_lines {
+        out.push(format!(
+            "start_line {start_line} is past the end; the file has {total_lines} lines"
+        ));
+    } else if object.get("has_more").and_then(Value::as_bool) == Some(true) {
+        // Every line the page covered is either in the list or counted as
+        // skipped, so the window end is exact even for a fully hidden page.
+        let covered = shown + skipped;
+        let end = start_line + covered.saturating_sub(1);
+        out.push(format!(
+            "showing lines {start_line}-{end} of {total_lines}; continue with start_line {}",
+            start_line + covered
+        ));
+    }
+    if let Some(capped) = object
+        .get("lines_capped")
+        .and_then(Value::as_array)
+        .filter(|capped| !capped.is_empty())
+    {
+        let mut numbers: Vec<String> = capped.iter().take(5).map(compact_number).collect();
+        let more = capped.len().saturating_sub(5);
+        if more > 0 {
+            numbers.push(format!("+{more} more"));
+        }
+        out.push(format!(
+            "lines {} shortened to fit the line cap",
+            numbers.join(", ")
+        ));
+    }
+    out.extend(clamp_reminders("read", object));
+}
+
+fn grep_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
+    if let Some(reason) = object.get("empty_reason").and_then(Value::as_str) {
+        let text = match reason {
+            "glob_no_files" => "no file matched the glob filter",
+            "file_unreadable" => "the file could not be read as text",
+            "binary" => "the file is binary; grep only searches text files",
+            "hidden_by_filters" => "the searched path is excluded by default filters",
+            "no_match" => "the pattern was not found",
+            "no_files" => "nothing to search under this path",
+            other => other,
+        };
+        out.push(text.to_string());
+    }
+    let total = object.get("total_hits").and_then(Value::as_u64);
+    let shown = object.get("hits").and_then(Value::as_array).map_or(0, Vec::len);
+    match (object.get("at_limit_cap"), total) {
+        (Some(Value::Bool(true)), Some(total)) => out.push(format!(
+            "stopped at the hit limit; showing {shown} of {total}"
+        )),
+        (_, Some(total)) if total > shown as u64 => {
+            out.push(format!("showing {shown} of {total} matches"));
+        }
+        _ => {}
+    }
+    if object.get("lines_truncated").and_then(Value::as_bool) == Some(true) {
+        out.push("long lines were shortened to fit the line cap".to_string());
+    }
+    if object.get("context_omitted").and_then(Value::as_bool) == Some(true) {
+        out.push("context lines were omitted to fit the budget".to_string());
+    }
+    if object.get("output_capped").and_then(Value::as_bool) == Some(true) {
+        out.push("output was capped; narrow the pattern or path".to_string());
+    }
+    out.extend(clamp_reminders("grep", object));
+}
+
+fn glob_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
+    let total = object.get("total").and_then(Value::as_u64).unwrap_or(0);
+    let shown = object
+        .get("paths")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    if object.get("truncated").and_then(Value::as_bool) == Some(true) {
+        out.push(format!(
+            "showing first {shown} of {total} paths; raise limit to see the rest"
+        ));
+    }
+    if let Some(reason) = object.get("empty_reason").and_then(Value::as_str) {
+        let text = match reason {
+            "hidden_by_filters" => {
+                "the searched path is excluded by default filters; an empty page is not \"no matches\""
+            }
+            "no_match" => "no path matched the pattern",
+            other => other,
+        };
+        out.push(text.to_string());
+    }
+    if object.get("outside_workspace").and_then(Value::as_bool) == Some(true) {
+        out.push("paths outside the workspace are absolute".to_string());
+    }
+    out.extend(clamp_reminders("glob", object));
+}
+
+fn clamp_reminders(tool: &str, object: &serde_json::Map<String, Value>) -> Vec<String> {
+    let Some(clamped) = object.get("clamped").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    clamped
+        .iter()
+        .filter_map(|clamp| {
+            let parameter = clamp.get("parameter")?.as_str()?;
+            let requested = clamp.get("requested")?;
+            let applied = clamp.get("applied")?;
+            Some(format!(
+                "{parameter} {} used instead of {}",
+                compact_number(applied),
+                compact_number(requested)
+            ))
+        })
+        .collect()
+}
+
+fn compact_number(value: &Value) -> String {
+    match value {
+        Value::Number(number) => number.to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Render one entry as it appears in the stream.
+fn entry_line(entry: &EntryView) -> String {
+    match entry {
+        EntryView::Text { level, text } => log_line(level, text),
+        EntryView::Value(value) => render_result_body(value),
+    }
+}
+
+/// Render the whole stream within one token budget.
+///
+/// Fits: everything, in order. Over budget: every entry gets a fair share of the
+/// same budget (water-filling, so one long line cannot starve the rest). Too many
+/// entries for a meaningful share: keep the head and say how many are gone. The
+/// return value is not special-cased; it is the last entry and is cut like one.
+fn render_stream(entries: &[EntryView], budget: usize, output_limited: bool) -> String {
+    if entries.is_empty() || budget == 0 {
+        return String::new();
+    }
+    let mut lines: Vec<String> = entries.iter().map(entry_line).collect();
+    if output_limited && let Some(last) = lines.last_mut() {
+        last.push_str(OUTPUT_LIMIT_MARK);
+    }
+    let costs: Vec<usize> = lines.iter().map(|line| count_tokens(line)).collect();
+    let total: usize = costs.iter().sum();
+    if total <= budget {
+        return lines.join("
+");
+    }
+    if let Some(allowances) = water_fill_allowances(&costs, budget) {
+        let mut out = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            out.push(entry_within(entry, &lines[index], allowances[index]));
+        }
+        let text = out.join("
+");
+        if count_tokens(&text) <= budget {
+            return text;
+        }
+    }
+    // Not even a minimum share per entry: keep the head of the stream.
+    let reserve = count_tokens("… 000 entries omitted (token budget)") + 1;
+    let mut kept = 0usize;
+    let mut used = 0usize;
+    for cost in &costs {
+        if used + cost + reserve > budget {
+            break;
+        }
+        used += cost;
+        kept += 1;
+    }
+    // BPE counts are not additive across line joins, so trim until it fits.
+    loop {
+        let mut out: Vec<String> = lines[..kept].to_vec();
+        let omitted = lines.len() - kept;
+        if omitted > 0 {
+            out.push(format!("… {omitted} entries omitted (token budget)"));
+        }
+        let text = out.join("
+");
+        if count_tokens(&text) <= budget || kept == 0 {
+            return text;
+        }
+        kept -= 1;
+    }
+}
+
+/// One line per call, in call order, charged to the same budget.
+fn render_reminder_lines(reminders: &[CallReminder], budget: usize) -> String {
+    let mut lines: Vec<String> = Vec::with_capacity(reminders.len());
+    let mut used = 0usize;
+    for reminder in reminders {
+        let line = reminder_line(&format!(
+            "#{} {}: {}",
+            reminder.seq, reminder.tool, reminder.text
+        ));
+        let cost = count_tokens(&line);
+        if used + cost > budget && !lines.is_empty() {
+            break;
+        }
+        used += cost;
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+fn reminder_line(text: &str) -> String {
+    let one_line = text.lines().next().unwrap_or("").trim();
+    let room = REMINDER_MAX_CHARS.saturating_sub(REMINDER_MARK.chars().count());
+    format!("{REMINDER_MARK}{}", prefix_utf8(one_line, room))
+}
+
+/// Render one entry inside its share of the budget.
+fn entry_within(entry: &EntryView, line: &str, allowance: usize) -> String {
+    let cost = count_tokens(line);
+    match entry {
+        EntryView::Text { .. } => {
+            if cost <= allowance {
+                line.to_string()
+            } else {
+                truncate_string_result(line, allowance, "", cost)
+            }
+        }
+        EntryView::Value(value) => {
+            let body = budget_value(value, allowance);
+            if body.is_empty() {
+                "… [value omitted (token budget)]".to_string()
+            } else {
+                body
+            }
+        }
+    }
+}
+
 
 fn count_tokens(text: &str) -> usize {
     crate::session::estimate::count_text_tokens(text)
@@ -222,174 +589,6 @@ fn water_fill_allowances(costs: &[usize], budget: usize) -> Option<Vec<usize>> {
         }
         share = next;
     }
-}
-
-/// Render every entry within its allowance, cutting only the ones that are
-/// over it (head + tail + middle marker).
-fn render_allocated_logs(lines: &[String], allowances: &[usize]) -> String {
-    let mut body = String::from("logs:");
-    for (line, allowance) in lines.iter().zip(allowances) {
-        body.push('\n');
-        let total = count_tokens(line);
-        if total <= *allowance {
-            body.push_str(line);
-            continue;
-        }
-        let truncated = truncate_string_result(line, *allowance, "", total);
-        if truncated.is_empty() {
-            body.push_str(token_prefix(line, *allowance));
-        } else {
-            body.push_str(&truncated);
-        }
-    }
-    body
-}
-
-/// Successful run: short entries stay whole; when the section is over budget
-/// the oversized ones split the leftover evenly (water-filling) and are cut
-/// head + tail. Too many entries for a meaningful share fall back to the head
-/// prefix plus one `... N lines omitted (token budget)` line.
-fn render_success_logs(logs: &[(String, String)], budget: usize) -> Option<String> {
-    if logs.is_empty() || budget == 0 {
-        return None;
-    }
-    let lines: Vec<String> = logs
-        .iter()
-        .map(|(level, message)| log_line(level, message))
-        .collect();
-    let build = |count: usize, token_limited: bool| {
-        let mut body = String::from("logs:");
-        for line in &lines[..count] {
-            body.push('\n');
-            body.push_str(line);
-        }
-        let omitted = lines.len() - count;
-        if omitted > 0 {
-            body.push_str(&format!("\n… {omitted} lines omitted"));
-            if token_limited {
-                body.push_str(" (token budget)");
-            }
-        }
-        body
-    };
-    let full = build(lines.len(), false);
-    if full.len() <= budget || count_tokens(&full) <= budget {
-        return Some(full);
-    }
-    // Fair split when every entry can still get a meaningful share: short
-    // entries stay whole and the oversized ones split the leftover evenly
-    // (water-filling), instead of dropping everything after the first entry
-    // that does not fit. Too many entries fall back to the head prefix below.
-    let costs: Vec<usize> = lines.iter().map(|line| count_tokens(line)).collect();
-    let inner = budget.saturating_sub(count_tokens("logs:") + 16);
-    if let Some(allowances) = water_fill_allowances(&costs, inner) {
-        let body = render_allocated_logs(&lines, &allowances);
-        if fits(&body, budget) {
-            return Some(body);
-        }
-    }
-    let (mut lo, mut hi) = (0usize, lines.len());
-    while lo < hi {
-        let mid = (lo + hi + 1) / 2;
-        if count_tokens(&build(mid, true)) <= budget {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    if lo == 0 {
-        // Even the first entry alone is over budget. Truncate it the same way a
-        // long string result is truncated (head + tail + middle-cut marker), so
-        // one oversized console.log cannot blank the whole log section.
-        let omitted = lines.len() - 1;
-        let rest = if omitted > 0 {
-            format!("\n… {omitted} lines omitted (token budget)")
-        } else {
-            String::new()
-        };
-        let overhead = count_tokens("logs:\n") + count_tokens(&rest) + 8;
-        let total = count_tokens(&lines[0]);
-        let entry = truncate_string_result(&lines[0], budget.saturating_sub(overhead), "", total);
-        if !entry.is_empty() {
-            let body = format!("logs:\n{entry}{rest}");
-            if fits(&body, budget) {
-                return Some(body);
-            }
-        }
-    }
-    let rendered = build(lo, true);
-    fits(&rendered, budget).then_some(rendered)
-}
-
-/// Failed run that had started: one line per settled nested call so the
-/// work already done is not lost (WP-210 A/Q1). The partial block spends from
-/// the same result budget as the final value; whole lines are dropped from the
-/// end and the omission marker names the token-budget side.
-fn render_partial_results(report: &RunReport, budget: usize) -> Option<String> {
-    if report.failure_kind.is_none() || did_not_start(report) || budget == 0 {
-        return None;
-    }
-    let settled: Vec<&LedgerSnap> = report
-        .calls
-        .iter()
-        .filter(|call| call.brief.is_some())
-        .collect();
-    if settled.is_empty() {
-        return None;
-    }
-    let lines: Vec<String> = settled
-        .iter()
-        .map(|call| {
-            let status = if call.state.starts_with("error") {
-                match &call.error_code {
-                    Some(code) => format!("failed({code})"),
-                    None => "failed".to_string(),
-                }
-            } else if call.state == "cancelled" {
-                "cancelled".to_string()
-            } else {
-                "ok".to_string()
-            };
-            let brief = call.brief.as_deref().unwrap_or("");
-            let summary = if call.summary.is_empty() {
-                String::new()
-            } else {
-                format!(" {}", call.summary)
-            };
-            format!("#{} {}{summary} → {status}: {brief}", call.seq, call.tool)
-        })
-        .collect();
-    let hidden = call_total(report).saturating_sub(report.calls.len());
-    let build = |count: usize, token_limited: bool| {
-        let mut out = String::from("completed tool calls before the failure:");
-        for line in &lines[..count] {
-            out.push('\n');
-            out.push_str(line);
-        }
-        let more = lines.len() - count + hidden;
-        if more > 0 {
-            out.push_str(&format!("\n… {more} more"));
-            if token_limited {
-                out.push_str(" (token budget)");
-            }
-        }
-        out
-    };
-    let full = build(lines.len(), false);
-    if full.len() <= budget || count_tokens(&full) <= budget {
-        return Some(full);
-    }
-    let (mut lo, mut hi) = (0usize, lines.len());
-    while lo < hi {
-        let mid = (lo + hi + 1) / 2;
-        if count_tokens(&build(mid, true)) <= budget {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    let rendered = build(lo, true);
-    fits(&rendered, budget).then_some(rendered)
 }
 
 fn format_ktok(tokens: usize) -> String {
@@ -721,67 +920,6 @@ fn token_suffix(text: &str, budget: usize) -> &str {
     &text[bounds[lo]..]
 }
 
-/// Failed run: keep the tail of the logs within `budget` tokens (errors sit at
-/// the end) and say how many earlier lines were dropped.
-fn render_failure_logs(
-    logs: &[(String, String)],
-    budget: usize,
-    output_limited: bool,
-) -> Option<String> {
-    if logs.is_empty() || budget == 0 {
-        return None;
-    }
-    let mut lines: Vec<String> = logs
-        .iter()
-        .map(|(level, message)| log_line(level, message))
-        .collect();
-    if output_limited {
-        if let Some(last) = lines.last_mut() {
-            last.push_str(OUTPUT_LIMIT_MARK);
-        }
-    }
-    let build = |start: usize, lines: &[String]| {
-        let mut body = String::from("logs:");
-        if start > 0 {
-            body.push_str(&format!(
-                "\n… [{start} earlier lines omitted] (token budget)"
-            ));
-        }
-        for line in &lines[start..] {
-            body.push('\n');
-            body.push_str(line);
-        }
-        body
-    };
-    let full = build(0, &lines);
-    if full.len() <= budget || count_tokens(&full) <= budget {
-        return Some(full);
-    }
-    // Smallest start whose rendered tail fits.
-    let (mut lo, mut hi) = (0usize, lines.len());
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if count_tokens(&build(mid, &lines)) <= budget {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    if lo < lines.len() {
-        return Some(build(lo, &lines));
-    }
-    // Even the last line alone is too long: keep its tail (the limit mark stays).
-    let start = lines.len() - 1;
-    let overhead = count_tokens(&format!(
-        "logs:\n… [{start} earlier lines omitted] (token budget)\n… [truncated by token budget]"
-    )) + 8;
-    let last = lines.pop().unwrap_or_default();
-    let tail = token_suffix(&last, budget.saturating_sub(overhead)).to_string();
-    lines.push(format!("… [truncated by token budget] {tail}"));
-    let rendered = build(start, &lines);
-    fits(&rendered, budget).then_some(rendered)
-}
-
 fn render_result_body(value: &Value) -> String {
     match value {
         Value::String(text) => compact_json_text(text).unwrap_or_else(|| text.clone()),
@@ -1055,94 +1193,6 @@ fn failure_kind_slug(kind: FailureKind) -> &'static str {
     }
 }
 
-fn assemble(
-    fixed: &[String],
-    logs: &Option<String>,
-    partial: &Option<String>,
-    result: &Option<String>,
-) -> String {
-    let mut sections = fixed.to_vec();
-    if let Some(logs) = logs {
-        sections.push(logs.clone());
-    }
-    if let Some(partial) = partial {
-        sections.push(partial.clone());
-    }
-    if let Some(result) = result {
-        sections.push(result.clone());
-    }
-    sections.join("\n\n")
-}
-
-/// Final 64KB guard. Logs keep a bounded byte share; the result side (partial
-/// calls plus the final value) fills the rest. Every byte-side cut says so in
-/// its omission marker, so it cannot be confused with the token budgets.
-fn byte_fallback(
-    fixed: &[String],
-    mut logs: Option<String>,
-    mut partial: Option<String>,
-    result_body: Option<&str>,
-) -> String {
-    let cap = RUN_CODE_VIEW_MAX_BYTES;
-    let fixed_only = assemble(fixed, &None, &None, &None);
-    let has_result_side = partial.is_some() || result_body.is_some();
-
-    if let Some(section) = logs.take() {
-        let mut logs_cap = cap
-            .saturating_sub(fixed_only.len())
-            .saturating_sub(2)
-            .saturating_sub(RESERVE_BYTES);
-        if has_result_side {
-            logs_cap = logs_cap.saturating_sub(2);
-        }
-        logs_cap = logs_cap.min(LOGS_FALLBACK_CAP);
-        let section = if section.len() > logs_cap {
-            explained_cut(&section, logs_cap)
-        } else {
-            section
-        };
-        logs = nonempty(section);
-    }
-
-    let base = assemble(fixed, &logs, &None, &None);
-    if !has_result_side {
-        return base;
-    }
-    let side_cap = cap
-        .saturating_sub(base.len())
-        .saturating_sub(RESERVE_BYTES)
-        .saturating_sub(if base.is_empty() { 0 } else { 2 });
-    if side_cap == 0 {
-        return base;
-    }
-
-    let result = if partial.is_some() && result_body.is_some() {
-        let partial_cap = side_cap / 2;
-        partial = nonempty(
-            partial
-                .take()
-                .map(|section| explained_cut(&section, partial_cap))
-                .unwrap_or_default(),
-        );
-        let used = partial
-            .as_ref()
-            .map(|section| section.len() + 2)
-            .unwrap_or(0);
-        result_body.and_then(|body| render_result(Some(body), side_cap.saturating_sub(used)))
-    } else if let Some(section) = partial.take() {
-        partial = nonempty(explained_cut(&section, side_cap));
-        None
-    } else {
-        result_body.and_then(|body| render_result(Some(body), side_cap))
-    };
-
-    let mut text = assemble(fixed, &logs, &partial, &result);
-    if text.len() > cap {
-        text = explained_cut(&text, cap);
-    }
-    text
-}
-
 fn render_header_block(report: &RunReport) -> String {
     let mut parts = vec![header_line(report)];
     if let Some(line) = &report.coerced_non_finite {
@@ -1224,7 +1274,7 @@ fn did_not_start(report: &RunReport) -> bool {
     match report.failure_kind {
         Some(FailureKind::Syntax) => true,
         Some(FailureKind::Internal)
-            if call_total(report) == 0 && report.logs.is_empty() && report.value.is_none() =>
+            if call_total(report) == 0 && report.entries.is_empty() =>
         {
             true
         }
@@ -1236,7 +1286,6 @@ fn header_line(report: &RunReport) -> String {
     if did_not_start(report) {
         return wont_start_line(report);
     }
-    let (success, failed) = success_failure_counts(report);
     let duration = format!("{}ms", report.duration_ms);
     let mut line = if let Some(error) = &report.tool_error {
         let detail = error
@@ -1247,7 +1296,7 @@ fn header_line(report: &RunReport) -> String {
             .filter(|line| !line.is_empty())
             .map(|line| prefix_utf8(line, HEAD_MESSAGE_CAP));
         let mut line = format!(
-            "run_code failed: uncaught ToolError {} from call #{} {} {} · program: failed · tool calls: {success} ok / {failed} failed · {duration}",
+            "run_code failed: uncaught ToolError {} from call #{} {} {} · {duration}",
             error.code, error.seq, error.tool, error.summary
         );
         if let Some(detail) = detail {
@@ -1261,9 +1310,7 @@ fn header_line(report: &RunReport) -> String {
         } else {
             failure_label(kind, report)
         };
-        let mut line = format!(
-            "run_code failed: {label} · program: failed · tool calls: {success} ok / {failed} failed · {duration}"
-        );
+        let mut line = format!("run_code failed: {label} · {duration}");
         // WP-210 B: a runtime exception points at the user's line like a
         // syntax error does.
         if kind == FailureKind::Exception
@@ -1291,9 +1338,8 @@ fn header_line(report: &RunReport) -> String {
         }
         line
     } else {
-        format!(
-            "run_code ok · program: ok · tool calls: {success} ok / {failed} failed · {duration}"
-        )
+        let calls = call_total(report);
+        format!("run_code ok · {calls} calls · {duration}")
     };
     if session_read_mark(report) {
         line.push(' ');
@@ -1395,7 +1441,9 @@ fn session_read_mark(report: &RunReport) -> bool {
 fn failure_label(kind: FailureKind, report: &RunReport) -> String {
     match kind {
         FailureKind::Timeout => format!("timeout after {}ms", report.timeout_ms),
-        FailureKind::Cancelled if report.value.is_some() => {
+        FailureKind::Cancelled
+            if matches!(report.entries.last(), Some(EntryView::Value(_))) =>
+        {
             "cancelled after the program returned".to_string()
         }
         FailureKind::Cancelled => "cancelled".to_string(),
@@ -1411,57 +1459,6 @@ fn failure_label(kind: FailureKind, report: &RunReport) -> String {
     }
 }
 
-const OUTPUT_LIMIT_MARK: &str = " [output limit reached]";
-
-fn render_result(body: Option<&str>, cap: usize) -> Option<String> {
-    let body = body?;
-    if cap == 0 {
-        return None;
-    }
-    let full = format!("result:\n{body}");
-    if full.len() <= cap {
-        return Some(full);
-    }
-    nonempty(fit_result(body, cap))
-}
-
-fn fit_result(body: &str, cap: usize) -> String {
-    let header = "result:\n";
-    if cap <= header.len() {
-        return explained_cut(header, cap);
-    }
-    let room = cap - header.len();
-    let marker_room = omission_marker(body.len(), body.len()).len();
-    let available = room.saturating_sub(marker_room);
-    if available == 0 {
-        return explained_cut(&format!("{header}{body}"), cap);
-    }
-    let head_budget = available * 2 / 3;
-    let tail_budget = available - head_budget;
-    let head = prefix_utf8(body, head_budget);
-    let tail = suffix_utf8(body, tail_budget);
-    let (head, tail) = disjoint_ends(body, head, tail);
-    let omitted = body.len().saturating_sub(head.len() + tail.len());
-    let marker = omission_marker(omitted, body.len());
-    let rendered = format!("{header}{head}{marker}{tail}");
-    if rendered.len() <= cap {
-        rendered
-    } else {
-        explained_cut(&rendered, cap)
-    }
-}
-
-fn disjoint_ends<'a>(body: &'a str, head: &'a str, tail: &'a str) -> (&'a str, &'a str) {
-    if head.len() + tail.len() <= body.len() && body.starts_with(head) && body.ends_with(tail) {
-        (head, tail)
-    } else {
-        (body, "")
-    }
-}
-
-fn omission_marker(omitted: usize, total: usize) -> String {
-    format!("… [truncated by byte cap: {omitted} bytes omitted of {total}] …")
-}
 
 /// Cut `text` to `cap` and say what was omitted. Never returns an unmarked prefix.
 /// This is the byte-cap side, so its marker names `byte cap` explicitly.
@@ -1492,13 +1489,10 @@ fn explained_cut(text: &str, cap: usize) -> String {
     }
 }
 
-fn nonempty(text: String) -> Option<String> {
-    if text.is_empty() { None } else { Some(text) }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn snap(seq: u64, tool: &str, summary: &str, state: &str, code: Option<&str>) -> LedgerSnap {
         LedgerSnap {
@@ -1512,16 +1506,22 @@ mod tests {
         }
     }
 
-    fn report() -> RunReport {
+    fn settled(seq: u64, tool: &str, summary: &str, state: &str, brief: &str) -> LedgerSnap {
+        LedgerSnap {
+            brief: Some(brief.to_string()),
+            ..snap(seq, tool, summary, state, None)
+        }
+    }
+
+    fn base_report() -> RunReport {
         RunReport {
-            logs: Vec::new(),
-            value: None,
+            entries: Vec::new(),
+            reminders: Vec::new(),
             failure_text: None,
             failure_kind: None,
             resource: None,
             timeout_ms: 120_000,
             duration_ms: 12,
-            output_limited: false,
             calls: Vec::new(),
             calls_omitted: 0,
             by_tool: BTreeMap::new(),
@@ -1540,358 +1540,725 @@ mod tests {
         }
     }
 
-    fn text_until_tokens(target: usize, unit: &str) -> String {
-        let mut out = String::new();
-        while count_tokens(&out) < target {
-            out.push_str(unit);
+    fn text(level: &str, body: &str) -> EntryView {
+        EntryView::Text {
+            level: level.to_string(),
+            text: body.to_string(),
         }
-        out
+    }
+
+    /// Put console entries before the value, the way the ledger does.
+    fn set_logs(report: &mut RunReport, logs: Vec<(&str, String)>) {
+        report
+            .entries
+            .retain(|entry| matches!(entry, EntryView::Value(_)));
+        let mut views: Vec<EntryView> = logs
+            .into_iter()
+            .map(|(level, text)| EntryView::Text {
+                level: level.to_string(),
+                text,
+            })
+            .collect();
+        views.append(&mut report.entries);
+        report.entries = views;
+    }
+
+    /// Append the return value as the last entry.
+    fn set_value(report: &mut RunReport, value: Value) {
+        report
+            .entries
+            .retain(|entry| !matches!(entry, EntryView::Value(_)));
+        report.entries.push(EntryView::Value(value));
+    }
+
+    fn tokens(text: &str) -> usize {
+        crate::session::estimate::count_text_tokens(text)
+    }
+
+
+    /// A reminder lands after the entry its call produced.
+
+    /// Every grep fact that lost its prose is still a field plus one line.
+    #[test]
+    fn grep_fields_and_their_reminder_lines() {
+        let base = |extra: Value| {
+            let mut value = serde_json::json!({
+                "hits": [], "total_hits": 0, "at_limit_cap": false,
+                "lines_truncated": false, "context_omitted": false, "output_capped": false,
+            });
+            let object = value.as_object_mut().unwrap();
+            for (key, item) in extra.as_object().unwrap() {
+                object.insert(key.clone(), item.clone());
+            }
+            value
+        };
+        let cases: Vec<(Value, Vec<&str>)> = vec![
+            (
+                base(serde_json::json!({"empty_reason": "no_files"})),
+                vec!["nothing to search under this path"],
+            ),
+            (
+                base(serde_json::json!({"empty_reason": "glob_no_files"})),
+                vec!["no file matched the glob filter"],
+            ),
+            (
+                base(serde_json::json!({"empty_reason": "no_match"})),
+                vec!["the pattern was not found"],
+            ),
+            (
+                base(serde_json::json!({"empty_reason": "file_unreadable"})),
+                vec!["the file could not be read as text"],
+            ),
+            (
+                base(serde_json::json!({"empty_reason": "binary"})),
+                vec!["the file is binary; grep only searches text files"],
+            ),
+            (
+                base(serde_json::json!({"empty_reason": "hidden_by_filters"})),
+                vec!["the searched path is excluded by default filters"],
+            ),
+            (
+                base(serde_json::json!({
+                    "total_hits": 120, "at_limit_cap": true,
+                    "hits": [{"path": "a.rs", "line": 1, "text": "needle"}],
+                })),
+                vec!["stopped at the hit limit; showing 1 of 120"],
+            ),
+            (
+                base(serde_json::json!({
+                    "total_hits": 9,
+                    "hits": [{"path": "a.rs", "line": 1, "text": "needle"}],
+                })),
+                vec!["showing 1 of 9 matches"],
+            ),
+            (
+                base(serde_json::json!({
+                    "lines_truncated": true, "context_omitted": true, "output_capped": true,
+                })),
+                vec![
+                    "long lines were shortened to fit the line cap",
+                    "context lines were omitted to fit the budget",
+                    "output was capped; narrow the pattern or path",
+                ],
+            ),
+            (
+                base(serde_json::json!({"clamped": [{"parameter": "before", "requested": 25, "applied": 10}]})),
+                vec!["before 10 used instead of 25"],
+            ),
+        ];
+        for (value, expected) in cases {
+            let lines = reminders_for_call("file.grep", &value);
+            assert_eq!(lines, expected, "{value}");
+            for line in &lines {
+                assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
+            }
+        }
+    }
+    /// Every read fact that lost its prose is still a field plus one line.
+    #[test]
+    fn read_fields_and_their_reminder_lines() {
+        let cases: Vec<(Value, Vec<&str>)> = vec![
+            (
+                serde_json::json!({
+                    "path": "a.txt", "start_line": 1, "lines": ["a", "b"],
+                    "total_lines": 2, "has_more": false, "skipped_in_context": 0,
+                }),
+                vec![],
+            ),
+            (
+                serde_json::json!({
+                    "path": "a.txt", "start_line": 1, "lines": ["a", "b"],
+                    "total_lines": 9, "has_more": true, "skipped_in_context": 0,
+                }),
+                vec!["showing lines 1-2 of 9; continue with start_line 3"],
+            ),
+            (
+                serde_json::json!({
+                    "path": "a.txt", "start_line": 4, "lines": [],
+                    "total_lines": 9, "has_more": true, "skipped_in_context": 2,
+                }),
+                vec![
+                    "2 lines were left out because they are already in your context",
+                    "showing lines 4-5 of 9; continue with start_line 6",
+                ],
+            ),
+            (
+                serde_json::json!({
+                    "path": "a.txt", "start_line": 5, "lines": [],
+                    "total_lines": 1, "has_more": false, "skipped_in_context": 0,
+                }),
+                vec!["start_line 5 is past the end; the file has 1 lines"],
+            ),
+            (
+                serde_json::json!({
+                    "path": "a.txt", "start_line": 1, "lines": ["x"],
+                    "total_lines": 1, "has_more": false, "skipped_in_context": 0,
+                    "lines_capped": [1, 7],
+                }),
+                vec!["lines 1, 7 shortened to fit the line cap"],
+            ),
+            (
+                serde_json::json!({
+                    "path": "a.txt", "start_line": 1, "lines": ["x"],
+                    "total_lines": 1, "has_more": false, "skipped_in_context": 0,
+                    "clamped": [{"parameter": "limit", "requested": 6000, "applied": 5000}],
+                }),
+                vec!["limit 5000 used instead of 6000"],
+            ),
+        ];
+        for (value, expected) in cases {
+            let lines = reminders_for_call("file.read", &value);
+            assert_eq!(lines, expected, "{value}");
+            for line in &lines {
+                assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
+            }
+        }
+    }
+    /// Every glob fact that has no prose any more still reaches the model as a
+    /// field, plus exactly one reminder line. Table-driven on purpose: a field
+    /// added without its line, or a line without its field, fails here.
+    #[test]
+    fn glob_fields_and_their_reminder_lines() {
+        let cases: Vec<(Value, Vec<&str>)> = vec![
+            (
+                serde_json::json!({
+                    "paths": ["a.rs", "b.rs"], "total": 2, "truncated": false,
+                    "outside_workspace": false,
+                }),
+                vec![],
+            ),
+            (
+                serde_json::json!({
+                    "paths": ["a.rs"], "total": 200, "truncated": true,
+                    "outside_workspace": false,
+                }),
+                vec!["showing first 1 of 200 paths; raise limit to see the rest"],
+            ),
+            (
+                serde_json::json!({
+                    "paths": [], "total": 0, "truncated": false,
+                    "outside_workspace": false, "empty_reason": "hidden_by_filters",
+                }),
+                vec![
+                    "the searched path is excluded by default filters; an empty page is not \"no matches\"",
+                ],
+            ),
+            (
+                serde_json::json!({
+                    "paths": [], "total": 0, "truncated": false,
+                    "outside_workspace": false, "empty_reason": "no_match",
+                }),
+                vec!["no path matched the pattern"],
+            ),
+            (
+                serde_json::json!({
+                    "paths": ["../x.rs"], "total": 1, "truncated": false,
+                    "outside_workspace": true,
+                }),
+                vec!["paths outside the workspace are absolute"],
+            ),
+            (
+                serde_json::json!({
+                    "paths": ["a.rs"], "total": 1, "truncated": false,
+                    "outside_workspace": false,
+                    "clamped": [{"parameter": "limit", "requested": 6000, "applied": 5000}],
+                }),
+                vec!["limit 5000 used instead of 6000"],
+            ),
+        ];
+        for (value, expected) in cases {
+            let lines = reminders_for_call("file.glob", &value);
+            assert_eq!(lines, expected, "{value}");
+            for line in &lines {
+                assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
+            }
+            // The value itself keeps every field: nothing is hidden.
+            assert!(value.is_object());
+        }
+    }
+
+    /// LSP facts live in `state`. `partial` and `unknown` are different facts:
+    /// one says the index is still building, the other says nobody reported it.
+    #[test]
+    fn lsp_fields_and_their_reminder_lines() {
+        let miss = |subject: &str| {
+            [
+                format!("no {subject} reported; the index is ready, so this is a real miss"),
+                format!(
+                    "no {subject} reported; the index is still building, so this is not a confirmed miss"
+                ),
+                format!(
+                    "no {subject} reported; the index state is unknown, so this is not a confirmed miss"
+                ),
+            ]
+        };
+        let locations = miss("locations");
+        let diagnostics = miss("diagnostics");
+        let symbols = miss("symbols");
+        let hover = miss("hover information");
+        let cases: Vec<(&str, Value, Vec<String>)> = vec![
+            (
+                "lsp.diagnostics",
+                json!({"items": [], "state": "ok"}),
+                vec![diagnostics[0].clone()],
+            ),
+            (
+                "lsp.diagnostics",
+                json!({"items": [], "state": "partial"}),
+                vec![diagnostics[1].clone()],
+            ),
+            (
+                "lsp.diagnostics",
+                json!({"items": [], "state": "unknown"}),
+                vec![diagnostics[2].clone()],
+            ),
+            (
+                "lsp.diagnostics",
+                json!({"items": [{"severity": "Error", "path": "a.rs", "line": 1,
+                          "character": 1, "message": "x"}], "state": "partial"}),
+                vec!["results may be incomplete; the index is still building".to_string()],
+            ),
+            (
+                "lsp.diagnostics",
+                json!({"items": [{"severity": "Error", "path": "a.rs", "line": 1,
+                          "character": 1, "message": "x"}], "state": "unknown"}),
+                vec!["results may be incomplete; the index state is unknown".to_string()],
+            ),
+            (
+                "lsp.diagnostics",
+                json!({"items": [{"severity": "Error", "path": "a.rs", "line": 1,
+                          "character": 1, "message": "x"}], "state": "ok"}),
+                Vec::new(),
+            ),
+            (
+                "lsp.hover",
+                json!({"markdown": "", "state": "ok"}),
+                vec![hover[0].clone()],
+            ),
+            (
+                "lsp.document_symbol",
+                json!({"symbols": [], "state": "unknown"}),
+                vec![symbols[2].clone()],
+            ),
+            (
+                "lsp.workspace_symbol",
+                json!({"symbols": [], "state": "partial"}),
+                vec![symbols[1].clone()],
+            ),
+            (
+                "lsp.find_references",
+                json!({"locations": [], "state": "partial"}),
+                vec![locations[1].clone()],
+            ),
+            (
+                "lsp.go_to_implementation",
+                json!({"locations": [], "state": "unknown"}),
+                vec![locations[2].clone()],
+            ),
+            (
+                "lsp.go_to_definition",
+                json!({"locations": [{"path": "a.rs", "line": 1, "character": 1}], "state": "ok"}),
+                Vec::new(),
+            ),
+        ];
+        for (tool, value, expected) in cases {
+            let lines = reminders_for_call(tool, &value);
+            assert_eq!(lines, expected, "{tool} {value}");
+            let mut report = base_report();
+            report.reminders = lines
+                .iter()
+                .map(|text| CallReminder {
+                    seq: 7,
+                    tool: tool.to_string(),
+                    text: text.clone(),
+                })
+                .collect();
+            let out = render_model_view(&report);
+            for text in &expected {
+                let line = format!("↳ #7 {tool}: {text}");
+                assert!(out.contains(&line), "{out}");
+                assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
+            }
+        }
+    }
+    /// Reminders describe calls, so they follow the stream in call order.
+    #[test]
+    fn call_reminders_follow_the_stream_in_call_order() {
+        let mut report = base_report();
+        report.entries = vec![text("log", "one")];
+        report.reminders = vec![
+            CallReminder {
+                seq: 3,
+                tool: "file.read".into(),
+                text: "showing lines 1-2000 of 5000; continue with start_line 2001".into(),
+            },
+            CallReminder {
+                seq: 4,
+                tool: "file.grep".into(),
+                text: "the pattern was not found".into(),
+            },
+        ];
+        let out = render_model_view(&report);
+        assert_eq!(
+            out.lines().collect::<Vec<_>>(),
+            vec![
+                "run_code ok · 0 calls · 12ms",
+                "",
+                "[log] one",
+                "",
+                "↳ #3 file.read: showing lines 1-2000 of 5000; continue with start_line 2001",
+                "↳ #4 file.grep: the pattern was not found",
+            ],
+            "{out}"
+        );
+    }
+
+    /// One line, at most REMINDER_MAX_CHARS, and newlines are collapsed.
+    #[test]
+    fn a_reminder_is_one_short_line() {
+        let mut report = base_report();
+        report.entries = vec![text("log", "x")];
+        let long = format!("{}\nsecond line", "y".repeat(400));
+        report.reminders = vec![CallReminder {
+            seq: 1,
+            tool: "file.read".into(),
+            text: long,
+        }];
+        let out = render_model_view(&report);
+        let reminder = out
+            .lines()
+            .find(|line| line.starts_with("↳ #1 file.read: yyy"))
+            .expect("reminder line");
+        assert!(!reminder.contains("second line"), "{out}");
+        assert_eq!(reminder.chars().count(), REMINDER_MAX_CHARS);
+    }
+
+    /// The budget covers reminders: they do not add a second allowance.
+    #[test]
+    fn reminders_are_charged_to_the_same_budget() {
+        let mut report = base_report();
+        report.entries = (0..200).map(|i| text("log", &format!("line {i}"))).collect();
+        report.reminders = (0..200)
+            .map(|i| CallReminder {
+                seq: i as u64,
+                tool: "file.grep".into(),
+                text: format!("reminder {i} {}", "z".repeat(100)),
+            })
+            .collect();
+        let out = render_model_view(&report);
+        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tokens", tokens(&out));
+    }
+
+    /// A reminder is distinguishable from a bare returned string.
+    #[test]
+    fn a_reminder_is_marked_next_to_a_bare_value() {
+        let mut report = base_report();
+        report.entries = vec![
+            EntryView::Value(serde_json::json!("showing lines 1-500 of 5000")),
+            text("log", "done"),
+        ];
+        report.reminders = vec![CallReminder {
+            seq: 2,
+            tool: "file.read".into(),
+            text: "showing lines 1-500 of 5000".into(),
+        }];
+        let out = render_model_view(&report);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(
+            lines.iter().any(|line| *line == "showing lines 1-500 of 5000"),
+            "the bare value keeps no mark: {out}"
+        );
+        assert!(
+            lines.iter().any(|line| line.starts_with("↳ #2 file.read: ")),
+            "the reminder carries the mark: {out}"
+        );
     }
 
     #[test]
-    fn output_budgets_match_the_contract() {
-        assert_eq!(RESULT_TOKEN_BUDGET, 10_000);
-        assert_eq!(SUCCESS_LOGS_TOKEN_BUDGET, 3_000);
-        assert_eq!(FAILURE_LOGS_TOKEN_BUDGET, 3_000);
+    fn one_budget_covers_the_whole_view() {
+        assert_eq!(RUN_CODE_VIEW_TOKENS, 10_000);
         assert_eq!(RUN_CODE_VIEW_MAX_BYTES, 65_536);
     }
 
     #[test]
-    fn partial_and_final_result_share_one_10k_budget() {
-        let mut report = report();
+    fn no_legacy_sections_in_the_view() {
+        let mut report = base_report();
+        report.entries = vec![
+            text("log", "one"),
+            text("warn", "two"),
+            EntryView::Value(serde_json::json!({ "ok": true, "n": 1 })),
+        ];
+        let out = render_model_view(&report);
+        assert!(!out.contains("logs:"), "{out}");
+        assert!(!out.contains("result:"), "{out}");
+        assert!(!out.contains("program: ok"), "{out}");
+        assert!(!out.contains("tool calls:"), "{out}");
+    }
+
+    #[test]
+    fn success_stream_keeps_console_order_then_the_value() {
+        let mut report = base_report();
+        report.call_total = Some(3);
+        report.entries = vec![
+            text("log", "first"),
+            text("warn", "second"),
+            EntryView::Value(serde_json::json!({ "done": true, "ok": true })),
+        ];
+        let out = render_model_view(&report);
+        assert_eq!(
+            out,
+            "run_code ok · 3 calls · 12ms\n\n[log] first\n[warn] second\n{\"done\":true,\"ok\":true}",
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn failure_view_is_header_manifest_then_stream() {
+        let mut report = base_report();
         report.failure_kind = Some(FailureKind::Exception);
         report.failure_text = Some("boom".into());
+        report.failure_location = Some(SourceLocation { line: 3, column: 5 });
+        report.source = "a\nb\nboom();".into();
+        report.calls = vec![settled(1, "write", "path=a.txt", "ok", "a.txt")];
+        report.call_total = Some(1);
+        report.entries = vec![text("log", "before")];
+        let out = render_model_view(&report);
+        // Snapshot: header, then the settled-call brief, then the same stream.
+        assert_eq!(
+            out,
+            "run_code failed: exception · 12ms · line 3, column 5 · boom(); · boom\n\n#1 write path=a.txt → ok: a.txt\n\n[log] before",
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn manifest_is_charged_to_the_same_budget() {
+        let mut report = base_report();
+        report.failure_kind = Some(FailureKind::Exception);
         report.calls = (0..400)
-            .map(|seq| {
-                let mut call = snap(seq, "read", "path=large.txt", "ok", None);
-                call.brief = Some(format!("{seq}: {}", "x".repeat(180)));
-                call
-            })
+            .map(|i| settled(i + 1, "write", "path=f.txt", "ok", "f.txt"))
             .collect();
-        report.value = Some(Value::String(format!(
-            "{}RESULT_END_SENTINEL",
-            "HEAD ".repeat(20_000)
-        )));
-        let text = render_model_view(&report);
-        let result_area = text
-            .split_once("completed tool calls before the failure:")
-            .expect("partial result block")
-            .1;
+        report.call_total = Some(400);
+        report.entries = (0..200).map(|i| text("log", &format!("line {i}"))).collect();
+        let out = render_model_view(&report);
         assert!(
-            crate::session::estimate::count_text_tokens(result_area) <= RESULT_TOKEN_BUDGET,
+            tokens(&out) <= RUN_CODE_VIEW_TOKENS + 64,
+            "manifest and stream share one budget: {} tokens",
+            tokens(&out)
+        );
+    }
+
+    #[test]
+    fn over_budget_stream_keeps_order_and_marks_the_cut() {
+        let mut report = base_report();
+        let body = "word ".repeat(12_000);
+        report.entries = vec![
+            text("log", &body),
+            text("log", "MIDDLE_SENTINEL"),
+            EntryView::Value(serde_json::json!({ "tail": "TAIL_SENTINEL" })),
+        ];
+        let out = render_model_view(&report);
+        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tokens", tokens(&out));
+        assert!(
+            out.contains("truncated by token budget")
+                || out.contains("entries omitted (token budget)")
+                || out.contains("truncated by byte cap"),
+            "the cut names the budget: {}",
+            &out[out.len().saturating_sub(300)..]
+        );
+        // The first entry keeps its head, the stream keeps its order.
+        assert!(out.contains("[log] word word"), "{out}");
+        let first = out.find("[log] word word").unwrap();
+        let middle = out.find("MIDDLE_SENTINEL").expect("later entries survive");
+        assert!(first < middle, "order is preserved: {out}");
+    }
+
+    #[test]
+    fn the_value_is_not_reserved_a_separate_share() {
+        let mut report = base_report();
+        report.entries = (0..40)
+            .map(|i| text("log", &format!("line {i} {}", "x".repeat(400))))
+            .chain(std::iter::once(EntryView::Value(serde_json::json!({
+                "payload": "v".repeat(200_000)
+            }))))
+            .collect();
+        let out = render_model_view(&report);
+        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tokens", tokens(&out));
+        // The value competes with the log lines: it is cut like any entry.
+        assert!(
+            out.contains("truncated by token budget")
+                || out.contains("… [value omitted")
+                || out.contains("entries omitted (token budget)"),
             "{}",
-            crate::session::estimate::count_text_tokens(result_area)
+            &out[out.len().saturating_sub(400)..]
         );
-        assert!(result_area.contains("(token budget)"), "{result_area}");
-        assert!(result_area.contains("result:\n"), "{result_area}");
-        assert!(result_area.contains("RESULT_END_SENTINEL"), "{result_area}");
-        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES);
+    }
+
+
+    /// Over budget, nothing fits: the stream degrades to one marker line.
+    #[test]
+    fn over_budget_stream_snapshot() {
+        let entries = vec![
+            text("log", "alpha alpha alpha alpha"),
+            text("log", "beta beta beta beta"),
+        ];
+        assert_eq!(
+            render_stream(&entries, 12, false),
+            "… 2 entries omitted (token budget)"
+        );
+        // Enough room: the same stream, whole, in order.
+        assert_eq!(
+            render_stream(&entries, 40, false),
+            "[log] alpha alpha alpha alpha\n[log] beta beta beta beta"
+        );
     }
 
     #[test]
-    fn typical_3k_logs_plus_10k_result_fit_under_the_byte_cap() {
-        let mut report = report();
-        report.logs = (0..265)
-            .map(|i| ("log".into(), format!("step {i} let value = compute();")))
+    fn many_entries_fall_back_to_a_head_prefix() {
+        let mut report = base_report();
+        report.entries = (0..2_000)
+            .map(|i| text("log", &format!("entry {i} {}", "z".repeat(200))))
             .collect();
-        report.logs.push(("log".into(), "LOG_END_SENTINEL".into()));
-        report.value = Some(Value::String(format!(
-            "{}RESULT_END_SENTINEL",
-            text_until_tokens(9_500, "let value = compute();\n")
-        )));
-
-        let text = render_model_view(&report);
-        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
-        assert!(!text.contains("byte cap"), "{text}");
-        let logs = text
-            .split_once("\n\nlogs:")
-            .expect("log section")
-            .1
-            .split("\n\nresult:")
-            .next()
-            .unwrap();
-        assert!(logs.contains("LOG_END_SENTINEL"), "{logs}");
-        assert!(!logs.contains("lines omitted"), "{logs}");
-        let log_tokens = crate::session::estimate::count_text_tokens(&format!("logs:{logs}"));
-        assert!(
-            log_tokens > 2_500 && log_tokens <= SUCCESS_LOGS_TOKEN_BUDGET,
-            "{log_tokens}"
-        );
-        let result = result_of(&text);
-        assert!(result.contains("RESULT_END_SENTINEL"), "{result}");
-        assert!(!result.contains("truncated"), "{result}");
-        let result_tokens =
-            crate::session::estimate::count_text_tokens(&format!("result:\n{result}"));
-        assert!(
-            result_tokens > 9_000 && result_tokens <= RESULT_TOKEN_BUDGET,
-            "{result_tokens}"
-        );
+        let out = render_model_view(&report);
+        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tokens", tokens(&out));
+        assert!(out.contains("entries omitted (token budget)"), "{out}");
     }
 
     #[test]
-    fn dropped_undefined_line_sits_in_the_head() {
-        let mut report = report();
-        report.value = Some(Value::Null);
-        report.dropped_undefined = Some("dropped undefined at a.b, c[2]".into());
-        // WP-210 H: a successful run does not mention dropped undefined.
-        assert!(!render_model_view(&report).contains("dropped undefined"));
+    fn byte_fallback_keeps_the_tail_and_names_the_byte_cap() {
+        let mut body = String::from("HEAD_SENTINEL");
+        body.push_str(&"a".repeat(RUN_CODE_VIEW_MAX_BYTES));
+        body.push_str("TAIL_SENTINEL");
+        let cut = byte_cut(&body, RUN_CODE_VIEW_MAX_BYTES);
+        assert!(cut.len() <= RUN_CODE_VIEW_MAX_BYTES + 120, "{}", cut.len());
+        assert!(cut.contains("HEAD_SENTINEL"), "head kept");
+        assert!(cut.contains("TAIL_SENTINEL"), "tail kept");
+        assert!(cut.contains("truncated by byte cap"), "{cut}");
+        // A huge payload never escapes the cap through the model view.
+        let mut report = base_report();
+        set_logs(&mut report, vec![("log", "中".repeat(60_000))]);
+        let out = render_model_view(&report);
+        assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES + 120, "{}", out.len());
+    }
+
+    #[test]
+    fn typical_stream_fits_under_the_byte_cap() {
+        let mut report = base_report();
+        set_logs(
+            &mut report,
+            (0..40).map(|i| ("log", format!("line {i} of a normal run"))).collect(),
+        );
+        set_value(&mut report, serde_json::json!({ "ok": true, "paths": ["a", "b"] }));
+        let out = render_model_view(&report);
+        assert!(out.len() < RUN_CODE_VIEW_MAX_BYTES / 4, "{} bytes", out.len());
+    }
+
+    #[test]
+    fn oversized_entry_keeps_head_and_tail() {
+        let mut report = base_report();
+        let body = format!("HEAD{}\n{}TAIL", "m".repeat(60_000), "n".repeat(60_000));
+        report.entries = vec![text("log", &body)];
+        let out = render_model_view(&report);
+        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tokens", tokens(&out));
+        assert!(out.contains("HEAD"), "{out}");
+        assert!(out.contains("TAIL"), "{out}");
+    }
+
+
+    #[test]
+    fn dropped_undefined_and_non_finite_lines_sit_in_the_header() {
+        let mut report = base_report();
         report.failure_kind = Some(FailureKind::Exception);
-        report.failure_text = Some("boom".into());
-        let text = render_model_view(&report);
-        let head = text.split("result:").next().unwrap_or("");
-        assert!(head.contains("dropped undefined at a.b, c[2]"), "{text}");
-    }
-
-    #[test]
-    fn coerced_non_finite_line_sits_in_the_success_head() {
-        let mut report = report();
-        report.value = Some(Value::Null);
-        report.coerced_non_finite = Some("coerced non-finite number at n to null".into());
-        let text = render_model_view(&report);
-        let head = text.split("result:").next().unwrap_or("");
+        report.dropped_undefined = Some("dropped undefined at a".into());
+        let head = render_model_view(&report);
+        assert!(head.contains("dropped undefined at a"), "{head}");
+        let mut clean = base_report();
+        clean.coerced_non_finite = Some("coerced non-finite number at n to null".into());
+        let head = render_model_view(&clean);
         assert!(
             head.contains("coerced non-finite number at n to null"),
-            "{text}"
+            "{head}"
         );
     }
 
     #[test]
-    fn large_string_result_keeps_head_and_tail_under_the_token_budget() {
-        let mut report = report();
-        let body = format!(
-            "{}RESULT_END_SENTINEL",
-            (0..20_000)
-                .map(|i| format!("line {i} alpha beta\n"))
-                .collect::<String>()
-        );
-        report.value = Some(Value::String(body));
-        let text = render_model_view(&report);
-        assert!(text.starts_with("run_code ok"));
-        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
-        let result = text.split_once("result:\n").unwrap().1;
-        assert!(
-            result
-                .lines()
-                .next()
-                .unwrap()
-                .contains("exceeds 10.0k; truncated by token budget"),
-            "{result}"
-        );
-        assert!(result.contains("line 0 alpha"), "{result}");
-        assert!(result.contains("RESULT_END_SENTINEL"), "{result}");
-        assert!(result.contains("tok omitted from the middle"), "{result}");
-        assert!(!result.contains("byte cap"), "{result}");
-        assert!(!text.starts_with("[blob:"));
+    fn cjk_value_is_cut_by_tokens_not_bytes() {
+        let body = "中".repeat(40_000);
+        let out = budget_value(&serde_json::json!(body), 400);
+        assert!(out.contains("truncated by token budget"), "{out}");
+        assert!(out.chars().count() < 40_000, "{out}");
     }
-
     #[test]
-    fn default_view_stays_inside_the_budget_without_legacy_sections() {
-        let mut report = report();
-        report.failure_kind = Some(FailureKind::Timeout);
-        report.failure_text = Some("x".repeat(20_000));
-        report.duration_ms = 120_000;
-        report.calls = (0..64)
-            .map(|seq| snap(seq, "read", &"p".repeat(400), "ok", None))
-            .collect();
-        report.logs = (0..40)
-            .map(|index| ("info".into(), format!("{index}{}", "L".repeat(800))))
-            .collect();
-        report.value = Some(Value::String("R".repeat(80_000)));
-        let text = render_model_view(&report);
-        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
-        assert!(
-            text.contains("omitted") || text.contains("truncated"),
-            "{text}"
-        );
-        assert!(!text.contains("diagnostics:"), "{text}");
-        assert!(!text.contains("calls ("), "{text}");
-        // Timeout label only — long failure_text must not flood the head.
-        assert!(!text.contains(&"x".repeat(32)), "{text}");
-        assert!(text.contains("timeout after"), "{text}");
-    }
+    fn header_counts_calls_and_names_the_failure() {
+        let mut report = base_report();
+        report.call_total = Some(4);
+        report.duration_ms = 1234;
+        assert_eq!(header_line(&report), "run_code ok · 4 calls · 1234ms");
 
-    #[test]
-    fn success_header_counts_failures_from_call_states() {
-        let mut report = report();
-        report.calls = vec![
-            snap(1, "read", "path=a", "ok", None),
-            snap(2, "grep", "pattern=x", "error:not_found", Some("not_found")),
-            snap(3, "grep", "pattern=y", "error:not_found", Some("not_found")),
-        ];
-        let text = render_model_view(&report);
-        assert!(
-            text.starts_with("run_code ok · program: ok · tool calls: 1 ok / 2 failed · 12ms"),
-            "{text}"
-        );
-        assert!(!text.contains("rejected"), "{text}");
-        assert!(!text.contains("calls ("), "{text}");
-    }
-
-    #[test]
-    fn failure_header_counts_and_marks_unsettled() {
-        let mut report = report();
         report.failure_kind = Some(FailureKind::Timeout);
         report.failure_text = Some("run_code timed out after 120000ms".into());
-        report.duration_ms = 120_000;
-        report.calls = vec![
-            snap(1, "read", "path=a", "ok", None),
-            snap(2, "write", "path=b", "unsettled", None),
-        ];
-        report.calls_omitted = 2;
-        report.call_total = Some(4);
-        report.unsettled_total = Some(1);
-        let text = render_model_view(&report);
-        assert!(
-            text.starts_with(
-                "run_code failed: timeout after 120000ms · program: failed · tool calls: 3 ok / 0 failed · 120000ms"
-            ),
-            "{text}"
+        assert_eq!(
+            header_line(&report),
+            "run_code failed: timeout after 120000ms · 1234ms"
         );
-        assert!(text.contains("1 calls were still running"), "{text}");
-        assert!(!text.contains("calls ("), "{text}");
     }
 
     #[test]
-    fn output_limit_mark_survives_an_overlong_last_line() {
-        let mut report = report();
-        report.output_limited = true;
-        report.failure_kind = Some(FailureKind::OutputLimit);
-        report.failure_text = Some("output exceeded 1048576 bytes".into());
-        report.logs = vec![("info".into(), "中".repeat(40_000))];
-        let text = render_model_view(&report);
-        assert!(text.contains("[output limit reached]"), "{text}");
-        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
-        let marked = text
-            .lines()
-            .find(|line| line.contains("[output limit reached]"))
-            .expect("marked log line");
-        assert!(marked.ends_with("[output limit reached]"), "{marked}");
-        assert!(std::str::from_utf8(text.as_bytes()).is_ok());
-    }
-
-    fn result_of(text: &str) -> &str {
-        text.split_once("result:\n").map(|(_, r)| r).unwrap_or("")
-    }
-
-    fn ok_with(value: Value) -> String {
-        let mut report = report();
-        report.value = Some(value);
-        render_model_view(&report)
+    fn uncaught_tool_error_header_keeps_the_code_and_the_call() {
+        let mut report = base_report();
+        report.tool_error = Some(UncaughtToolError {
+            seq: 2,
+            tool: "write".into(),
+            code: "invalid_args".into(),
+            message: "nope".into(),
+            summary: "path=a.txt".into(),
+        });
+        report.call_total = Some(2);
+        let line = header_line(&report);
+        assert!(line.contains("uncaught ToolError invalid_args"), "{line}");
+        assert!(line.contains("from call #2 write"), "{line}");
+        assert!(!line.contains("tool calls:"), "{line}");
     }
 
     #[test]
     fn uniform_object_array_renders_as_a_table() {
-        let text = ok_with(serde_json::json!([
-            {"path": "a.rs", "line": 1, "hit": true},
-            {"line": 2, "path": "b.rs", "hit": false},
-            {"path": "c.rs", "hit": null, "line": 3.5},
-        ]));
-        assert_eq!(
-            result_of(&text),
-            // WP-210 E: columns follow the first row's key order (agent order).
-            "[3]{path,line,hit}:\na.rs,1,true\nb.rs,2,false\nc.rs,3.5,"
-        );
+        let value = serde_json::json!([
+            { "a": 1, "b": "two" },
+            { "a": 3, "b": "four" },
+            { "a": 5, "b": "six" }
+        ]);
+        let body = render_result_body(&value);
+        assert!(body.starts_with("[3]{a,b}:"), "{body}");
+        assert!(body.contains("1,two"), "{body}");
     }
 
     #[test]
     fn non_tabular_arrays_fall_back_to_compact_json() {
-        let cases = [
-            serde_json::json!([{"a": 1}, {"a": 2}]),
-            serde_json::json!([{"a": 1}, {}, {"a": 3}]),
-            serde_json::json!([{"a": [1]}, {"a": [2]}, {"a": [3]}]),
-            serde_json::json!([{"a": {"x": 1}}, {"a": 2}, {"a": 3}]),
-            serde_json::json!([1, 2, 3]),
-        ];
-        for value in cases {
-            let text = ok_with(value.clone());
-            assert_eq!(result_of(&text), serde_json::to_string(&value).unwrap());
-        }
+        let value = serde_json::json!([{ "a": [1, 2] }, { "a": [3] }]);
+        let body = render_result_body(&value);
+        assert_eq!(body, r#"[{"a":[1,2]},{"a":[3]}]"#);
     }
 
     #[test]
-    fn ragged_rows_render_as_a_padded_table() {
-        let text = ok_with(serde_json::json!([
-            {"a": 1, "b": 2},
-            {"a": 3},
-            {"b": 5, "a": 4},
-        ]));
-        // Columns are the union in first-seen order; an omitted key is empty.
-        assert_eq!(result_of(&text), "[3]{a,b}:\n1,2\n3,\n4,5");
+    fn strings_stay_verbatim_and_json_text_is_compacted() {
+        let plain = serde_json::json!("hello world");
+        assert_eq!(render_result_body(&plain), "hello world");
+        let json_text = serde_json::json!("{ \"a\": 1, \"b\": [1, 2] }");
+        assert_eq!(render_result_body(&json_text), r#"{"a":1,"b":[1,2]}"#);
     }
 
     #[test]
-    fn later_row_new_key_appends_a_column() {
-        let text = ok_with(serde_json::json!([
-            {"a": 1},
-            {"a": 2},
-            {"a": 3, "b": 4},
-        ]));
-        assert_eq!(result_of(&text), "[3]{a,b}:\n1,\n2,\n3,4");
+    fn human_data_stays_structured_for_the_pretty_frontend() {
+        let mut report = base_report();
+        report.calls = vec![settled(1, "write", "path=a.txt", "ok", "a.txt")];
+        report.call_total = Some(1);
+        report.by_tool.insert("write".into(), (1, 0));
+        let data = human_data(&report).expect("data");
+        assert_eq!(data["ok"], true);
+        assert_eq!(data["succeeded"], 1);
+        assert_eq!(data["failed"], 0);
+        assert_eq!(data["by_tool"]["write"], serde_json::json!({ "ok": 1, "fail": 0 }));
     }
-
-    #[test]
-    fn too_many_columns_fall_back_to_compact_json() {
-        let mut rows = Vec::new();
-        for row in 0..3 {
-            let mut map = serde_json::Map::new();
-            for key in 0..17 {
-                map.insert(format!("k{key}"), serde_json::json!(row));
-            }
-            rows.push(Value::Object(map));
-        }
-        let value = Value::Array(rows);
-        let text = ok_with(value.clone());
-        assert_eq!(result_of(&text), serde_json::to_string(&value).unwrap());
-    }
-
-    #[test]
-    fn table_cells_quote_ambiguous_strings() {
-        let text = ok_with(serde_json::json!([
-            {"v": "a,b"}, {"v": "say \"hi\""}, {"v": "x\ny"},
-            {"v": " pad"}, {"v": ""}, {"v": "42"}, {"v": "true"}, {"v": "null"}, {"v": "中文 ok"},
-        ]));
-        let rows: Vec<&str> = result_of(&text).lines().collect();
-        assert_eq!(rows[0], "[9]{v}:");
-        assert_eq!(
-            &rows[1..],
-            &[
-                r#""a,b""#,
-                r#""say \"hi\"""#,
-                r#""x\ny""#,
-                r#"" pad""#,
-                r#""""#,
-                r#""42""#,
-                r#""true""#,
-                r#""null""#,
-                "中文 ok"
-            ]
-        );
-    }
-
-    #[test]
-    fn table_nested_in_an_object_renders_as_a_keyed_block() {
-        let text = ok_with(serde_json::json!({
-            "total": 3,
-            "hits": [{"p": "a", "n": 1}, {"p": "b", "n": 2}, {"p": "c", "n": 3}],
-            "note": "x"
-        }));
-        let result = result_of(&text);
-        assert_eq!(
-            result,
-            "{\"total\":3,\"note\":\"x\"}\nhits[3]{p,n}:\na,1\nb,2\nc,3"
-        );
-    }
-
-    #[test]
-    fn other_values_are_compact_json_and_strings_verbatim() {
-        let value = serde_json::json!({"a": {"b": [1, 2]}, "c": "d"});
-        let text = ok_with(value.clone());
-        assert_eq!(result_of(&text), serde_json::to_string(&value).unwrap());
-        assert!(!result_of(&text).contains('\n'));
-        let text = ok_with(Value::String("plain\n  text".into()));
-        assert_eq!(result_of(&text), "plain\n  text");
-    }
-
     #[test]
     fn json_text_is_compacted_without_rewriting_tokens() {
         let pretty = r#"{
@@ -1984,11 +2351,14 @@ mod tests {
 
     #[test]
     fn pretty_json_log_lines_are_compacted() {
-        let mut report = report();
-        report.logs = vec![
-            ("log".into(), "{\n  \"a\": 1\n}".into()),
-            ("log".into(), "plain text".into()),
-        ];
+        let mut report = base_report();
+        set_logs(
+            &mut report,
+            vec![
+                ("log", "{\n  \"a\": 1\n}".to_string()),
+                ("log", "plain text".to_string()),
+            ],
+        );
         let text = render_model_view(&report);
         assert!(text.contains("[log] {\"a\":1}"), "{text}");
         assert!(text.contains("[log] plain text"), "{text}");
@@ -1996,38 +2366,194 @@ mod tests {
     }
 
     #[test]
-    fn cjk_result_is_cut_by_tokens_not_bytes_and_keeps_both_ends() {
-        let mut body = "中文字符测试".repeat(5_000); // ~30k tok, ~90KB
-        body.push_str("CJK_END_SENTINEL");
-        let text = ok_with(Value::String(body));
+    fn large_string_result_keeps_head_and_tail_under_the_token_budget() {
+        let mut report = base_report();
+        let body = format!(
+            "{}RESULT_END_SENTINEL",
+            (0..20_000)
+                .map(|i| format!("line {i} alpha beta\n"))
+                .collect::<String>()
+        );
+        set_value(&mut report, Value::String(body));
+        let text = render_model_view(&report);
+        assert!(text.starts_with("run_code ok"));
+        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
         let result = result_of(&text);
-        let notice = result.lines().next().unwrap();
         assert!(
-            notice.starts_with("result ")
-                && notice.contains("exceeds 10.0k; truncated by token budget"),
-            "{notice}"
+            result.contains("truncated by token budget"),
+            "{result}"
         );
-        assert!(result.contains("CJK_END_SENTINEL"), "{result}");
+        assert!(result.contains("line 0 alpha"), "{result}");
+        assert!(result.contains("RESULT_END_SENTINEL"), "{result}");
         assert!(result.contains("tok omitted from the middle"), "{result}");
-        let result_section = format!("result:\n{result}");
-        assert!(
-            crate::session::estimate::count_text_tokens(&result_section) <= RESULT_TOKEN_BUDGET,
-            "{}",
-            crate::session::estimate::count_text_tokens(&result_section)
-        );
-        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES);
+        assert!(!result.contains("byte cap"), "{result}");
+        assert!(!text.starts_with("[blob:"));
     }
 
     #[test]
-    fn byte_fallback_keeps_the_tail_and_names_the_byte_cap() {
-        // Few tokens, many bytes: long runs compress well in cl100k.
-        let text = ok_with(Value::String(format!(
-            "{}BYTE_END_SENTINEL",
-            " ".repeat(400_000)
-        )));
+    fn over_budget_object_degrades_structurally_and_stays_valid_json() {
+        let items: Vec<Value> = (0..4_000)
+            .map(|i| serde_json::json!({"id": i, "tags": ["x", "y"], "note": "word ".repeat(10)}))
+            .collect();
+        let text = ok_with(serde_json::json!({"total": 4000, "items": items, "done": true}));
+        let result = result_of(&text);
+        let (notice, body) = result.split_once('\n').unwrap();
+        assert!(notice.contains("exceeds 10.0k; truncated"), "{notice}");
+        let parsed: Value = serde_json::from_str(body).expect("still valid JSON");
+        assert_eq!(parsed["total"], 4000);
+        assert_eq!(parsed["done"], true);
+        let kept = parsed["items"].as_array().unwrap();
+        let marker = kept.last().unwrap().as_str().unwrap();
+        assert_eq!(marker, format!("… {} more", 4000 - (kept.len() - 1)));
+        assert!(crate::session::estimate::count_text_tokens(body) <= RUN_CODE_VIEW_TOKENS);
+        // Key order of the agent survives degradation.
+        assert!(
+            body.starts_with("{\"total\":4000,\"items\":["),
+            "{}",
+            &body[..40]
+        );
+    }
+
+    #[test]
+    fn long_strings_are_cut_before_containers_collapse_to_key_counts() {
+        // Shape from a real run: four file reads returned as {path,n,text}.
+        // At ~11k tokens the result must keep useful prefixes, not become
+        // {"catalog":"{…3 keys}",...}, which drops the whole payload.
+        // Sized so the degraded object stays under the byte cap: this test is
+        // about strings being cut before containers collapse, not about the cap.
+        let value = serde_json::json!({
+            "catalog": {"path": "src/apps/catalog.rs", "n": 660, "text": "x".repeat(8_000)},
+            "app_panel": {"path": "web/src/lib/appPanel.ts", "n": 420, "text": "x".repeat(8_000)},
+            "app_tab": {"path": "web/src/dockview/tabs/AppTab.tsx", "n": 310, "text": "x".repeat(8_000)},
+            "app_view": {"path": "web/src/dockview/panels/AppViewPanel.tsx", "n": 280, "text": "x".repeat(8_000)},
+        });
+        let text = ok_with(value);
+        let result = result_of(&text);
+        let body = match result.split_once('\n') {
+            Some((notice, rest)) if notice.contains("exceeds") => rest,
+            _ => result,
+        };
+        let parsed: Value = serde_json::from_str(body).expect("still valid JSON");
+        for (key, path) in [
+            ("catalog", "src/apps/catalog.rs"),
+            ("app_panel", "web/src/lib/appPanel.ts"),
+            ("app_tab", "web/src/dockview/tabs/AppTab.tsx"),
+            ("app_view", "web/src/dockview/panels/AppViewPanel.tsx"),
+        ] {
+            assert_eq!(parsed[key]["path"].as_str(), Some(path), "{body}");
+            let kept = parsed[key]["text"].as_str().expect("text kept");
+            assert!(kept.starts_with('x'), "{kept}");
+            assert!(kept.len() > 1_000, "{}", kept.len());
+        }
+        assert!(!body.contains("{…"), "{body}");
+        assert!(crate::session::estimate::count_text_tokens(body) <= RUN_CODE_VIEW_TOKENS);
+    }
+
+    #[test]
+    fn output_limit_mark_survives_an_overlong_last_line() {
+        let mut report = base_report();
+        report.failure_kind = Some(FailureKind::OutputLimit);
+        report.failure_text = Some("output exceeded 1048576 bytes".into());
+        set_logs(&mut report, vec![("info", "中".repeat(40_000))]);
+        let text = render_model_view(&report);
+        assert!(text.contains("[output limit reached]"), "{text}");
         assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
-        assert!(text.contains("truncated by byte cap"), "{text}");
-        assert!(text.contains("BYTE_END_SENTINEL"), "{text}");
+        let marked = text
+            .lines()
+            .find(|line| line.contains("[output limit reached]"))
+            .expect("marked log line");
+        assert!(marked.ends_with("[output limit reached]"), "{marked}");
+        assert!(std::str::from_utf8(text.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn short_stack_drops_eval_frames_by_name() {
+        let mut report = base_report();
+        report.failure_kind = Some(FailureKind::Exception);
+        report.failure_text = Some("x".into());
+        report.failure_location = Some(SourceLocation { line: 2, column: 1 });
+        report.source = "return 1;\nthrow new Error('x');".into();
+        report.failure_stack = Some(
+            "    at <eval> (program.js:3:1)\n    at boom (program.js:3:5)\n    at <eval> (program.js:9:9)".into(),
+        );
+        let text = render_model_view(&report);
+        assert!(text.contains("stack:\n  at boom (line 2:5)"), "{text}");
+        assert!(!text.contains("<eval>"), "{text}");
+    }
+
+    #[test]
+    fn ragged_rows_render_as_a_padded_table() {
+        let text = ok_with(serde_json::json!([
+            {"a": 1, "b": 2},
+            {"a": 3},
+            {"b": 5, "a": 4},
+        ]));
+
+        // Columns are the union in first-seen order; an omitted key is empty.
+        assert_eq!(result_of(&text), "[3]{a,b}:\n1,2\n3,\n4,5");
+    }
+
+    #[test]
+    fn later_row_new_key_appends_a_column() {
+        let text = ok_with(serde_json::json!([
+            {"a": 1},
+            {"a": 2},
+            {"a": 3, "b": 4},
+        ]));
+        assert_eq!(result_of(&text), "[3]{a,b}:\n1,\n2,\n3,4");
+    }
+
+    #[test]
+    fn too_many_columns_fall_back_to_compact_json() {
+        let mut rows = Vec::new();
+        for row in 0..3 {
+            let mut map = serde_json::Map::new();
+            for key in 0..17 {
+                map.insert(format!("k{key}"), serde_json::json!(row));
+            }
+            rows.push(Value::Object(map));
+        }
+        let value = Value::Array(rows);
+        let text = ok_with(value.clone());
+        assert_eq!(result_of(&text), serde_json::to_string(&value).unwrap());
+    }
+
+    #[test]
+    fn table_cells_quote_ambiguous_strings() {
+        let text = ok_with(serde_json::json!([
+            {"v": "a,b"}, {"v": "say \"hi\""}, {"v": "x\ny"},
+            {"v": " pad"}, {"v": ""}, {"v": "42"}, {"v": "true"}, {"v": "null"}, {"v": "中文 ok"},
+        ]));
+        let rows: Vec<&str> = result_of(&text).lines().collect();
+        assert_eq!(rows[0], "[9]{v}:");
+        assert_eq!(
+            &rows[1..],
+            &[
+                r#""a,b""#,
+                r#""say \"hi\"""#,
+                r#""x\ny""#,
+                r#"" pad""#,
+                r#""""#,
+                r#""42""#,
+                r#""true""#,
+                r#""null""#,
+                "中文 ok"
+            ]
+        );
+    }
+
+    #[test]
+    fn table_nested_in_an_object_renders_as_a_keyed_block() {
+        let text = ok_with(serde_json::json!({
+            "total": 3,
+            "hits": [{"p": "a", "n": 1}, {"p": "b", "n": 2}, {"p": "c", "n": 3}],
+            "note": "x"
+        }));
+        let result = result_of(&text);
+        assert_eq!(
+            result,
+            "{\"total\":3,\"note\":\"x\"}\nhits[3]{p,n}:\na,1\nb,2\nc,3"
+        );
     }
 
     #[test]
@@ -2049,271 +2575,49 @@ mod tests {
     }
 
     #[test]
-    fn notice_appears_only_when_over_budget() {
-        let text = ok_with(serde_json::json!({"small": true}));
-        assert!(!text.contains("exceeds"), "{text}");
-        assert!(!text.contains("truncated"), "{text}");
+    fn other_values_are_compact_json_and_strings_verbatim() {
+        let value = serde_json::json!({"a": {"b": [1, 2]}, "c": "d"});
+        let text = ok_with(value.clone());
+        assert_eq!(result_of(&text), serde_json::to_string(&value).unwrap());
+        assert!(!result_of(&text).contains('\n'));
+        let text = ok_with(Value::String("plain\n  text".into()));
+        assert_eq!(result_of(&text), "plain\n  text");
     }
 
     #[test]
-    fn success_logs_keep_the_head_within_3k_tokens() {
-        let mut report = report();
-        report.logs = (0..7)
-            .map(|i| ("log".into(), format!("line {i}")))
-            .collect();
-        report.value = Some(Value::Null);
-        let text = render_model_view(&report);
-        assert!(text.contains("\n\nlogs:\n[log] line 0\n"), "{text}");
-        assert!(text.contains("[log] line 6\n\nresult:"), "{text}");
-        assert!(!text.contains("omitted"), "{text}");
-
-        report.logs = (0..2_000)
-            .map(|i| ("log".into(), format!("step {i} doing some work here")))
-            .collect();
-        let text = render_model_view(&report);
-        let logs = text
-            .split_once("\n\nlogs:")
-            .unwrap()
-            .1
-            .split("\n\nresult:")
-            .next()
-            .unwrap();
-        assert!(logs.starts_with("\n[log] step 0 doing"), "{logs}");
-        let tail = logs.lines().last().unwrap();
-        assert!(
-            tail.starts_with("… ") && tail.ends_with(" lines omitted (token budget)"),
-            "{tail}"
-        );
-        let whole = format!("logs:{logs}");
-        assert!(
-            crate::session::estimate::count_text_tokens(&whole) <= SUCCESS_LOGS_TOKEN_BUDGET,
-            "{}",
-            crate::session::estimate::count_text_tokens(&whole)
-        );
-    }
-
-    #[test]
-    fn one_oversized_log_entry_keeps_its_head_and_tail() {
-        let mut report = report();
-        let unit = "let value = compute();\n";
-        report.logs = vec![(
-            "log".to_string(),
-            format!(
-                "HEAD_SENTINEL {}TAIL_SENTINEL {}",
-                text_until_tokens(1_800, unit),
-                text_until_tokens(1_800, unit)
-            ),
-        )];
-        report.value = Some(Value::Null);
-        let text = render_model_view(&report);
-        let logs = text
-            .split_once("\n\nlogs:")
-            .expect("log section")
-            .1
-            .split("\n\nresult:")
-            .next()
-            .unwrap();
-        assert!(logs.contains("HEAD_SENTINEL"), "{logs}");
-        assert!(logs.contains("TAIL_SENTINEL"), "{logs}");
-        assert!(logs.contains("truncated by token budget"), "{logs}");
-        assert!(
-            crate::session::estimate::count_text_tokens(&format!("logs:{logs}"))
-                <= SUCCESS_LOGS_TOKEN_BUDGET,
-            "{}",
-            crate::session::estimate::count_text_tokens(&format!("logs:{logs}"))
-        );
-    }
-
-    #[test]
-    fn oversized_log_entry_does_not_starve_the_small_ones() {
-        let mut report = report();
-        report.logs = vec![
-            (
-                "log".to_string(),
-                text_until_tokens(4_000, "let value = compute();\n"),
-            ),
-            ("log".to_string(), "SECOND_SENTINEL".to_string()),
-            ("log".to_string(), "THIRD_SENTINEL".to_string()),
+    fn failure_header_counts_and_marks_unsettled() {
+        let mut report = base_report();
+        report.failure_kind = Some(FailureKind::Timeout);
+        report.failure_text = Some("run_code timed out after 120000ms".into());
+        report.duration_ms = 120_000;
+        report.calls = vec![
+            snap(1, "read", "path=a", "ok", None),
+            snap(2, "write", "path=b", "unsettled", None),
         ];
-        report.value = Some(Value::Null);
+        report.calls_omitted = 2;
+        report.call_total = Some(4);
+        report.unsettled_total = Some(1);
         let text = render_model_view(&report);
-        assert!(text.contains("SECOND_SENTINEL"), "{text}");
-        assert!(text.contains("THIRD_SENTINEL"), "{text}");
-        assert!(text.contains("truncated by token budget"), "{text}");
-        assert!(!text.contains("lines omitted"), "{text}");
-        let logs = text
-            .split_once("\n\nlogs:")
-            .expect("log section")
-            .1
-            .split("\n\nresult:")
-            .next()
-            .unwrap();
         assert!(
-            crate::session::estimate::count_text_tokens(&format!("logs:{logs}"))
-                <= SUCCESS_LOGS_TOKEN_BUDGET,
-            "{}",
-            crate::session::estimate::count_text_tokens(&format!("logs:{logs}"))
-        );
-    }
-
-    #[test]
-    fn failed_run_keeps_completed_calls_and_separates_program_from_tool_counts() {
-        let mut report = report();
-        report.failure_kind = Some(FailureKind::Exception);
-        report.failure_text = Some("Cannot read properties of null".into());
-        report.failure_location = Some(SourceLocation {
-            line: 3,
-            column: 14,
-        });
-        report.source =
-            "const a = await tools.file.read({path:'a'});\nconst b = 2;\nreturn null.x;".into();
-        report.failure_stack = Some(
-            "    at boom (program.js:4:14)\n    at <anonymous> (libs.js:9:1)\n    at <eval> (program.js:1:1)".into(),
-        );
-        let mut first = snap(1, "read", "path=a", "ok", None);
-        first.brief = Some("{\"ok\":true,\"lines\":[\"fn a\"]}".into());
-        let mut second = snap(
-            2,
-            "grep",
-            "pattern=x",
-            "error:invalid_args",
-            Some("invalid_args"),
-        );
-        second.brief = Some("bad regex".into());
-        report.calls = vec![first, second];
-        let text = render_model_view(&report);
-        let head = text.lines().next().unwrap();
-        assert!(
-            head.starts_with(
-                "run_code failed: exception · program: failed · tool calls: 1 ok / 1 failed"
-            ),
-            "{head}"
-        );
-        assert!(
-            head.contains("line 3, column 14 · return null.x;"),
-            "{head}"
-        );
-        assert!(text.contains("stack:\n  at boom (line 3:14)"), "{text}");
-        assert!(!text.contains("libs.js"), "{text}");
-        assert!(!text.contains("<eval>"), "{text}");
-        assert!(
-            text.contains(
-                "completed tool calls before the failure:\n#1 read path=a → ok: {\"ok\":true"
-            ),
+            text.starts_with("run_code failed: timeout after 120000ms · 120000ms"),
             "{text}"
         );
-        assert!(
-            text.contains("#2 grep pattern=x → failed(invalid_args): bad regex"),
-            "{text}"
-        );
-        // A successful run never prints the partial-results block.
-        report.failure_kind = None;
-        assert!(!render_model_view(&report).contains("completed tool calls"));
+        // Unsettled keeps its own head line; it is not folded into the stream.
+        assert!(text.contains("1 calls were still running"), "{text}");
+        assert!(!text.contains("tool calls:"), "{text}");
     }
 
-    #[test]
-    fn short_stack_drops_eval_frames_by_name() {
-        let mut report = report();
-        report.failure_kind = Some(FailureKind::Exception);
-        report.failure_text = Some("x".into());
-        report.failure_location = Some(SourceLocation { line: 2, column: 1 });
-        report.source = "return 1;\nthrow new Error('x');".into();
-        report.failure_stack = Some(
-            "    at <eval> (program.js:3:1)\n    at boom (program.js:3:5)\n    at <eval> (program.js:9:9)".into(),
-        );
-        let text = render_model_view(&report);
-        assert!(text.contains("stack:\n  at boom (line 2:5)"), "{text}");
-        assert!(!text.contains("<eval>"), "{text}");
+    /// Everything after the header: the stream (these tests render success
+    /// views, where the header is followed directly by the stream).
+    fn result_of(text: &str) -> &str {
+        text.split_once("\n\n").map(|(_, rest)| rest).unwrap_or("")
     }
 
-    #[test]
-    fn over_budget_object_degrades_structurally_and_stays_valid_json() {
-        let items: Vec<Value> = (0..4_000)
-            .map(|i| serde_json::json!({"id": i, "tags": ["x", "y"], "note": "word ".repeat(10)}))
-            .collect();
-        let text = ok_with(serde_json::json!({"total": 4000, "items": items, "done": true}));
-        let result = result_of(&text);
-        let (notice, body) = result.split_once('\n').unwrap();
-        assert!(notice.contains("exceeds 10.0k; truncated"), "{notice}");
-        let parsed: Value = serde_json::from_str(body).expect("still valid JSON");
-        assert_eq!(parsed["total"], 4000);
-        assert_eq!(parsed["done"], true);
-        let kept = parsed["items"].as_array().unwrap();
-        let marker = kept.last().unwrap().as_str().unwrap();
-        assert_eq!(marker, format!("… {} more", 4000 - (kept.len() - 1)));
-        assert!(crate::session::estimate::count_text_tokens(body) <= RESULT_TOKEN_BUDGET);
-        // Key order of the agent survives degradation.
-        assert!(
-            body.starts_with("{\"total\":4000,\"items\":["),
-            "{}",
-            &body[..40]
-        );
+    fn ok_with(value: Value) -> String {
+        let mut report = base_report();
+        set_value(&mut report, value);
+        render_model_view(&report)
     }
 
-    #[test]
-    fn long_strings_are_cut_before_containers_collapse_to_key_counts() {
-        // Shape from a real run: four file reads returned as {path,n,text}.
-        // At ~11k tokens the result must keep useful prefixes, not become
-        // {"catalog":"{…3 keys}",...}, which drops the whole payload.
-        let value = serde_json::json!({
-            "catalog": {"path": "src/apps/catalog.rs", "n": 660, "text": "x".repeat(20_000)},
-            "app_panel": {"path": "web/src/lib/appPanel.ts", "n": 420, "text": "x".repeat(20_000)},
-            "app_tab": {"path": "web/src/dockview/tabs/AppTab.tsx", "n": 310, "text": "x".repeat(20_000)},
-            "app_view": {"path": "web/src/dockview/panels/AppViewPanel.tsx", "n": 280, "text": "x".repeat(20_000)},
-        });
-        let text = ok_with(value);
-        let result = result_of(&text);
-        let (notice, body) = result.split_once('\n').unwrap();
-        assert!(notice.contains("exceeds 10.0k; truncated"), "{notice}");
-        let parsed: Value = serde_json::from_str(body).expect("still valid JSON");
-        for (key, path) in [
-            ("catalog", "src/apps/catalog.rs"),
-            ("app_panel", "web/src/lib/appPanel.ts"),
-            ("app_tab", "web/src/dockview/tabs/AppTab.tsx"),
-            ("app_view", "web/src/dockview/panels/AppViewPanel.tsx"),
-        ] {
-            assert_eq!(parsed[key]["path"].as_str(), Some(path), "{body}");
-            let kept = parsed[key]["text"].as_str().expect("text kept");
-            assert!(kept.starts_with('x'), "{kept}");
-            assert!(kept.len() > 1_000, "{}", kept.len());
-        }
-        assert!(!body.contains("{…"), "{body}");
-        assert!(crate::session::estimate::count_text_tokens(body) <= RESULT_TOKEN_BUDGET);
-    }
 
-    #[test]
-    fn failure_logs_keep_the_tail_within_3k_tokens() {
-        let mut report = report();
-        report.failure_kind = Some(FailureKind::Exception);
-        report.failure_text = Some("boom".into());
-        report.logs = (0..2_000)
-            .map(|i| ("log".into(), format!("step {i} doing work here")))
-            .collect();
-        let text = render_model_view(&report);
-        let logs = text.split_once("logs:").unwrap().1;
-        assert!(
-            crate::session::estimate::count_text_tokens(&format!("logs:{logs}"))
-                <= FAILURE_LOGS_TOKEN_BUDGET
-        );
-        assert!(logs.contains("step 1999 doing work here"), "{logs}");
-        assert!(!logs.contains("step 0 doing"), "{logs}");
-        assert!(
-            logs.contains("earlier lines omitted] (token budget)"),
-            "{logs}"
-        );
-        let mut small = super::tests::report();
-        small.failure_kind = Some(FailureKind::Exception);
-        small.logs = vec![("log".into(), "only".into())];
-        assert!(render_model_view(&small).contains("logs:\n[log] only"));
-    }
-
-    #[test]
-    fn human_data_stays_structured_for_the_pretty_frontend() {
-        let mut report = report();
-        report.value = Some(serde_json::json!([{"a": 1}, {"a": 2}, {"a": 3}]));
-        report.logs = vec![("log".into(), "x".into())];
-        let data = human_data(&report).unwrap();
-        assert!(data.get("succeeded").is_some() && data.get("by_tool").is_some());
-        assert_eq!(data["ok"], Value::Bool(true));
-    }
 }

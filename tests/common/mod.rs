@@ -68,10 +68,7 @@ pub fn latest_user_anchor_from_items(items: &[litecode::types::Item]) -> String 
             })
             .collect::<String>();
         let text = text.trim();
-        if text.is_empty()
-            || text.contains("<compacted-summary>")
-            || text.starts_with(litecode::config::global_db::CHECKPOINT_PREAMBLE)
-        {
+        if text.is_empty() || text.starts_with(litecode::reminder::SYSTEM_REMINDER_OPEN) {
             continue;
         }
         return text.chars().take(240).collect();

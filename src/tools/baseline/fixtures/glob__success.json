@@ -2,10 +2,12 @@
   "content_historical": "",
   "covered": true,
   "data": {
-    "message": "",
     "paths": [
       "keep.txt"
-    ]
+    ],
+    "total": 1,
+    "truncated": false,
+    "outside_workspace": false
   },
   "error": null,
   "gap": null,

@@ -73,12 +73,33 @@ type ReadInput = {
   limit?: Integer;
 };
 
+type ClampedParam = {
+  /** Parameter name as the caller wrote it. */
+  parameter: string;
+  /** Value the caller asked for. */
+  requested: number;
+  /** Value the tool used instead. */
+  applied: number;
+};
+
 type ReadData = {
   /** Line contents for this page, in file order. */
   lines: string[];
-  message: string;
   path: string;
   start_line: Integer;
+  /** Lines in the file; `has_more` compares against it. */
+  total_lines: Integer;
+  /** True when this page stops before the end of the file. */
+  has_more: boolean;
+  /**
+   * Lines the window covered but left out because they are already in the
+   * model's context. A gap in `lines` is explained by this number.
+   */
+  skipped_in_context: Integer;
+  /** Lines shortened to the per-line character cap, by number. */
+  lines_capped?: Integer[];
+  /** Parameters adjusted to a legal value; absent when nothing moved. */
+  clamped?: ClampedParam[];
 };
 
 type WriteInput = {
@@ -163,9 +184,21 @@ type GlobInput = {
 };
 
 type GlobData = {
-  message: string;
-  /** Matching paths sorted by depth, then parent directory, then name. */
+  /** Matching paths, sorted by depth, then parent directory, then name. */
   paths: string[];
+  /** Matches found before the limit was applied. */
+  total: Integer;
+  /** True when paths holds only the first limit matches. */
+  truncated: boolean;
+  /** True when some returned paths are outside the workspace (absolute). */
+  outside_workspace: boolean;
+  /**
+   * Why `paths` is empty; absent when it is not. Only what glob can produce:
+   * the searched path is excluded by default filters, or nothing matched.
+   */
+  empty_reason?: "hidden_by_filters" | "no_match";
+  /** Parameters adjusted to a legal value; absent when nothing moved. */
+  clamped?: ClampedParam[];
 };
 
 type GrepInput = {
@@ -203,9 +236,33 @@ type GrepHit = {
 
 type GrepData = {
   hits: GrepHit[];
-  message: string;
-  /** True when a limit or the 8K-token data guard removed results or context. */
+  /** True when a limit or the token budget cut the result short. */
   truncated?: boolean;
+  /**
+   * Why `hits` is empty; absent when it is not. Only what grep can produce:
+   * nothing to search, the glob filter matched no file, no match, the file
+   * could not be read as text, the file is binary, or the searched path is
+   * excluded by default filters.
+   */
+  empty_reason?:
+    | "no_files"
+    | "glob_no_files"
+    | "no_match"
+    | "file_unreadable"
+    | "binary"
+    | "hidden_by_filters";
+  /** Matches found before any limit was applied. */
+  total_hits: Integer;
+  /** True when the hit limit stopped the scan. */
+  at_limit_cap: boolean;
+  /** True when a match or context line was shortened to the per-line cap. */
+  lines_truncated: boolean;
+  /** True when context lines were dropped to fit the token budget. */
+  context_omitted: boolean;
+  /** True when hits were dropped to fit the token budget. */
+  output_capped: boolean;
+  /** Parameters adjusted to a legal value; absent when nothing moved. */
+  clamped?: ClampedParam[];
 };
 
 type CodeSearchHit = {
@@ -552,15 +609,21 @@ type LspDataState = "ok" | "partial" | "unknown";
 
 type DiagnosticsData = {
   items: DiagnosticItem[];
-  message: string;
-  /** `partial`/`unknown` means an empty result is not a confirmed miss. */
+  /**
+   * ok means the index is ready, partial that it is still building, and
+   * unknown that the server never reported it. An empty value under
+   * partial/unknown is not a confirmed miss.
+   */
   state: LspDataState;
 };
 
 type SymbolsData = {
-  message: string;
   symbols: SymbolInfo[];
-  /** `partial`/`unknown` means an empty result is not a confirmed miss. */
+  /**
+   * ok means the index is ready, partial that it is still building, and
+   * unknown that the server never reported it. An empty value under
+   * partial/unknown is not a confirmed miss.
+   */
   state: LspDataState;
 };
 
@@ -569,8 +632,11 @@ type WorkspaceSymbolData = SymbolsData;
 
 type LocationsData = {
   locations: Location[];
-  message: string;
-  /** `partial`/`unknown` means an empty result is not a confirmed miss. */
+  /**
+   * ok means the index is ready, partial that it is still building, and
+   * unknown that the server never reported it. An empty value under
+   * partial/unknown is not a confirmed miss.
+   */
   state: LspDataState;
 };
 
@@ -581,8 +647,11 @@ type GoToImplementationData = LocationsData;
 type HoverData = {
   /** Flattened hover text, not raw LSP JSON. */
   markdown: string;
-  message: string;
-  /** `partial`/`unknown` means an empty result is not a confirmed miss. */
+  /**
+   * ok means the index is ready, partial that it is still building, and
+   * unknown that the server never reported it. An empty value under
+   * partial/unknown is not a confirmed miss.
+   */
   state: LspDataState;
 };
 

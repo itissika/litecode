@@ -5,14 +5,11 @@
 //! role is created only by the projector in this module.
 
 use crate::authority::responses::{InputRole, MessageItem};
-use crate::config::global_db::CHECKPOINT_PREAMBLE;
 use crate::types::{Item, user_text};
 
 use super::event::Seq;
 use super::model::{CompactedBody, SessionKind};
 
-pub const SUMMARY_OPEN_TAG: &str = "<compacted-summary>";
-pub const SUMMARY_CLOSE_TAG: &str = "</compacted-summary>";
 const CONVERSATION_SUMMARY_PREFIX: &str = "[Conversation summary]";
 const AGGRESSIVE_SUMMARY_PREFIX: &str = "[Aggressive summary]";
 
@@ -29,9 +26,7 @@ impl CompactionCheckpoint {
     /// this framed user message is view-only and must never be persisted back.
     pub fn model_item(&self) -> Item {
         let body = strip_legacy_summary_prefix(&self.summary);
-        user_text(format!(
-            "{CHECKPOINT_PREAMBLE}\n\n{SUMMARY_OPEN_TAG}{body}{SUMMARY_CLOSE_TAG}"
-        ))
+        user_text(crate::reminder::render_text(body))
     }
 
     /// The raw summary shown to UI/reader consumers that need the body rather
@@ -310,9 +305,9 @@ mod tests {
         };
         assert_eq!(message.role, InputRole::User);
         let text = crate::types::item_text_preview(&item);
-        assert!(text.starts_with(CHECKPOINT_PREAMBLE));
-        assert_eq!(text.matches(SUMMARY_OPEN_TAG).count(), 1, "{text}");
-        assert_eq!(text.matches(SUMMARY_CLOSE_TAG).count(), 1, "{text}");
+        assert!(text.starts_with("<system-reminder>\n"), "{text}");
+        assert!(text.ends_with("\n</system-reminder>"), "{text}");
+        assert!(!text.contains("<compacted-summary>"), "{text}");
         assert!(text.contains("## Primary Request and Intent"));
     }
 
@@ -356,6 +351,6 @@ mod tests {
         let text = crate::types::item_text_preview(&projected);
         assert!(!text.contains(CONVERSATION_SUMMARY_PREFIX));
         assert!(!text.contains(AGGRESSIVE_SUMMARY_PREFIX));
-        assert!(text.ends_with("prior facts</compacted-summary>"));
+        assert!(text.ends_with("prior facts\n</system-reminder>"));
     }
 }

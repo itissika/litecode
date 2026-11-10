@@ -732,12 +732,11 @@ export function SessionList() {
             {renderBotEntries(botUngrouped)}
           </div>
         )}
+        {hasBots && hasSessions && (
+          <div className="mx-3 my-2 border-t border-(--_dk-line)" />
+        )}
         {hasSessions && (
-          <div
-            className={
-              hasBots ? "mt-2 border-t border-(--_dk-line) pt-2" : undefined
-            }
-          >
+          <div>
             <SectionHeader
               icon={
                 <StackSimple

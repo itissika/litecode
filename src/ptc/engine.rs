@@ -67,6 +67,22 @@ struct Faults {
     ctx: Arc<AtomicPtr<c_void>>,
     /// Byte offset of `JSContext.interrupt_counter`. `0` means unknown.
     counter_offset: Arc<AtomicUsize>,
+    /// First contract violation of this run. The bit above says "one happened";
+    /// this slot carries its text, so the terminal branch does not have to read
+    /// it back out of an uncatchable exception.
+    contract: Mutex<Option<ContractFault>>,
+    /// A contract failure latched. Separate from `interrupt` because another
+    /// fault recorded later must not un-latch it.
+    contract_latched: AtomicBool,
+}
+
+/// One contract violation: the call does not hold under the tool's contract.
+#[derive(Debug, Clone)]
+struct ContractFault {
+    code: String,
+    tool: String,
+    seq: u64,
+    message: String,
 }
 
 impl Faults {
@@ -76,6 +92,7 @@ impl Faults {
     const OUTPUT: u8 = 3;
     const STACK: u8 = 4;
     const MEMORY: u8 = 5;
+    const CONTRACT: u8 = 6;
 
     fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -85,6 +102,8 @@ impl Faults {
             stack_limit: AtomicUsize::new(0),
             ctx: Arc::new(AtomicPtr::new(std::ptr::null_mut())),
             counter_offset: Arc::new(AtomicUsize::new(0)),
+            contract: Mutex::new(None),
+            contract_latched: AtomicBool::new(false),
         })
     }
 
@@ -94,6 +113,52 @@ impl Faults {
 
     fn interrupt(&self) -> u8 {
         self.interrupt.load(Ordering::Acquire)
+    }
+
+    /// Latch a contract fault only if no fault has latched yet.
+    ///
+    /// First fault wins: a later one must not rewrite the terminal state, and
+    /// the slot only carries a fault that actually latched.
+    fn try_contract(&self, fault: ContractFault) -> bool {
+        if self
+            .interrupt
+            .compare_exchange(
+                Self::NONE,
+                Self::CONTRACT,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        // Slot first, flag second: whoever observes the flag is guaranteed to
+        // find the text, because the store is Release and the load Acquire.
+        self.set_contract(fault);
+        self.contract_latched.store(true, Ordering::Release);
+        true
+    }
+
+    fn contract_latched(&self) -> bool {
+        self.contract_latched.load(Ordering::Acquire)
+    }
+
+    /// Keep the first violation: later ones add nothing the model can act on.
+    fn set_contract(&self, fault: ContractFault) {
+        let mut slot = self
+            .contract
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if slot.is_none() {
+            *slot = Some(fault);
+        }
+    }
+
+    fn contract_fault(&self) -> Option<ContractFault> {
+        self.contract
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
     }
 
     fn memory_fault(&self) -> bool {
@@ -134,6 +199,13 @@ enum ProgramEnd {
     Success(Json),
     /// The user cancelled after the program had already returned.
     CancelledAfterReturn(Json),
+    Failure(Failure),
+}
+
+/// How the run ended, after the value has been appended to the stream.
+enum EndKind {
+    Success,
+    CancelledAfterReturn,
     Failure(Failure),
 }
 
@@ -383,7 +455,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
                     "{pending} host calls were still running when the program returned and have been cancelled"
                 )
             };
-            if output.borrow_mut().push(LogLevel::Warn, note) {
+            if output.borrow_mut().push_text(LogLevel::Warn, note) {
                 ProgramEnd::Success(value)
             } else {
                 ProgramEnd::Failure(Failure::output(output_limit))
@@ -396,12 +468,17 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     // caught the overflow and returned without reaching another interrupt
     // point is still a stack failure, not a success or plain exception.
     let end = seal_latched_stack(end, &faults);
+    let end = if faults.contract_latched() {
+        ProgramEnd::Failure(contract_failure(&faults))
+    } else {
+        end
+    };
     {
         let state = rejections.lock().expect("rejection lock");
         if state.count > 0 {
             let first = state.first.as_deref().unwrap_or("rejection");
             let note = format!("unhandled promise rejection ({}): {}", state.count, first);
-            let _ = output.borrow_mut().push(LogLevel::Warn, note);
+            let _ = output.borrow_mut().push_text(LogLevel::Warn, note);
         }
     }
     faults.disarm();
@@ -410,34 +487,50 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     drop(context);
     drop(runtime);
 
-    let logs = output.borrow().logs().to_vec();
+    // The return value is the last entry of the stream, not a field beside it.
+    // If it cannot fit, the run is an output-limit failure instead.
+    let end = match end {
+        ProgramEnd::Success(value) => {
+            if output.borrow_mut().push_value(value) {
+                EndKind::Success
+            } else {
+                EndKind::Failure(Failure::output(output_limit))
+            }
+        }
+        ProgramEnd::CancelledAfterReturn(value) => {
+            if output.borrow_mut().push_value(value) {
+                EndKind::CancelledAfterReturn
+            } else {
+                EndKind::Failure(Failure::output(output_limit))
+            }
+        }
+        ProgramEnd::Failure(failure) => EndKind::Failure(failure),
+    };
+    let entries = output.borrow().entries().to_vec();
     let dropped_undefined = output.borrow().dropped_undefined().clone();
     let calls = calls.snapshot();
     let duration_ms = clock.wall_elapsed().as_millis() as u64;
     match end {
-        ProgramEnd::Success(value) => Outcome {
-            logs,
-            value: Some(value),
+        EndKind::Success => Outcome {
+            entries,
             failure: None,
             calls,
             duration_ms,
-            dropped_undefined: dropped_undefined.clone(),
+            dropped_undefined,
         },
-        ProgramEnd::CancelledAfterReturn(value) => Outcome {
-            logs,
-            value: Some(value),
+        EndKind::CancelledAfterReturn => Outcome {
+            entries,
             failure: Some(Failure::cancelled()),
             calls,
             duration_ms,
-            dropped_undefined: dropped_undefined.clone(),
+            dropped_undefined,
         },
-        ProgramEnd::Failure(failure) => Outcome {
-            logs,
-            value: None,
+        EndKind::Failure(failure) => Outcome {
+            entries,
             failure: Some(failure),
             calls,
             duration_ms,
-            dropped_undefined: dropped_undefined.clone(),
+            dropped_undefined,
         },
     }
 }
@@ -516,7 +609,7 @@ fn reconcile_drain(
                     }
                     _ => "host drain stopped after the program returned",
                 };
-                let _ = output.borrow_mut().push(LogLevel::Warn, note.to_string());
+                let _ = output.borrow_mut().push_text(LogLevel::Warn, note.to_string());
                 ProgramEnd::Success(value)
             }
             _ => ProgramEnd::Failure(failure),
@@ -780,7 +873,7 @@ fn install_console(
             ctx.clone(),
             move |ctx: Ctx<'_>, args: Rest<Value<'_>>| -> rquickjs::Result<()> {
                 let message = format_console(&args.0);
-                let accepted = output.borrow_mut().push(level, message);
+                let accepted = output.borrow_mut().push_text(level, message);
                 if !accepted {
                     flags.output.store(true, Ordering::Release);
                     faults.record(Faults::OUTPUT);
@@ -804,51 +897,186 @@ fn install_namespace(
     shared: &Shared,
 ) -> Result<(), Failure> {
     let object = Object::new(ctx.clone()).map_err(|error| Failure::internal(error.to_string()))?;
+    let fail = contract_fail_native(ctx, &shared.faults)?;
     for binding in &namespace.functions {
-        install_binding(ctx, &object, namespace, binding, shared)?;
+        install_binding(ctx, &object, namespace, binding, shared, &fail)?;
     }
-    let value = unknown_tool_proxy(ctx, object)?;
+    let value = unknown_tool_proxy(ctx, object, &namespace.name, &fail)?;
     define_const(ctx, &namespace.name, value)
 }
 
-/// Unknown tools should fail with a named TypeError, not V8's bare
-/// "not a function". Proxy known members through unchanged; for an unknown
-/// identifier return a function that throws with the attempted tool path.
-fn unknown_tool_proxy<'js>(ctx: &Ctx<'js>, target: Object<'js>) -> Result<Value<'js>, Failure> {
+/// Hides unknown members behind the contract.
+///
+/// A call that does not hold must fail at the point the program names it, not
+/// later with V8's "not a function" (a catchable TypeError that also hides which
+/// name was wrong). Both levels are proxied and cached, so `tools.file` is the
+/// same object each time it is read and `tools.file.readx` fails at the
+/// property access while `tools.file.read` passes through untouched.
+///
+/// Candidates come from this namespace's own members, which the binding layer
+/// filled from the generated contract: the list is never hard-coded here.
+///
+/// Intentional behaviour change: `typeof tools.nope` now ends the run. Reading
+/// a name that does not exist is a call that does not hold, so it is judged
+/// before the program can branch on the result.
+/// The JS side of the contract channel: one native, shared by the namespace
+/// proxy and the result proxy, so both fail through `contract_fail`.
+fn contract_fail_native<'js>(
+    ctx: &Ctx<'js>,
+    faults: &Arc<Faults>,
+) -> Result<Function<'js>, Failure> {
+    let faults = Arc::clone(faults);
+    Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'_>, code: String, name: String, message: String| -> rquickjs::Result<()> {
+            // seq 0: no call was dispatched, so there is nothing to point at.
+            Err(contract_fail(&ctx, &faults, &code, &name, 0, &message))
+        },
+    )
+    .map_err(|error| Failure::internal(error.to_string()))
+}
+
+/// Wraps one tool call so its resolved value is read through the contract.
+///
+/// Top level only. A property the tool's output schema does not declare fails at
+/// the read, naming that tool's real field list; a failed result
+/// (`ok === false`) is checked against the failure envelope instead and the
+/// error names the real reason and message.
+///
+/// Intentional behaviour change: reading a success-only field before checking
+/// `ok` used to yield `undefined` (or a catchable TypeError one step later). It
+/// now ends the run, because the call did not hold.
+fn wrap_result_proxy<'js>(
+    ctx: &Ctx<'js>,
+    function: Function<'js>,
+    contract: &super::BindingContract,
+    name: &str,
+    fail: &Function<'js>,
+) -> Result<Function<'js>, Failure> {
     const FACTORY: &str = r#"
-        (target) => {
+        (fn, fields, failureFields, name, fail) => {
             const blocked = new Set([
                 "then", "toJSON", "toString", "valueOf", "inspect", "constructor"
             ]);
-            const wrap = (value, path) => {
-                if (value === null || typeof value !== "object" || Array.isArray(value)) {
-                    return value;
-                }
-                return new Proxy(value, {
-                    get(target, property, receiver) {
-                        if (
-                            typeof property === "string" &&
-                            !(property in target) &&
-                            !blocked.has(property)
-                        ) {
-                            return function () {
-                                throw new TypeError(
-                                    "tool '" + path + property + "' not found"
-                                );
-                            };
-                        }
-                        return Reflect.get(target, property, receiver);
+            return function (...args) {
+                return fn(...args).then((value) => {
+                    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+                        return value;
                     }
+                    const failed = value.ok === false;
+                    const allowed = failed ? failureFields : fields;
+                    return new Proxy(value, {
+                        get(target, property, receiver) {
+                            if (typeof property === "symbol" || blocked.has(property)) {
+                                return Reflect.get(target, property, receiver);
+                            }
+                            if (allowed.indexOf(property) >= 0) {
+                                return Reflect.get(target, property, receiver);
+                            }
+                            if (failed) {
+                                fail(
+                                    "not_found",
+                                    name,
+                                    "'" + name + "' returned " + String(target.reason) +
+                                        ": " + String(target.message) +
+                                        ". A failed result has only ok, reason and message; there is no '" +
+                                        property + "'."
+                                );
+                            }
+                            fail(
+                                "not_found",
+                                name,
+                                "'" + name + "' result has no field '" + property +
+                                    "'. fields: " + fields.join(", ")
+                            );
+                            return undefined;
+                        }
+                    });
                 });
             };
-            return wrap(target, "");
+        }
+    "#;
+    let factory = ctx
+        .eval::<Function<'js>, _>(FACTORY)
+        .map_err(|error| Failure::internal(error.to_string()))?;
+    let fields = js_field_list(ctx, contract.fields.as_ref())?;
+    let failure = js_field_list(ctx, contract.failure_fields.as_ref())?;
+    factory
+        .call::<_, Function<'js>>((function, fields, failure, name, fail.clone()))
+        .map_err(|error| Failure::internal(error.to_string()))
+}
+
+fn js_field_list<'js>(ctx: &Ctx<'js>, fields: &[String]) -> Result<Value<'js>, Failure> {
+    let list = serde_json::Value::Array(
+        fields
+            .iter()
+            .map(|field| serde_json::Value::String(field.clone()))
+            .collect(),
+    );
+    boundary::to_js(ctx, Json::new(list)).map_err(Failure::internal)
+}
+
+fn unknown_tool_proxy<'js>(
+    ctx: &Ctx<'js>,
+    target: Object<'js>,
+    namespace: &str,
+    fail: &Function<'js>,
+) -> Result<Value<'js>, Failure> {
+    const FACTORY: &str = r#"
+        (target, fail, root) => {
+            const blocked = new Set([
+                "then", "toJSON", "toString", "valueOf", "inspect", "constructor"
+            ]);
+            const cache = new Map();
+            const isSuite = (value) =>
+                value !== null && typeof value === "object" && !Array.isArray(value);
+            const wrap = (value, path) => {
+                if (!isSuite(value)) {
+                    return value;
+                }
+                const hit = cache.get(value);
+                if (hit !== undefined) {
+                    return hit;
+                }
+                const proxy = new Proxy(value, {
+                    get(suite, property, receiver) {
+                        if (typeof property === "symbol" || blocked.has(property)) {
+                            return Reflect.get(suite, property, receiver);
+                        }
+                        if (property in suite) {
+                            return Reflect.get(suite, property, receiver);
+                        }
+                        const known = Object.keys(suite).sort();
+                        fail(
+                            "not_found",
+                            path + property,
+                            "tool '" + path + property + "' not found. available: " +
+                                (known.length > 0 ? known.join(", ") : "(none)")
+                        );
+                    },
+                    has(suite, property) {
+                        return Reflect.has(suite, property);
+                    }
+                });
+                cache.set(value, proxy);
+                // Nested suites become proxies in place, so `get` always returns
+                // the exact value the target holds (a proxy invariant) and
+                // `tools.file === tools.file` holds without special casing.
+                for (const key of Object.keys(value)) {
+                    if (isSuite(value[key])) {
+                        value[key] = wrap(value[key], path + key + ".");
+                    }
+                }
+                return proxy;
+            };
+            return wrap(target, root + ".");
         }
     "#;
     let factory = ctx
         .eval::<Function<'js>, _>(FACTORY)
         .map_err(|error| Failure::internal(error.to_string()))?;
     factory
-        .call::<_, Value<'js>>((target,))
+        .call::<_, Value<'js>>((target, fail.clone(), namespace))
         .map_err(|error| Failure::internal(error.to_string()))
 }
 
@@ -861,6 +1089,7 @@ fn install_binding<'js>(
     namespace: &super::Namespace,
     binding: &super::HostBinding,
     shared: &Shared,
+    fail: &Function<'js>,
 ) -> Result<(), Failure> {
     let mut target = root.clone();
     let mut parts = binding.name.split('.').peekable();
@@ -879,6 +1108,16 @@ fn install_binding<'js>(
                 namespace.name.clone(),
                 binding.name.clone(),
             )?;
+            let function = match binding.contract.as_deref() {
+                Some(contract) => wrap_result_proxy(
+                    ctx,
+                    function,
+                    contract,
+                    &format!("{}.{}", namespace.name, binding.name),
+                    fail,
+                )?,
+                None => function,
+            };
             target
                 .set(part, function)
                 .map_err(|error| Failure::internal(error.to_string()))?;
@@ -1022,6 +1261,10 @@ async fn invoke<'js>(
         }
     };
 
+    // Seal the run: once the contract has been violated, nothing else runs.
+    if faults.contract_latched() {
+        return Err(boundary::uncatchable(&ctx, "stopped"));
+    }
     let Some(ticket) = calls.begin(&namespace, &name, clock.wall_elapsed()) else {
         return Err(boundary::throw_type(&ctx, "in-flight call limit exceeded"));
     };
@@ -1068,7 +1311,7 @@ async fn invoke<'js>(
             Ok(js) => Ok(js),
             Err(message) => Err(boundary::throw_type(&ctx, &message)),
         },
-        Ok(Err(error)) => Err(raise_host_error(&ctx, error, &name, seq)),
+        Ok(Err(error)) => Err(raise_host_error(&ctx, &faults, error, &name, seq)),
         Err(_) => Err(boundary::throw_message(
             &ctx,
             "host call ended without a result",
@@ -1076,10 +1319,19 @@ async fn invoke<'js>(
     }
 }
 
-fn raise_host_error(ctx: &Ctx<'_>, error: super::HostError, tool: &str, seq: u64) -> Error {
+fn raise_host_error(
+    ctx: &Ctx<'_>,
+    faults: &Faults,
+    error: super::HostError,
+    tool: &str,
+    seq: u64,
+) -> Error {
     match error.kind {
         super::HostErrorKind::Type => boundary::throw_type(ctx, &error.message),
         super::HostErrorKind::Error => boundary::throw_message(ctx, &error.message),
+        super::HostErrorKind::Contract { code, tool } => {
+            contract_fail(ctx, faults, &code, &tool, seq, &error.message)
+        }
         super::HostErrorKind::Tool {
             code,
             details,
@@ -1092,7 +1344,46 @@ fn raise_host_error(ctx: &Ctx<'_>, error: super::HostError, tool: &str, seq: u64
             retryable,
             tool,
             seq,
+            false,
         ),
+    }
+}
+
+/// The one form of "this call does not hold" that ends the run.
+///
+/// Rust sites raise it through `HostError::contract`; both sides end up here,
+/// so there is a single place that records the fault and a single throw.
+fn contract_fail(
+    ctx: &Ctx<'_>,
+    faults: &Faults,
+    code: &str,
+    tool: &str,
+    seq: u64,
+    message: &str,
+) -> Error {
+    faults.try_contract(ContractFault {
+        code: code.to_string(),
+        tool: tool.to_string(),
+        seq,
+        message: message.to_string(),
+    });
+    throw_tool_error(ctx, message, code, None, false, tool, seq, true)
+}
+
+/// The terminal failure for a run that hit a contract violation.
+fn contract_failure(faults: &Faults) -> Failure {
+    match faults.contract_fault() {
+        Some(fault) => {
+            let mut failure = Failure::exception(fault.message, None);
+            failure.tool_error = Some(super::ToolErrorInfo {
+                code: fault.code,
+                tool: fault.tool,
+                seq: fault.seq,
+                details: None,
+            });
+            failure
+        }
+        None => Failure::internal("contract failure"),
     }
 }
 
@@ -1104,6 +1395,7 @@ fn throw_tool_error(
     retryable: bool,
     tool: &str,
     seq: u64,
+    uncatchable: bool,
 ) -> Error {
     const FACTORY: &str = r#"
         (function (message, code, details, retryable, tool, seq) {
@@ -1134,9 +1426,15 @@ fn throw_tool_error(
         None => Value::new_undefined(ctx.clone()),
     };
     match factory.call::<_, Object<'_>>((message, code, details, retryable, tool, seq as f64)) {
-        Ok(error) => Exception::from_object(error)
-            .map(Exception::throw)
-            .unwrap_or_else(|| boundary::throw_message(ctx, message)),
+        Ok(error) => match Exception::from_object(error) {
+            Some(exception) => {
+                if uncatchable {
+                    boundary::mark_uncatchable(ctx, exception.as_value());
+                }
+                exception.throw()
+            }
+            None => boundary::throw_message(ctx, message),
+        },
         Err(error) => error,
     }
 }
@@ -1179,7 +1477,7 @@ async fn run_program(
             );
         }
     };
-    match promise.into_future::<Value<'_>>().await {
+    let end = match promise.into_future::<Value<'_>>().await {
         Ok(value) => {
             // The stack watch may be disarmed, so the allocator cannot poke
             // the interrupt counter. A caught allocation failure still leaves
@@ -1205,13 +1503,18 @@ async fn run_program(
             protos,
             source_lines,
         ),
+    };
+    // A contract failure is terminal even when some path still delivered a value.
+    if faults.contract_latched() {
+        return ProgramEnd::Failure(contract_failure(faults));
     }
+    end
 }
 
 fn accept_value(
     value: &Value<'_>,
     output: &RefCell<OutputLedger>,
-    output_limit: usize,
+    _output_limit: usize,
 ) -> ProgramEnd {
     let mut dropped = boundary::DroppedUndefined::default();
     let converted = boundary::from_js_with(
@@ -1226,15 +1529,7 @@ fn accept_value(
         Err(BoundaryError::Thrown(thrown)) => {
             ProgramEnd::Failure(Failure::exception(thrown.message, thrown.stack))
         }
-        Ok(json) => match boundary::json_bytes(json.as_value()) {
-            Err(error) => ProgramEnd::Failure(Failure::internal(error)),
-            Ok(bytes) => {
-                if !output.borrow_mut().try_value(bytes.len()) {
-                    return ProgramEnd::Failure(Failure::output(output_limit));
-                }
-                ProgramEnd::Success(json)
-            }
-        },
+        Ok(json) => ProgramEnd::Success(json),
     }
 }
 
@@ -1289,6 +1584,11 @@ fn classify_value<'js>(
     protos: &RefCell<Option<Protos>>,
     source_lines: u32,
 ) -> ProgramEnd {
+    // A contract failure is terminal and carries its own text. Check it before
+    // the generic uncatchable stop, which has no message to give.
+    if faults.contract_latched() {
+        return ProgramEnd::Failure(contract_failure(faults));
+    }
     if value.is_uncatchable_error() {
         let failure = match faults.interrupt() {
             Faults::CANCEL => Failure::cancelled(),
@@ -1691,11 +1991,13 @@ fn format_console(args: &[Value<'_>]) -> String {
 }
 
 fn format_error(value: &Value<'_>) -> Option<String> {
-    let object = value.as_object()?;
-    let name = object.get::<_, String>("name").ok()?;
-    if !name.ends_with("Error") {
+    // JS_IsError, not a property probe: reading `name` here would go through a
+    // tool result proxy and latch a contract failure for an internal check.
+    if !value.is_error() {
         return None;
     }
+    let object = value.as_object()?;
+    let name = object.get::<_, String>("name").ok()?;
     let message = object.get::<_, String>("message").unwrap_or_default();
     let mut text = format!("{name}: {message}");
     if name == "ToolError"
@@ -1826,10 +2128,11 @@ mod settle_tests {
             }
             _ => panic!("expected the returned value to survive a drain timeout"),
         }
-        assert!(output.borrow().logs().iter().any(|entry| {
-            entry
-                .message
-                .contains("program budget expired while draining")
+        assert!(output.borrow().entries().iter().any(|entry| match &entry.body {
+            crate::ptc::EntryBody::Text { text, .. } => {
+                text.contains("program budget expired while draining")
+            }
+            crate::ptc::EntryBody::Value(_) => false,
         }));
     }
 
@@ -1856,5 +2159,59 @@ mod settle_tests {
             ProgramEnd::Failure(failure) => assert_eq!(failure.kind, FailureKind::OutputLimit),
             _ => panic!("expected the output failure to replace success"),
         }
+    }
+}
+
+#[cfg(test)]
+mod contract_latch_tests {
+    use super::{ContractFault, Faults};
+
+    fn fault() -> ContractFault {
+        ContractFault {
+            code: "invalid_args".into(),
+            tool: "read".into(),
+            seq: 1,
+            message: "bad input".into(),
+        }
+    }
+
+    /// Another fault landed first: the contract failure must not take over the
+    /// terminal state, and must not write the slot either.
+    #[test]
+    fn cancel_first_keeps_cancel() {
+        let faults = Faults::new();
+        faults.record(Faults::CANCEL);
+        assert!(!faults.try_contract(fault()));
+        assert_eq!(faults.interrupt(), Faults::CANCEL);
+        assert!(!faults.contract_latched());
+        assert!(faults.contract_fault().is_none());
+    }
+
+    /// The third place the code appears: the ToolError identity a program would
+    /// see. It is built from the slot, so it cannot drift from the header.
+    #[test]
+    fn contract_failure_carries_the_tool_error_code() {
+        let faults = Faults::new();
+        assert!(faults.try_contract(fault()));
+        let failure = super::contract_failure(&faults);
+        let info = failure
+            .tool_error
+            .expect("a contract failure keeps its ToolError identity");
+        assert_eq!(info.code, "invalid_args");
+        assert_eq!(info.tool, "read");
+        assert_eq!(failure.message, "bad input");
+    }
+
+    /// The contract failure landed first: a later fault may overwrite the
+    /// interrupt word, but the latch and the text stay.
+    #[test]
+    fn contract_first_stays_contract() {
+        let faults = Faults::new();
+        assert!(faults.try_contract(fault()));
+        faults.record(Faults::CANCEL);
+        assert!(faults.contract_latched());
+        let kept = faults.contract_fault().expect("slot keeps the first fault");
+        assert_eq!(kept.code, "invalid_args");
+        assert_eq!(kept.message, "bad input");
     }
 }

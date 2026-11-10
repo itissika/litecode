@@ -237,11 +237,16 @@ fn coded(code: &str, message: impl Into<String>) -> ToolCallResult {
     crate::tools::file_path::coded_error(code, message)
 }
 
-fn parse_limit(input: &Value) -> Result<(usize, Option<String>), String> {
+fn parse_limit(
+    input: &Value,
+) -> Result<(usize, Option<crate::tool::clamp::Clamp>), String> {
     let clamped = crate::tool::clamp::clamp_int(input, "limit", 1, MAX_LINE_LIMIT as u64, "lines")?;
     Ok(match clamped {
         None => (DEFAULT_LINE_LIMIT, None),
-        Some(clamped) => (clamped.value as usize, clamped.note),
+        Some(clamped) => {
+            let applied = clamped.value as usize;
+            (applied, clamped.as_clamp("limit"))
+        }
     })
 }
 
@@ -292,10 +297,10 @@ fn render_projection_page(
         Ok(limit) => limit,
         Err(msg) => return coded("invalid_input", msg),
     };
-    let note = join_notes(start_note, limit_note);
+    let clamped = merge_clamps(start_note, limit_note);
     let total_lines = file.total_lines();
     if start_line > total_lines {
-        return past_eof_page(data_path, start_line, total_lines, note.as_deref());
+        return past_eof_page(data_path, start_line, total_lines, clamped);
     }
     let start = start_line.saturating_sub(1);
     let end = (start + limit).min(total_lines);
@@ -310,19 +315,21 @@ fn render_projection_page(
             Vec::new(),
             end,
             total_lines,
-            "These session lines are already in the context window.",
-            note.as_deref(),
+            end - start,
+            clamped,
             Vec::new(),
         );
     }
     let mut lines = Vec::new();
     let mut line_capped: Vec<usize> = Vec::new();
+    let mut skipped_in_context = 0usize;
     for i in start..end {
         let line_no = (i + 1) as u32;
         if file
             .seq_at(line_no)
             .is_some_and(|seq| hidden_seqs.contains(&seq))
         {
+            skipped_in_context += 1;
             continue;
         }
         let raw = file.lines.get(i).map(String::as_str).unwrap_or("");
@@ -338,8 +345,8 @@ fn render_projection_page(
         lines,
         end,
         total_lines,
-        "",
-        note.as_deref(),
+        skipped_in_context,
+        clamped,
         line_capped,
     )
 }
@@ -354,10 +361,10 @@ fn render_text_page(content: &str, input: &Value, path: &str) -> ToolCallResult 
         Ok(limit) => limit,
         Err(msg) => return coded("invalid_input", msg),
     };
-    let note = join_notes(start_note, limit_note);
+    let clamped = merge_clamps(start_note, limit_note);
     let total_lines = lines.len();
     if start_line > total_lines {
-        return past_eof_page(path, start_line, total_lines, note.as_deref());
+        return past_eof_page(path, start_line, total_lines, clamped);
     }
     let start = start_line.saturating_sub(1);
     let end = (start + limit).min(total_lines);
@@ -376,8 +383,8 @@ fn render_text_page(content: &str, input: &Value, path: &str) -> ToolCallResult 
         out,
         end,
         total_lines,
-        "",
-        note.as_deref(),
+        0,
+        clamped,
         line_capped,
     )
 }
@@ -388,34 +395,44 @@ fn past_eof_page(
     path: &str,
     start_line: usize,
     total_lines: usize,
-    note: Option<&str>,
+    clamped: Vec<crate::tool::clamp::Clamp>,
 ) -> ToolCallResult {
-    let message = format!("File has {total_lines} lines; start_line {start_line} is past the end.");
     finish_read(
         path,
         start_line,
         Vec::new(),
         total_lines,
         total_lines,
-        &message,
-        note,
+        0,
+        clamped,
         Vec::new(),
     )
 }
 
-/// Sole success shape for read: one page of lines plus paging guidance.
+/// Sole success shape for read: one page of lines plus paging facts.
 #[derive(serde::Serialize)]
 struct ReadData {
     path: String,
     start_line: usize,
     lines: Vec<String>,
-    message: String,
+    /// Lines in the file; [`Self::has_more`] compares against it.
+    total_lines: usize,
+    /// True when this page stops before the end of the file.
+    has_more: bool,
+    /// Lines the window covered but left out because they are already in the
+    /// model's context. A gap in `lines` is explained by this number.
+    skipped_in_context: usize,
+    /// Lines shortened to the per-line character cap, by number.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    lines_capped: Vec<usize>,
+    /// Parameters adjusted to a legal value; absent when nothing moved.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    clamped: Vec<crate::tool::clamp::Clamp>,
 }
 
 #[cfg(test)]
 pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
     use crate::tool::code_contract::DriftCase;
-    // read has no optional property, so both states share one shape.
     vec![DriftCase {
         tool: "read",
         all_optional_present: finish_read(
@@ -423,9 +440,13 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
             1,
             vec!["alpha".into()],
             1,
+            2,
             1,
-            "",
-            Some("note"),
+            vec![crate::tool::clamp::Clamp {
+                parameter: "limit".into(),
+                requested: serde_json::json!(0),
+                applied: serde_json::json!(1),
+            }],
             vec![1],
         ),
         all_optional_absent: finish_read(
@@ -434,8 +455,8 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
             vec!["alpha".into()],
             1,
             1,
-            "",
-            None,
+            0,
+            Vec::new(),
             Vec::new(),
         ),
     }]
@@ -447,52 +468,23 @@ fn finish_read(
     lines: Vec<String>,
     covered_end: usize,
     total_lines: usize,
-    preset_message: &str,
-    note: Option<&str>,
-    line_capped: Vec<usize>,
+    skipped_in_context: usize,
+    clamped: Vec<crate::tool::clamp::Clamp>,
+    lines_capped: Vec<usize>,
 ) -> ToolCallResult {
-    // WP-210 H: paging guidance only when the file is not finished; a capped
-    // line is named by number.
+    // Paging is a fact, not a sentence: has_more + total_lines say it, and the
+    // renderer turns the pair into one reminder line for the model.
     let has_more = covered_end < total_lines;
-    let mut parts: Vec<String> = Vec::new();
-    if !preset_message.is_empty() {
-        parts.push(preset_message.to_string());
-    } else if has_more {
-        parts.push(format!(
-            "Showing lines {start_line}–{covered_end} of {total_lines}. Continue with start_line={}.",
-            covered_end + 1
-        ));
-    }
-    if let Some(note) = note {
-        parts.push(note.to_string());
-    }
-    if !line_capped.is_empty() {
-        parts.push(capped_note(&line_capped));
-    }
-    let message = parts.join(" ");
     crate::tool::outcome::ok_data(ReadData {
         path: path.to_string(),
         start_line,
         lines,
-        message,
+        total_lines,
+        has_more,
+        skipped_in_context,
+        lines_capped,
+        clamped,
     })
-}
-
-/// `Line 12 truncated to N chars.` / `Lines 3, 9, 40 (+2 more) truncated …`.
-fn capped_note(lines: &[usize]) -> String {
-    const SHOW: usize = 5;
-    let shown: Vec<String> = lines.iter().take(SHOW).map(usize::to_string).collect();
-    let more = lines.len().saturating_sub(SHOW);
-    let more = if more > 0 {
-        format!(" (+{more} more)")
-    } else {
-        String::new()
-    };
-    let noun = if lines.len() == 1 { "Line" } else { "Lines" };
-    format!(
-        "{noun} {}{more} truncated to {MAX_LINE_CHARS} chars.",
-        shown.join(", ")
-    )
 }
 
 fn data_line_text(line: &str) -> (String, bool) {
@@ -509,21 +501,24 @@ fn data_line_text(line: &str) -> (String, bool) {
     }
 }
 
-fn resolve_start_line(input: &Value) -> Result<(usize, Option<String>), String> {
+fn resolve_start_line(
+    input: &Value,
+) -> Result<(usize, Option<crate::tool::clamp::Clamp>), String> {
     let clamped = crate::tool::clamp::clamp_int(input, "start_line", 1, u64::MAX, "")?;
     Ok(match clamped {
         None => (1, None),
-        Some(clamped) => (clamped.value as usize, clamped.note),
+        Some(clamped) => {
+            let applied = clamped.value as usize;
+            (applied, clamped.as_clamp("start_line"))
+        }
     })
 }
 
-fn join_notes(first: Option<String>, second: Option<String>) -> Option<String> {
-    match (first, second) {
-        (None, None) => None,
-        (Some(first), None) => Some(first),
-        (None, Some(second)) => Some(second),
-        (Some(first), Some(second)) => Some(format!("{first} {second}")),
-    }
+fn merge_clamps(
+    first: Option<crate::tool::clamp::Clamp>,
+    second: Option<crate::tool::clamp::Clamp>,
+) -> Vec<crate::tool::clamp::Clamp> {
+    first.into_iter().chain(second).collect()
 }
 
 enum WorkspaceBytes {
@@ -640,6 +635,7 @@ fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn cancelled_read_stops_between_chunks() {
@@ -674,11 +670,63 @@ mod tests {
         assert_eq!(page_lines(&result), ["line2", "line3"]);
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["start_line"], 2);
-        assert!(
-            data["message"].as_str().unwrap().contains("start_line=4"),
-            "{}",
-            data["message"]
+        assert_eq!(data["has_more"], true, "{data}");
+        assert_eq!(data["total_lines"], 5, "{data}");
+        assert!(data.get("message").is_none(), "{data}");
+    }
+
+    fn page_file(lines: &[&str]) -> crate::session::transcript_file::TranscriptFile {
+        crate::session::transcript_file::TranscriptFile {
+            session_id: "session-1".to_string(),
+            virtual_path: crate::session::transcript_file::virtual_path_for("session-1"),
+            line_index: (1..=lines.len())
+                .map(|line| crate::session::transcript_file::LineSpan {
+                    line: line as u32,
+                    seq: line as i64,
+                    kind: "item/user".to_string(),
+                    item_type: "message".to_string(),
+                    is_header: false,
+                    char_start_in_item: 0,
+                    char_end_in_item: 0,
+                })
+                .collect(),
+            lines: lines.iter().map(|line| line.to_string()).collect(),
+            tool_names: Default::default(),
+            result_call_ids: Default::default(),
+            session_read_calls: Default::default(),
+        }
+    }
+
+    /// A page that is entirely in the context window says so instead of
+    /// handing back an unexplained empty list.
+    #[test]
+    fn a_page_already_in_context_counts_what_it_left_out() {
+        let file = page_file(&["one", "two", "three"]);
+        let result = render_projection_page(
+            &file,
+            &json!({"start_line": 1, "limit": 3}),
+            &[1, 2, 3],
+            "session://session-1",
         );
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["lines"], json!([]));
+        assert_eq!(data["skipped_in_context"], 3, "{data}");
+        assert_eq!(data["has_more"], false, "{data}");
+    }
+
+    /// A partly hidden page leaves a gap; the count explains it.
+    #[test]
+    fn a_partly_hidden_page_explains_the_gap() {
+        let file = page_file(&["one", "two", "three"]);
+        let result = render_projection_page(
+            &file,
+            &json!({"start_line": 1, "limit": 3}),
+            &[2],
+            "session://session-1",
+        );
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["lines"], json!(["one", "three"]), "{data}");
+        assert_eq!(data["skipped_in_context"], 1, "{data}");
     }
 
     #[test]
@@ -694,9 +742,9 @@ mod tests {
         assert!(page_lines(&result).is_empty());
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["start_line"], 5);
-        let message = data["message"].as_str().unwrap();
-        assert!(message.contains("1 lines"), "{message}");
-        assert!(message.contains("start_line 5"), "{message}");
+        assert_eq!(data["total_lines"], 1, "{data}");
+        assert_eq!(data["has_more"], false, "{data}");
+        assert_eq!(data["skipped_in_context"], 0, "{data}");
     }
 
     #[test]
@@ -710,8 +758,9 @@ mod tests {
         }));
         assert!(result.error_code.is_none(), "{}", result.content);
         assert!(page_lines(&result).is_empty());
-        let message = result.data.as_ref().unwrap()["message"].as_str().unwrap();
-        assert!(message.contains("0 lines"), "{message}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["total_lines"], 0, "{data}");
+        assert_eq!(data["has_more"], false, "{data}");
     }
 
     #[test]
@@ -724,14 +773,8 @@ mod tests {
         }));
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["lines"].as_array().unwrap().len(), 2000);
-        assert!(
-            data["message"]
-                .as_str()
-                .unwrap()
-                .contains("start_line=2001"),
-            "{}",
-            data["message"]
-        );
+        assert_eq!(data["total_lines"], 2500, "{data}");
+        assert_eq!(data["has_more"], true, "{data}");
     }
 
     #[test]
@@ -748,14 +791,13 @@ mod tests {
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["start_line"], 1);
         assert_eq!(page_lines(&result), ["line1", "line2", "line3"]);
-        let message = data["message"].as_str().unwrap();
-        assert!(
-            message.contains("`start_line` was raised from 0 to 1"),
-            "{message}"
-        );
-        assert!(
-            message.contains("`limit` was reduced from 6000 to 5000 lines"),
-            "{message}"
+        assert_eq!(
+            data["clamped"],
+            json!([
+                {"parameter": "start_line", "requested": 0, "applied": 1},
+                {"parameter": "limit", "requested": 6000, "applied": 5000},
+            ]),
+            "{data}"
         );
     }
 
@@ -771,11 +813,7 @@ mod tests {
         assert!(line.ends_with("..."));
         assert!(line.chars().count() <= MAX_LINE_CHARS + 3);
         let data = result.data.as_ref().unwrap();
-        assert!(
-            data["message"].as_str().unwrap().contains("truncated"),
-            "{}",
-            data["message"]
-        );
+        assert_eq!(data["lines_capped"], json!([1]), "{data}");
         assert!(data["lines"][0].is_string());
     }
 }
@@ -825,23 +863,6 @@ mod chain_contract_tests {
         call(tool, root, input, crate::workspace::ToolPathMode::Safe)
     }
 
-    fn message(result: &ToolCallResult) -> String {
-        result
-            .data
-            .as_ref()
-            .and_then(|data| data.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    }
-
-    fn message_of(data: &Value) -> String {
-        data.get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    }
-
     #[test]
     fn read_missing_file_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
@@ -869,11 +890,8 @@ mod chain_contract_tests {
         assert!(data.get("base").is_none());
         let path = data["paths"][0].as_str().unwrap().to_string();
         assert!(path.contains("note.txt"), "{path}");
-        assert!(
-            message_of(&data).to_lowercase().contains("absolute") || path.starts_with('/'),
-            "{} / {path}",
-            message_of(&data)
-        );
+        assert_eq!(data["outside_workspace"], json!(true), "{data}");
+        assert!(path.starts_with('/') || path.contains(":\\"), "{path}");
         let read = call(
             &ReadTool::default(),
             workspace.path(),

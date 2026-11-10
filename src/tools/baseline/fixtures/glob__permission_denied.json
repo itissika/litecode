@@ -4,7 +4,7 @@
   "data": null,
   "error": {
     "kind": "permission_denied",
-    "message": "permission denied for 'glob'",
+    "message": "blocked: 'C:/Windows/win.ini' is outside the workspace. Use a workspace-relative path, or enable unrestricted path mode (ALL preset) for paths outside the workspace.",
     "retryable": false
   },
   "gap": null,

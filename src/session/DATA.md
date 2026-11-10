@@ -152,12 +152,12 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 AgentView/projector 在读取边界把它展开成唯一形状：
 
 ```
-{CHECKPOINT_PREAMBLE}
-
-<compacted-summary>{summary}</compacted-summary>
+<system-reminder>
+{summary}
+</system-reminder>
 ```
 
-该消息的角色是 `user`，只在投影结果中出现，绝不回写 SessionEvent。旧库 summary 文本若以 `[Conversation summary]` 或 `[Aggressive summary]` 开头，只在 projector 边界剥掉标签；cut、rebase、role、previous-summary 等决策一律使用结构化 checkpoint 身份，绝不解析文本前缀。
+该消息的角色是 `user`，只在投影结果中出现，绝不回写 SessionEvent。旧库 summary 文本若以 `[Conversation summary]` 或 `[Aggressive summary]` 开头，只在 projector 边界剥掉标签；cut、rebase、role 等决策一律使用结构化 checkpoint 身份，绝不解析文本前缀。
 
 摘要验收只检查 provider finish 为 `Completed`、trim 后非空、无 tool call/image、且 `summary_tokens < source_tokens`；失败时以完全相同的请求重试一次，第二次失败是硬失败且不写 checkpoint。不存在质量分、章节、anchor、placeholder 或 prior-summary 验收启发式。
 

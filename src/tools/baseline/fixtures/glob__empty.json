@@ -2,8 +2,11 @@
   "content_historical": "",
   "covered": true,
   "data": {
-    "message": "No matching paths.",
-    "paths": []
+    "paths": [],
+    "total": 0,
+    "truncated": false,
+    "outside_workspace": false,
+    "empty_reason": "no_match"
   },
   "error": null,
   "gap": null,

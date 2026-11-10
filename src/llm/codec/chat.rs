@@ -599,7 +599,9 @@ headers = { "x-opencode-session" = "{{session_id}}" }
         let messages = body["messages"].as_array().expect("messages");
         assert_eq!(messages[1]["role"], "user", "{body}");
         let text = messages[1]["content"].as_str().expect("user content");
-        assert_eq!(text.matches("<compacted-summary>").count(), 1, "{body}");
+        assert!(text.starts_with("<system-reminder>\n"), "{body}");
+        assert!(text.ends_with("\n</system-reminder>"), "{body}");
+        assert!(!text.contains("<compacted-summary>"), "{body}");
         assert!(text.contains("ship checkpoint identity"));
     }
 

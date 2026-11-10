@@ -372,6 +372,7 @@ impl Tool for SubagentLaunchTool {
 
             serde_json::json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
                     "agent": {
                         "type": "string",

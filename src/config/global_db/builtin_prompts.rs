@@ -36,11 +36,9 @@ pub const EXPLORE_PROMPT: &str = concat!(
     "\n",
     include_str!("prompts/explore/voice.md"),
 );
-/// DSH-faithful compaction constants: the trailing summarization instruction
-/// and the user-facing checkpoint preamble. Compaction is a call mode of the
-/// main request, never a hidden agent prompt.
+/// DSH-faithful compaction constant: the trailing summarization instruction.
+/// Compaction is a call mode of the main request, never a hidden agent prompt.
 pub const COMPACTION_INSTRUCTION: &str = include_str!("prompts/compaction_instruction.md");
-pub const CHECKPOINT_PREAMBLE: &str = include_str!("prompts/checkpoint_preamble.md");
 
 /// Shared citation rules for every non-hidden agent. Spliced by `build_system_prompt`.
 pub const CITATION_PROMPT: &str = include_str!("prompts/citations.md");

@@ -666,7 +666,9 @@ mod tests {
             "path": "a.txt",
             "start_line": 1,
             "lines": [],
-            "message": "",
+            "total_lines": 0,
+            "has_more": false,
+            "skipped_in_context": 0,
         }));
         assert!(surface.output_violation("read", &right).is_none());
         let failed = ToolCallResult::error_with_kind(

@@ -3,7 +3,12 @@
   "covered": true,
   "data": {
     "hits": [],
-    "message": "No matches found."
+    "total_hits": 0,
+    "at_limit_cap": false,
+    "lines_truncated": false,
+    "context_omitted": false,
+    "output_capped": false,
+    "empty_reason": "no_match"
   },
   "error": null,
   "gap": null,

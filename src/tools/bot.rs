@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use crate::bot::{BotRecord, BotService};
 use crate::context_pipeline::Context;
+use crate::session::manager::SessionStatus;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::{DirectToolSpec, Tool};
 use crate::types::ToolCallResult;
@@ -28,6 +29,51 @@ impl BotCreateTool {
     }
 }
 
+/// G6: the bot tools' input schemas are closed objects (no extra parameters).
+pub(crate) fn bot_create_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Stable bot name, unique in this workspace."
+            },
+            "description": {
+                "type": "string",
+                "description": "Optional one-line purpose shown by bot_list."
+            }
+        },
+        "required": ["name"]
+    })
+}
+
+pub(crate) fn bot_list_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+    })
+}
+
+pub(crate) fn bot_send_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "bot": {
+                "type": "string",
+                "description": "Target bot id (preferred) or a unique bot name, restricted to your visible org scope."
+            },
+            "message": {
+                "type": "string",
+                "description": "Message text queued for the target bot's session."
+            }
+        },
+        "required": ["bot", "message"]
+    })
+}
+
 impl Tool for BotCreateTool {
     fn name(&self) -> &str {
         BOT_CREATE_TOOL
@@ -36,20 +82,7 @@ impl Tool for BotCreateTool {
     fn direct_spec(&self, _ctx: &Context) -> Option<DirectToolSpec> {
         Some(DirectToolSpec {
             description: crate::tools::description_text(include_str!("descriptions/bot_create.md")),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Stable bot name, unique in this workspace."
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Optional one-line purpose shown by bot_list."
-                    }
-                },
-                "required": ["name"]
-            }),
+            input_schema: bot_create_schema(),
         })
     }
 
@@ -108,10 +141,7 @@ impl Tool for BotListTool {
     fn direct_spec(&self, _ctx: &Context) -> Option<DirectToolSpec> {
         Some(DirectToolSpec {
             description: crate::tools::description_text(include_str!("descriptions/bot_list.md")),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
+            input_schema: bot_list_schema(),
         })
     }
 
@@ -125,7 +155,12 @@ impl Tool for BotListTool {
             let Some(caller) = bots.bot_for_session(&execution.session_id) else {
                 return ToolCallResult::error("bot_list is only available to bot sessions");
             };
-            ToolCallResult::ok(bot_list_text(&bots.list_for_caller(&caller.id), &caller.id))
+            let visible = bots.list_for_caller(&caller.id);
+            ToolCallResult::ok(bot_list_text(&visible, &caller.id, |session_id| {
+                bots.service()
+                    .status(session_id)
+                    .unwrap_or(SessionStatus::Idle)
+            }))
         })
     }
 
@@ -157,20 +192,7 @@ impl Tool for BotSendTool {
     fn direct_spec(&self, _ctx: &Context) -> Option<DirectToolSpec> {
         Some(DirectToolSpec {
             description: crate::tools::description_text(include_str!("descriptions/bot_send.md")),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "bot": {
-                        "type": "string",
-                        "description": "Target bot id (preferred) or a unique bot name, restricted to your visible org scope."
-                    },
-                    "message": {
-                        "type": "string",
-                        "description": "Message text queued for the target bot's session."
-                    }
-                },
-                "required": ["bot", "message"]
-            }),
+            input_schema: bot_send_schema(),
         })
     }
 
@@ -221,8 +243,12 @@ pub fn bot_tools(bots: Arc<BotService>) -> Vec<Arc<dyn Tool>> {
 
 /// Text projection shared by the tool and its unit test. The caller's row is
 /// marked `(self)` right after its id, so a bot reading the list can tell which
-/// identity is its own.
-fn bot_list_text(bots: &[BotRecord], caller_id: &str) -> String {
+/// identity is its own. Each row also carries its session's current status.
+fn bot_list_text(
+    bots: &[BotRecord],
+    caller_id: &str,
+    status: impl Fn(&str) -> SessionStatus,
+) -> String {
     if bots.is_empty() {
         return "No bots are visible to you.".to_string();
     }
@@ -236,6 +262,10 @@ fn bot_list_text(bots: &[BotRecord], caller_id: &str) -> String {
         if bot.id.as_str() == caller_id {
             out.push_str(" (self)");
         }
+        out.push_str(&format!(
+            " — bot status: {}",
+            status(&bot.session_id).as_str()
+        ));
         if !bot.description.is_empty() {
             out.push_str(&format!(" — {}", bot.description));
         }
@@ -268,10 +298,48 @@ mod tests {
         }
     }
 
+    /// G6 for the three bot tools: closed objects, so an unknown parameter fails
+    /// validation instead of being silently ignored.
+    #[test]
+    fn bot_schemas_are_closed_objects_and_reject_unknown_parameters() {
+        for (name, schema) in [
+            ("bot_create", bot_create_schema()),
+            ("bot_list", bot_list_schema()),
+            ("bot_send", bot_send_schema()),
+        ] {
+            assert_eq!(schema["type"], "object", "{name}");
+            assert_eq!(schema["additionalProperties"], serde_json::json!(false), "{name}");
+            let mut input = serde_json::Map::new();
+            for key in schema["required"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|key| key.as_str())
+            {
+                input.insert(key.to_string(), serde_json::json!("x"));
+            }
+            input.insert("__nope__".into(), serde_json::json!(1));
+            let error = crate::tool::schema_validate::schema_validate(
+                &schema,
+                &serde_json::Value::Object(input),
+            )
+            .expect_err(&format!("{name} must reject an unknown parameter"));
+            assert!(
+                error.contains("unknown parameter '__nope__'"),
+                "{name}: {error}"
+            );
+        }
+    }
+
     #[test]
     fn list_marks_the_calling_bot_after_its_id() {
-        let text = bot_list_text(&[bot("b1", "Researcher"), bot("b2", "Writer")], "b1");
+        let text = bot_list_text(
+            &[bot("b1", "Researcher"), bot("b2", "Writer")],
+            "b1",
+            |_| SessionStatus::Idle,
+        );
         assert!(text.contains("Bots visible to you"));
+        assert!(text.contains("bot status: idle"));
         assert!(!text.contains("in this workspace"));
         assert!(text.contains("The entry marked (self) is the calling bot."));
         assert!(text.contains("id b1 (self)"));

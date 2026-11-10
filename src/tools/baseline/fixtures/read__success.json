@@ -8,7 +8,9 @@
       "alpha",
       "beta"
     ],
-    "message": ""
+    "total_lines": 2,
+    "has_more": false,
+    "skipped_in_context": 0
   },
   "error": null,
   "gap": null,

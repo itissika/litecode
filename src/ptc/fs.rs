@@ -113,14 +113,7 @@ pub fn ls(root: &Path, raw: &str) -> Value {
                 .collect(),
         ),
     );
-    if total > LS_CAP {
-        out.insert(
-            "message".into(),
-            Value::String(format!(
-                "showing {LS_CAP} of {total} entries; use tools.file.glob to filter"
-            )),
-        );
-    }
+    out.insert("truncated".into(), Value::Bool(total > LS_CAP));
     Value::Object(out)
 }
 

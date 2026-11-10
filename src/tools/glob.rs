@@ -100,7 +100,7 @@ impl GlobTool {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
-        let (limit, limit_note) = match parse_glob_limit(&input) {
+        let (limit, clamp) = match parse_glob_limit(&input) {
             Ok(parsed) => parsed,
             Err(error) => return coded("invalid_input", error),
         };
@@ -118,7 +118,7 @@ impl GlobTool {
                 Ok(r) => r,
                 Err(e) => return crate::tools::file_path::litecode_error(e),
             };
-            return finish_glob(&results.hits, limit, outside, limit_note.as_deref());
+            return finish_glob(&results.hits, limit, outside, None, clamp);
         }
 
         let search_path = match path_arg {
@@ -154,17 +154,7 @@ impl GlobTool {
         )
         .is_some()
         {
-            let mut message =
-                "Path is hidden by default search filters (.gitignore / workspace excludes)."
-                    .to_string();
-            if let Some(note) = limit_note.as_deref() {
-                message = format!("{message} {note}");
-            }
-            let mut result = finish_glob(&[], limit, outside, None);
-            if let Some(data) = result.data.as_mut() {
-                data["message"] = serde_json::json!(message);
-            }
-            return result;
+            return finish_glob(&[], limit, outside, Some("hidden_by_filters"), clamp);
         }
 
         let results = match glob_match_cancellable(
@@ -177,7 +167,7 @@ impl GlobTool {
             Ok(r) => r,
             Err(e) => return crate::tools::file_path::litecode_error(e),
         };
-        finish_glob(&results.hits, limit, outside, limit_note.as_deref())
+        finish_glob(&results.hits, limit, outside, None, clamp)
     }
 }
 
@@ -197,11 +187,16 @@ impl GlobListing {
     }
 }
 
-fn parse_glob_limit(input: &Value) -> std::result::Result<(usize, Option<String>), String> {
+fn parse_glob_limit(
+    input: &Value,
+) -> std::result::Result<(usize, Vec<crate::tool::clamp::Clamp>), String> {
     let clamped = crate::tool::clamp::clamp_int(input, "limit", 1, MAX_GLOB_LIMIT as u64, "paths")?;
     Ok(match clamped {
-        None => (DEFAULT_GLOB_LIMIT, None),
-        Some(clamped) => (clamped.value as usize, clamped.note),
+        None => (DEFAULT_GLOB_LIMIT, Vec::new()),
+        Some(clamped) => {
+            let applied = clamped.value as usize;
+            (applied, clamped.as_clamp("limit").into_iter().collect())
+        }
     })
 }
 
@@ -212,8 +207,22 @@ fn coded(code: &str, message: impl Into<String>) -> ToolCallResult {
 /// Sole success shape for glob.
 #[derive(serde::Serialize)]
 struct GlobData {
+    /// Matching paths, sorted by depth, then parent directory, then name.
     paths: Vec<String>,
-    message: String,
+    /// Matches found before the limit was applied.
+    total: usize,
+    /// True when [`Self::paths`] is only the first `limit` matches.
+    truncated: bool,
+    /// True when some returned paths are outside the workspace (absolute).
+    outside_workspace: bool,
+    /// Why `paths` is empty; absent when it is not. Only the reasons glob can
+    /// actually produce: the searched path is excluded by default filters, or
+    /// nothing matched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    empty_reason: Option<&'static str>,
+    /// Parameters adjusted to a legal value; absent when nothing moved.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    clamped: Vec<crate::tool::clamp::Clamp>,
 }
 
 #[cfg(test)]
@@ -222,46 +231,43 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
     // glob has no optional property, so both states share one shape.
     vec![DriftCase {
         tool: "glob",
-        all_optional_present: finish_glob(&["a.txt".to_string()], 1, true, Some("note")),
-        all_optional_absent: finish_glob(&["a.txt".to_string()], 5, false, None),
+        all_optional_present: finish_glob(
+            &["a.txt".to_string()],
+            1,
+            true,
+            Some("hidden_by_filters"),
+            vec![crate::tool::clamp::Clamp {
+                parameter: "limit".into(),
+                requested: serde_json::json!(0),
+                applied: serde_json::json!(1),
+            }],
+        ),
+        all_optional_absent: finish_glob(&["a.txt".to_string()], 5, false, None, Vec::new()),
     }]
 }
 
-fn finish_glob(hits: &[String], limit: usize, outside: bool, note: Option<&str>) -> ToolCallResult {
-    let truncated = hits.len() > limit;
-    let page_hits = if truncated {
+fn finish_glob(
+    hits: &[String],
+    limit: usize,
+    outside: bool,
+    empty_reason: Option<&'static str>,
+    clamped: Vec<crate::tool::clamp::Clamp>,
+) -> ToolCallResult {
+    let total = hits.len();
+    let truncated = total > limit;
+    let paths = if truncated {
         hits[..limit].to_vec()
     } else {
         hits.to_vec()
     };
-    let mut message = String::new();
-    if truncated {
-        message = format!(
-            "Showing first {} of {} paths. Raise limit to see more.",
-            page_hits.len(),
-            hits.len()
-        );
-    } else if hits.is_empty() {
-        message = "No matching paths.".into();
-    }
-    if outside {
-        let note = "Paths outside the workspace are absolute.";
-        if message.is_empty() {
-            message = note.into();
-        } else {
-            message = format!("{message} {note}");
-        }
-    }
-    if let Some(note) = note {
-        if message.is_empty() {
-            message = note.into();
-        } else {
-            message = format!("{message} {note}");
-        }
-    }
+    let empty_reason = empty_reason.or_else(|| paths.is_empty().then_some("no_match"));
     crate::tool::outcome::ok_data(GlobData {
-        paths: page_hits,
-        message,
+        paths,
+        total,
+        truncated,
+        outside_workspace: outside,
+        empty_reason,
+        clamped,
     })
 }
 
@@ -467,12 +473,14 @@ mod tests {
         assert_eq!(listing.hits.len(), DEFAULT_GLOB_LIMIT + 7);
         let data = glob_data_in(root, serde_json::json!({"pattern": "*.txt"}));
         assert_eq!(data["paths"].as_array().unwrap().len(), DEFAULT_GLOB_LIMIT);
+        assert_eq!(data["total"], serde_json::json!(DEFAULT_GLOB_LIMIT + 7));
+        assert_eq!(data["truncated"], serde_json::json!(true));
         assert!(
-            data["message"].as_str().unwrap().contains("Raise limit"),
-            "{}",
-            data["message"]
+            data.get("empty_reason").is_none(),
+            "a non-empty page carries no empty reason: {data}"
         );
         assert!(data.get("page").is_none());
+        assert!(data.get("message").is_none(), "the prose field is gone");
     }
 
     #[test]
@@ -527,10 +535,13 @@ mod tests {
             dir.path(),
             serde_json::json!({"pattern": "**/*", "limit": 6000}),
         );
-        let message = data["message"].as_str().unwrap();
-        assert!(
-            message.contains("`limit` was reduced from 6000 to 5000 paths"),
-            "{message}"
+        assert_eq!(
+            data["clamped"],
+            serde_json::json!([{
+                "parameter": "limit",
+                "requested": 6000,
+                "applied": MAX_GLOB_LIMIT,
+            }])
         );
         assert_eq!(data["paths"].as_array().unwrap().len(), 1);
     }

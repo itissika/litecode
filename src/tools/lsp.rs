@@ -546,7 +546,6 @@ fn state_note(readiness: IndexReadiness) -> &'static str {
 #[derive(serde::Serialize)]
 struct LocationsData {
     locations: Vec<LocationItem>,
-    message: String,
     state: &'static str,
 }
 
@@ -554,7 +553,6 @@ struct LocationsData {
 #[derive(serde::Serialize)]
 struct HoverData {
     markdown: String,
-    message: String,
     state: &'static str,
 }
 
@@ -562,7 +560,6 @@ struct HoverData {
 #[derive(serde::Serialize)]
 struct DiagnosticsData {
     items: Vec<DiagnosticItem>,
-    message: String,
     state: &'static str,
 }
 
@@ -570,7 +567,6 @@ struct DiagnosticsData {
 #[derive(serde::Serialize)]
 struct SymbolsData {
     symbols: Vec<SymbolItem>,
-    message: String,
     state: &'static str,
 }
 
@@ -586,30 +582,9 @@ fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCall
             "language server index is still building; no locations would be inconclusive. Retry when indexing finishes.",
         );
     }
-    let message = if locations.is_empty() {
-        match out.readiness {
-            IndexReadiness::Ready => {
-                "No locations found (language server ready; no definition/reference at this position)."
-                    .to_string()
-            }
-            _ => "No locations reported. The language server has not reported its index state, so this is not a confirmed miss.".to_string(),
-        }
-    } else if truncated {
-        format!(
-            "Returning first {MAX_LOCATIONS} locations (more omitted).{}",
-            state_note(out.readiness)
-        )
-    } else {
-        format!(
-            "{} location(s).{}",
-            locations.len(),
-            state_note(out.readiness)
-        )
-    };
     finish_with_state(
         crate::tool::outcome::ok_data(LocationsData {
             locations,
-            message,
             state: out.readiness.as_str(),
         }),
         out.readiness,
@@ -626,19 +601,10 @@ fn finish_hover(out: crate::lsp::LspToolOutput) -> ToolCallResult {
             "language server index is still building; an empty hover would be inconclusive. Retry when indexing finishes.",
         );
     }
-    let message = if empty {
-        match out.readiness {
-            IndexReadiness::Ready => "No hover information available.".to_string(),
-            _ => "No hover information reported. The language server has not reported its index state, so this is not a confirmed miss.".to_string(),
-        }
-    } else {
-        format!("Hover information.{}", state_note(out.readiness))
-    };
     let markdown = if empty { String::new() } else { markdown };
     finish_with_state(
         crate::tool::outcome::ok_data(HoverData {
             markdown,
-            message,
             state: out.readiness.as_str(),
         }),
         out.readiness,
@@ -658,27 +624,9 @@ fn finish_diagnostics(out: crate::lsp::LspToolOutput, file_path: &str) -> ToolCa
             "language server index is still building; no diagnostics would be inconclusive. Retry when indexing finishes.",
         );
     }
-    let message = if items.is_empty() {
-        match out.readiness {
-            IndexReadiness::Ready => "No diagnostics.".to_string(),
-            _ => "No diagnostics reported. The language server has not reported its index state, so this is not a confirmed clean file.".to_string(),
-        }
-    } else if truncated {
-        format!(
-            "Returning first {MAX_DIAGNOSTIC_ITEMS} diagnostics (more omitted).{}",
-            state_note(out.readiness)
-        )
-    } else {
-        format!(
-            "{} diagnostic(s).{}",
-            items.len(),
-            state_note(out.readiness)
-        )
-    };
     finish_with_state(
         crate::tool::outcome::ok_data(DiagnosticsData {
             items,
-            message,
             state: out.readiness.as_str(),
         }),
         out.readiness,
@@ -702,23 +650,9 @@ fn finish_symbols(
             "language server index is still building; no symbols would be inconclusive. Retry when indexing finishes.",
         );
     }
-    let message = if symbols.is_empty() {
-        match out.readiness {
-            IndexReadiness::Ready => "No symbols found.".to_string(),
-            _ => "No symbols reported. The language server has not reported its index state, so this is not a confirmed miss.".to_string(),
-        }
-    } else if truncated {
-        format!(
-            "Returning first {MAX_SYMBOLS} symbols (more omitted).{}",
-            state_note(out.readiness)
-        )
-    } else {
-        format!("{} symbol(s).{}", symbols.len(), state_note(out.readiness))
-    };
     finish_with_state(
         crate::tool::outcome::ok_data(SymbolsData {
             symbols,
-            message,
             state: out.readiness.as_str(),
         }),
         out.readiness,
@@ -984,7 +918,8 @@ mod tests {
         assert!(result.error.is_none());
         let data = result.data.expect("data");
         assert_eq!(data["locations"], serde_json::json!([]));
-        assert!(data["message"].as_str().unwrap().contains("No locations"));
+        assert_eq!(data["state"], "ok");
+        assert!(data.get("message").is_none(), "{data}");
     }
 
     #[test]
@@ -1051,13 +986,8 @@ mod tests {
         assert!(result.error.is_none());
         let data = result.data.as_ref().expect("data");
         assert_eq!(data["state"], "unknown");
-        assert!(
-            data["message"]
-                .as_str()
-                .unwrap()
-                .contains("not a confirmed miss"),
-            "{data}"
-        );
+        assert_eq!(data["symbols"], serde_json::json!([]));
+        assert!(data.get("message").is_none(), "{data}");
         assert!(
             result
                 .warning_status
@@ -1093,13 +1023,8 @@ mod tests {
         assert!(result.error.is_none());
         let data = result.data.as_ref().expect("data");
         assert_eq!(data["state"], "unknown");
-        assert!(
-            data["message"]
-                .as_str()
-                .unwrap()
-                .contains("not a confirmed clean file"),
-            "{data}"
-        );
+        assert_eq!(data["items"], serde_json::json!([]));
+        assert!(data.get("message").is_none(), "{data}");
     }
 
     #[test]

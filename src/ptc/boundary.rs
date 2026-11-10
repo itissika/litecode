@@ -874,15 +874,19 @@ pub(crate) fn throw_message(ctx: &Ctx<'_>, message: &str) -> Error {
     Exception::throw_message(ctx, message)
 }
 
+/// Mark an exception value so no `catch` on the way out can take it.
+/// QuickJS-NG checks this flag at every catch site, including the ones an
+/// `await` crosses (quickjs.c:20901, 21482, 55584).
+pub(crate) fn mark_uncatchable(ctx: &Ctx<'_>, value: &rquickjs::Value<'_>) {
+    unsafe {
+        rquickjs::qjs::JS_SetUncatchableError(ctx.as_raw().as_ptr(), value.as_raw());
+    }
+}
+
 pub(crate) fn uncatchable(ctx: &Ctx<'_>, message: &str) -> Error {
     match Exception::from_message(ctx.clone(), message) {
         Ok(exception) => {
-            unsafe {
-                rquickjs::qjs::JS_SetUncatchableError(
-                    ctx.as_raw().as_ptr(),
-                    exception.as_value().as_raw(),
-                );
-            }
+            mark_uncatchable(ctx, exception.as_value());
             exception.throw()
         }
         Err(error) => error,

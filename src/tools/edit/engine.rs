@@ -32,7 +32,9 @@ impl EditEngine {
                 raw_path,
                 crate::session::transcript_file::READ_ONLY_MSG,
             )
-            .because("permission"));
+            // `permission_denied` is the key in the soft-failure table; it
+            // projects to the program as `reason: "permission"`.
+            .because("permission_denied"));
         }
         let path = match crate::workspace::resolve_agent(
             &execution.workspace_root,
@@ -41,7 +43,10 @@ impl EditEngine {
         ) {
             Ok(path) => path,
             Err(error) => {
-                return Ok(EditResult::failure(raw_path, error.to_string()).because("invalid_args"));
+                // Input-class refusals stay a value: `invalid_input` is in the
+                // soft-failure table, so the program sees `{ok:false}` instead of
+                // the run ending.
+                return Ok(EditResult::failure(raw_path, error.to_string()).because("invalid_input"));
             }
         };
         if execution.cancel.is_cancelled() {
@@ -101,7 +106,7 @@ impl EditEngine {
             Err(PlanFail::Reject(reason)) => {
                 let code = match reason.code() {
                     "no_match" | "multiple_matches" => "no_match",
-                    _ => "invalid_args",
+                    _ => "invalid_input",
                 };
                 return Ok(EditResult::failure(raw_path, reason.message()).because(code));
             }
@@ -112,7 +117,7 @@ impl EditEngine {
         if edited == content {
             return Ok(
                 EditResult::failure(raw_path, "replacement does not change the file")
-                    .because("invalid_args"),
+                    .because("invalid_input"),
             );
         }
         let to_write = text_codec::reattach_utf8_bom(decoded.has_bom, &edited);

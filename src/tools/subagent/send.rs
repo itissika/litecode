@@ -241,6 +241,7 @@ impl Tool for SubagentSendTool {
         let input_schema = {
             serde_json::json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
                     "id": {
                         "type": "string",

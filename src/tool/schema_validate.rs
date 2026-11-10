@@ -109,35 +109,6 @@ pub fn check_tool_input(
     tool.validate_input(input)
 }
 
-/// Top-level keys present on `input` but absent from `schema.properties`.
-///
-/// Extra keys are allowed (the call still runs); callers may attach a Warning.
-/// Unconstrained schemas and `additionalProperties: true` yield no names.
-pub fn unknown_top_level_properties(schema: &Value, input: &Value) -> Vec<String> {
-    if is_unconstrained(schema) {
-        return Vec::new();
-    }
-    let Some(schema_obj) = schema.as_object() else {
-        return Vec::new();
-    };
-    if schema_obj.get("additionalProperties") == Some(&Value::Bool(true)) {
-        return Vec::new();
-    }
-    let Some(properties) = schema_obj.get("properties").and_then(Value::as_object) else {
-        return Vec::new();
-    };
-    let Some(map) = input.as_object() else {
-        return Vec::new();
-    };
-    let mut extra: Vec<String> = map
-        .keys()
-        .filter(|key| !properties.contains_key(*key))
-        .cloned()
-        .collect();
-    extra.sort();
-    extra
-}
-
 /// Validate `input` against the JSON Schema subset used by direct tools and
 /// the generated JS/TS code contract.
 pub fn schema_validate(schema: &Value, input: &Value) -> Result<(), String> {

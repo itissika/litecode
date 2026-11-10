@@ -30,6 +30,38 @@ fn tools(functions: Vec<(&str, HostFn)>) -> Vec<Namespace> {
             .map(|(name, function)| HostBinding {
                 name: name.into(),
                 function,
+                contract: None,
+            })
+            .collect(),
+    }]
+}
+
+/// Bindings whose result is read through this contract. The engine does not
+/// own field lists: in production they come from the tool's output schema.
+fn tools_with_contract(
+    functions: Vec<(&str, HostFn)>,
+    fields: &[&str],
+) -> Vec<Namespace> {
+    let contract = Arc::new(super::BindingContract {
+        fields: fields
+            .iter()
+            .map(|field| (*field).to_string())
+            .collect::<Vec<_>>()
+            .into(),
+        failure_fields: ["ok", "reason", "message"]
+            .iter()
+            .map(|field| (*field).to_string())
+            .collect::<Vec<_>>()
+            .into(),
+    });
+    vec![Namespace {
+        name: "tools".into(),
+        functions: functions
+            .into_iter()
+            .map(|(name, function)| HostBinding {
+                name: name.into(),
+                function,
+                contract: Some(Arc::clone(&contract)),
             })
             .collect(),
     }]
@@ -73,10 +105,45 @@ fn value_of(outcome: &Outcome) -> &Value {
         "expected success, got {outcome:?}"
     );
     outcome
-        .value
+        .value()
         .as_ref()
         .expect("success carries a value")
         .as_value()
+}
+
+/// `fs` has no reminder channel, so `truncated` is the only way the model
+/// learns that entries were left out. The program must see it on the value.
+#[tokio::test]
+async fn fs_ls_exposes_truncation_as_a_field() {
+    let dir = tempfile::tempdir().unwrap();
+    for index in 0..(crate::ptc::fs::LS_CAP + 1) {
+        std::fs::write(dir.path().join(format!("f{index:04}.txt")), "x").unwrap();
+    }
+    let outcome = execute(ExecuteRequest {
+        source: "return fs.ls(\".\");".into(),
+        namespaces: Vec::new(),
+        limits: limits(),
+        budget: Duration::from_secs(5),
+        grace: Duration::from_millis(200),
+        cancel: CancellationToken::new(),
+        fs_root: Some(dir.path().to_path_buf()),
+    })
+    .await;
+    let value = value_of(&outcome);
+    assert_eq!(value["truncated"].as_bool(), Some(true), "{value}");
+    assert_eq!(value["entries"].as_array().unwrap().len(), crate::ptc::fs::LS_CAP);
+    assert!(value.get("message").is_none(), "the prose field is gone: {value}");
+}
+/// Console lines of the run, in order.
+fn texts(outcome: &Outcome) -> Vec<String> {
+    outcome
+        .entries
+        .iter()
+        .filter_map(|entry| match &entry.body {
+            crate::ptc::EntryBody::Text { text, .. } => Some(text.clone()),
+            crate::ptc::EntryBody::Value(_) => None,
+        })
+        .collect()
 }
 
 fn failure_kind(outcome: &Outcome) -> FailureKind {
@@ -111,7 +178,7 @@ async fn budget_interrupts_infinite_loop() {
     )
     .await;
     assert_eq!(failure_kind(&outcome), FailureKind::Timeout);
-    assert!(outcome.value.is_none());
+    assert!(outcome.value().is_none());
     assert!(started.elapsed() < Duration::from_secs(2));
 }
 
@@ -156,7 +223,7 @@ async fn cancel_while_js_running_cancels_inflight() {
     .expect("cancel while running timed out");
     waiter.await.unwrap();
     assert_eq!(failure_kind(&outcome), FailureKind::Cancelled);
-    assert!(outcome.value.is_none());
+    assert!(outcome.value().is_none());
     assert!(saw.load(Ordering::SeqCst));
     assert_eq!(outcome.calls.len(), 1);
     assert_eq!(outcome.calls[0].state, CallState::CancelledFinished);
@@ -196,7 +263,7 @@ async fn cancel_while_awaiting_host() {
     .await;
     waiter.await.unwrap();
     assert_eq!(failure_kind(&outcome), FailureKind::Cancelled);
-    assert!(outcome.value.is_none());
+    assert!(outcome.value().is_none());
     assert!(saw.load(Ordering::SeqCst));
     assert_eq!(outcome.calls[0].state, CallState::CancelledFinished);
 }
@@ -323,9 +390,9 @@ async fn memory_exhaustion_stays_sealed_when_the_program_catches_it() {
     )
     .await;
     assert!(
-        outcome.value.is_none(),
+        outcome.value().is_none(),
         "program returned {:?}",
-        outcome.value
+        outcome.value()
     );
     let failure = outcome.failure.expect("out of memory is not catchable");
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
@@ -354,9 +421,9 @@ async fn caught_allocation_failure_is_memory_when_the_stack_watch_is_disarmed() 
     )
     .await;
     assert!(
-        outcome.value.is_none(),
+        outcome.value().is_none(),
         "program returned {:?}",
-        outcome.value
+        outcome.value()
     );
     let failure = outcome.failure.expect("memory fault overrides success");
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
@@ -404,9 +471,9 @@ async fn stack_overflow_caught_then_immediate_return_is_still_sealed() {
     )
     .await;
     assert!(
-        outcome.value.is_none(),
+        outcome.value().is_none(),
         "program returned {:?}",
-        outcome.value
+        outcome.value()
     );
     let failure = outcome.failure.expect("stack overflow is not catchable");
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
@@ -434,9 +501,9 @@ async fn stack_overflow_stays_sealed_when_the_program_catches_it() {
     )
     .await;
     assert!(
-        outcome.value.is_none(),
+        outcome.value().is_none(),
         "program returned {:?}",
-        outcome.value
+        outcome.value()
     );
     let failure = outcome.failure.expect("stack overflow is not catchable");
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
@@ -472,10 +539,8 @@ async fn output_limit_keeps_log_prefix() {
     )
     .await;
     assert_eq!(failure_kind(&outcome), FailureKind::OutputLimit);
-    assert!(outcome.value.is_none());
-    assert_eq!(outcome.logs.len(), 2);
-    assert_eq!(outcome.logs[0].message, "abcdefghij");
-    assert_eq!(outcome.logs[1].message, "XY");
+    assert!(outcome.value().is_none());
+    assert_eq!(texts(&outcome), vec!["abcdefghij", "XY"]);
 }
 
 #[tokio::test]
@@ -492,9 +557,8 @@ async fn output_limit_counts_final_value() {
     )
     .await;
     assert_eq!(failure_kind(&outcome), FailureKind::OutputLimit);
-    assert_eq!(outcome.logs.len(), 1);
-    assert_eq!(outcome.logs[0].message, "ab");
-    assert!(outcome.value.is_none());
+    assert_eq!(texts(&outcome), vec!["ab"]);
+    assert!(outcome.value().is_none());
 
     limits.output_bytes = 3;
     let outcome = run_with(
@@ -507,7 +571,7 @@ async fn output_limit_counts_final_value() {
     )
     .await;
     assert_eq!(value_of(&outcome), &json!(1));
-    assert_eq!(outcome.logs[0].message, "ab");
+    assert_eq!(texts(&outcome), vec!["ab"]);
 }
 
 #[tokio::test]
@@ -539,7 +603,7 @@ async fn illegal_output_values() {
             "{source}: {}",
             failure.message
         );
-        assert!(outcome.value.is_none());
+        assert!(outcome.value().is_none());
     }
 }
 
@@ -566,14 +630,21 @@ async fn non_finite_output_is_nulled_with_paths() {
 }
 
 #[tokio::test]
-async fn unknown_tool_type_error_names_the_tool() {
+async fn unknown_tool_is_a_contract_failure() {
+    // B3: naming a tool that does not exist is a contract failure, not a
+    // catchable TypeError with a bare "not a function".
     let outcome = run("return await tools.nope({});", tools(vec![])).await;
     let failure = outcome.failure.as_ref().expect("unknown tool must fail");
     assert_eq!(failure.kind, FailureKind::Exception);
-    assert!(failure.uncaught_type_error, "{failure:?}");
+    assert!(!failure.uncaught_type_error, "{failure:?}");
+    let info = failure
+        .tool_error
+        .as_ref()
+        .expect("a contract failure keeps its ToolError identity");
+    assert_eq!(info.code, "not_found");
     assert!(
-        failure.message.contains("tool 'nope' not found"),
-        "{failure:?}"
+        failure.message.contains("tools.nope"),
+        "the message names the call: {failure:?}"
     );
 }
 
@@ -687,13 +758,12 @@ async fn unhandled_promise_rejection_warns_without_failing() {
     assert_eq!(value_of(&outcome), &json!("ok"));
     assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
     assert!(
-        outcome.logs.iter().any(|entry| {
-            entry.level == crate::ptc::LogLevel::Warn
-                && entry.message.contains("unhandled promise rejection")
-                && entry.message.contains("boom-unhandled")
-        }),
+        texts(&outcome)
+            .iter()
+            .any(|text| text.contains("unhandled promise rejection")
+                && text.contains("boom-unhandled")),
         "{:?}",
-        outcome.logs
+        texts(&outcome)
     );
 }
 
@@ -709,12 +779,11 @@ async fn handled_promise_rejection_does_not_warn() {
     .await;
     assert_eq!(value_of(&outcome), &json!("ok"));
     assert!(
-        outcome
-            .logs
+        texts(&outcome)
             .iter()
-            .all(|entry| !entry.message.contains("unhandled promise rejection")),
+            .all(|text| !text.contains("unhandled promise rejection")),
         "{:?}",
-        outcome.logs
+        texts(&outcome)
     );
 }
 
@@ -742,12 +811,11 @@ async fn unawaited_calls_are_waited_and_recorded() {
     assert_eq!(outcome.calls[0].state, CallState::CancelledFinished);
     assert!(outcome.calls[0].ended.is_some());
     assert!(
-        outcome
-            .logs
+        texts(&outcome)
             .iter()
-            .any(|entry| entry.message.contains("1 host call was still running")),
+            .any(|text| text.contains("1 host call was still running")),
         "{:?}",
-        outcome.logs
+        texts(&outcome)
     );
 }
 
@@ -868,12 +936,11 @@ async fn success_cancels_inflight_calls() {
     assert_eq!(outcome.calls.len(), 1);
     assert_eq!(outcome.calls[0].state, CallState::CancelledUnfinished);
     assert!(
-        outcome
-            .logs
+        texts(&outcome)
             .iter()
-            .any(|entry| { entry.message.contains("1 host call was still running") }),
+            .any(|text| text.contains("1 host call was still running")),
         "{:?}",
-        outcome.logs
+        texts(&outcome)
     );
 
     let paused = HostFn::new(|_, _, pause, _| async move {
@@ -925,7 +992,7 @@ async fn user_exceptions_are_not_classified_by_message() {
             FailureKind::Exception,
             "{source}: {failure:?}"
         );
-        assert!(outcome.value.is_none());
+        assert!(outcome.value().is_none());
     }
 }
 
@@ -1045,7 +1112,7 @@ async fn deep_nest_child() {
             "deep return: {}",
             failure_text(&returned)
         );
-        let value = returned.value.as_ref().expect("deep value");
+        let value = returned.value().expect("deep value");
         assert_eq!(array_depth(value.as_value()), 20_000);
         exercise_json(value);
     }
@@ -1077,7 +1144,7 @@ async fn deep_nest_child() {
             "deep host result: {}",
             failure_text(&host_to_js)
         );
-        let value = host_to_js.value.as_ref().expect("injected value");
+        let value = host_to_js.value().expect("injected value");
         assert_eq!(array_depth(value.as_value()), 20_000);
         exercise_json(value);
     }
@@ -1096,7 +1163,7 @@ async fn deep_nest_child() {
         .await;
         let failure = over_budget.failure.as_ref().expect("output budget");
         assert_eq!(failure.kind, FailureKind::OutputLimit, "{failure:?}");
-        assert!(over_budget.value.is_none());
+        assert!(over_budget.value().is_none());
     }
 
     {
@@ -1116,7 +1183,7 @@ async fn deep_nest_child() {
             "{}",
             failure.message
         );
-        assert!(illegal.value.is_none());
+        assert!(illegal.value().is_none());
     }
 
     let mut wide = limits();
@@ -1282,5 +1349,288 @@ async fn object_keys_keep_agent_order_across_the_bridge() {
     assert_eq!(
         text,
         r#"{"z":1,"a":{"zeta":1,"alpha":2,"mid":{"y":1,"b":2}},"m":3}"#
+    );
+}
+
+// ── PROBE P2–P9: contract failures and the read proxy (design v2 §3) ──
+//
+// Probes are split by layer, because only the production path can say what the
+// contract is:
+//   - judgement (S2/S3) live at the bridge, `src/tools/code/bridge_tests.rs`:
+//     a real CodeSurface decides, and the run must end there;
+//   - mechanism (a host `HostError::Contract` crossing try/catch and
+//     Promise.all) is B2's gate and lands with B2's first change point, which
+//     introduces that variant; B1 keeps product code at zero;
+//   - everything else (unknown suite/member, read proxy, passthrough, benchmark)
+//     is engine-level and lives here.
+//
+// Each probe asserts the behaviour the design requires, not the behaviour the
+// code has today; "Expected red before <step>" is written on the test.
+
+// ── MECHANISM M1–M3: is a contract error uncatchable? (B2 gate) ──
+//
+// These drive the engine directly with the error the bridge will hand it, so
+// they measure the channel and nothing else. They must be red until the
+// second cut seals the contract failure as terminal.
+
+/// M1: a contract error cannot be swallowed by try/catch. (Expected red before
+/// B2 second cut.)
+#[tokio::test]
+async fn m1_contract_error_is_not_catchable() {
+    let host = HostFn::new(|_, _, _, _| async move {
+        Err(HostError::contract(
+            "invalid_args",
+            "invalid input for 'read': unknown parameter 'nope'",
+            "read",
+        ))
+    });
+    let outcome = run(
+        r#"
+        try { await tools.read({ nope: 1 }); } catch (e) { return "swallowed"; }
+        return "done";
+        "#,
+        tools(vec![("read", host)]),
+    )
+    .await;
+    let failure = outcome
+        .failure
+        .as_ref()
+        .unwrap_or_else(|| panic!("a contract error must end the run, got {outcome:?}"));
+    assert!(
+        failure.message.contains("unknown parameter 'nope'"),
+        "{failure:?}"
+    );
+}
+
+/// M2: a contract error inside Promise.all still ends the run. (Expected red
+/// before B2 second cut; this is the await boundary the whole channel depends on.)
+#[tokio::test]
+async fn m2_contract_error_inside_promise_all_ends_run() {
+    let host = HostFn::new(|_, _, _, _| async move {
+        Err(HostError::contract(
+            "invalid_args",
+            "invalid input for 'read': unknown parameter 'nope'",
+            "read",
+        ))
+    });
+    let outcome = run(
+        r#"
+        try { await Promise.all([tools.read({ nope: 1 })]); } catch (e) { return "swallowed"; }
+        return "done";
+        "#,
+        tools(vec![("read", host)]),
+    )
+    .await;
+    assert!(
+        outcome.failure.is_some(),
+        "a contract error must not resolve: {outcome:?}"
+    );
+}
+
+/// M3: after a contract error nothing else is dispatched. (Expected red before
+/// B2 second cut.)
+#[tokio::test]
+async fn m3_no_host_call_after_contract_error() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let host = HostFn::new(move |_, _, _, _| {
+        let counter = Arc::clone(&counter);
+        async move {
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(HostError::contract(
+                    "invalid_args",
+                    "invalid input for 'read': unknown parameter 'nope'",
+                    "read",
+                ))
+            } else {
+                Ok(json!({ "ok": true }))
+            }
+        }
+    });
+    let outcome = run(
+        r#"
+        try { await tools.read({ nope: 1 }); } catch (e) {}
+        try { await tools.read({ path: "ok" }); } catch (e) {}
+        return "finished";
+        "#,
+        tools(vec![("read", host)]),
+    )
+    .await;
+    assert!(outcome.failure.is_some(), "{outcome:?}");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "no host call may be dispatched after a contract error"
+    );
+}
+
+/// P2: an unknown member throws at property access, not on call.
+/// (Expected red before B3.)
+#[tokio::test]
+async fn p2_unknown_member_throws_at_property_access() {
+    let echo = HostFn::new(|_, _, _, _| async move { Ok(json!({ "ok": true })) });
+    let outcome = run(
+        r#"const f = tools.file.readx; return typeof f;"#,
+        tools(vec![("file.write", echo)]),
+    )
+    .await;
+    let failure = outcome
+        .failure
+        .as_ref()
+        .unwrap_or_else(|| panic!("reading an unknown member must fail, got {outcome:?}"));
+    assert!(failure.message.contains("file.readx"), "{failure:?}");
+}
+
+/// P6: an unknown suite names the available suites. (Expected red before B3.)
+#[tokio::test]
+async fn p6_unknown_suite_names_the_candidates() {
+    let echo = HostFn::new(|_, _, _, _| async move { Ok(json!({ "ok": true })) });
+    let outcome = run(
+        r#"
+        try { tools.zzz.one({ path: "a" }); } catch (e) { return "swallowed"; }
+        return "done";
+        "#,
+        tools(vec![("alpha.one", echo)]),
+    )
+    .await;
+    let failure = outcome
+        .failure
+        .as_ref()
+        .unwrap_or_else(|| panic!("unknown suite must fail the run, got {outcome:?}"));
+    assert!(failure.message.contains("zzz"), "{failure:?}");
+    assert!(failure.message.contains("alpha"), "{failure:?}");
+}
+
+/// P7: an unknown member names the member and its suite's candidates.
+/// (Expected red before B3.)
+#[tokio::test]
+async fn p7_unknown_member_names_the_candidates() {
+    let echo = HostFn::new(|_, _, _, _| async move { Ok(json!({ "ok": true })) });
+    let outcome = run(
+        r#"
+        try { await tools.file.readx({ path: "a" }); } catch (e) { return "swallowed"; }
+        return "done";
+        "#,
+        tools(vec![("file.write", echo)]),
+    )
+    .await;
+    let failure = outcome
+        .failure
+        .as_ref()
+        .unwrap_or_else(|| panic!("unknown member must fail the run, got {outcome:?}"));
+    assert!(failure.message.contains("file.readx"), "{failure:?}");
+    assert!(failure.message.contains("write"), "{failure:?}");
+}
+
+/// B3: typeof on a missing name ends the run. Intentional: reading a name that
+/// does not exist is judged before the program can branch on the value.
+#[tokio::test]
+async fn p10_typeof_unknown_suite_ends_the_run() {
+    let echo = HostFn::new(|_, _, _, _| async move { Ok(json!({ "ok": true })) });
+    let outcome = run(
+        r#"const hint = typeof tools.zzz; return hint;"#,
+        tools(vec![("alpha.one", echo)]),
+    )
+    .await;
+    let failure = outcome
+        .failure
+        .as_ref()
+        .unwrap_or_else(|| panic!("typeof of a missing name must end the run, got {outcome:?}"));
+    assert!(failure.message.contains("zzz"), "{failure:?}");
+}
+
+/// B3: membership answers false for a missing name, and a suite is the same
+/// object every time it is read.
+#[tokio::test]
+async fn p11_membership_is_false_and_suites_are_cached() {
+    let echo = HostFn::new(|_, _, _, _| async move { Ok(json!({ "ok": true })) });
+    let outcome = run(
+        r#"
+        const same = tools.alpha === tools.alpha;
+        return [same, "zzz" in tools, "alpha" in tools];
+        "#,
+        tools(vec![("alpha.one", echo)]),
+    )
+    .await;
+    assert_eq!(value_of(&outcome), &json!([true, false, true]));
+}
+
+// P4 and P9 moved to the bridge: a field list is only meaningful against the
+// contract, and the engine harness has none. See
+// `src/tools/code/bridge_tests.rs::s4_*`.
+
+/// P8: the read proxy must not misfire on the ways a result is normally used.
+/// (Green before B4; must stay green after it.)
+#[tokio::test]
+async fn p8_proxy_passthrough_does_not_misfire() {
+    let host = HostFn::new(|_, _, _, _| async move {
+        Ok(json!({ "ok": true, "lines": ["a"], "path": "p", "start_line": 1 }))
+    });
+    let outcome = run(
+        r#"
+        const r = await tools.read({ path: "p" });
+        const awaited = await r;
+        const text = JSON.stringify(r);
+        const rendered = String(r);
+        const spread = { ...r };
+        const ctor = typeof r.constructor;
+        console.log(r);
+        return [awaited.lines.length, text.includes('"lines"'), rendered.length > 0, spread.path, ctor];
+        "#,
+        tools_with_contract(
+            vec![("read", host)],
+            &["ok", "lines", "path", "start_line"],
+        ),
+    )
+    .await;
+    assert_eq!(
+        value_of(&outcome),
+        &json!([1, true, true, "p", "function"])
+    );
+}
+
+/// P5: benchmark for the per-field read cost. Not a gate. (Expected flat
+/// before B4; re-run after it.)
+#[tokio::test]
+#[ignore = "benchmark: field reads through the read proxy"]
+async fn p5_read_proxy_overhead() {
+    let host = HostFn::new(|_, _, _, _| async move {
+        Ok(json!({ "ok": true, "lines": ["a"], "path": "p", "start_line": 1 }))
+    });
+    let baseline = Instant::now();
+    let none = run(
+        r#"
+        const r = await tools.read({ path: "p" });
+        return r.path === "p" ? 1 : 0;
+        "#,
+        tools_with_contract(
+            vec![("read", host.clone())],
+            &["ok", "lines", "path", "start_line"],
+        ),
+    )
+    .await;
+    let baseline = baseline.elapsed();
+    assert_eq!(value_of(&none), &json!(1));
+    let thousand = Instant::now();
+    let outcome = run(
+        r#"
+        const r = await tools.read({ path: "p" });
+        let n = 0;
+        for (let i = 0; i < 1000; i++) { if (r.path === "p") n++; }
+        return n;
+        "#,
+        tools_with_contract(
+            vec![("read", host)],
+            &["ok", "lines", "path", "start_line"],
+        ),
+    )
+    .await;
+    let thousand = thousand.elapsed();
+    assert_eq!(value_of(&outcome), &json!(1000));
+    println!(
+        "p5: 1000 proxied reads {:?} vs 1 read {:?} => {:?} per read",
+        thousand,
+        baseline,
+        (thousand.saturating_sub(baseline)) / 1000
     );
 }

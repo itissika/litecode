@@ -103,21 +103,9 @@ fn one_compaction_execute_path() {
 
 #[test]
 fn summary_user_projection_has_one_owner() {
-    let mut owners = Vec::new();
-    for (path, text) in source_files() {
-        if text.contains("SUMMARY_OPEN_TAG") {
-            owners.push(relative(&path));
-        }
-    }
-    assert_eq!(
-        owners,
-        vec!["src/session/working.rs".to_string()],
-        "only the working-set projector may assemble the checkpoint user message"
-    );
-
     let working = read("src/session/working.rs");
     assert!(working.contains("pub fn model_item(&self) -> Item"));
-    assert!(working.contains("user_text(format!("));
+    assert!(working.contains("user_text(crate::reminder::render_text(body))"));
     assert!(working.contains("strip_legacy_summary_prefix"));
 
     for (path, text) in source_files() {

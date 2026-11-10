@@ -1465,6 +1465,93 @@ mod tests {
         );
     }
 
+    /// The direct-spec set this registry can build. The bot tools are appended
+    /// only for a bot session, so they are asserted in `tools::bot` instead; the
+    /// union of both lists is the full builtin direct surface.
+    /// The builtin direct surface this registry can build, spelled out so a new
+    /// direct tool cannot slip in unnoticed: 4 + 3 bot (asserted in
+    /// `tools::bot`) + 6 subagent + run_code + litecode_workspace = 15.
+    const REGISTRY_DIRECT_TOOLS: &[&str] = &[
+        "ask_user",
+        "knowledge",
+        "litecode_workspace",
+        "plan",
+        "run_code",
+        "subagent_delete",
+        "subagent_launch",
+        "subagent_list",
+        "subagent_send",
+        "subagent_stop",
+        "subagent_wait",
+        "todo",
+    ];
+
+    /// A value of the schema's type, for filling required properties.
+    fn dummy_for(schema: &serde_json::Value) -> serde_json::Value {
+        match schema.get("type").and_then(|value| value.as_str()) {
+            Some("string") => serde_json::json!("x"),
+            Some("array") => serde_json::json!([]),
+            Some("boolean") => serde_json::json!(true),
+            Some("integer") | Some("number") => serde_json::json!(1),
+            Some("object") => serde_json::json!({}),
+            _ => serde_json::json!(null),
+        }
+    }
+
+    /// An input that satisfies `required` and carries one unknown key.
+    fn with_unknown_parameter(schema: &serde_json::Value) -> serde_json::Value {
+        let mut input = serde_json::Map::new();
+        if let Some(required) = schema.get("required").and_then(|value| value.as_array()) {
+            for key in required.iter().filter_map(|key| key.as_str()) {
+                let child = schema["properties"][key].clone();
+                input.insert(key.to_string(), dummy_for(&child));
+            }
+        }
+        input.insert("__nope__".into(), serde_json::json!(1));
+        serde_json::Value::Object(input)
+    }
+
+    /// G6: every builtin direct spec this registry exposes is a closed object, and
+    /// feeding it an unknown parameter is rejected before the call runs.
+    ///
+    /// MCP (`mcp_*`) and custom suites (`suite.member`) own their schemas and are
+    /// excluded by name, matching the comment.
+    #[test]
+    fn builtin_direct_specs_are_closed_and_reject_unknown_parameters() {
+        let resolved = test_resolved(default_bindings());
+        let ctx = dummy_ctx();
+        // run_code only enters the list with a host, like production.
+        let tools = list_tools_with(&resolved, 0, Some(test_host(&resolved, 0)));
+        let mut checked: Vec<String> = Vec::new();
+        for tool in &tools {
+            let name = tool.name();
+            if name.starts_with("mcp_") || name.contains('.') {
+                continue;
+            }
+            let Some(spec) = tool.direct_spec(&ctx) else {
+                continue;
+            };
+            assert_eq!(spec.input_schema["type"], "object", "{name} must take an object");
+            assert_eq!(
+                spec.input_schema["additionalProperties"],
+                serde_json::json!(false),
+                "{name} must be a closed object (D1)"
+            );
+            let error = crate::tool::schema_validate::schema_validate(
+                &spec.input_schema,
+                &with_unknown_parameter(&spec.input_schema),
+            )
+            .expect_err(&format!("{name} must reject an unknown parameter"));
+            assert!(
+                error.contains("unknown parameter '__nope__'"),
+                "{name}: {error}"
+            );
+            checked.push(name.to_string());
+        }
+        checked.sort();
+        assert_eq!(checked, REGISTRY_DIRECT_TOOLS, "the direct surface changed");
+    }
+
     #[test]
     fn code_gate_projects_every_depth_from_that_callers_visible_set() {
         use crate::permission::{PermissionEngine, deny_permission_sink};

@@ -1989,10 +1989,6 @@ impl CompactPolicy {
             let review =
                 SummaryAcceptance::review_with_text_cap(&artifact, &prefix, summary_text_cap);
             if review.accepted {
-                let mut artifact = artifact;
-                if omitted_history {
-                    artifact.text = format!("{OMITTED_HISTORY_MARKER}{}", artifact.text);
-                }
                 tracing::info!(
                     summary_len = artifact.text.len(),
                     finish = ?artifact.finish,
@@ -2146,8 +2142,6 @@ impl CompactPolicy {
 /// Build the compaction input from the same projected view as the main
 /// request. The selected items are the prefix whose source row index is in the
 /// discarded range; synthetic pads inherit the unanswered call's index.
-const OMITTED_HISTORY_MARKER: &str = "[Earlier history was omitted before this summary.]\n\n";
-
 fn is_user_message(item: &Item) -> bool {
     matches!(
         item,

@@ -19,13 +19,13 @@ use crate::tool::authorize::{AuthResult, authorize};
 use crate::tool::output;
 use crate::tool::resource_gate::{ToolEffects, process_resource_gate};
 use crate::tool::schema_validate::{
-    check_tool_input, invalid_input_for, parse_tool_arguments, unknown_top_level_properties,
+    check_tool_input, invalid_input_for, parse_tool_arguments,
 };
 use crate::tool::trait_::{Tool, ToolExecutionContext, ToolSurface};
 use crate::tool::write_lock::{ResourceKey, WorkspaceWriteLock};
 use crate::types::{
     FunctionToolCall, Item, MediaArtifact, MediaKind, Result, ToolCallResult, ToolErrorKind,
-    ToolOutputPart, ToolResultData, ToolSignalLevel,
+    ToolOutputPart, ToolResultData,
 };
 
 /// UI-only `result.data` payload cap. `run_code`'s aggregate is ~1 KB; this
@@ -210,26 +210,6 @@ fn present_for_caller(origin: &ToolCallOrigin, result: ToolCallResult) -> ToolCa
         result
     } else {
         wire_result(result)
-    }
-}
-
-fn attach_unknown_param_warning(result: ToolCallResult, extra: &[String]) -> ToolCallResult {
-    if extra.is_empty() || result.level == ToolSignalLevel::Error {
-        return result;
-    }
-    let msg = format!(
-        "ignored unknown parameter(s): {}. Not in this tool's schema; the call ran without them",
-        extra.join(", ")
-    );
-    let existing = result
-        .warning_status
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    if let Some(existing) = existing {
-        result.with_warning(format!("{existing}; {msg}"))
-    } else {
-        result.with_warning(msg)
     }
 }
 
@@ -775,18 +755,10 @@ pub async fn execute_tool_call(
             )
         }
     };
-    let unknown = if matches!(origin.caller, ToolCaller::Code { .. }) {
-        Vec::new()
-    } else {
-        let spec = tool.direct_spec(ctx).unwrap_or_else(|| {
-            panic!("direct tool '{tu_name}' has no direct tool spec");
-        });
-        unknown_top_level_properties(&spec.input_schema, &effective_input)
-    };
     let output = if matches!(origin.caller, ToolCaller::Code { .. }) {
         output
     } else if tool.is_code_transport() {
-        let output = wire_result(attach_unknown_param_warning(output, &unknown));
+        let output = wire_result(output);
         if output.content.len() > crate::tools::code::RUN_CODE_VIEW_MAX_BYTES {
             tracing::warn!(
                 bytes = output.content.len(),
@@ -796,8 +768,7 @@ pub async fn execute_tool_call(
         }
         output
     } else {
-        let mut output = attach_unknown_param_warning(output, &unknown);
-        output = wire_result(output);
+        let mut output = wire_result(output);
         output.content = output::cap_direct_content(tool.as_ref(), &output.content);
         match output::finalize_tool_call_result(output, data_root, spill_threshold) {
             Ok(processed) => processed,

@@ -2,7 +2,6 @@
   "content_historical": "",
   "covered": true,
   "data": {
-    "message": "Showing first 1000 of 1001 paths. Raise limit to see more.",
     "paths": [
       "g0000.txt",
       "g0001.txt",
@@ -1004,7 +1003,10 @@
       "g0997.txt",
       "g0998.txt",
       "g0999.txt"
-    ]
+    ],
+    "total": 1001,
+    "truncated": true,
+    "outside_workspace": false
   },
   "error": null,
   "gap": null,

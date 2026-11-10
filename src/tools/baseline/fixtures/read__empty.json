@@ -5,7 +5,9 @@
     "path": "empty.txt",
     "start_line": 1,
     "lines": [],
-    "message": "File has 0 lines; start_line 1 is past the end."
+    "total_lines": 0,
+    "has_more": false,
+    "skipped_in_context": 0
   },
   "error": null,
   "gap": null,

@@ -531,6 +531,7 @@ impl Tool for KnowledgeTool {
         let input_schema = {
             serde_json::json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
                     "command": {
                         "type": "string",

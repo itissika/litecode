@@ -683,7 +683,8 @@ endpoint_type = "responses"
         let input = body["input"].as_array().expect("input array");
         assert_eq!(input[0]["role"], "user", "{body}");
         let text = input[0].to_string();
-        assert_eq!(text.matches("<compacted-summary>").count(), 1, "{body}");
+        assert_eq!(text.matches("<system-reminder>").count(), 1, "{body}");
+        assert!(!text.contains("<compacted-summary>"), "{body}");
         assert!(text.contains("ship checkpoint identity"));
     }
 

@@ -906,13 +906,6 @@ pub fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // A run with no prompt and no terminal has nothing to read: fail here,
-    // before loading config, instead of opening a REPL that can never prompt.
-    let stdin_is_terminal = std::io::stdin().is_terminal();
-    if cli.prompt.is_empty() && !stdin_is_terminal {
-        anyhow::bail!("nothing to run: pass a prompt, or use a terminal for the REPL");
-    }
-
     let resolved = load_runtime_bundle_from_cli(&cli)?;
     let workspace = resolved.workspace().clone();
     let db_path = workspace.paths.sessions_db.clone();
@@ -983,6 +976,13 @@ pub fn run() -> anyhow::Result<()> {
         }
         data.shutdown();
         return Ok(());
+    }
+
+    // Only the agent-run path needs something to read. Subcommands with their
+    // own stdin contract (`serve`, `list-sessions`, ...) returned above.
+    let stdin_is_terminal = std::io::stdin().is_terminal();
+    if cli.prompt.is_empty() && !stdin_is_terminal {
+        anyhow::bail!("nothing to run: pass a prompt, or use a terminal for the REPL");
     }
 
     let api_key = get_api_key(&resolved)?;

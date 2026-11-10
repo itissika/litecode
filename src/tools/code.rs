@@ -537,6 +537,7 @@ impl CodeTool {
     fn binding(
         &self,
         ledger: Arc<CallLedger>,
+        reminders: Arc<std::sync::Mutex<Vec<render::CallReminder>>>,
         execution: &ToolExecutionContext,
     ) -> Vec<HostBinding> {
         self.surface
@@ -552,6 +553,26 @@ impl CodeTool {
                 }
                 let sdk_path = sdk_path.clone();
                 let runtime_name = runtime_name.clone();
+                let reminders = Arc::clone(&reminders);
+                // Result fields come from this tool's output schema, and the
+                // failure fields from the envelope the program is handed.
+                let contract = self.surface.tools.get(runtime_name.as_str()).map(|spec| {
+                    let mut fields: Vec<String> = spec
+                        .output_schema
+                        .get("properties")
+                        .and_then(serde_json::Value::as_object)
+                        .map(|properties| properties.keys().cloned().collect())
+                        .unwrap_or_default();
+                    fields.sort();
+                    std::sync::Arc::new(crate::ptc::BindingContract {
+                        fields: fields.into(),
+                        failure_fields: crate::tool::outcome::FAILURE_FIELDS
+                            .iter()
+                            .map(|field| (*field).to_string())
+                            .collect::<Vec<_>>()
+                            .into(),
+                    })
+                });
                 let bundle = Arc::clone(&self.bundle);
                 let host = Arc::clone(&self.host);
                 let surface = Arc::clone(&self.surface);
@@ -559,6 +580,7 @@ impl CodeTool {
                 let session_id = execution.session_id.clone();
                 let parent_call_id = execution.call_id.clone();
                 Some(HostBinding {
+                    contract,
                     name: sdk_path.clone(),
                     function: HostFn::new(move |args, cancel, pause, info: CallInfo| {
                         let sdk_path = sdk_path.clone();
@@ -567,6 +589,7 @@ impl CodeTool {
                         let host = Arc::clone(&host);
                         let surface = Arc::clone(&surface);
                         let ledger = Arc::clone(&ledger);
+                        let reminders = Arc::clone(&reminders);
                         let session_id = session_id.clone();
                         let parent_call_id = parent_call_id.clone();
                         let seq = info.seq;
@@ -575,6 +598,7 @@ impl CodeTool {
                             invoke_binding(
                                 runtime_name,
                                 sdk_path,
+                                reminders,
                                 seq,
                                 deadline,
                                 args,
@@ -617,11 +641,13 @@ impl CodeTool {
         };
 
         let ledger = Arc::new(CallLedger::new());
+        let reminders: Arc<std::sync::Mutex<Vec<render::CallReminder>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let request = ExecuteRequest {
             source: code.clone(),
             namespaces: vec![Namespace {
                 name: "tools".to_string(),
-                functions: self.binding(Arc::clone(&ledger), &execution),
+                functions: self.binding(Arc::clone(&ledger), Arc::clone(&reminders), &execution),
             }],
             limits: Limits {
                 output_bytes: MAX_CODE_OUTPUT_BYTES,
@@ -633,7 +659,9 @@ impl CodeTool {
             cancel: execution.cancel,
         };
         let outcome = ptc::execute(request).await;
-        render_run_output(&ledger, &outcome, run_timeout_ms, &code)
+        let mut collected = reminders.lock().expect("reminder buffer").split_off(0);
+        collected.sort_by_key(|reminder| reminder.seq);
+        render_run_output(&ledger, &outcome, run_timeout_ms, &code, collected)
     }
 }
 
@@ -641,6 +669,7 @@ impl CodeTool {
 async fn invoke_binding(
     tool_name: String,
     sdk_name: String,
+    reminders: Arc<std::sync::Mutex<Vec<render::CallReminder>>>,
     seq: u64,
     deadline: tokio::time::Instant,
     args: Json,
@@ -658,46 +687,57 @@ async fn invoke_binding(
     drop(args);
     let (arguments, summary) = match decoded {
         Ok(decoded) => (decoded.arguments, decoded.summary),
-        Err(DecodeFail::ExtraArgument { summary }) => {
+        Err(DecodeFail::ExtraArgument { summary, count }) => {
             ledger.begin(seq, &sdk_name, &summary);
-            let index = seq;
-            ledger.record(
-                index,
-                &protocol_failure("tool bindings accept one argument"),
-            );
-            return Err(crate::ptc::HostError::type_error(
-                "tool bindings accept one argument",
+            return Err(contract_reject(
+                &ledger,
+                seq,
+                "invalid_args",
+                &sdk_name,
+                format!("'{sdk_name}' accepts exactly one argument, got {count}"),
             ));
         }
         Err(DecodeFail::Illegal(illegal)) => {
             ledger.begin(seq, &sdk_name, &illegal.summary);
-            let index = seq;
-            ledger.record(index, &protocol_failure(&illegal.message));
-            return Err(crate::ptc::HostError::type_error(illegal.message));
+            return Err(contract_reject(
+                &ledger,
+                seq,
+                "invalid_args",
+                &sdk_name,
+                illegal.message,
+            ));
         }
     };
     ledger.begin(seq, &sdk_name, &summary);
     let index = seq;
 
     if !bundle.iter().any(|tool| tool.name() == tool_name.as_str()) {
-        let message = format!("tool '{sdk_name}' not found");
-        ledger.record(index, &protocol_failure(&message));
-        return Err(crate::ptc::HostError::type_error(message));
+        return Err(contract_reject(
+            &ledger,
+            index,
+            "not_found",
+            &sdk_name,
+            format!("tool '{sdk_name}' not found"),
+        ));
     }
     let input_value: Value = match serde_json::from_str(&arguments) {
         Ok(value) => value,
         Err(error) => {
+            // Internal error, not a call the model got wrong: the arguments
+            // never reached the contract as JSON.
             let message = format!("tool arguments for '{sdk_name}' are not valid JSON: {error}");
             ledger.record(index, &protocol_failure(&message));
             return Err(crate::ptc::HostError::type_error(message));
         }
     };
     if let Err(error) = surface.validate_input(&tool_name, &input_value) {
-        let failure = protocol_failure(&format!("invalid input for '{sdk_name}': {error}"));
-        ledger.record(index, &failure);
-        return Ok(
-            outcome::program_result(&failure).expect("invalid input is a resolved domain failure")
-        );
+        return Err(contract_reject(
+            &ledger,
+            index,
+            "invalid_args",
+            &sdk_name,
+            format!("invalid input for '{sdk_name}': {error}"),
+        ));
     }
 
     let call = FunctionToolCall {
@@ -712,7 +752,7 @@ async fn invoke_binding(
         inner: host.sink(),
         pause,
     };
-    let mut result = host
+    let result = host
         .run_nested(
             bundle.as_slice(),
             &call,
@@ -724,16 +764,57 @@ async fn invoke_binding(
         )
         .await;
     if let Some(error) = surface.output_violation(&tool_name, &result) {
-        let mut invalid = ToolCallResult::error_with_kind(
-            ToolErrorKind::Internal,
+        // The ledger row is a failure too: the call did not produce a usable
+        // result, and the manifest must not say "ok" for it.
+        return Err(contract_reject(
+            &ledger,
+            index,
+            "invalid_output",
+            &sdk_name,
             format!("tool '{sdk_name}' returned data that does not match its JS contract: {error}"),
-            false,
-        );
-        invalid.error_code = Some("invalid_output".into());
-        result = invalid;
+        ));
     }
     ledger.record(index, &result);
-    outcome::program_result(&result)
+    let value = outcome::program_result(&result)?;
+    // Facts are anchored to the call, not to a line of output: the program may
+    // return only a slice of this value, or none of it.
+    let texts = render::reminders_for_call(&sdk_name, &value);
+    if !texts.is_empty() {
+        let mut collected = reminders.lock().expect("reminder buffer");
+        for text in texts {
+            collected.push(render::CallReminder {
+                seq,
+                tool: sdk_name.clone(),
+                text,
+            });
+        }
+    }
+    Ok(value)
+}
+
+/// Record one contract failure and build the error that ends the run.
+///
+/// The ledger row and the thrown error carry the same code, so the manifest
+/// line, the header and `ToolErrorInfo.code` cannot disagree.
+fn contract_reject(
+    ledger: &CallLedger,
+    index: u64,
+    code: &str,
+    tool: &str,
+    message: String,
+) -> crate::ptc::HostError {
+    ledger.record(index, &contract_record(code, &message));
+    crate::ptc::HostError::contract(code, message, tool)
+}
+
+/// The ledger row for a contract failure: a failure row, never a success one.
+fn contract_record(code: &str, message: &str) -> ToolCallResult {
+    ToolCallResult::error_with_kind(
+        crate::tool::outcome::kind_for_code(code),
+        message.to_string(),
+        false,
+    )
+    .with_error_code(code)
 }
 
 fn protocol_failure(message: &str) -> ToolCallResult {
@@ -757,7 +838,7 @@ struct IllegalInvocation {
 
 #[derive(Debug)]
 enum DecodeFail {
-    ExtraArgument { summary: String },
+    ExtraArgument { summary: String, count: usize },
     Illegal(IllegalInvocation),
 }
 
@@ -781,7 +862,10 @@ fn decode_invocation(payload: &Json) -> Result<DecodedInvocation, DecodeFail> {
             .map(key_arg_summary)
             .filter(|summary| !summary.is_empty())
             .unwrap_or_else(|| "extra argument".to_string());
-        return Err(DecodeFail::ExtraArgument { summary });
+        return Err(DecodeFail::ExtraArgument {
+            summary,
+            count: items.len(),
+        });
     }
     let summary = key_arg_summary(value);
     if exceeds_owned_depth(value) {
@@ -886,10 +970,11 @@ fn render_run_output(
     outcome: &crate::ptc::Outcome,
     run_timeout_ms: u64,
     source: &str,
+    reminders: Vec<render::CallReminder>,
 ) -> ToolCallResult {
     let failure_text = outcome.failure.as_ref().map(|failure| match failure.kind {
         FailureKind::Timeout => format!("run_code timed out after {run_timeout_ms}ms"),
-        FailureKind::Cancelled if outcome.value.is_some() => {
+        FailureKind::Cancelled if outcome.value().is_some() => {
             "cancelled after the program returned".to_string()
         }
         FailureKind::Cancelled => "code execution cancelled".to_string(),
@@ -900,46 +985,35 @@ fn render_run_output(
         FailureKind::Syntax => failure.message.clone(),
         _ => failure.message.clone(),
     });
-    // Keep any returned value even on failure (pi-style: don't blank wipe partial).
-    let presented = if outcome.value.is_some() {
-        match outcome.value.as_ref().map(present_returned_value) {
-            Some(Ok(presented)) => Some(presented),
-            Some(Err(message)) => {
-                let report = run_report(
-                    ledger,
-                    outcome,
-                    None,
-                    Some(message),
-                    Some(FailureKind::IllegalOutput),
-                    None,
-                    run_timeout_ms,
-                    source,
-                );
-                return finish_run_result(
-                    &report,
-                    Some((ToolErrorKind::InvalidOutput, false, None)),
-                );
-            }
-            None => None,
-        }
-    } else {
-        None
-    };
+    // Keep whatever the program produced even on failure: the stream is the
+    // record. A returned value that cannot be presented is an illegal output.
     let failure_kind = outcome.failure.as_ref().map(|failure| failure.kind);
     let resource = outcome
         .failure
         .as_ref()
         .and_then(|failure| failure.resource);
+    let (entries, illegal_output) = match entry_views(&outcome.entries) {
+        Ok(entries) => (entries, None),
+        Err(message) => (text_views(&outcome.entries), Some(message)),
+    };
+    let (failure_text, failure_kind) = match &illegal_output {
+        Some(message) => (Some(message.clone()), Some(FailureKind::IllegalOutput)),
+        None => (failure_text, failure_kind),
+    };
     let report = run_report(
         ledger,
         outcome,
-        presented,
+        entries,
+        reminders,
         failure_text,
         failure_kind,
         resource,
         run_timeout_ms,
         source,
     );
+    if illegal_output.is_some() {
+        return finish_run_result(&report, Some((ToolErrorKind::InvalidOutput, false, None)));
+    }
 
     let error = outcome.failure.as_ref().map(|failure| {
         if let Some(info) = &failure.tool_error {
@@ -991,7 +1065,8 @@ fn finish_run_result(
 fn run_report(
     ledger: &CallLedger,
     outcome: &crate::ptc::Outcome,
-    value: Option<Value>,
+    entries: Vec<render::EntryView>,
+    reminders: Vec<render::CallReminder>,
     failure_text: Option<String>,
     failure_kind: Option<FailureKind>,
     resource: Option<crate::ptc::ResourceKind>,
@@ -1015,25 +1090,15 @@ fn run_report(
         });
     }
     render::RunReport {
+        reminders,
         dropped_undefined: outcome.dropped_undefined.head_line(),
         coerced_non_finite: outcome.dropped_undefined.non_finite_head_line(),
-        logs: outcome
-            .logs
-            .iter()
-            .map(|entry| {
-                (
-                    log_level_name(entry.level).to_string(),
-                    entry.message.clone(),
-                )
-            })
-            .collect(),
-        value,
+        entries,
         failure_text,
         failure_kind,
         resource,
         timeout_ms,
         duration_ms: outcome.duration_ms,
-        output_limited: failure_kind == Some(FailureKind::OutputLimit),
         calls,
         calls_omitted,
         by_tool: snapshot.by_tool.clone(),
@@ -1111,6 +1176,38 @@ fn log_level_name(level: LogLevel) -> &'static str {
         LogLevel::Error => "error",
         LogLevel::Debug => "debug",
     }
+}
+
+
+/// The report's view of the stream: text as-is, the value depth-guarded.
+fn entry_views(entries: &[crate::ptc::Entry]) -> Result<Vec<render::EntryView>, String> {
+    let mut views = Vec::with_capacity(entries.len());
+    for entry in entries {
+        match &entry.body {
+            crate::ptc::EntryBody::Text { level, text } => views.push(render::EntryView::Text {
+                level: log_level_name(*level).to_string(),
+                text: text.clone(),
+            }),
+            crate::ptc::EntryBody::Value(value) => {
+                views.push(render::EntryView::Value(present_returned_value(value)?));
+            }
+        }
+    }
+    Ok(views)
+}
+
+/// Text entries only, for a run whose value cannot be presented.
+fn text_views(entries: &[crate::ptc::Entry]) -> Vec<render::EntryView> {
+    entries
+        .iter()
+        .filter_map(|entry| match &entry.body {
+            crate::ptc::EntryBody::Text { level, text } => Some(render::EntryView::Text {
+                level: log_level_name(*level).to_string(),
+                text: text.clone(),
+            }),
+            crate::ptc::EntryBody::Value(_) => None,
+        })
+        .collect()
 }
 
 fn present_returned_value(value: &Json) -> Result<Value, String> {
@@ -1218,6 +1315,9 @@ impl Tool for CodeTool {
 }
 
 #[cfg(test)]
+mod bridge_tests;
+
+#[cfg(test)]
 mod outcome_tests {
     use std::time::Duration;
 
@@ -1233,9 +1333,8 @@ mod outcome_tests {
 
     fn runtime(state: CallState) -> Outcome {
         Outcome {
-            logs: Vec::new(),
+            entries: Vec::new(),
             dropped_undefined: Default::default(),
-            value: None,
             failure: Some(Failure::cancelled()),
             duration_ms: 0,
             calls: vec![CallRecord {
@@ -1258,7 +1357,7 @@ mod outcome_tests {
         ledger.begin(1, "write", "path=a.txt");
         let index = 1u64;
         ledger.record(index, result);
-        render_run_output(&ledger, outcome, 120_000, "").content
+        render_run_output(&ledger, outcome, 120_000, "", Vec::new()).content
     }
 
     #[test]
@@ -1273,8 +1372,8 @@ mod outcome_tests {
         );
         // Unsettled is a head aside, not a ledger row; it is not counted as failed.
         assert!(text.contains("calls were still running"), "{text}");
-        assert!(text.contains("tool calls: 0 ok / 0 failed"), "{text}");
-        assert!(!text.contains("calls ("), "{text}");
+        assert!(text.starts_with("run_code failed: "), "{text}");
+        assert!(!text.contains("tool calls:"), "{text}");
         assert!(!text.contains("@@run_code_data"), "{text}");
     }
 
@@ -1289,9 +1388,8 @@ mod outcome_tests {
     #[test]
     fn permission_denial_is_counted_as_a_failed_settled_call() {
         let completed = Outcome {
-            logs: Vec::new(),
+            entries: Vec::new(),
             dropped_undefined: Default::default(),
-            value: None,
             failure: None,
             duration_ms: 0,
             calls: vec![CallRecord {
@@ -1307,8 +1405,8 @@ mod outcome_tests {
             &ToolCallResult::error_with_kind(ToolErrorKind::PermissionDenied, "denied", false),
             &completed,
         );
-        assert!(text.contains("tool calls: 0 ok / 1 failed"), "{text}");
-        assert!(!text.contains("calls ("), "{text}");
+        assert!(text.starts_with("run_code ok · 1 calls · "), "{text}");
+        assert!(!text.contains("tool calls:"), "{text}");
         assert!(!text.contains("#1 "), "{text}");
         assert!(!text.contains("@@run_code_data"), "{text}");
     }
@@ -1317,7 +1415,7 @@ mod outcome_tests {
     fn a_second_javascript_argument_is_rejected_before_the_tool_runs() {
         let payload = Json::new(json!([{"path": "a.txt"}, {"timeout_ms": 1}]));
         match decode_invocation(&payload) {
-            Err(DecodeFail::ExtraArgument { summary }) => assert_eq!(summary, "path=a.txt"),
+            Err(DecodeFail::ExtraArgument { summary, .. }) => assert_eq!(summary, "path=a.txt"),
             other => panic!("expected the extra argument to be rejected: {other:?}"),
         }
         let one = Json::new(json!({"path": "a.txt"}));
@@ -1349,9 +1447,11 @@ mod outcome_tests {
             &ToolCallResult::error_with_kind(ToolErrorKind::PermissionDenied, "denied", false),
         );
         let outcome = Outcome {
-            logs: Vec::new(),
+            entries: vec![crate::ptc::Entry {
+                order: 1,
+                body: crate::ptc::EntryBody::Value(Json::new(json!("done"))),
+            }],
             dropped_undefined: Default::default(),
-            value: Some(Json::new(json!("done"))),
             failure: None,
             duration_ms: 42,
             calls: vec![
@@ -1373,15 +1473,14 @@ mod outcome_tests {
                 },
             ],
         };
-        let result = render_run_output(&ledger, &outcome, 120_000, "");
+        let result = render_run_output(&ledger, &outcome, 120_000, "", Vec::new());
         assert!(result.error.is_none(), "{}", result.content);
         assert!(
-            result
-                .content
-                .starts_with("run_code ok · program: ok · tool calls: 1 ok / 1 failed · 42ms"),
+            result.content.starts_with("run_code ok · 2 calls · 42ms"),
             "{}",
             result.content
         );
+        assert!(result.content.ends_with("done"), "{}", result.content);
         assert!(!result.content.contains("by_tool"), "{}", result.content);
         assert!(!result.content.contains("calls ("), "{}", result.content);
         assert!(

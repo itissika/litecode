@@ -89,6 +89,7 @@ impl Tool for SubagentStopTool {
         let input_schema = {
             serde_json::json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
                     "id": {
                         "type": "string",

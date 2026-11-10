@@ -1244,7 +1244,8 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
         assert_eq!(messages.len(), 1, "{body}");
         assert_eq!(messages[0]["role"], "user", "{body}");
         let text = messages[0].to_string();
-        assert_eq!(text.matches("<compacted-summary>").count(), 1, "{body}");
+        assert_eq!(text.matches("<system-reminder>").count(), 1, "{body}");
+        assert!(!text.contains("<compacted-summary>"), "{body}");
         assert!(text.contains("ship checkpoint identity"));
     }
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "6f21116c292596eff76ef4d8534a660513e755a5dc692f6df3b4a57be5f4aa7e",
+  "sdk_hash": "01190a8eb7d8085c090655a4e529abeda6172104746c670adf5a919152fce956",
   "tools": {
     "apply_edits": {
       "path": [
@@ -182,6 +182,7 @@
       "input_type": "GlobInput",
       "output_type": "GlobData",
       "type_deps": [
+        "ClampedParam",
         "GlobData",
         "GlobInput",
         "Integer",
@@ -212,15 +213,59 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "message": {
-            "type": "string"
-          },
           "paths": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Matching paths sorted by depth, then parent directory, then name."
+            "description": "Matching paths, sorted by depth, then parent directory, then name."
+          },
+          "total": {
+            "type": "integer",
+            "description": "Matches found before the limit was applied."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when paths holds only the first limit matches."
+          },
+          "outside_workspace": {
+            "type": "boolean",
+            "description": "True when some returned paths are outside the workspace (absolute)."
+          },
+          "empty_reason": {
+            "type": "string",
+            "enum": [
+              "hidden_by_filters",
+              "no_match"
+            ],
+            "description": "Why `paths` is empty; absent when it is not. Only what glob can produce: the searched path is excluded by default filters, or nothing matched."
+          },
+          "clamped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "parameter": {
+                  "type": "string",
+                  "description": "Parameter name as the caller wrote it."
+                },
+                "requested": {
+                  "type": "number",
+                  "description": "Value the caller asked for."
+                },
+                "applied": {
+                  "type": "number",
+                  "description": "Value the tool used instead."
+                }
+              },
+              "required": [
+                "parameter",
+                "requested",
+                "applied"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Parameters adjusted to a legal value; absent when nothing moved."
           },
           "ok": {
             "type": "boolean",
@@ -229,8 +274,10 @@
         },
         "required": [
           "ok",
-          "message",
-          "paths"
+          "paths",
+          "total",
+          "truncated",
+          "outside_workspace"
         ],
         "additionalProperties": false
       }
@@ -247,6 +294,7 @@
       "input_type": "GrepInput",
       "output_type": "GrepData",
       "type_deps": [
+        "ClampedParam",
         "GrepData",
         "GrepHit",
         "GrepInput",
@@ -329,12 +377,68 @@
               "description": "One match. Context, when requested, is folded into `text` as one block."
             }
           },
-          "message": {
-            "type": "string"
-          },
           "truncated": {
             "type": "boolean",
-            "description": "True when a limit or the 8K-token data guard removed results or context."
+            "description": "True when a limit or the token budget cut the result short."
+          },
+          "empty_reason": {
+            "type": "string",
+            "enum": [
+              "no_files",
+              "glob_no_files",
+              "no_match",
+              "file_unreadable",
+              "binary",
+              "hidden_by_filters"
+            ],
+            "description": "Why `hits` is empty; absent when it is not. Only what grep can produce: nothing to search, the glob filter matched no file, no match, the file could not be read as text, the file is binary, or the searched path is excluded by default filters."
+          },
+          "total_hits": {
+            "type": "integer",
+            "description": "Matches found before any limit was applied."
+          },
+          "at_limit_cap": {
+            "type": "boolean",
+            "description": "True when the hit limit stopped the scan."
+          },
+          "lines_truncated": {
+            "type": "boolean",
+            "description": "True when a match or context line was shortened to the per-line cap."
+          },
+          "context_omitted": {
+            "type": "boolean",
+            "description": "True when context lines were dropped to fit the token budget."
+          },
+          "output_capped": {
+            "type": "boolean",
+            "description": "True when hits were dropped to fit the token budget."
+          },
+          "clamped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "parameter": {
+                  "type": "string",
+                  "description": "Parameter name as the caller wrote it."
+                },
+                "requested": {
+                  "type": "number",
+                  "description": "Value the caller asked for."
+                },
+                "applied": {
+                  "type": "number",
+                  "description": "Value the tool used instead."
+                }
+              },
+              "required": [
+                "parameter",
+                "requested",
+                "applied"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Parameters adjusted to a legal value; absent when nothing moved."
           },
           "ok": {
             "type": "boolean",
@@ -344,7 +448,11 @@
         "required": [
           "ok",
           "hits",
-          "message"
+          "total_hits",
+          "at_limit_cap",
+          "lines_truncated",
+          "context_omitted",
+          "output_capped"
         ],
         "additionalProperties": false
       }
@@ -361,6 +469,7 @@
       "input_type": "ReadInput",
       "output_type": "ReadData",
       "type_deps": [
+        "ClampedParam",
         "Integer",
         "Path",
         "ReadData",
@@ -399,15 +508,59 @@
             },
             "description": "Line contents for this page, in file order."
           },
-          "message": {
-            "type": "string"
-          },
           "path": {
             "type": "string"
           },
           "start_line": {
             "type": "integer",
             "description": "Whole JSON number. The host rejects fractional values."
+          },
+          "total_lines": {
+            "type": "integer",
+            "description": "Lines in the file; `has_more` compares against it."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "True when this page stops before the end of the file."
+          },
+          "skipped_in_context": {
+            "type": "integer",
+            "description": "Lines the window covered but left out because they are already in the model's context. A gap in `lines` is explained by this number."
+          },
+          "lines_capped": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "description": "Whole JSON number. The host rejects fractional values."
+            },
+            "description": "Lines shortened to the per-line character cap, by number."
+          },
+          "clamped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "parameter": {
+                  "type": "string",
+                  "description": "Parameter name as the caller wrote it."
+                },
+                "requested": {
+                  "type": "number",
+                  "description": "Value the caller asked for."
+                },
+                "applied": {
+                  "type": "number",
+                  "description": "Value the tool used instead."
+                }
+              },
+              "required": [
+                "parameter",
+                "requested",
+                "applied"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Parameters adjusted to a legal value; absent when nothing moved."
           },
           "ok": {
             "type": "boolean",
@@ -417,9 +570,11 @@
         "required": [
           "ok",
           "lines",
-          "message",
           "path",
-          "start_line"
+          "start_line",
+          "total_lines",
+          "has_more",
+          "skipped_in_context"
         ],
         "additionalProperties": false
       }
@@ -1701,9 +1856,6 @@
               "additionalProperties": false
             }
           },
-          "message": {
-            "type": "string"
-          },
           "state": {
             "type": "string",
             "enum": [
@@ -1711,7 +1863,7 @@
               "partial",
               "unknown"
             ],
-            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+            "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
           "ok": {
             "type": "boolean",
@@ -1721,7 +1873,6 @@
         "required": [
           "ok",
           "items",
-          "message",
           "state"
         ],
         "additionalProperties": false
@@ -1764,9 +1915,6 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "message": {
-            "type": "string"
-          },
           "symbols": {
             "type": "array",
             "items": {
@@ -1817,7 +1965,7 @@
               "partial",
               "unknown"
             ],
-            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+            "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
           "ok": {
             "type": "boolean",
@@ -1826,7 +1974,6 @@
         },
         "required": [
           "ok",
-          "message",
           "symbols",
           "state"
         ],
@@ -1914,9 +2061,6 @@
               "additionalProperties": false
             }
           },
-          "message": {
-            "type": "string"
-          },
           "state": {
             "type": "string",
             "enum": [
@@ -1924,7 +2068,7 @@
               "partial",
               "unknown"
             ],
-            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+            "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
           "ok": {
             "type": "boolean",
@@ -1934,7 +2078,6 @@
         "required": [
           "ok",
           "locations",
-          "message",
           "state"
         ],
         "additionalProperties": false
@@ -2021,9 +2164,6 @@
               "additionalProperties": false
             }
           },
-          "message": {
-            "type": "string"
-          },
           "state": {
             "type": "string",
             "enum": [
@@ -2031,7 +2171,7 @@
               "partial",
               "unknown"
             ],
-            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+            "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
           "ok": {
             "type": "boolean",
@@ -2041,7 +2181,6 @@
         "required": [
           "ok",
           "locations",
-          "message",
           "state"
         ],
         "additionalProperties": false
@@ -2128,9 +2267,6 @@
               "additionalProperties": false
             }
           },
-          "message": {
-            "type": "string"
-          },
           "state": {
             "type": "string",
             "enum": [
@@ -2138,7 +2274,7 @@
               "partial",
               "unknown"
             ],
-            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+            "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
           "ok": {
             "type": "boolean",
@@ -2148,7 +2284,6 @@
         "required": [
           "ok",
           "locations",
-          "message",
           "state"
         ],
         "additionalProperties": false
@@ -2203,9 +2338,6 @@
             "type": "string",
             "description": "Flattened hover text, not raw LSP JSON."
           },
-          "message": {
-            "type": "string"
-          },
           "state": {
             "type": "string",
             "enum": [
@@ -2213,7 +2345,7 @@
               "partial",
               "unknown"
             ],
-            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+            "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
           "ok": {
             "type": "boolean",
@@ -2223,7 +2355,6 @@
         "required": [
           "ok",
           "markdown",
-          "message",
           "state"
         ],
         "additionalProperties": false
@@ -2268,9 +2399,6 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "message": {
-            "type": "string"
-          },
           "symbols": {
             "type": "array",
             "items": {
@@ -2321,7 +2449,7 @@
               "partial",
               "unknown"
             ],
-            "description": "`partial`/`unknown` means an empty result is not a confirmed miss."
+            "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
           "ok": {
             "type": "boolean",
@@ -2330,7 +2458,6 @@
         },
         "required": [
           "ok",
-          "message",
           "symbols",
           "state"
         ],

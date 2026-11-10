@@ -476,34 +476,17 @@ fn expect_shape(case: &Live, result: &ToolCallResult) {
         let data = result.data.as_ref().unwrap();
         let line = data["lines"][0].as_str().unwrap();
         assert!(line.ends_with("..."), "{data}");
-        assert!(
-            data["message"].as_str().unwrap().contains("truncated"),
-            "{data}"
-        );
+        assert_eq!(data["lines_capped"], json!([1]), "{data}");
     }
     if case.tool == "glob" && case.scenario == "truncation" {
         let data = result.data.as_ref().unwrap();
-        assert!(
-            data["message"]
-                .as_str()
-                .unwrap()
-                .to_lowercase()
-                .contains("raise limit"),
-            "{data}"
-        );
+        assert_eq!(data["truncated"], json!(true), "{data}");
         assert_eq!(data["paths"].as_array().unwrap().len(), 1000, "{data}");
     }
     if case.tool == "grep" && case.scenario == "truncation" {
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["hits"].as_array().unwrap().len(), 1, "{data}");
-        assert!(
-            data["message"]
-                .as_str()
-                .unwrap()
-                .to_lowercase()
-                .contains("raise limit"),
-            "{data}"
-        );
+        assert_eq!(data["truncated"], json!(true), "{data}");
     }
 }
 
@@ -626,6 +609,7 @@ fn load_fixture(path: &Path) -> Value {
         panic!("fixture {} is not json: {error}", path.display());
     })
 }
+
 
 #[tokio::test]
 async fn phase0_tool_fixtures_lock_data_and_error() {

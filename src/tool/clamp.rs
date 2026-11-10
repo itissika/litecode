@@ -10,8 +10,36 @@ use serde_json::Value;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Clamped<T> {
     pub value: T,
+    /// The parameter exactly as the caller wrote it, before clamping.
+    pub requested: Value,
     /// Set when the requested value fell outside the budget.
     pub note: Option<String>,
+}
+
+/// One parameter a tool adjusted to a legal value, as it appears in a result.
+///
+/// Structured on purpose: the fact "5000 was used instead of 6000" belongs in a
+/// field the model can read, not in a prose sentence.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Clamp {
+    /// Parameter name as the caller wrote it.
+    pub parameter: String,
+    /// Value the caller asked for.
+    pub requested: Value,
+    /// Value the tool used instead.
+    pub applied: Value,
+}
+
+impl Clamped<u64> {
+    /// Project an integer clamp for a result field; None when nothing moved.
+    pub fn as_clamp(&self, parameter: &str) -> Option<Clamp> {
+        self.note.as_ref()?;
+        Some(Clamp {
+            parameter: parameter.to_string(),
+            requested: self.requested.clone(),
+            applied: Value::from(self.value),
+        })
+    }
 }
 
 /// Read an integer parameter and clamp it into `min..=max`.
@@ -35,6 +63,7 @@ pub fn clamp_int(
     let note = (i128::from(clamped) != requested).then(|| int_note(name, requested, clamped, unit));
     Ok(Some(Clamped {
         value: clamped,
+        requested: raw.clone(),
         note,
     }))
 }
@@ -57,6 +86,7 @@ pub fn clamp_float(
     let note = (clamped != requested).then(|| float_note(name, requested, clamped, unit));
     Ok(Some(Clamped {
         value: clamped,
+        requested: raw.clone(),
         note,
     }))
 }

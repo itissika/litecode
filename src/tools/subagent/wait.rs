@@ -194,6 +194,7 @@ impl Tool for SubagentWaitTool {
         let input_schema = {
             serde_json::json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
                     "ids": {
                         "type": "array",

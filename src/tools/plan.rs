@@ -57,6 +57,7 @@ impl Tool for PlanTool {
         let input_schema = {
             serde_json::json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
                     "action": {
                         "type": "string",

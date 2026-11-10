@@ -12,7 +12,7 @@ pub struct EditResult {
     pub path: String,
     pub message: String,
     /// Structured cause when `ok` is false (WP-210 G): one of
-    /// not_found / no_match / invalid_args / empty / permission / io.
+    /// not_found / no_match / invalid_input / empty / permission / io.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
 }

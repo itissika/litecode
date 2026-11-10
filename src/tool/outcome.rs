@@ -156,7 +156,12 @@ impl<T: Serialize> ToolOutcome<T> {
 
 pub fn kind_for_code(code: &str) -> ToolErrorKind {
     match code {
-        "invalid_input" | "invalid_regex" | "no_match" | "empty" => ToolErrorKind::InvalidInput,
+        // `invalid_args` is the JS-facing name of the same fault (`soft_failure_reason`
+        // emits it for `invalid_input`), so a contract row labelled with it must not
+        // fall through to Internal.
+        "invalid_input" | "invalid_args" | "invalid_regex" | "no_match" | "empty" => {
+            ToolErrorKind::InvalidInput
+        }
         "not_found" => ToolErrorKind::NotFound,
         "permission_denied" => ToolErrorKind::PermissionDenied,
         "conflict" | "stale" | "stale_cursor" | "still_alive" => ToolErrorKind::Conflict,
@@ -183,6 +188,11 @@ pub fn error_kind_code(kind: ToolErrorKind) -> String {
         .and_then(|value| value.as_str().map(str::to_string))
         .unwrap_or_else(|| "internal".into())
 }
+
+/// Fields of the resolved failure envelope below. The read proxy allows
+/// exactly these on a failed result; a test pins them to what this function
+/// actually builds, so the list cannot drift from the envelope.
+pub const FAILURE_FIELDS: [&str; 3] = ["ok", "reason", "message"];
 
 /// Data the program receives, or the `ToolError` it should see.
 ///
@@ -278,6 +288,12 @@ fn program_error(result: &ToolCallResult, code: String) -> Result<Value, HostErr
 
 #[cfg(test)]
 mod tests {
+    /// The JS-facing name must map to the same kind as its Rust-side source.
+    #[test]
+    fn invalid_args_is_invalid_input() {
+        assert_eq!(kind_for_code("invalid_args"), super::ToolErrorKind::InvalidInput);
+    }
+
     use super::*;
     use crate::types::ToolErrorKind;
 

@@ -39,6 +39,21 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) use boundary::json_bytes;
 pub use boundary::{DROPPED_CAP, DroppedUndefined};
+/// One entry of the run's output stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    /// Monotonic position in the stream, assigned when the entry was appended.
+    pub order: u64,
+    pub body: EntryBody,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EntryBody {
+    /// One console line.
+    Text { level: LogLevel, text: String },
+    /// The program's return value. Always the last entry when present.
+    Value(Json),
+}
 pub use budget::{BudgetPause, BudgetPauseGuard};
 pub use json::Json;
 
@@ -82,6 +97,13 @@ pub enum HostErrorKind {
         details: Option<serde_json::Value>,
         retryable: bool,
     },
+    /// A call that does not hold under the tool's contract: no such tool,
+    /// missing or unknown parameter, or a result that violates its own schema.
+    /// Thrown uncatchable; the run always ends on it.
+    Contract {
+        code: String,
+        tool: String,
+    },
 }
 
 /// Error returned by a host function.
@@ -104,6 +126,21 @@ impl HostError {
     pub fn type_error(message: impl Into<String>) -> Self {
         Self {
             kind: HostErrorKind::Type,
+            message: message.into(),
+        }
+    }
+
+    /// A call that does not hold under the tool's contract.
+    pub fn contract(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        tool: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: HostErrorKind::Contract {
+                code: code.into(),
+                tool: tool.into(),
+            },
             message: message.into(),
         }
     }
@@ -194,6 +231,20 @@ impl fmt::Debug for HostFn {
 pub struct HostBinding {
     pub name: String,
     pub function: HostFn,
+    /// Result fields this binding may expose. `None` means the binding has no
+    /// contract, so its result is handed to the program unwrapped.
+    pub contract: Option<std::sync::Arc<BindingContract>>,
+}
+
+/// The part of a tool's contract the runtime enforces on results.
+///
+/// `fields` comes from the tool's output schema (top-level properties only) and
+/// `failure_fields` from the failure envelope `program_result` builds, so both
+/// lists are owned by the contract, never by a name written here.
+#[derive(Debug, Clone)]
+pub struct BindingContract {
+    pub fields: std::sync::Arc<[String]>,
+    pub failure_fields: std::sync::Arc<[String]>,
 }
 
 /// A global object whose properties are async host functions.
@@ -438,17 +489,17 @@ fn program_js_site(text: &str) -> Option<(u32, u32)> {
 
 /// Result of one program.
 ///
-/// `value` is kept when the program has returned. `failure` coexists with
-/// `value` only for [`FailureKind::Cancelled`] (the user cancelled after the
-/// return). A later [`FailureKind::Timeout`] or [`FailureKind::Internal`]
-/// during drain is a warning on `logs`.
+/// `entries` is one ordered stream: console text and, when the program
+/// returned, its value as the **last** entry. `failure` coexists with a value
+/// only for [`FailureKind::Cancelled`] (the user cancelled after the return). A
+/// later [`FailureKind::Timeout`] or [`FailureKind::Internal`] during drain is
+/// a text entry.
 ///
-/// `value` is [`Json`], so dropping, cloning, comparing, or debugging an
+/// Entries hold [`Json`], so dropping, cloning, comparing, or debugging an
 /// outcome does not overflow the stack on a deep tree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
-    pub logs: Vec<LogEntry>,
-    pub value: Option<Json>,
+    pub entries: Vec<Entry>,
     pub failure: Option<Failure>,
     pub calls: Vec<CallRecord>,
     /// Active program time when the run settled (excludes approval pauses).
@@ -458,10 +509,20 @@ pub struct Outcome {
 }
 
 impl Outcome {
+    /// The program's return value: the last entry, and only when it is a value.
+    pub fn value(&self) -> Option<&Json> {
+        match self.entries.last() {
+            Some(Entry {
+                body: EntryBody::Value(value),
+                ..
+            }) => Some(value),
+            _ => None,
+        }
+    }
+
     pub(crate) fn from_failure(failure: Failure) -> Self {
         Self {
-            logs: Vec::new(),
-            value: None,
+            entries: Vec::new(),
             failure: Some(failure),
             calls: Vec::new(),
             duration_ms: 0,

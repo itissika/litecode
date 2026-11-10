@@ -111,6 +111,7 @@ impl Tool for SubagentListTool {
         let input_schema = {
             serde_json::json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {},
             })
         };

@@ -794,6 +794,26 @@ function scheduleDidChange(
   );
 }
 
+/** Hidden Dockview overlays keep their last box; layout info alone says "visible". */
+function isElementVisible(node: HTMLElement): boolean {
+  const view = node.ownerDocument.defaultView;
+  if (!view) return false;
+  let el: HTMLElement | null = node;
+  while (el) {
+    const style = view.getComputedStyle(el);
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      style.visibility === "collapse"
+    ) {
+      return false;
+    }
+    if (el === node.ownerDocument.body) break;
+    el = el.parentElement;
+  }
+  return true;
+}
+
 function isModelVisible(
   monaco: typeof import("monaco-editor"),
   model: Monaco.editor.ITextModel,
@@ -803,7 +823,7 @@ function isModelVisible(
     const node = ed.getDomNode();
     if (!node?.isConnected) return false;
     const layout = ed.getLayoutInfo();
-    return layout.width > 0 && layout.height > 0;
+    return layout.width > 0 && layout.height > 0 && isElementVisible(node);
   });
 }
 
@@ -813,7 +833,8 @@ function jumpFromEditor(
 ): { path: string; line: number; column: number } | null {
   const model = editor.getModel();
   const pos = editor.getPosition();
-  if (!model || !pos || !projectRoot) return null;
+  if (!model || model.uri.scheme !== "file" || !pos || !projectRoot)
+    return null;
   return {
     path: relPathFromModel(model, projectRoot),
     line: pos.lineNumber,
@@ -953,7 +974,9 @@ function lspFileUri(
   model: Monaco.editor.ITextModel,
   projectRoot: string,
 ): string | null {
-  if (!projectRoot) return null;
+  // Only workspace files belong to the LSP. External previews and the
+  // git-show quick-diff models are Monaco models too, but not project files.
+  if (model.uri.scheme !== "file" || !projectRoot) return null;
   return toFileUri(projectRoot, relPathFromModel(model, projectRoot));
 }
 
@@ -1592,6 +1615,7 @@ function registerWorkspaceLsp(
   disposables.push(
     monaco.editor.registerEditorOpener({
       openCodeEditor: async (_input, resource, selectionOrPosition) => {
+        if (resource.scheme !== "file") return false;
         const projectRoot = getProjectRoot();
         const focused = monaco.editor
           .getEditors()
@@ -1691,7 +1715,8 @@ export function bindEditorLsp(
   const syncBuffer = () => {
     const model = editor.getModel();
     const projectRoot = getProjectRoot();
-    if (!model || !projectRoot || !isLspWarm()) return;
+    if (!model || model.uri.scheme !== "file" || !projectRoot || !isLspWarm())
+      return;
     const rel = relPathFromModel(model, projectRoot);
     const uri = toFileUri(projectRoot, rel);
     void flushDidChange(monaco, model, uri);
@@ -1701,7 +1726,8 @@ export function bindEditorLsp(
     editor.onDidChangeModelContent((e) => {
       const model = editor.getModel();
       const projectRoot = getProjectRoot();
-      if (!model || !projectRoot || !isLspWarm()) return;
+      if (!model || model.uri.scheme !== "file" || !projectRoot || !isLspWarm())
+        return;
       const uri = toFileUri(projectRoot, relPathFromModel(model, projectRoot));
       queueContentChanges(uri, e.changes);
       scheduleDidChange(monaco, model, uri);

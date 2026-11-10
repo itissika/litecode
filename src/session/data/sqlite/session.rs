@@ -3915,7 +3915,9 @@ mod tests {
         assert!(
             previews
                 .iter()
-                .any(|p| p.contains("prior") && p.matches("<compacted-summary>").count() == 1)
+                .any(|p| p.contains("prior")
+                && p.starts_with("<system-reminder>")
+                && p.ends_with("</system-reminder>"))
         );
         assert!(previews.iter().any(|p| p == "keep-tail"));
     }
@@ -4263,7 +4265,9 @@ mod tests {
         let folded = fold_ids(&session);
         assert_eq!(writer, folded);
         assert!(writer[0].1.contains("sum"));
-        assert_eq!(writer[0].1.matches("<compacted-summary>").count(), 1);
+        assert!(writer[0].1.starts_with("<system-reminder>\n"));
+        assert!(writer[0].1.ends_with("\n</system-reminder>"));
+        assert!(!writer[0].1.contains("<compacted-summary>"));
         assert!(writer.iter().any(|(seq, text)| *seq == 1 && text == "b"));
     }
 
@@ -4423,7 +4427,9 @@ mod tests {
         }
         let text = item_text_preview(&loaded[0]);
         assert!(text.contains("rolled-up"));
-        assert_eq!(text.matches("<compacted-summary>").count(), 1);
+        assert!(text.starts_with("<system-reminder>\n"));
+        assert!(text.ends_with("\n</system-reminder>"));
+        assert!(!text.contains("<compacted-summary>"));
         assert!(!matches!(loaded[0], Item::Message(MessageItem::Output(_))));
 
         let body: CompactedBody = serde_json::from_value(

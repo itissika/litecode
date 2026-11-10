@@ -123,10 +123,18 @@ fn keep_recent_compact_reader_matches_fold_checkpoint_then_kept() {
     assert_eq!(checkpoint.summary, "sum");
     assert_eq!(checkpoint.from, 0);
     assert_eq!(checkpoint.to, 1);
-    assert_eq!(
-        text(&visible[0].1).matches("<compacted-summary>").count(),
-        1,
-        "checkpoint projection must contain exactly one wrapper"
+    let checkpoint_text = text(&visible[0].1);
+    assert!(
+        checkpoint_text.starts_with("<system-reminder>\n"),
+        "{checkpoint_text}"
+    );
+    assert!(
+        checkpoint_text.ends_with("\n</system-reminder>"),
+        "{checkpoint_text}"
+    );
+    assert!(
+        !checkpoint_text.contains("<compacted-summary>"),
+        "{checkpoint_text}"
     );
     assert!(
         visible

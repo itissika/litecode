@@ -800,8 +800,12 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         "summary is stored as the model text, got {summary:?}"
     );
     assert!(
-        !summary.contains("<system-reminder>"),
-        "summary must not embed a reminder, got {summary:?}"
+        summary.starts_with("<system-reminder>\n") && summary.ends_with("\n</system-reminder>"),
+        "checkpoint projects through the system-reminder frame, got {summary:?}"
+    );
+    assert!(
+        !summary.contains("keep shipping"),
+        "restored tasks must not be embedded in the checkpoint, got {summary:?}"
     );
 
     let view = sessions.spine_reminder_view(&sid).unwrap();
@@ -925,7 +929,8 @@ fn revert_contract_three_states() {
         .collect();
     assert_eq!(previews.len(), 2, "{previews:?}");
     assert!(previews[0].contains("summary"));
-    assert_eq!(previews[0].matches("<compacted-summary>").count(), 1);
+    assert!(previews[0].starts_with("<system-reminder>\n"), "{previews:?}");
+    assert!(previews[0].ends_with("\n</system-reminder>"), "{previews:?}");
     assert_eq!(previews[1], "u2");
     assert_eq!(sessions.entry_user_detail_count(&sid).unwrap(), 3);
 

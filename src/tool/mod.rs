@@ -35,7 +35,6 @@ pub use schema_validate::{
     check_tool_input, expected_type, invalid_input_for, missing_parameter, must_be,
     must_be_nonempty_string, must_be_one_of, parse_tool_arguments, require_nonempty_string,
     require_nonempty_string_trimmed, require_string, require_string_value, schema_validate,
-    unknown_top_level_properties,
 };
 pub use snippet::{SnippetSection, format_snippet_sections};
 pub use trait_::{DirectToolSpec, DynamicCodeSpec, Tool, ToolSurface};
