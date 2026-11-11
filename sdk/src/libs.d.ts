@@ -54,8 +54,8 @@ type FsFailure = { ok: false; reason: "not_found" | "permission" | "io"; message
 
 /** Read-only workspace probes. Synchronous; paths are workspace-relative. */
 declare const fs: {
-  /** One level, sorted by name, at most 500 entries (message says when cut). */
-  ls(path: string): { ok: true; entries: Array<{ name: string; type: "file" | "dir" | "symlink" | "other"; size: number }>; message?: string } | FsFailure;
+  /** One level, sorted by name; more than 500 entries set `truncated`. */
+  ls(path: string): { ok: true; entries: Array<{ name: string; type: "file" | "dir" | "symlink" | "other"; size: number }>; truncated: boolean } | FsFailure;
   /** mtime is ms since the Unix epoch. */
   stat(path: string): { ok: true; type: "file" | "dir" | "symlink" | "other"; size: number; mtime: number } | FsFailure;
   exists(path: string): boolean;

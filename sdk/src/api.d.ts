@@ -20,19 +20,6 @@ type Location = {
   end_line?: Integer;
 };
 
-type DiagnosticItem = {
-  /** Severity name mapped from the LSP number: Error, Warning, Information, Hint; Unknown for anything else. */
-  severity: string;
-  /** Source file path. */
-  path: string;
-  /** 1-based line number. */
-  line: Integer;
-  /** 1-based UTF-16 column on that line. */
-  character: Integer;
-  /** Human-readable diagnostic. */
-  message: string;
-};
-
 type SymbolInfo = {
   /** Symbol name. */
   name: string;
@@ -64,15 +51,6 @@ type RangeInput = {
   path: Path;
 };
 
-type ReadInput = {
-  /** Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md. */
-  path: Path;
-  /** First line to read, 1-based, inclusive. @default 1 */
-  start_line?: Integer;
-  /** Lines to return. 1–5000. @default 2000 */
-  limit?: Integer;
-};
-
 type ClampedParam = {
   /** Parameter name as the caller wrote it. */
   parameter: string;
@@ -82,55 +60,23 @@ type ClampedParam = {
   applied: number;
 };
 
-type ReadData = {
-  /** Line contents for this page, in file order. */
-  lines: string[];
-  path: string;
-  start_line: Integer;
-  /** Lines in the file; `has_more` compares against it. */
-  total_lines: Integer;
-  /** True when this page stops before the end of the file. */
-  has_more: boolean;
-  /**
-   * Lines the window covered but left out because they are already in the
-   * model's context. A gap in `lines` is explained by this number.
-   */
-  skipped_in_context: Integer;
-  /** Lines shortened to the per-line character cap, by number. */
-  lines_capped?: Integer[];
-  /** Parameters adjusted to a legal value; absent when nothing moved. */
-  clamped?: ClampedParam[];
+/** Truthful index state of the language server that produced this result. */
+type LspDataState = "ok" | "partial" | "unknown";
+
+type SymbolsData = {
+  symbols: SymbolInfo[];
+  /** ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss. */
+  state: LspDataState;
+  /** True when the cap cut the list: more results exist. */
+  truncated: boolean;
 };
 
-type WriteInput = {
-  /** Content to write to the file. */
-  content: string;
-  /** Prefer a workspace-relative path. */
-  path: Path;
-  /** If true, refuse to overwrite an existing file. @default false */
-  create_only?: boolean;
-  /** sha256 of the current file bytes. Omit to skip the check. A mismatch is ToolFailure reason stale. */
-  expected_hash?: string;
-};
-
-type FileRef = {
-  /** File size in bytes. */
-  bytes: Integer;
-  /** sha256 hex of the file bytes. */
-  hash: string;
-  /** Workspace-relative path inside the workspace; requested path outside it. */
-  path: string;
-  /** Absolute path when the file is outside the workspace. */
-  abs?: string;
-};
-
-type PathRisk = {
-  /** The target resolves outside the workspace root. */
-  outside_workspace: boolean;
-  /** The target is a sensitive system location. */
-  sensitive: boolean;
-  /** Absolute path the target resolved to; present when it is outside. */
-  resolved?: string;
+type LocationsData = {
+  locations: Location[];
+  /** ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss. */
+  state: LspDataState;
+  /** True when the cap cut the list: more results exist. */
+  truncated: boolean;
 };
 
 /** One warning a tool attached to a successful write. */
@@ -145,15 +91,22 @@ type ToolDiagnostic = {
   details?: unknown;
 };
 
-type WriteData = {
-  /** True when the file did not exist before. */
-  created: boolean;
-  /** File identity after the write. */
-  file: FileRef;
-  /** Outside-workspace or sensitive-path target; absent when there is none. */
-  path_risk?: PathRisk;
-  /** Warnings recorded after the write; absent when the write was clean. */
-  diagnostics?: ToolDiagnostic[];
+type PathRisk = {
+  /** The target resolves outside the workspace root. */
+  outside_workspace: boolean;
+  /** The target is a sensitive system location. */
+  sensitive: boolean;
+  /** Absolute path the target resolved to; present when it is outside. */
+  resolved?: string;
+};
+
+type BrowserPage = {
+  active: boolean;
+  agentOwned: boolean;
+  id: string;
+  title: string;
+  url: string;
+  visible: boolean;
 };
 
 type EditInput = {
@@ -165,246 +118,14 @@ type EditInput = {
   path: Path;
 };
 
-type EditFailureReason =
-  | "not_found"
-  | "no_match"
-  | "invalid_args"
-  | "empty"
-  | "permission"
-  | "io";
-
-/** Successful single-edit payload. Failures use ToolFailure. */
-type EditData = {
-  path: string;
-  /** Outside-workspace or sensitive-path target; absent when there is none. */
-  path_risk?: PathRisk;
-  /** Warnings recorded after the edit; absent when the edit was clean. */
-  diagnostics?: ToolDiagnostic[];
-};
-
-/** One item in a serial apply_edits batch. Item failures stay item-level. */
-type EditResult = {
-  ok: boolean;
-  path: string;
-  /** Why this item failed; `null` when `ok` is true. */
-  reason: EditFailureReason | null;
-  /** 1-based line of the closest match when `old_string` was not found; `null` otherwise. */
-  nearest_line: Integer | null;
-  /** Outside-workspace or sensitive-path target; absent when there is none. */
-  path_risk?: PathRisk;
-  /** Warnings recorded after the edit; absent when there were none. */
-  diagnostics?: ToolDiagnostic[];
-};
-
-type ApplyEditsInput = {
-  /** Replacements applied serially; later items on the same path see earlier successful writes. */
-  edits: EditInput[];
-};
-
-type ApplyEditsData = {
-  /** Same length and order as edits. */
-  results: EditResult[];
-};
-
-type GlobInput = {
-  /** Glob relative to path, or to the workspace root when path is omitted. */
-  pattern: string;
-  /** Maximum paths to return. 1–5000. @default 1000 */
-  limit?: Integer;
-  /** Optional directory to search under. */
-  path?: Path;
-};
-
-type GlobData = {
-  /** Matching paths, sorted by depth, then parent directory, then name. */
-  paths: string[];
-  /** Matches found before the limit was applied. */
-  total: Integer;
-  /** True when paths holds only the first limit matches. */
-  truncated: boolean;
-  /** True when some returned paths are outside the workspace (absolute). */
-  outside_workspace: boolean;
-  /**
-   * Why `paths` is empty; absent when it is not. Only what glob can produce:
-   * the searched path is excluded by default filters, or nothing matched.
-   */
-  empty_reason?: "hidden_by_filters" | "no_match";
-  /** Parameters adjusted to a legal value; absent when nothing moved. */
-  clamped?: ClampedParam[];
-};
-
-type GrepInput = {
-  /** Regular expression over file contents, unless literal is true. */
-  pattern: string;
-  /** Lines of context before each hit. 0–10. @default 0 */
-  before?: Integer;
-  /** Lines of context after each hit. 0–10. @default 0 */
-  after?: Integer;
-  /** One glob or comma-separated globs. A leading ! excludes. Relative to path. */
-  glob?: string;
-  /** Ignore case when matching. @default false */
-  ignore_case?: boolean;
-  /** Maximum hits to return. 1–100. @default 40 */
-  limit?: Integer;
-  /** Search for pattern as plain text. @default false */
-  literal?: boolean;
-  /** File or directory to search. Defaults to the workspace. */
-  path?: Path;
-};
-
-/** One match. Context, when requested, is folded into `text` as one block. */
-type GrepHit = {
-  /** Source file path. */
-  path: string;
-  /** 1-based match line. */
-  line: Integer;
-  /**
-   * Matching line text, capped at 500 characters. With `before`/`after` this
-   * is a whole block in ripgrep notation, newline-separated:
-   * `12- before`, `13: match`, `14+ after` (real file line numbers).
-   */
-  text: string;
-};
-
-type GrepData = {
-  hits: GrepHit[];
-  /** True when a limit or the token budget cut the result short. */
-  truncated?: boolean;
-  /**
-   * Why `hits` is empty; absent when it is not. Only what grep can produce:
-   * nothing to search, the glob filter matched no file, no match, the file
-   * could not be read as text, the file is binary, or the searched path is
-   * excluded by default filters.
-   */
-  empty_reason?:
-    | "no_files"
-    | "glob_no_files"
-    | "no_match"
-    | "file_unreadable"
-    | "binary"
-    | "hidden_by_filters";
-  /**
-   * Matches found before the result was cut; absent when the scan stopped at a
-   * limit and never counted the rest. Do not treat a missing value as zero.
-   */
-  total_hits?: Integer;
-  /** True when the hit limit stopped the scan. */
-  at_limit_cap: boolean;
-  /** True when a match or context line was shortened to the per-line cap. */
-  lines_truncated: boolean;
-  /** True when context lines were dropped to fit the token budget. */
-  context_omitted: boolean;
-  /** True when hits were dropped to fit the token budget. */
-  output_capped: boolean;
-  /** Parameters adjusted to a legal value; absent when nothing moved. */
-  clamped?: ClampedParam[];
-};
-
-type CodeSearchHit = {
-  /** Source file path. */
-  path: string;
-  /** Query-relevant anchor line. */
-  anchor_line: Integer;
-  /** First line in the returned snippet. */
-  start_line: Integer;
-  /** Last line in the returned snippet. */
-  end_line: Integer;
-  /** Optional AST symbol enclosing the anchor. */
-  symbol?: string;
-  /** Which retrieval leg(s) admitted this chunk. */
-  via: "lex" | "dense" | "both";
-  /** Raw dense cosine similarity; 0.0 means the hit is lexical-only. */
-  dense_similarity: number;
-  /** The anchor line itself, cheap enough for a table cell. */
-  text: string;
-  /** Source excerpt, at most 24 lines; overlong lines are capped. */
-  snippet: string;
-};
-
-type CodeSearchInput = {
-  /** One natural-language or code-token query. */
-  query: string;
-  /** Optional glob filter for workspace paths. */
-  include_pattern?: string;
-  /**
-   * Minimum raw dense cosine similarity for dense-only hits. 0–1. Lexical
-   * hits are not subject to this floor; 0 disables it. @default 0.8
-   */
-  min_score?: number;
-  /** Maximum hits. 1–20. @default 8 */
-  top_k?: Integer;
-};
-
-type CodeSearchData = {
-  /** Empty if the search completed but found no matching chunks. */
-  hits: CodeSearchHit[];
-  /** Parameters adjusted to a legal value; absent when nothing moved. */
-  clamped?: ClampedParam[];
-};
-
-type SessionSearchHit = {
-  /** Shortest unique session handle, also accepted by `session_id`. */
-  session: string;
-  /** Derived bot name for this session, if any. Never a stored session field. */
-  bot_name?: string;
-  /** Relative age of the session's last update. */
-  age: string;
-  /** 1-based rendered transcript line of the hit. */
-  line: Integer;
-  /** Content role of the row. */
-  role: "conversation" | "reasoning" | "action" | "outcome" | "unknown";
-  /** Evidence that found this row, in rank order: `exact`, `prox`, `lex`, `sem`, `fuzzy`, joined by `+`. */
-  via: string;
-  /** Collapsed one-line hit text. */
-  summary: string;
-};
-
-type SessionSearchInput = {
-  /** What to find in past session transcripts. Literal words or a phrase. */
-  query: string;
-  /** Optional session scope: full id, unique prefix, or the handle from a result. */
-  session_id?: string;
-  /** Search only this session's transcript: the turns already folded out of the live context window. Cannot be combined with session_id. */
-  own_session?: boolean;
-  /** Maximum rows. 1–50. @default 20 */
-  limit?: Integer;
-};
-
-type SessionSearchData = {
-  /** Flat rank order; not grouped by session. */
-  hits: SessionSearchHit[];
-  /** Total matching rows before `limit` is applied. */
-  total: Integer;
-  /** True when `total` exceeds the returned rows. */
-  truncated: boolean;
-  /** False when the semantic leg was unavailable: the hits are lexical only. */
-  semantic: boolean;
-  /** Parameters adjusted to a legal value; absent when nothing moved. */
-  clamped?: ClampedParam[];
-};
-
-type RunInput = {
-  /** Shell command to run once in the workspace root. Chain with && for cd or env changes. */
-  command: string;
-  /**
-   * Return immediately after spawn with exit_code:null and keep the job as a
-   * wait/kill target. Default false: stay in the foreground until the command
-   * exits or the run_code budget runs out; a job still alive then detaches with
-   * exit_code:null. @default false
-   */
-  run_in_background?: boolean;
-};
-
-type WaitInput = {
-  /** Command.id from a tools.process.run result whose exit_code is null. */
-  id: string;
-  /** Seconds to block waiting for exit. 1–300. */
-  sec: Integer;
-};
-
-type KillInput = {
-  /** Command.id from a tools.process.run or tools.process.wait result whose exit_code is null. */
-  id: string;
+type RejectedItem = {
+  /** 0-based input item index. */
+  index: Integer;
+  /** empty_text | text_too_long | invalid_id | unknown_id | limit_exceeded. */
+  reason: string;
+  id?: string;
+  /** Which limit the reason names, and by how much this item misses it. */
+  detail?: string;
 };
 
 type CommandData = {
@@ -412,10 +133,7 @@ type CommandData = {
   exit_code: Integer | null;
   /** While exit_code is null, use with tools.process.wait / tools.process.kill in this session. */
   id: string;
-  /**
-   * Stdout exactly as the process wrote it: no notes, no status line.
-   * A truncated stream keeps its `... (truncated)` marker in place.
-   */
+  /** Stdout exactly as the process wrote it: no notes, no status line. A truncated stream keeps its `... (truncated)` marker in place. */
   output: string;
   /** Shell that ran the command. */
   shell: string;
@@ -440,384 +158,338 @@ type CommandData = {
   /** Parameters adjusted to a legal value; absent when nothing moved. */
   clamped?: ClampedParam[];
 };
-/** Command payload shared by run, wait, and kill; exit_code carries command status. */
-type RunData = CommandData;
-type WaitData = CommandData;
-type KillData = CommandData;
-
-type WebfetchFormat = "text" | "markdown" | "html";
-
-type WebfetchInput = {
-  /** URL to fetch. Only http(s) URLs are accepted. */
-  url: string;
-  /** Desired output format. @default "markdown" */
-  format?: WebfetchFormat;
-};
-
-type WebfetchData = {
-  /** Empty for a non-2xx answer: the status carries the fact. */
-  body?: string;
-  format?: WebfetchFormat;
-  /** HTTP status of the final response, 2xx or not. */
-  status?: Integer;
-  url?: string;
-};
-
-type WebsearchHit = {
-  /** Query-relevant excerpt from the page, as returned by the provider. */
-  snippet: string;
-  title: string;
-  url: string;
-};
-
-type WebsearchInput = {
-  /** Search query. */
-  query: string;
-  /** Number of results, best first. 1–100. @default 10 */
-  top_k?: Integer;
-};
-
-type WebsearchData = {
-  /** At most top_k hits, best first; empty when the search found nothing. */
-  results: WebsearchHit[];
-  query?: string;
-  /** Parameters adjusted to a legal value; absent when nothing moved. */
-  clamped?: ClampedParam[];
-};
-
-type MemoryEntry = {
-  id: string;
-  text: string;
-  /** Milliseconds since Unix epoch. */
-  updated_at: Integer;
-};
-
-type RejectedItem = {
-  /** 0-based input item index. */
-  index: Integer;
-  /** empty_text | text_too_long | invalid_id | unknown_id | limit_exceeded. */
-  reason: string;
-  id?: string;
-  /** Which limit the reason names, and by how much this item misses it. */
-  detail?: string;
-};
-
-type MemoryListData = {
-  /** Number of entries in this snapshot. */
-  count: Integer;
-  /** Authoritative current entries, in insertion order. */
-  entries: MemoryEntry[];
-  /** Maximum entries the session can hold. */
-  limit: Integer;
-  /** Entries in the whole session memory. */
-  total: Integer;
-  /** Characters across all entry texts. */
-  total_chars: Integer;
-};
-
-type MemoryUpsertEntry = {
-  /** Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry. */
-  text: string;
-  /** Optional existing id. Omit to add or update by text. */
-  id?: string;
-};
-
-type MemoryUpsertInput = {
-  /** Memory entries to add or update. */
-  entries: MemoryUpsertEntry[];
-};
-
-type MemoryUpsertData = {
-  /** New ids. */
-  added: string[];
-  /** Entries after the batch. */
-  count: Integer;
-  rejected: RejectedItem[];
-  /** Characters after the batch. */
-  total_chars: Integer;
-  /** Updated ids. */
-  updated: string[];
-};
-
-type MemoryDeleteInput = {
-  /** Entry ids to delete. */
-  ids: string[];
-};
-
-type MemoryDeleteData = {
-  /** Entries after the batch. */
-  count: Integer;
-  /** Deleted ids. */
-  deleted: string[];
-  rejected: RejectedItem[];
-};
-
-type BrowserPage = {
-  active: boolean;
-  agentOwned: boolean;
-  id: string;
-  title: string;
-  url: string;
-  visible: boolean;
-};
-
-type BrowserElement = {
-  /** Element reference from the latest browser_read. */
-  ref: string;
-  tag: string;
-  text: string;
-  href?: string;
-  type?: string;
-};
-
-type BrowserOpenInput = {
-  /** http(s) URL to open in a visible browser tab. */
-  url: string;
-};
-
-type BrowserOpenData = BrowserPage;
-
-type BrowserCloseInput = {
-  /** Browser page id from browser_open or browser_list. */
-  page_id: string;
-};
-
-type BrowserCloseData = {
-  closed: boolean;
-  id: string;
-  fallback?: boolean;
-};
-
-type BrowserListData = {
-  active_id: string;
-  pages: BrowserPage[];
-};
-
-type BrowserReadInput = {
-  /** Maximum body text characters. 1000–30000. @default 12000 */
-  max_chars?: Integer;
-  /** Optional page id. Omit for the active visible tab. */
-  page_id?: string;
-};
-
-type BrowserReadData = {
-  elements: BrowserElement[];
-  /** Set when max_chars was clamped into range. */
-  message?: string;
-  page_id: string;
-  text: string;
-  title: string;
-  truncated: boolean;
-  url: string;
-};
-
-type BrowserClickInput = {
-  /** Element reference from the latest browser_read. */
-  ref: string;
-  /** Optional page id. Omit for the active visible tab. */
-  page_id?: string;
-};
-
-type BrowserClickData = {
-  page_id: string;
-  ref: string;
-  tag: string;
-  text: string;
-  title: string;
-  url: string;
-};
-
-type BrowserTypeInput = {
-  /** Input reference from the latest browser_read. */
-  ref: string;
-  /** Text to set on the focused input. */
-  text: string;
-  /** Optional page id. Omit for the active visible tab. */
-  page_id?: string;
-};
-
-type BrowserTypeData = {
-  page_id: string;
-  ref: string;
-  tag: string;
-  title: string;
-  url: string;
-};
-
-type DiagnosticsInput = PathInput;
-type DocumentSymbolInput = PathInput;
-type FindReferencesInput = RangeInput;
-type GoToDefinitionInput = RangeInput;
-type GoToImplementationInput = RangeInput;
-type HoverInput = RangeInput;
-
-type WorkspaceSymbolInput = {
-  /** Symbol name or fragment to search across the workspace. */
-  query: string;
-  /**
-   * Optional source file that selects/starts the project's language server.
-   * Required only when more than one server is running.
-   */
-  path?: string;
-};
-
-/** Truthful index state of the language server that produced this result. */
-type LspDataState = "ok" | "partial" | "unknown";
-
-type DiagnosticsData = {
-  items: DiagnosticItem[];
-  /**
-   * ok means the index is ready, partial that it is still building, and
-   * unknown that the server never reported it. An empty value under
-   * partial/unknown is not a confirmed miss.
-   */
-  state: LspDataState;
-  /** True when the cap cut the list: more results exist. */
-  truncated: boolean;
-};
-
-type SymbolsData = {
-  symbols: SymbolInfo[];
-  /**
-   * ok means the index is ready, partial that it is still building, and
-   * unknown that the server never reported it. An empty value under
-   * partial/unknown is not a confirmed miss.
-   */
-  state: LspDataState;
-  /** True when the cap cut the list: more results exist. */
-  truncated: boolean;
-};
-
-type DocumentSymbolData = SymbolsData;
-type WorkspaceSymbolData = SymbolsData;
-
-type LocationsData = {
-  locations: Location[];
-  /**
-   * ok means the index is ready, partial that it is still building, and
-   * unknown that the server never reported it. An empty value under
-   * partial/unknown is not a confirmed miss.
-   */
-  state: LspDataState;
-  /** True when the cap cut the list: more results exist. */
-  truncated: boolean;
-};
-
-type FindReferencesData = LocationsData;
-type GoToDefinitionData = LocationsData;
-type GoToImplementationData = LocationsData;
-
-/** One hover answer. A hover is a single value, so there is no truncation. */
-type HoverData = {
-  /** Flattened hover text, not raw LSP JSON. */
-  markdown: string;
-  /**
-   * ok means the index is ready, partial that it is still building, and
-   * unknown that the server never reported it. An empty value under
-   * partial/unknown is not a confirmed miss.
-   */
-  state: LspDataState;
-};
 
 interface FileTools {
-  /** Read lines from one file or archived session transcript. @tool read @suite file @input ReadInput @output ReadData */
-  read(args: ReadInput): Promise<ToolResult<ReadData>>;
-
-  /** Replace a file's contents; optional hash and create-only guards. @tool write @suite file @input WriteInput @output WriteData */
-  write(args: WriteInput): Promise<ToolResult<WriteData>>;
-
-  /** Apply one exact-string replacement. @tool edit @suite file @input EditInput @output EditData */
-  edit(args: EditInput): Promise<ToolResult<EditData>>;
-
-  /** Apply several edit replacements serially. @tool apply_edits @suite file @input ApplyEditsInput @output ApplyEditsData */
-  apply_edits(args: ApplyEditsInput): Promise<ToolResult<ApplyEditsData>>;
-
-  /** Find files by path glob. @tool glob @suite file @input GlobInput @output GlobData */
-  glob(args: GlobInput): Promise<ToolResult<GlobData>>;
-
-  /** Search file contents. @tool grep @suite file @input GrepInput @output GrepData */
-  grep(args: GrepInput): Promise<ToolResult<GrepData>>;
+  /** Read lines from one file or archived session transcript. @tool read @suite file */
+  read(args: {
+    path: Path; // Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md.
+    start_line?: Integer; // First line to read, 1-based, inclusive. @default 1
+    limit?: Integer; // Lines to return. 1–5000. @default 2000
+  }): Promise<ToolResult<{
+    lines: string[]; // Line contents for this page, in file order.
+    path: string;
+    start_line: Integer;
+    total_lines: Integer; // Lines in the file; `has_more` compares against it.
+    has_more: boolean; // True when this page stops before the end of the file.
+    skipped_in_context: Integer; // Lines the window covered but left out because they are already in the model's context. A gap in `lines` is explained by this number.
+    lines_capped?: Integer[]; // Lines shortened to the per-line character cap, by number.
+    clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
+  }>>;
+  /** Replace a file's contents; optional hash and create-only guards. @tool write @suite file */
+  write(args: {
+    content: string; // Content to write to the file.
+    path: Path; // Prefer a workspace-relative path.
+    create_only?: boolean; // If true, refuse to overwrite an existing file. @default false
+    expected_hash?: string; // sha256 of the current file bytes. Omit to skip the check. A mismatch is ToolFailure reason stale.
+  }): Promise<ToolResult<{
+    created: boolean; // True when the file did not exist before.
+    // File identity after the write.
+    file: {
+      bytes: Integer; // File size in bytes.
+      hash: string; // sha256 hex of the file bytes.
+      path: string; // Workspace-relative path inside the workspace; requested path outside it.
+      abs?: string; // Absolute path when the file is outside the workspace.
+    };
+    path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.
+    diagnostics?: ToolDiagnostic[]; // Warnings recorded after the write; absent when the write was clean.
+  }>>;
+  /** Apply one exact-string replacement. @tool edit @suite file */
+  edit(args: EditInput): Promise<ToolResult<
+    // Successful single-edit payload. Failures use ToolFailure.
+    {
+      path: string;
+      path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.
+      diagnostics?: ToolDiagnostic[]; // Warnings recorded after the edit; absent when the edit was clean.
+    }
+  >>;
+  /** Apply several edit replacements serially. @tool apply_edits @suite file */
+  apply_edits(args: {
+    edits: EditInput[]; // Replacements applied serially; later items on the same path see earlier successful writes.
+  }): Promise<ToolResult<{
+    // Same length and order as edits.
+    results: Array<
+      // One item in a serial apply_edits batch. Item failures stay item-level.
+      {
+        ok: boolean;
+        path: string;
+        reason: ("not_found" | "no_match" | "invalid_args" | "empty" | "permission" | "io") | null; // Why this item failed; `null` when `ok` is true.
+        nearest_line: Integer | null; // 1-based line of the closest match when `old_string` was not found; `null` otherwise.
+        path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.
+        diagnostics?: ToolDiagnostic[]; // Warnings recorded after the edit; absent when there were none.
+      }
+    >;
+  }>>;
+  /** Find files by path glob. @tool glob @suite file */
+  glob(args: {
+    pattern: string; // Glob relative to path, or to the workspace root when path is omitted.
+    limit?: Integer; // Maximum paths to return. 1–5000. @default 1000
+    path?: Path; // Optional directory to search under.
+  }): Promise<ToolResult<{
+    paths: string[]; // Matching paths, sorted by depth, then parent directory, then name.
+    total: Integer; // Matches found before the limit was applied.
+    truncated: boolean; // True when paths holds only the first limit matches.
+    outside_workspace: boolean; // True when some returned paths are outside the workspace (absolute).
+    empty_reason?: "hidden_by_filters" | "no_match"; // Why `paths` is empty; absent when it is not. Only what glob can produce: the searched path is excluded by default filters, or nothing matched.
+    clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
+  }>>;
+  /** Search file contents. @tool grep @suite file */
+  grep(args: {
+    pattern: string; // Regular expression over file contents, unless literal is true.
+    before?: Integer; // Lines of context before each hit. 0–10. @default 0
+    after?: Integer; // Lines of context after each hit. 0–10. @default 0
+    glob?: string; // One glob or comma-separated globs. A leading ! excludes. Relative to path.
+    ignore_case?: boolean; // Ignore case when matching. @default false
+    limit?: Integer; // Maximum hits to return. 1–100. @default 40
+    literal?: boolean; // Search for pattern as plain text. @default false
+    path?: Path; // File or directory to search. Defaults to the workspace.
+  }): Promise<ToolResult<{
+    hits: Array<
+      // One match. Context, when requested, is folded into `text` as one block.
+      {
+        path: string; // Source file path.
+        line: Integer; // 1-based match line.
+        text: string; // Matching line text, capped at 500 characters. With `before`/`after` this is a whole block in ripgrep notation, newline-separated: `12- before`, `13: match`, `14+ after` (real file line numbers).
+      }
+    >;
+    truncated?: boolean; // True when a limit or the token budget cut the result short.
+    empty_reason?: "no_files" | "glob_no_files" | "no_match" | "file_unreadable" | "binary" | "hidden_by_filters"; // Why `hits` is empty; absent when it is not. Only what grep can produce: nothing to search, the glob filter matched no file, no match, the file could not be read as text, the file is binary, or the searched path is excluded by default filters.
+    total_hits?: Integer; // Matches found before the result was cut; absent when the scan stopped at a limit and never counted the rest. Do not treat a missing value as zero.
+    at_limit_cap: boolean; // True when the hit limit stopped the scan.
+    lines_truncated: boolean; // True when a match or context line was shortened to the per-line cap.
+    context_omitted: boolean; // True when context lines were dropped to fit the token budget.
+    output_capped: boolean; // True when hits were dropped to fit the token budget.
+    clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
+  }>>;
 }
 
 interface SearchTools {
-  /** Semantic search over the workspace code index. @tool code_search @suite search @input CodeSearchInput @output CodeSearchData */
-  code_search(args: CodeSearchInput): Promise<ToolResult<CodeSearchData>>;
-
-  /** Search past session transcripts. @tool session_search @suite search @input SessionSearchInput @output SessionSearchData */
-  session_search(args: SessionSearchInput): Promise<ToolResult<SessionSearchData>>;
+  /** Semantic search over the workspace code index. @tool code_search @suite search */
+  code_search(args: {
+    query: string; // One natural-language or code-token query.
+    include_pattern?: string; // Optional glob filter for workspace paths.
+    min_score?: number; // Minimum raw dense cosine similarity for dense-only hits. 0–1. Lexical hits are not subject to this floor; 0 disables it. @default 0.8
+    top_k?: Integer; // Maximum hits. 1–20. @default 8
+  }): Promise<ToolResult<{
+    // Empty if the search completed but found no matching chunks.
+    hits: {
+      path: string; // Source file path.
+      anchor_line: Integer; // Query-relevant anchor line.
+      start_line: Integer; // First line in the returned snippet.
+      end_line: Integer; // Last line in the returned snippet.
+      symbol?: string; // Optional AST symbol enclosing the anchor.
+      via: "lex" | "dense" | "both"; // Which retrieval leg(s) admitted this chunk.
+      dense_similarity: number; // Raw dense cosine similarity; 0.0 means the hit is lexical-only.
+      text: string; // The anchor line itself, cheap enough for a table cell.
+      snippet: string; // Source excerpt, at most 24 lines; overlong lines are capped.
+    }[];
+    clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
+  }>>;
+  /** Search past session transcripts. @tool session_search @suite search */
+  session_search(args: {
+    query: string; // What to find in past session transcripts. Literal words or a phrase.
+    session_id?: string; // Optional session scope: full id, unique prefix, or the handle from a result.
+    own_session?: boolean; // Search only this session's transcript: the turns already folded out of the live context window. Cannot be combined with session_id.
+    limit?: Integer; // Maximum rows. 1–50. @default 20
+  }): Promise<ToolResult<{
+    // Flat rank order; not grouped by session.
+    hits: {
+      session: string; // Shortest unique session handle, also accepted by `session_id`.
+      bot_name?: string; // Derived bot name for this session, if any. Never a stored session field.
+      age: string; // Relative age of the session's last update.
+      line: Integer; // 1-based rendered transcript line of the hit.
+      role: "conversation" | "reasoning" | "action" | "outcome" | "unknown"; // Content role of the row.
+      via: string; // Evidence that found this row, in rank order: `exact`, `prox`, `lex`, `sem`, `fuzzy`, joined by `+`.
+      summary: string; // Collapsed one-line hit text.
+    }[];
+    total: Integer; // Total matching rows before `limit` is applied.
+    truncated: boolean; // True when `total` exceeds the returned rows.
+    semantic: boolean; // False when the semantic leg was unavailable: the hits are lexical only.
+    clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
+  }>>;
 }
 
 interface ProcessTools {
-  /** Start one shell command; use run_in_background for a non-blocking job. @tool run @suite process @input RunInput @output RunData */
-  run(args: RunInput): Promise<ToolResult<RunData>>;
-
-  /** Wait for a still-running command job; exit_code is the command status. @tool wait @suite process @input WaitInput @output WaitData */
-  wait(args: WaitInput): Promise<ToolResult<WaitData>>;
-
-  /** Terminate a command job in this session. @tool kill @suite process @input KillInput @output KillData */
-  kill(args: KillInput): Promise<ToolResult<KillData>>;
+  /** Start one shell command; use run_in_background for a non-blocking job. @tool run @suite process */
+  run(args: {
+    command: string; // Shell command to run once in the workspace root. Chain with && for cd or env changes.
+    run_in_background?: boolean; // Return immediately after spawn with exit_code:null and keep the job as a wait/kill target. Default false: stay in the foreground until the command exits or the run_code budget runs out; a job still alive then detaches with exit_code:null. @default false
+  }): Promise<ToolResult<
+    // Command payload shared by run, wait, and kill; exit_code carries command status.
+    CommandData
+  >>;
+  /** Wait for a still-running command job; exit_code is the command status. @tool wait @suite process */
+  wait(args: {
+    id: string; // Command.id from a tools.process.run result whose exit_code is null.
+    sec: Integer; // Seconds to block waiting for exit. 1–300.
+  }): Promise<ToolResult<CommandData>>;
+  /** Terminate a command job in this session. @tool kill @suite process */
+  kill(args: {
+    id: string; // Command.id from a tools.process.run or tools.process.wait result whose exit_code is null.
+  }): Promise<ToolResult<CommandData>>;
 }
 
 interface WebTools {
-  /** Fetch one http(s) URL. @tool webfetch @suite web @input WebfetchInput @output WebfetchData */
-  fetch(args: WebfetchInput): Promise<ToolResult<WebfetchData>>;
-
-  /** Search the web. @tool websearch @suite web @input WebsearchInput @output WebsearchData */
-  search(args: WebsearchInput): Promise<ToolResult<WebsearchData>>;
+  /** Fetch one http(s) URL. @tool webfetch @suite web */
+  fetch(args: {
+    url: string; // URL to fetch. Only http(s) URLs are accepted.
+    format?: "text" | "markdown" | "html"; // Desired output format. @default "markdown"
+  }): Promise<ToolResult<{
+    body?: string; // Empty for a non-2xx answer: the status carries the fact.
+    format?: "text" | "markdown" | "html";
+    status?: Integer; // HTTP status of the final response, 2xx or not.
+    url?: string;
+  }>>;
+  /** Search the web. @tool websearch @suite web */
+  search(args: {
+    query: string; // Search query.
+    top_k?: Integer; // Number of results, best first. 1–100. @default 10
+  }): Promise<ToolResult<{
+    // At most top_k hits, best first; empty when the search found nothing.
+    results: {
+      snippet: string; // Query-relevant excerpt from the page, as returned by the provider.
+      title: string;
+      url: string;
+    }[];
+    query?: string;
+    clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
+  }>>;
 }
 
 interface BrowserTools {
-  /** Open a visible browser tab. @tool browser_open @suite browser @input BrowserOpenInput @output BrowserOpenData */
-  open(args: BrowserOpenInput): Promise<ToolResult<BrowserOpenData>>;
-
-  /** Close an agent-owned browser tab. @tool browser_close @suite browser @input BrowserCloseInput @output BrowserCloseData */
-  close(args: BrowserCloseInput): Promise<ToolResult<BrowserCloseData>>;
-
-  /** List open browser tabs. @tool browser_list @suite browser @input NoArgs @output BrowserListData */
-  list(args?: NoArgs): Promise<ToolResult<BrowserListData>>;
-
-  /** Read the current visible browser page. @tool browser_read @suite browser @input BrowserReadInput @output BrowserReadData */
-  read(args: BrowserReadInput): Promise<ToolResult<BrowserReadData>>;
-
-  /** Click one interactive element on the visible page. @tool browser_click @suite browser @input BrowserClickInput @output BrowserClickData */
-  click(args: BrowserClickInput): Promise<ToolResult<BrowserClickData>>;
-
-  /** Type text into one input on the visible page. @tool browser_type @suite browser @input BrowserTypeInput @output BrowserTypeData */
-  type(args: BrowserTypeInput): Promise<ToolResult<BrowserTypeData>>;
+  /** Open a visible browser tab. @tool browser_open @suite browser */
+  open(args: {
+    url: string; // http(s) URL to open in a visible browser tab.
+  }): Promise<ToolResult<BrowserPage>>;
+  /** Close an agent-owned browser tab. @tool browser_close @suite browser */
+  close(args: {
+    page_id: string; // Browser page id from browser_open or browser_list.
+  }): Promise<ToolResult<{
+    closed: boolean;
+    id: string;
+    fallback?: boolean;
+  }>>;
+  /** List open browser tabs. @tool browser_list @suite browser */
+  list(args?: NoArgs): Promise<ToolResult<{
+    active_id: string;
+    pages: BrowserPage[];
+  }>>;
+  /** Read the current visible browser page. @tool browser_read @suite browser */
+  read(args: {
+    max_chars?: Integer; // Maximum body text characters. 1000–30000. @default 12000
+    page_id?: string; // Optional page id. Omit for the active visible tab.
+  }): Promise<ToolResult<{
+    elements: {
+      ref: string; // Element reference from the latest browser_read.
+      tag: string;
+      text: string;
+      href?: string;
+      type?: string;
+    }[];
+    message?: string; // Set when max_chars was clamped into range.
+    page_id: string;
+    text: string;
+    title: string;
+    truncated: boolean;
+    url: string;
+  }>>;
+  /** Click one interactive element on the visible page. @tool browser_click @suite browser */
+  click(args: {
+    ref: string; // Element reference from the latest browser_read.
+    page_id?: string; // Optional page id. Omit for the active visible tab.
+  }): Promise<ToolResult<{
+    page_id: string;
+    ref: string;
+    tag: string;
+    text: string;
+    title: string;
+    url: string;
+  }>>;
+  /** Type text into one input on the visible page. @tool browser_type @suite browser */
+  type(args: {
+    ref: string; // Input reference from the latest browser_read.
+    text: string; // Text to set on the focused input.
+    page_id?: string; // Optional page id. Omit for the active visible tab.
+  }): Promise<ToolResult<{
+    page_id: string;
+    ref: string;
+    tag: string;
+    title: string;
+    url: string;
+  }>>;
 }
 
 interface LspTools {
-  /** List diagnostics for one source file. @tool diagnostics @suite lsp @input DiagnosticsInput @output DiagnosticsData */
-  diagnostics(args: DiagnosticsInput): Promise<ToolResult<DiagnosticsData>>;
-
-  /** List symbols in one source file. @tool document_symbol @suite lsp @input DocumentSymbolInput @output DocumentSymbolData */
-  document_symbol(args: DocumentSymbolInput): Promise<ToolResult<DocumentSymbolData>>;
-
-  /** Search symbols across the workspace. @tool workspace_symbol @suite lsp @input WorkspaceSymbolInput @output WorkspaceSymbolData */
-  workspace_symbol(args: WorkspaceSymbolInput): Promise<ToolResult<WorkspaceSymbolData>>;
-
-  /** Fetch hover docs or type information at a file position. @tool hover @suite lsp @input HoverInput @output HoverData */
-  hover(args: HoverInput): Promise<ToolResult<HoverData>>;
-
-  /** List references at a file position. @tool find_references @suite lsp @input FindReferencesInput @output FindReferencesData */
-  find_references(args: FindReferencesInput): Promise<ToolResult<FindReferencesData>>;
-
-  /** Jump to definition at a file position. @tool go_to_definition @suite lsp @input GoToDefinitionInput @output GoToDefinitionData */
-  go_to_definition(args: GoToDefinitionInput): Promise<ToolResult<GoToDefinitionData>>;
-
-  /** Jump to implementations at a file position. @tool go_to_implementation @suite lsp @input GoToImplementationInput @output GoToImplementationData */
-  go_to_implementation(args: GoToImplementationInput): Promise<ToolResult<GoToImplementationData>>;
+  /** List diagnostics for one source file. @tool diagnostics @suite lsp */
+  diagnostics(args: PathInput): Promise<ToolResult<{
+    items: {
+      severity: string; // Severity name mapped from the LSP number: Error, Warning, Information, Hint; Unknown for anything else.
+      path: string; // Source file path.
+      line: Integer; // 1-based line number.
+      character: Integer; // 1-based UTF-16 column on that line.
+      message: string; // Human-readable diagnostic.
+    }[];
+    state: LspDataState; // ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss.
+    truncated: boolean; // True when the cap cut the list: more results exist.
+  }>>;
+  /** List symbols in one source file. @tool document_symbol @suite lsp */
+  document_symbol(args: PathInput): Promise<ToolResult<SymbolsData>>;
+  /** Search symbols across the workspace. @tool workspace_symbol @suite lsp */
+  workspace_symbol(args: {
+    query: string; // Symbol name or fragment to search across the workspace.
+    path?: string; // Optional source file that selects/starts the project's language server. Required only when more than one server is running.
+  }): Promise<ToolResult<SymbolsData>>;
+  /** Fetch hover docs or type information at a file position. @tool hover @suite lsp */
+  hover(args: RangeInput): Promise<ToolResult<
+    // One hover answer. A hover is a single value, so there is no truncation.
+    {
+      markdown: string; // Flattened hover text, not raw LSP JSON.
+      state: LspDataState; // ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss.
+    }
+  >>;
+  /** List references at a file position. @tool find_references @suite lsp */
+  find_references(args: RangeInput): Promise<ToolResult<LocationsData>>;
+  /** Jump to definition at a file position. @tool go_to_definition @suite lsp */
+  go_to_definition(args: RangeInput): Promise<ToolResult<LocationsData>>;
+  /** Jump to implementations at a file position. @tool go_to_implementation @suite lsp */
+  go_to_implementation(args: RangeInput): Promise<ToolResult<LocationsData>>;
 }
 
 interface MemoryTools {
-  /** Return the authoritative current session memory snapshot; memory survives compaction and is re-injected. @tool memory.list @suite memory @input NoArgs @output MemoryListData */
-  list(args?: NoArgs): Promise<ToolResult<MemoryListData>>;
-
-  /** Add or update small, durable session memory entries. @tool memory.upsert @suite memory @input MemoryUpsertInput @output MemoryUpsertData */
-  upsert(args: MemoryUpsertInput): Promise<ToolResult<MemoryUpsertData>>;
-
-  /** Delete entries by id from the current session's working memory. @tool memory.delete @suite memory @input MemoryDeleteInput @output MemoryDeleteData */
-  delete(args: MemoryDeleteInput): Promise<ToolResult<MemoryDeleteData>>;
+  /** Return the authoritative current session memory snapshot; memory survives compaction and is re-injected. @tool memory.list @suite memory */
+  list(args?: NoArgs): Promise<ToolResult<{
+    count: Integer; // Number of entries in this snapshot.
+    // Authoritative current entries, in insertion order.
+    entries: {
+      id: string;
+      text: string;
+      updated_at: Integer; // Milliseconds since Unix epoch.
+    }[];
+    limit: Integer; // Maximum entries the session can hold.
+    total: Integer; // Entries in the whole session memory.
+    total_chars: Integer; // Characters across all entry texts.
+  }>>;
+  /** Add or update small, durable session memory entries. @tool memory.upsert @suite memory */
+  upsert(args: {
+    // Memory entries to add or update.
+    entries: {
+      text: string; // Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry.
+      id?: string; // Optional existing id. Omit to add or update by text.
+    }[];
+  }): Promise<ToolResult<{
+    added: string[]; // New ids.
+    count: Integer; // Entries after the batch.
+    rejected: RejectedItem[];
+    total_chars: Integer; // Characters after the batch.
+    updated: string[]; // Updated ids.
+  }>>;
+  /** Delete entries by id from the current session's working memory. @tool memory.delete @suite memory */
+  delete(args: {
+    ids: string[]; // Entry ids to delete.
+  }): Promise<ToolResult<{
+    count: Integer; // Entries after the batch.
+    deleted: string[]; // Deleted ids.
+    rejected: RejectedItem[];
+  }>>;
 }
 
 interface Tools {

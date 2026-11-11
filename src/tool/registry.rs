@@ -1088,7 +1088,7 @@ mod tests {
             .direct_spec(&dummy_ctx())
             .unwrap()
             .description;
-        assert!(sdk.contains("read(args: ReadInput)"));
+        assert!(sdk.contains("read(args: {"));
     }
 
     #[test]
@@ -1130,9 +1130,9 @@ mod tests {
             .unwrap()
             .description;
         for needle in [
-            "run(args: RunInput)",
-            "read(args: ReadInput)",
-            "upsert(args: MemoryUpsertInput)",
+            "run(args: {",
+            "read(args: {",
+            "upsert(args: {",
         ] {
             assert!(sdk.contains(needle), "missing {needle}");
         }
@@ -1600,11 +1600,11 @@ mod tests {
             .description;
         assert!(child_sdk.contains("declare const tools"));
         for needle in [
-            "run(args: RunInput)",
-            "wait(args: WaitInput)",
-            "kill(args: KillInput)",
+            "run(args: {",
+            "wait(args: {",
+            "kill(args: {",
             "edit(args: EditInput)",
-            "apply_edits(args: ApplyEditsInput)",
+            "apply_edits(args: {",
         ] {
             assert!(child_sdk.contains(needle), "missing {needle}");
         }
@@ -1634,14 +1634,14 @@ mod tests {
             .unwrap()
             .description;
         for needle in [
-            "read(args: ReadInput)",
-            "glob(args: GlobInput)",
+            "read(args: {",
+            "glob(args: {",
             "edit(args: EditInput)",
-            "write(args: WriteInput)",
+            "write(args: {",
         ] {
             assert!(narrow_sdk.contains(needle), "missing {needle}");
         }
-        assert!(!narrow_sdk.contains("grep(args: GrepInput)"));
+        assert!(!narrow_sdk.contains("grep(args: "));
         assert_ne!(child_sdk, narrow_sdk);
         let whitelist = narrow_tools
             .iter()
@@ -1664,10 +1664,10 @@ mod tests {
                 "write"
             ]
         );
-        assert!(narrow_sdk.contains("run(args: RunInput)"));
-        assert!(narrow_sdk.contains("wait(args: WaitInput)"));
-        assert!(narrow_sdk.contains("kill(args: KillInput)"));
-        assert!(narrow_sdk.contains("apply_edits(args: ApplyEditsInput)"));
+        assert!(narrow_sdk.contains("run(args: {"));
+        assert!(narrow_sdk.contains("wait(args: {"));
+        assert!(narrow_sdk.contains("kill(args: {"));
+        assert!(narrow_sdk.contains("apply_edits(args: {"));
     }
 
     #[test]

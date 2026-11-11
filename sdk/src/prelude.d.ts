@@ -7,11 +7,7 @@ declare class ToolError extends Error {
   readonly seq: number;
 }
 
-/**
- * A resolved domain failure. ToolError is thrown for protocol and hard
- * execution failures; this shape is the normal failure branch of ToolResult.
- */
-type ToolFailure = {
+type ToolFailure = { // A resolved domain failure. ToolError is thrown for protocol and hard execution failures; this shape is the normal failure branch of ToolResult.
   ok: false;
   reason:
     | "not_found"

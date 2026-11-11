@@ -33,6 +33,9 @@ fn render_doc(doc: &str, indent: &str) -> String {
     if doc.is_empty() {
         return String::new();
     }
+    if !doc.contains('\n') {
+        return format!("{indent}/** {doc} */\n");
+    }
     let mut out = String::new();
     out.push_str(indent);
     out.push_str("/**\n");
@@ -55,9 +58,11 @@ fn render_doc(doc: &str, indent: &str) -> String {
 
 fn render_tool(tool: &SdkToolFragment, indent: &str) -> String {
     let mut out = render_doc(&tool.doc, indent);
-    out.push_str(indent);
-    out.push_str(&tool.signature);
-    out.push('\n');
+    for line in tool.signature.split('\n') {
+        out.push_str(indent);
+        out.push_str(line);
+        out.push('\n');
+    }
     out
 }
 
@@ -92,9 +97,6 @@ fn render_tools_interface(entries: &[&SdkToolFragment]) -> Result<String, String
             continue;
         };
         emitted_flat.insert(*suite);
-        out.push_str("  // ");
-        out.push_str(suite);
-        out.push('\n');
         for tool in group {
             out.push_str(&render_tool(tool, "  "));
         }
@@ -104,9 +106,6 @@ fn render_tools_interface(entries: &[&SdkToolFragment]) -> Result<String, String
         if emitted_flat.contains(suite) {
             continue;
         }
-        out.push_str("  // ");
-        out.push_str(suite);
-        out.push('\n');
         for tool in group {
             out.push_str(&render_tool(tool, "  "));
         }
@@ -119,31 +118,25 @@ fn render_tools_interface(entries: &[&SdkToolFragment]) -> Result<String, String
             continue;
         };
         emitted_nested.insert(*suite);
-        out.push_str("  // ");
-        out.push_str(suite);
-        out.push('\n');
         out.push_str("  ");
         out.push_str(suite);
         out.push_str(": {\n");
         for tool in group {
             out.push_str(&render_tool(tool, "    "));
         }
-        out.push_str("  };\n\n");
+        out.push_str("  };\n");
     }
     for (suite, group) in nested_by_suite {
         if emitted_nested.contains(suite) {
             continue;
         }
-        out.push_str("  // ");
-        out.push_str(suite);
-        out.push('\n');
         out.push_str("  ");
         out.push_str(suite);
         out.push_str(": {\n");
         for tool in group {
             out.push_str(&render_tool(tool, "    "));
         }
-        out.push_str("  };\n\n");
+        out.push_str("  };\n");
     }
 
     while out.ends_with('\n') {
@@ -170,7 +163,7 @@ fn render_ts(fragments: &SdkFragments, entries: &[&SdkToolFragment]) -> Result<S
         .iter()
         .map(|name| fragments.types.get(name).expect("checked above").as_str())
         .collect::<Vec<_>>()
-        .join("\n\n");
+        .join("\n");
     let tools = render_tools_interface(entries)?;
     Ok(format!(
         "{}\n\n{}\n\n{}\n\n{}\n\ndeclare const tools: Tools;\n",

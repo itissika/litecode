@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "1257b42fcffe08f802cb26c73b444b2af4e93599b6259d9c41c0bdf954b7853f",
+  "sdk_hash": "6ea9ec768b8af383f0cb47e43737e61a32d1c2023cbea7e3476a17b76c934195",
   "tools": {
     "apply_edits": {
       "path": [
@@ -10,15 +10,11 @@
       "suite": "file",
       "tool": "apply_edits",
       "doc": "Apply several edit replacements serially.",
-      "signature": "apply_edits(args: ApplyEditsInput): Promise<ToolResult<ApplyEditsData>>;",
-      "input_type": "ApplyEditsInput",
-      "output_type": "ApplyEditsData",
+      "signature": "apply_edits(args: {\n  edits: EditInput[]; // Replacements applied serially; later items on the same path see earlier successful writes.\n}): Promise<ToolResult<{\n  // Same length and order as edits.\n  results: Array<\n    // One item in a serial apply_edits batch. Item failures stay item-level.\n    {\n      ok: boolean;\n      path: string;\n      reason: (\"not_found\" | \"no_match\" | \"invalid_args\" | \"empty\" | \"permission\" | \"io\") | null; // Why this item failed; `null` when `ok` is true.\n      nearest_line: Integer | null; // 1-based line of the closest match when `old_string` was not found; `null` otherwise.\n      path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.\n      diagnostics?: ToolDiagnostic[]; // Warnings recorded after the edit; absent when there were none.\n    }\n  >;\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
-        "ApplyEditsData",
-        "ApplyEditsInput",
-        "EditFailureReason",
         "EditInput",
-        "EditResult",
         "Integer",
         "Path",
         "PathRisk",
@@ -195,11 +191,10 @@
       "suite": "file",
       "tool": "edit",
       "doc": "Apply one exact-string replacement.",
-      "signature": "edit(args: EditInput): Promise<ToolResult<EditData>>;",
+      "signature": "edit(args: EditInput): Promise<ToolResult<\n  // Successful single-edit payload. Failures use ToolFailure.\n  {\n    path: string;\n    path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.\n    diagnostics?: ToolDiagnostic[]; // Warnings recorded after the edit; absent when the edit was clean.\n  }\n>>;",
       "input_type": "EditInput",
-      "output_type": "EditData",
+      "output_type": "(inline)",
       "type_deps": [
-        "EditData",
         "EditInput",
         "Path",
         "PathRisk",
@@ -313,13 +308,11 @@
       "suite": "file",
       "tool": "glob",
       "doc": "Find files by path glob.",
-      "signature": "glob(args: GlobInput): Promise<ToolResult<GlobData>>;",
-      "input_type": "GlobInput",
-      "output_type": "GlobData",
+      "signature": "glob(args: {\n  pattern: string; // Glob relative to path, or to the workspace root when path is omitted.\n  limit?: Integer; // Maximum paths to return. 1–5000. @default 1000\n  path?: Path; // Optional directory to search under.\n}): Promise<ToolResult<{\n  paths: string[]; // Matching paths, sorted by depth, then parent directory, then name.\n  total: Integer; // Matches found before the limit was applied.\n  truncated: boolean; // True when paths holds only the first limit matches.\n  outside_workspace: boolean; // True when some returned paths are outside the workspace (absolute).\n  empty_reason?: \"hidden_by_filters\" | \"no_match\"; // Why `paths` is empty; absent when it is not. Only what glob can produce: the searched path is excluded by default filters, or nothing matched.\n  clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
         "ClampedParam",
-        "GlobData",
-        "GlobInput",
         "Integer",
         "Path"
       ],
@@ -425,14 +418,11 @@
       "suite": "file",
       "tool": "grep",
       "doc": "Search file contents.",
-      "signature": "grep(args: GrepInput): Promise<ToolResult<GrepData>>;",
-      "input_type": "GrepInput",
-      "output_type": "GrepData",
+      "signature": "grep(args: {\n  pattern: string; // Regular expression over file contents, unless literal is true.\n  before?: Integer; // Lines of context before each hit. 0–10. @default 0\n  after?: Integer; // Lines of context after each hit. 0–10. @default 0\n  glob?: string; // One glob or comma-separated globs. A leading ! excludes. Relative to path.\n  ignore_case?: boolean; // Ignore case when matching. @default false\n  limit?: Integer; // Maximum hits to return. 1–100. @default 40\n  literal?: boolean; // Search for pattern as plain text. @default false\n  path?: Path; // File or directory to search. Defaults to the workspace.\n}): Promise<ToolResult<{\n  hits: Array<\n    // One match. Context, when requested, is folded into `text` as one block.\n    {\n      path: string; // Source file path.\n      line: Integer; // 1-based match line.\n      text: string; // Matching line text, capped at 500 characters. With `before`/`after` this is a whole block in ripgrep notation, newline-separated: `12- before`, `13: match`, `14+ after` (real file line numbers).\n    }\n  >;\n  truncated?: boolean; // True when a limit or the token budget cut the result short.\n  empty_reason?: \"no_files\" | \"glob_no_files\" | \"no_match\" | \"file_unreadable\" | \"binary\" | \"hidden_by_filters\"; // Why `hits` is empty; absent when it is not. Only what grep can produce: nothing to search, the glob filter matched no file, no match, the file could not be read as text, the file is binary, or the searched path is excluded by default filters.\n  total_hits?: Integer; // Matches found before the result was cut; absent when the scan stopped at a limit and never counted the rest. Do not treat a missing value as zero.\n  at_limit_cap: boolean; // True when the hit limit stopped the scan.\n  lines_truncated: boolean; // True when a match or context line was shortened to the per-line cap.\n  context_omitted: boolean; // True when context lines were dropped to fit the token budget.\n  output_capped: boolean; // True when hits were dropped to fit the token budget.\n  clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
         "ClampedParam",
-        "GrepData",
-        "GrepHit",
-        "GrepInput",
         "Integer",
         "Path"
       ],
@@ -599,15 +589,13 @@
       "suite": "file",
       "tool": "read",
       "doc": "Read lines from one file or archived session transcript.",
-      "signature": "read(args: ReadInput): Promise<ToolResult<ReadData>>;",
-      "input_type": "ReadInput",
-      "output_type": "ReadData",
+      "signature": "read(args: {\n  path: Path; // Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md.\n  start_line?: Integer; // First line to read, 1-based, inclusive. @default 1\n  limit?: Integer; // Lines to return. 1–5000. @default 2000\n}): Promise<ToolResult<{\n  lines: string[]; // Line contents for this page, in file order.\n  path: string;\n  start_line: Integer;\n  total_lines: Integer; // Lines in the file; `has_more` compares against it.\n  has_more: boolean; // True when this page stops before the end of the file.\n  skipped_in_context: Integer; // Lines the window covered but left out because they are already in the model's context. A gap in `lines` is explained by this number.\n  lines_capped?: Integer[]; // Lines shortened to the per-line character cap, by number.\n  clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
         "ClampedParam",
         "Integer",
-        "Path",
-        "ReadData",
-        "ReadInput"
+        "Path"
       ],
       "input_schema": {
         "type": "object",
@@ -721,17 +709,14 @@
       "suite": "file",
       "tool": "write",
       "doc": "Replace a file's contents; optional hash and create-only guards.",
-      "signature": "write(args: WriteInput): Promise<ToolResult<WriteData>>;",
-      "input_type": "WriteInput",
-      "output_type": "WriteData",
+      "signature": "write(args: {\n  content: string; // Content to write to the file.\n  path: Path; // Prefer a workspace-relative path.\n  create_only?: boolean; // If true, refuse to overwrite an existing file. @default false\n  expected_hash?: string; // sha256 of the current file bytes. Omit to skip the check. A mismatch is ToolFailure reason stale.\n}): Promise<ToolResult<{\n  created: boolean; // True when the file did not exist before.\n  // File identity after the write.\n  file: {\n    bytes: Integer; // File size in bytes.\n    hash: string; // sha256 hex of the file bytes.\n    path: string; // Workspace-relative path inside the workspace; requested path outside it.\n    abs?: string; // Absolute path when the file is outside the workspace.\n  };\n  path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.\n  diagnostics?: ToolDiagnostic[]; // Warnings recorded after the write; absent when the write was clean.\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
-        "FileRef",
         "Integer",
         "Path",
         "PathRisk",
-        "ToolDiagnostic",
-        "WriteData",
-        "WriteInput"
+        "ToolDiagnostic"
       ],
       "input_schema": {
         "type": "object",
@@ -874,14 +859,11 @@
       "suite": "search",
       "tool": "code_search",
       "doc": "Semantic search over the workspace code index.",
-      "signature": "code_search(args: CodeSearchInput): Promise<ToolResult<CodeSearchData>>;",
-      "input_type": "CodeSearchInput",
-      "output_type": "CodeSearchData",
+      "signature": "code_search(args: {\n  query: string; // One natural-language or code-token query.\n  include_pattern?: string; // Optional glob filter for workspace paths.\n  min_score?: number; // Minimum raw dense cosine similarity for dense-only hits. 0–1. Lexical hits are not subject to this floor; 0 disables it. @default 0.8\n  top_k?: Integer; // Maximum hits. 1–20. @default 8\n}): Promise<ToolResult<{\n  // Empty if the search completed but found no matching chunks.\n  hits: {\n    path: string; // Source file path.\n    anchor_line: Integer; // Query-relevant anchor line.\n    start_line: Integer; // First line in the returned snippet.\n    end_line: Integer; // Last line in the returned snippet.\n    symbol?: string; // Optional AST symbol enclosing the anchor.\n    via: \"lex\" | \"dense\" | \"both\"; // Which retrieval leg(s) admitted this chunk.\n    dense_similarity: number; // Raw dense cosine similarity; 0.0 means the hit is lexical-only.\n    text: string; // The anchor line itself, cheap enough for a table cell.\n    snippet: string; // Source excerpt, at most 24 lines; overlong lines are capped.\n  }[];\n  clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
         "ClampedParam",
-        "CodeSearchData",
-        "CodeSearchHit",
-        "CodeSearchInput",
         "Integer"
       ],
       "input_schema": {
@@ -1022,15 +1004,12 @@
       "suite": "search",
       "tool": "session_search",
       "doc": "Search past session transcripts.",
-      "signature": "session_search(args: SessionSearchInput): Promise<ToolResult<SessionSearchData>>;",
-      "input_type": "SessionSearchInput",
-      "output_type": "SessionSearchData",
+      "signature": "session_search(args: {\n  query: string; // What to find in past session transcripts. Literal words or a phrase.\n  session_id?: string; // Optional session scope: full id, unique prefix, or the handle from a result.\n  own_session?: boolean; // Search only this session's transcript: the turns already folded out of the live context window. Cannot be combined with session_id.\n  limit?: Integer; // Maximum rows. 1–50. @default 20\n}): Promise<ToolResult<{\n  // Flat rank order; not grouped by session.\n  hits: {\n    session: string; // Shortest unique session handle, also accepted by `session_id`.\n    bot_name?: string; // Derived bot name for this session, if any. Never a stored session field.\n    age: string; // Relative age of the session's last update.\n    line: Integer; // 1-based rendered transcript line of the hit.\n    role: \"conversation\" | \"reasoning\" | \"action\" | \"outcome\" | \"unknown\"; // Content role of the row.\n    via: string; // Evidence that found this row, in rank order: `exact`, `prox`, `lex`, `sem`, `fuzzy`, joined by `+`.\n    summary: string; // Collapsed one-line hit text.\n  }[];\n  total: Integer; // Total matching rows before `limit` is applied.\n  truncated: boolean; // True when `total` exceeds the returned rows.\n  semantic: boolean; // False when the semantic leg was unavailable: the hits are lexical only.\n  clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
         "ClampedParam",
-        "Integer",
-        "SessionSearchData",
-        "SessionSearchHit",
-        "SessionSearchInput"
+        "Integer"
       ],
       "input_schema": {
         "type": "object",
@@ -1176,15 +1155,13 @@
       "suite": "process",
       "tool": "kill",
       "doc": "Terminate a command job in this session.",
-      "signature": "kill(args: KillInput): Promise<ToolResult<KillData>>;",
-      "input_type": "KillInput",
-      "output_type": "KillData",
+      "signature": "kill(args: {\n  id: string; // Command.id from a tools.process.run or tools.process.wait result whose exit_code is null.\n}): Promise<ToolResult<CommandData>>;",
+      "input_type": "(inline)",
+      "output_type": "CommandData",
       "type_deps": [
         "ClampedParam",
         "CommandData",
-        "Integer",
-        "KillData",
-        "KillInput"
+        "Integer"
       ],
       "input_schema": {
         "type": "object",
@@ -1318,15 +1295,13 @@
       "suite": "process",
       "tool": "run",
       "doc": "Start one shell command; use run_in_background for a non-blocking job.",
-      "signature": "run(args: RunInput): Promise<ToolResult<RunData>>;",
-      "input_type": "RunInput",
-      "output_type": "RunData",
+      "signature": "run(args: {\n  command: string; // Shell command to run once in the workspace root. Chain with && for cd or env changes.\n  run_in_background?: boolean; // Return immediately after spawn with exit_code:null and keep the job as a wait/kill target. Default false: stay in the foreground until the command exits or the run_code budget runs out; a job still alive then detaches with exit_code:null. @default false\n}): Promise<ToolResult<\n  // Command payload shared by run, wait, and kill; exit_code carries command status.\n  CommandData\n>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
         "ClampedParam",
         "CommandData",
-        "Integer",
-        "RunData",
-        "RunInput"
+        "Integer"
       ],
       "input_schema": {
         "type": "object",
@@ -1466,15 +1441,13 @@
       "suite": "process",
       "tool": "wait",
       "doc": "Wait for a still-running command job; exit_code is the command status.",
-      "signature": "wait(args: WaitInput): Promise<ToolResult<WaitData>>;",
-      "input_type": "WaitInput",
-      "output_type": "WaitData",
+      "signature": "wait(args: {\n  id: string; // Command.id from a tools.process.run result whose exit_code is null.\n  sec: Integer; // Seconds to block waiting for exit. 1–300.\n}): Promise<ToolResult<CommandData>>;",
+      "input_type": "(inline)",
+      "output_type": "CommandData",
       "type_deps": [
         "ClampedParam",
         "CommandData",
-        "Integer",
-        "WaitData",
-        "WaitInput"
+        "Integer"
       ],
       "input_schema": {
         "type": "object",
@@ -1613,14 +1586,11 @@
       "suite": "web",
       "tool": "webfetch",
       "doc": "Fetch one http(s) URL.",
-      "signature": "fetch(args: WebfetchInput): Promise<ToolResult<WebfetchData>>;",
-      "input_type": "WebfetchInput",
-      "output_type": "WebfetchData",
+      "signature": "fetch(args: {\n  url: string; // URL to fetch. Only http(s) URLs are accepted.\n  format?: \"text\" | \"markdown\" | \"html\"; // Desired output format. @default \"markdown\"\n}): Promise<ToolResult<{\n  body?: string; // Empty for a non-2xx answer: the status carries the fact.\n  format?: \"text\" | \"markdown\" | \"html\";\n  status?: Integer; // HTTP status of the final response, 2xx or not.\n  url?: string;\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
-        "Integer",
-        "WebfetchData",
-        "WebfetchFormat",
-        "WebfetchInput"
+        "Integer"
       ],
       "input_schema": {
         "type": "object",
@@ -1686,15 +1656,12 @@
       "suite": "web",
       "tool": "websearch",
       "doc": "Search the web.",
-      "signature": "search(args: WebsearchInput): Promise<ToolResult<WebsearchData>>;",
-      "input_type": "WebsearchInput",
-      "output_type": "WebsearchData",
+      "signature": "search(args: {\n  query: string; // Search query.\n  top_k?: Integer; // Number of results, best first. 1–100. @default 10\n}): Promise<ToolResult<{\n  // At most top_k hits, best first; empty when the search found nothing.\n  results: {\n    snippet: string; // Query-relevant excerpt from the page, as returned by the provider.\n    title: string;\n    url: string;\n  }[];\n  query?: string;\n  clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
         "ClampedParam",
-        "Integer",
-        "WebsearchData",
-        "WebsearchHit",
-        "WebsearchInput"
+        "Integer"
       ],
       "input_schema": {
         "type": "object",
@@ -1792,13 +1759,10 @@
       "suite": "browser",
       "tool": "browser_click",
       "doc": "Click one interactive element on the visible page.",
-      "signature": "click(args: BrowserClickInput): Promise<ToolResult<BrowserClickData>>;",
-      "input_type": "BrowserClickInput",
-      "output_type": "BrowserClickData",
-      "type_deps": [
-        "BrowserClickData",
-        "BrowserClickInput"
-      ],
+      "signature": "click(args: {\n  ref: string; // Element reference from the latest browser_read.\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<ToolResult<{\n  page_id: string;\n  ref: string;\n  tag: string;\n  text: string;\n  title: string;\n  url: string;\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -1862,13 +1826,10 @@
       "suite": "browser",
       "tool": "browser_close",
       "doc": "Close an agent-owned browser tab.",
-      "signature": "close(args: BrowserCloseInput): Promise<ToolResult<BrowserCloseData>>;",
-      "input_type": "BrowserCloseInput",
-      "output_type": "BrowserCloseData",
-      "type_deps": [
-        "BrowserCloseData",
-        "BrowserCloseInput"
-      ],
+      "signature": "close(args: {\n  page_id: string; // Browser page id from browser_open or browser_list.\n}): Promise<ToolResult<{\n  closed: boolean;\n  id: string;\n  fallback?: boolean;\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -1915,11 +1876,10 @@
       "suite": "browser",
       "tool": "browser_list",
       "doc": "List open browser tabs.",
-      "signature": "list(args?: NoArgs): Promise<ToolResult<BrowserListData>>;",
+      "signature": "list(args?: NoArgs): Promise<ToolResult<{\n  active_id: string;\n  pages: BrowserPage[];\n}>>;",
       "input_type": "NoArgs",
-      "output_type": "BrowserListData",
+      "output_type": "(inline)",
       "type_deps": [
-        "BrowserListData",
         "BrowserPage",
         "NoArgs"
       ],
@@ -1990,12 +1950,10 @@
       "suite": "browser",
       "tool": "browser_open",
       "doc": "Open a visible browser tab.",
-      "signature": "open(args: BrowserOpenInput): Promise<ToolResult<BrowserOpenData>>;",
-      "input_type": "BrowserOpenInput",
-      "output_type": "BrowserOpenData",
+      "signature": "open(args: {\n  url: string; // http(s) URL to open in a visible browser tab.\n}): Promise<ToolResult<BrowserPage>>;",
+      "input_type": "(inline)",
+      "output_type": "BrowserPage",
       "type_deps": [
-        "BrowserOpenData",
-        "BrowserOpenInput",
         "BrowserPage"
       ],
       "input_schema": {
@@ -2057,13 +2015,10 @@
       "suite": "browser",
       "tool": "browser_read",
       "doc": "Read the current visible browser page.",
-      "signature": "read(args: BrowserReadInput): Promise<ToolResult<BrowserReadData>>;",
-      "input_type": "BrowserReadInput",
-      "output_type": "BrowserReadData",
+      "signature": "read(args: {\n  max_chars?: Integer; // Maximum body text characters. 1000–30000. @default 12000\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<ToolResult<{\n  elements: {\n    ref: string; // Element reference from the latest browser_read.\n    tag: string;\n    text: string;\n    href?: string;\n    type?: string;\n  }[];\n  message?: string; // Set when max_chars was clamped into range.\n  page_id: string;\n  text: string;\n  title: string;\n  truncated: boolean;\n  url: string;\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
-        "BrowserElement",
-        "BrowserReadData",
-        "BrowserReadInput",
         "Integer"
       ],
       "input_schema": {
@@ -2158,13 +2113,10 @@
       "suite": "browser",
       "tool": "browser_type",
       "doc": "Type text into one input on the visible page.",
-      "signature": "type(args: BrowserTypeInput): Promise<ToolResult<BrowserTypeData>>;",
-      "input_type": "BrowserTypeInput",
-      "output_type": "BrowserTypeData",
-      "type_deps": [
-        "BrowserTypeData",
-        "BrowserTypeInput"
-      ],
+      "signature": "type(args: {\n  ref: string; // Input reference from the latest browser_read.\n  text: string; // Text to set on the focused input.\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<ToolResult<{\n  page_id: string;\n  ref: string;\n  tag: string;\n  title: string;\n  url: string;\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -2229,13 +2181,10 @@
       "suite": "lsp",
       "tool": "diagnostics",
       "doc": "List diagnostics for one source file.",
-      "signature": "diagnostics(args: DiagnosticsInput): Promise<ToolResult<DiagnosticsData>>;",
-      "input_type": "DiagnosticsInput",
-      "output_type": "DiagnosticsData",
+      "signature": "diagnostics(args: PathInput): Promise<ToolResult<{\n  items: {\n    severity: string; // Severity name mapped from the LSP number: Error, Warning, Information, Hint; Unknown for anything else.\n    path: string; // Source file path.\n    line: Integer; // 1-based line number.\n    character: Integer; // 1-based UTF-16 column on that line.\n    message: string; // Human-readable diagnostic.\n  }[];\n  state: LspDataState; // ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss.\n  truncated: boolean; // True when the cap cut the list: more results exist.\n}>>;",
+      "input_type": "PathInput",
+      "output_type": "(inline)",
       "type_deps": [
-        "DiagnosticItem",
-        "DiagnosticsData",
-        "DiagnosticsInput",
         "Integer",
         "LspDataState",
         "Path",
@@ -2328,12 +2277,10 @@
       "suite": "lsp",
       "tool": "document_symbol",
       "doc": "List symbols in one source file.",
-      "signature": "document_symbol(args: DocumentSymbolInput): Promise<ToolResult<DocumentSymbolData>>;",
-      "input_type": "DocumentSymbolInput",
-      "output_type": "DocumentSymbolData",
+      "signature": "document_symbol(args: PathInput): Promise<ToolResult<SymbolsData>>;",
+      "input_type": "PathInput",
+      "output_type": "SymbolsData",
       "type_deps": [
-        "DocumentSymbolData",
-        "DocumentSymbolInput",
         "Integer",
         "LspDataState",
         "Path",
@@ -2435,12 +2382,10 @@
       "suite": "lsp",
       "tool": "find_references",
       "doc": "List references at a file position.",
-      "signature": "find_references(args: FindReferencesInput): Promise<ToolResult<FindReferencesData>>;",
-      "input_type": "FindReferencesInput",
-      "output_type": "FindReferencesData",
+      "signature": "find_references(args: RangeInput): Promise<ToolResult<LocationsData>>;",
+      "input_type": "RangeInput",
+      "output_type": "LocationsData",
       "type_deps": [
-        "FindReferencesData",
-        "FindReferencesInput",
         "Integer",
         "Location",
         "LocationsData",
@@ -2543,12 +2488,10 @@
       "suite": "lsp",
       "tool": "go_to_definition",
       "doc": "Jump to definition at a file position.",
-      "signature": "go_to_definition(args: GoToDefinitionInput): Promise<ToolResult<GoToDefinitionData>>;",
-      "input_type": "GoToDefinitionInput",
-      "output_type": "GoToDefinitionData",
+      "signature": "go_to_definition(args: RangeInput): Promise<ToolResult<LocationsData>>;",
+      "input_type": "RangeInput",
+      "output_type": "LocationsData",
       "type_deps": [
-        "GoToDefinitionData",
-        "GoToDefinitionInput",
         "Integer",
         "Location",
         "LocationsData",
@@ -2651,12 +2594,10 @@
       "suite": "lsp",
       "tool": "go_to_implementation",
       "doc": "Jump to implementations at a file position.",
-      "signature": "go_to_implementation(args: GoToImplementationInput): Promise<ToolResult<GoToImplementationData>>;",
-      "input_type": "GoToImplementationInput",
-      "output_type": "GoToImplementationData",
+      "signature": "go_to_implementation(args: RangeInput): Promise<ToolResult<LocationsData>>;",
+      "input_type": "RangeInput",
+      "output_type": "LocationsData",
       "type_deps": [
-        "GoToImplementationData",
-        "GoToImplementationInput",
         "Integer",
         "Location",
         "LocationsData",
@@ -2759,12 +2700,10 @@
       "suite": "lsp",
       "tool": "hover",
       "doc": "Fetch hover docs or type information at a file position.",
-      "signature": "hover(args: HoverInput): Promise<ToolResult<HoverData>>;",
-      "input_type": "HoverInput",
-      "output_type": "HoverData",
+      "signature": "hover(args: RangeInput): Promise<ToolResult<\n  // One hover answer. A hover is a single value, so there is no truncation.\n  {\n    markdown: string; // Flattened hover text, not raw LSP JSON.\n    state: LspDataState; // ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss.\n  }\n>>;",
+      "input_type": "RangeInput",
+      "output_type": "(inline)",
       "type_deps": [
-        "HoverData",
-        "HoverInput",
         "Integer",
         "LspDataState",
         "Path",
@@ -2831,16 +2770,14 @@
       "suite": "lsp",
       "tool": "workspace_symbol",
       "doc": "Search symbols across the workspace.",
-      "signature": "workspace_symbol(args: WorkspaceSymbolInput): Promise<ToolResult<WorkspaceSymbolData>>;",
-      "input_type": "WorkspaceSymbolInput",
-      "output_type": "WorkspaceSymbolData",
+      "signature": "workspace_symbol(args: {\n  query: string; // Symbol name or fragment to search across the workspace.\n  path?: string; // Optional source file that selects/starts the project's language server. Required only when more than one server is running.\n}): Promise<ToolResult<SymbolsData>>;",
+      "input_type": "(inline)",
+      "output_type": "SymbolsData",
       "type_deps": [
         "Integer",
         "LspDataState",
         "SymbolInfo",
-        "SymbolsData",
-        "WorkspaceSymbolData",
-        "WorkspaceSymbolInput"
+        "SymbolsData"
       ],
       "input_schema": {
         "type": "object",
@@ -2940,13 +2877,11 @@
       "suite": "memory",
       "tool": "memory.delete",
       "doc": "Delete entries by id from the current session's working memory.",
-      "signature": "delete(args: MemoryDeleteInput): Promise<ToolResult<MemoryDeleteData>>;",
-      "input_type": "MemoryDeleteInput",
-      "output_type": "MemoryDeleteData",
+      "signature": "delete(args: {\n  ids: string[]; // Entry ids to delete.\n}): Promise<ToolResult<{\n  count: Integer; // Entries after the batch.\n  deleted: string[]; // Deleted ids.\n  rejected: RejectedItem[];\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
         "Integer",
-        "MemoryDeleteData",
-        "MemoryDeleteInput",
         "RejectedItem"
       ],
       "input_schema": {
@@ -3029,13 +2964,11 @@
       "suite": "memory",
       "tool": "memory.list",
       "doc": "Return the authoritative current session memory snapshot; memory survives compaction and is re-injected.",
-      "signature": "list(args?: NoArgs): Promise<ToolResult<MemoryListData>>;",
+      "signature": "list(args?: NoArgs): Promise<ToolResult<{\n  count: Integer; // Number of entries in this snapshot.\n  // Authoritative current entries, in insertion order.\n  entries: {\n    id: string;\n    text: string;\n    updated_at: Integer; // Milliseconds since Unix epoch.\n  }[];\n  limit: Integer; // Maximum entries the session can hold.\n  total: Integer; // Entries in the whole session memory.\n  total_chars: Integer; // Characters across all entry texts.\n}>>;",
       "input_type": "NoArgs",
-      "output_type": "MemoryListData",
+      "output_type": "(inline)",
       "type_deps": [
         "Integer",
-        "MemoryEntry",
-        "MemoryListData",
         "NoArgs"
       ],
       "input_schema": {
@@ -3111,14 +3044,11 @@
       "suite": "memory",
       "tool": "memory.upsert",
       "doc": "Add or update small, durable session memory entries.",
-      "signature": "upsert(args: MemoryUpsertInput): Promise<ToolResult<MemoryUpsertData>>;",
-      "input_type": "MemoryUpsertInput",
-      "output_type": "MemoryUpsertData",
+      "signature": "upsert(args: {\n  // Memory entries to add or update.\n  entries: {\n    text: string; // Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry.\n    id?: string; // Optional existing id. Omit to add or update by text.\n  }[];\n}): Promise<ToolResult<{\n  added: string[]; // New ids.\n  count: Integer; // Entries after the batch.\n  rejected: RejectedItem[];\n  total_chars: Integer; // Characters after the batch.\n  updated: string[]; // Updated ids.\n}>>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
       "type_deps": [
         "Integer",
-        "MemoryUpsertData",
-        "MemoryUpsertEntry",
-        "MemoryUpsertInput",
         "RejectedItem"
       ],
       "input_schema": {

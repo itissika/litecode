@@ -80,7 +80,7 @@ fn io_failure(raw: &str, error: std::io::Error) -> Value {
     }
 }
 
-/// `{ok, entries:[{name,type,size}], message?}` — one level, sorted by name.
+/// `{ok, entries:[{name,type,size}], truncated}` — one level, sorted by name, capped at `LS_CAP`.
 pub fn ls(root: &Path, raw: &str) -> Value {
     let path = match confine(root, raw) {
         Ok(path) => path,
@@ -185,5 +185,89 @@ mod tests {
 
         // Nothing was created or removed by the probes.
         assert_eq!(std::fs::read_dir(root).unwrap().count(), 2);
+    }
+
+    /// Top-level key names declared in the first object literal after `marker`.
+    fn declared_keys(marker: &str, libs: &str) -> std::collections::BTreeSet<String> {
+        let start = libs
+            .find(marker)
+            .unwrap_or_else(|| panic!("marker not found in sdk/src/libs.d.ts: {marker}"));
+        let body = &libs[start + marker.len()..];
+        let open = body.find('{').expect("object type");
+        let mut depth = 0usize;
+        let mut segment = String::new();
+        let mut keys = std::collections::BTreeSet::new();
+        for ch in body[open..].chars() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    if depth == 1 {
+                        segment.clear();
+                    } else {
+                        segment.push(ch);
+                    }
+                }
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        record_key(&segment, &mut keys);
+                        break;
+                    }
+                    segment.push(ch);
+                }
+                ';' if depth == 1 => {
+                    record_key(&segment, &mut keys);
+                    segment.clear();
+                }
+                _ => segment.push(ch),
+            }
+        }
+        keys
+    }
+
+    fn record_key(segment: &str, keys: &mut std::collections::BTreeSet<String>) {
+        let name = segment
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_end_matches('?');
+        if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            keys.insert(name.to_string());
+        }
+    }
+
+    fn runtime_keys(value: &Value) -> std::collections::BTreeSet<String> {
+        value
+            .as_object()
+            .expect("object result")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// The SDK is the model-facing contract for `fs`; every key it declares must
+    /// exist at runtime and vice versa, so the declaration cannot drift silently.
+    #[test]
+    fn sdk_declaration_matches_runtime_keys() {
+        let libs = include_str!("../../sdk/src/libs.d.ts");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("b.txt"), "hi").unwrap();
+
+        let listed = ls(root, ".");
+        assert_eq!(declared_keys("  ls(path: string): ", libs), runtime_keys(&listed));
+        assert_eq!(
+            declared_keys("entries: Array<", libs),
+            runtime_keys(&listed["entries"][0]),
+        );
+
+        let statted = stat(root, "b.txt");
+        assert_eq!(declared_keys("  stat(path: string): ", libs), runtime_keys(&statted));
+
+        let missing = ls(root, "missing.txt");
+        assert_eq!(declared_keys("type FsFailure = ", libs), runtime_keys(&missing));
+
+        assert!(libs.contains("  exists(path: string): boolean;"));
     }
 }

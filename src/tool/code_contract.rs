@@ -342,7 +342,7 @@ mod tests {
         let first = build_surface(&[read.clone()]).expect("read surface");
         let second = build_surface(&[read]).expect("read surface twice");
         assert_eq!(first.sdk, second.sdk);
-        assert!(first.sdk.contains("read(args: ReadInput)"));
+        assert!(first.sdk.contains("read(args: {"));
         assert!(!first.sdk.contains("GrepInput"));
         assert!(!first.sdk.contains("grep(args:"));
     }
