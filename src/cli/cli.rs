@@ -114,6 +114,36 @@ enum Commands {
 enum ConfigCommands {
     /// Set a global settings key (writes to litecode.db)
     Set { key: String, value: String },
+    /// Evaluation profiles: the scored surface in one file
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfileCommands {
+    /// Bind a profile's tools and tiers to the `default` agent
+    ///
+    /// Every id is checked against the live capability catalog: an unknown one
+    /// is an error, never a quietly smaller tool set. Repeating the command
+    /// leaves the same bindings behind.
+    Apply {
+        path: String,
+        /// Resolve `web = "auto"`: `on` keeps the web tools, `off` drops them.
+        #[arg(long)]
+        web: Option<String>,
+        /// Write the applied profile as JSON (web resolved) to this path.
+        #[arg(long)]
+        write_applied: Option<String>,
+        /// Read the websearch key from this file and store it in the settings.
+        ///
+        /// A file, never a value: a key that never reaches an argument cannot
+        /// reach a log. Nothing about it is printed or written to the applied
+        /// document.
+        #[arg(long)]
+        websearch_key_file: Option<String>,
+    },
 }
 
 fn workspace_override(cli: &Cli) -> Option<&Path> {
@@ -900,6 +930,99 @@ pub fn run() -> anyhow::Result<()> {
                         std::process::exit(1);
                     }
                     Err(e) => return Err(e.into()),
+                }
+            }
+            ConfigCommands::Profile { command } => {
+                let ProfileCommands::Apply {
+                    path,
+                    web,
+                    write_applied,
+                    websearch_key_file,
+                } = command;
+                let web = match web.as_deref() {
+                    None => None,
+                    Some("on") => Some(crate::config::eval_profile::WebMode::On),
+                    Some("off") => Some(crate::config::eval_profile::WebMode::Off),
+                    Some(other) => {
+                        eprintln!("error: --web takes 'on' or 'off', not '{other}'");
+                        std::process::exit(1);
+                    }
+                };
+                let resolved = load_runtime_bundle_from_cli(&cli)?;
+                let profile =
+                    match crate::config::eval_profile::EvalProfile::from_path(Path::new(path)) {
+                        Ok(profile) => profile,
+                        Err(error) => {
+                            eprintln!("error: {error}");
+                            std::process::exit(1);
+                        }
+                    };
+                // Read and validate the key before anything is written, so a bad
+                // file leaves the database exactly as it was.
+                let websearch_key = match &websearch_key_file {
+                    None => None,
+                    Some(path) => {
+                        let raw = match std::fs::read_to_string(path) {
+                            Ok(raw) => raw,
+                            Err(error) => {
+                                eprintln!("error: --websearch-key-file {path}: {error}");
+                                std::process::exit(1);
+                            }
+                        };
+                        let key = raw.trim();
+                        if key.is_empty() {
+                            eprintln!("error: --websearch-key-file {path} is empty");
+                            std::process::exit(1);
+                        }
+                        Some(key.to_string())
+                    }
+                };
+                let database = crate::config::global_db::default_db_path();
+                let writer = SettingsWriter::with_path(&database, cli_turn_guard());
+                match crate::config::eval_profile::apply(&writer, &resolved, &profile, web) {
+                    Ok(applied) => {
+                        // The key goes into the same database as the provider key:
+                        // one secret store, and the turn reads it from settings
+                        // instead of from its environment.
+                        if let Some(key) = &websearch_key
+                            && let Err(error) =
+                                writer.write_websearch(crate::config::schema::WebSearchSettings {
+                                    api_key: Some(key.clone()),
+                                })
+                        {
+                            eprintln!("error: {error}");
+                            std::process::exit(1);
+                        }
+                        // Written before the summary so a failed write is not
+                        // silent about missing evidence.
+                        if let Some(target) = &write_applied
+                            && let Err(error) =
+                                applied.write_document(Path::new(&path), Path::new(target))
+                        {
+                            eprintln!("error: {error}");
+                            std::process::exit(1);
+                        }
+                        println!(
+                            "profile '{}' applied to agent '{}': {} tools, web {}",
+                            applied.name,
+                            crate::config::eval_profile::AGENT_ID,
+                            applied.tools.len(),
+                            applied.web.as_str(),
+                        );
+                        // Say which database took the bindings: on a dev machine
+                        // this is the developer's own profile.
+                        println!("database: {}", database.display());
+                        if let Some(target) = &write_applied {
+                            println!("applied: {target}");
+                        }
+                        for tool in &applied.tools {
+                            println!("  {tool}");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        std::process::exit(1);
+                    }
                 }
             }
         }

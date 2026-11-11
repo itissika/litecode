@@ -1,0 +1,103 @@
+# Evaluation profile: the whole scored surface in one file.
+#
+#   litecode config profile apply eval/profile.toml --web on|off
+#
+# `[tools]` classifies model-visible tool ids. A test walks the capability
+# catalog and fails when a tool the registry can bind is not classified here, so
+# a new tool cannot join a scored run unnoticed. Grouped cards (`run` =
+# run/wait/kill, `edit` = edit/apply_edits, `lsp`, `browser`, `memory`,
+# `subagent_tools`) are bound as a whole, so every member of a group has to sit
+# in the same list. `run_code` is the code transport itself: it is listed but it
+# is not a binding, and it cannot be switched off while code tools are bound.
+
+name = "harbor"
+
+# Web tools follow the container, not a fixed answer: the adapter probes once
+# (bounded by a timeout) and passes `--web on|off`. Forcing them off on a
+# networked task would forfeit what every other harness has; forcing them on
+# offline only buys timeouts. Browser tools are not in this group: they are an
+# environment fact (no display, no browser) and are always off.
+web = "auto"
+
+[tools]
+on = [
+  "read",           # read files: the one tool every task starts from
+  "grep",           # search inside files; no index needed
+  "glob",           # find files by name
+  "write",          # create files
+  "edit",           # change files in place
+  "apply_edits",    # batch edits; same card as `edit`, comes with it
+  "run",            # shell: in a task container the work happens here
+  "wait",           # long command handles; same card as `run`
+  "kill",           # stop a runaway command; same card as `run`
+  "todo",           # progress outside the context window; survives compaction
+  "run_code",       # the code transport: code tools are called through it
+]
+off = [
+  # Language service: the container runs no language server, so every call
+  # would sit out a timeout instead of answering.
+  "go_to_definition",
+  "find_references",
+  "hover",
+  "diagnostics",
+  "document_symbol",
+  "workspace_symbol",
+  "go_to_implementation",
+  # Semantic search: needs an embedding model and a warm index; the container
+  # has neither, so the call is either an error or a long wait.
+  "code_search",
+  # Session search: every task starts in a fresh container with no history.
+  "session_search",
+  # Browser: no display and no browser binary, so the six tools can only fail.
+  "browser_open",
+  "browser_close",
+  "browser_list",
+  "browser_read",
+  "browser_click",
+  "browser_type",
+  # Cross-task memory is contamination in a scored run: the next task must not
+  # inherit what this one learned.
+  "memory.list",
+  "memory.upsert",
+  "memory.delete",
+  # A question needs a human to answer it. In a scored run nobody does, so the
+  # call does not get refused, it waits forever.
+  "ask_user",
+  "plan",
+  # Product surface: says nothing about how well the task was solved.
+  "knowledge",
+  "litecode_workspace",
+  # Subagents: the same model in another context. The eval scores one
+  # trajectory, and spawning would make the score depend on delegation.
+  "subagent_launch",
+  "subagent_wait",
+  "subagent_stop",
+  "subagent_list",
+  "subagent_send",
+  "subagent_delete",
+]
+# Follows `web` above: bound when the probe says the container has a network.
+network = [
+  "webfetch",   # fetch one URL
+  "websearch",  # Exa endpoint; key from EXA_API_KEY, rate-limited without one
+]
+
+[permissions]
+# Keys are capability cards, because a binding carries one tier. Every bound
+# tool that has a dial must state it: a command refused by an allowlist reads
+# exactly like a model that would not run commands, and `--yes` does not move
+# this dial. A fresh `default` agent ships All while subagent agents ship Safe,
+# which is why an applied profile states it instead of inheriting it.
+read = "all"
+grep = "all"
+glob = "all"
+write = "all"
+edit = "all"
+run = "all"   # the one that matters: Safe would quietly allowlist the shell
+
+[knobs]
+# Model comes from Harbor's `-m`. These two are session fields the CLI cannot
+# set yet, so this pins the values the artifact records; a scored run must not
+# differ from another one in a way the score cannot explain.
+thinking = "medium"
+context = "standard"

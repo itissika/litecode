@@ -1,5 +1,6 @@
 pub mod binding_scope;
 pub mod bridge;
+pub mod eval_profile;
 pub mod gate;
 pub mod git_install;
 pub mod global_db;
