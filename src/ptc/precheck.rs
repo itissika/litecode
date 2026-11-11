@@ -114,11 +114,17 @@ fn check_arguments(
     };
     let mut cursor = arguments.walk();
     let named: Vec<Node<'_>> = arguments.named_children(&mut cursor).collect();
-    if named.len() != 1 {
+    if named.len() > 1 {
         out.push(format!(
             "'{sdk_path}' accepts exactly one argument, got {}",
             named.len()
         ));
+        return;
+    }
+    if named.is_empty() {
+        // A bare call is legal when the schema requires nothing; otherwise the
+        // missing names are the message the call itself would produce.
+        missing_required(contract, sdk_path, &[], out);
         return;
     }
     let object = named[0];
@@ -156,13 +162,24 @@ fn check_arguments(
             ));
         }
     }
-    if let Some(required) = contract.input_schema.get("required").and_then(Value::as_array) {
-        for name in required.iter().filter_map(Value::as_str) {
-            if !keys.iter().any(|key| key == name) {
-                out.push(format!(
-                    "invalid input for '{sdk_path}': missing required parameter '{name}'"
-                ));
-            }
+    missing_required(contract, sdk_path, &keys, out);
+}
+
+/// Name every required parameter the literal did not supply.
+fn missing_required(
+    contract: &CodeToolContract,
+    sdk_path: &str,
+    keys: &[String],
+    out: &mut Vec<String>,
+) {
+    let Some(required) = contract.input_schema.get("required").and_then(Value::as_array) else {
+        return;
+    };
+    for name in required.iter().filter_map(Value::as_str) {
+        if !keys.iter().any(|key| key == name) {
+            out.push(format!(
+                "invalid input for '{sdk_path}': missing required parameter '{name}'"
+            ));
         }
     }
 }
@@ -366,9 +383,23 @@ mod tests {
                     input_schema: input,
                     output_schema: output,
                 },
+            ),
+            (
+                "memory.list".to_string(),
+                CodeToolContract {
+                    input_schema: json!({
+                        "type": "object",
+                        "additionalProperties": false
+                    }),
+                    output_schema: json!({"type": "object", "properties": {}}),
+                },
             )]
             .into(),
-            bindings: [("file.read".to_string(), "read".to_string())].into(),
+            bindings: [
+                ("file.read".to_string(), "read".to_string()),
+                ("memory.list".to_string(), "memory.list".to_string()),
+            ]
+            .into(),
         }
     }
 
@@ -468,6 +499,35 @@ mod tests {
             &surface(),
         );
         assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn a_tool_with_no_required_input_may_be_called_bare() {
+        let findings = check("await tools.memory.list();", &surface());
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    #[test]
+    fn a_bare_call_names_every_missing_required_parameter() {
+        let findings = check("await tools.file.read();", &surface());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].contains("missing required parameter 'path'"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn two_positional_arguments_are_named() {
+        let findings = check(
+            r#"await tools.file.read({ path: "a" }, { path: "b" });"#,
+            &surface(),
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].contains("accepts exactly one argument, got 2"),
+            "{findings:?}"
+        );
     }
 
     #[test]
