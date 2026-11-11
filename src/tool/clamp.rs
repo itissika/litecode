@@ -42,6 +42,18 @@ impl Clamped<u64> {
     }
 }
 
+impl Clamped<f64> {
+    /// Project a float clamp for a result field; None when nothing moved.
+    pub fn as_clamp(&self, parameter: &str) -> Option<Clamp> {
+        self.note.as_ref()?;
+        Some(Clamp {
+            parameter: parameter.to_string(),
+            requested: self.requested.clone(),
+            applied: serde_json::json!(self.value),
+        })
+    }
+}
+
 /// Read an integer parameter and clamp it into `min..=max`.
 ///
 /// Missing or `null` yields `None` (the caller applies its default). A

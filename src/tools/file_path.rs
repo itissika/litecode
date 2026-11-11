@@ -8,7 +8,6 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::permission::sensitive::is_sensitive_system_path;
-use crate::tool::outcome::Diagnostic;
 use crate::types::ToolCallResult;
 use crate::workspace::is_resolved_outside_workspace;
 
@@ -94,63 +93,32 @@ fn tool_message_code(message: &str) -> &'static str {
     "internal"
 }
 
-/// Attach outside-workspace / sensitive-path diagnostics after a successful edit/write.
-pub fn with_path_risk_warning(
-    mut result: ToolCallResult,
-    workspace_root: &Path,
-    raw_path: &str,
-    resolved: &Path,
-    operation: &str,
-) -> ToolCallResult {
-    if is_resolved_outside_workspace(workspace_root, resolved) {
-        result.diagnostics.push(
-            Diagnostic::warning(
-                "path_outside_workspace",
-                format!(
-                    "you are {operation} outside the workspace ({})",
-                    resolved.display()
-                ),
-            )
-            .with_details(serde_json::json!({
-                "path": raw_path,
-                "resolved": resolved.display().to_string(),
-                "operation": operation,
-            })),
-        );
-    }
-    let resolved_display = resolved.to_string_lossy();
-    if is_sensitive_system_path(raw_path) || is_sensitive_system_path(&resolved_display) {
-        result.diagnostics.push(
-            Diagnostic::warning("sensitive_path", "target is a sensitive system location")
-                .with_details(serde_json::json!({ "path": raw_path })),
-        );
-    }
-    result
+/// Structured path risk, attached to a write or an edit that landed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PathRisk {
+    /// The target resolves outside the workspace root.
+    pub outside_workspace: bool,
+    /// The target is a sensitive system location.
+    pub sensitive: bool,
+    /// Absolute path the target resolved to, present when it is outside.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<String>,
 }
 
-/// Warning text for an outside-workspace or sensitive path, if any.
-pub fn path_risk_warning_text(
-    workspace_root: &Path,
-    raw_path: &str,
-    resolved: &Path,
-    operation: &str,
-) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    if is_resolved_outside_workspace(workspace_root, resolved) {
-        parts.push(format!(
-            "you are {operation} outside the workspace ({})",
-            resolved.display()
-        ));
-    }
+/// The path risk of a write or edit, or `None` when there is none.
+pub fn path_risk(workspace_root: &Path, raw_path: &str, resolved: &Path) -> Option<PathRisk> {
+    let outside_workspace = is_resolved_outside_workspace(workspace_root, resolved);
     let resolved_display = resolved.to_string_lossy();
-    if is_sensitive_system_path(raw_path) || is_sensitive_system_path(&resolved_display) {
-        parts.push("target is a sensitive system location".into());
+    let sensitive =
+        is_sensitive_system_path(raw_path) || is_sensitive_system_path(&resolved_display);
+    if !outside_workspace && !sensitive {
+        return None;
     }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("; "))
-    }
+    Some(PathRisk {
+        outside_workspace,
+        sensitive,
+        resolved: outside_workspace.then(|| resolved.display().to_string()),
+    })
 }
 
 /// Code-mode file argument. The only name is `path`.

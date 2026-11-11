@@ -108,22 +108,25 @@ impl LspShared {
     fn availability_failure(&self, workspace_root: &Path) -> Option<String> {
         match self.engines.state("lsp") {
             Some(EngineState::Warm) => None,
+            // The model can act here: waiting is the fix, not a UI step.
             Some(EngineState::Warming) => Some(
-                "LSP is still loading for the current workspace after waiting; \
-                 skipped — wait for Settings → Engines → LSP to show Warm, then retry"
+                "LSP is still starting for this workspace; the call was skipped. \
+                 Retry in a few seconds."
                     .into(),
             ),
+            // Nothing the call can do: the user has to restart the engine.
             Some(EngineState::Failed) => Some(format!(
-                "LSP is unavailable in the current workspace (root={}): {}. \
-                 Check Settings → Engines → LSP, then retry",
+                "LSP is unavailable in this workspace (root={}): {}. Retrying will not \
+                 help until the user restarts the language engine in Settings → Engines → LSP",
                 workspace_root.display(),
                 self.engines
                     .last_error("lsp")
                     .unwrap_or_else(|| "language engine failed to start".into())
             )),
+            // Enabling an engine is a user action; say who can do it.
             _ => Some(format!(
-                "LSP is not enabled for the current workspace (root={}). \
-                 Configure and start an LSP server in Settings → Engines → LSP",
+                "LSP is not enabled for this workspace (root={}). The user has to enable \
+                 and start an LSP engine in Settings → Engines → LSP; this call cannot do it",
                 workspace_root.display()
             )),
         }
@@ -142,7 +145,8 @@ impl LspShared {
         let program = crate::lsp::server_map::program_from_command(&command);
         let detail = failed_server_detail(&self.hub.instance_statuses(), &program)?;
         Some(format!(
-            "LSP server for '{program}' failed: {detail}. Check Settings → Engines → LSP, then retry"
+            "LSP server for '{program}' failed: {detail}. Retrying will not help until the \
+             user restarts it in Settings → Engines → LSP"
         ))
     }
 
@@ -509,11 +513,8 @@ fn map_lsp_query_error(err: impl std::fmt::Display) -> ToolCallResult {
     } else {
         "unavailable"
     };
-    let msg = if msg.contains("index not ready") || msg.contains("inconclusive") {
-        format!("{msg}. Wait for Settings → Engines → LSP to finish indexing, then retry")
-    } else {
-        msg
-    };
+    // The error text is the only source of wording: the tool adds no tail, so a
+    // model sees one sentence about its own next step and no UI instructions.
     coded(code, msg)
 }
 
@@ -534,22 +535,17 @@ fn finish_with_state(
     with_content_modified(result, content_modified)
 }
 
-fn state_note(readiness: IndexReadiness) -> &'static str {
-    match readiness {
-        IndexReadiness::Ready => "",
-        IndexReadiness::Indexing => " Index is still building; results may be incomplete.",
-        IndexReadiness::Unknown => " Index state is unknown; results may be incomplete.",
-    }
-}
-
 /// Sole success shape for find_references, go_to_definition, and go_to_implementation.
 #[derive(serde::Serialize)]
 struct LocationsData {
     locations: Vec<LocationItem>,
     state: &'static str,
+    /// The cap cut the list; `locations` is exactly the cap.
+    truncated: bool,
 }
 
-/// Sole success shape for hover.
+/// Sole success shape for hover. A hover is one value, so there is no
+/// truncation fact to report.
 #[derive(serde::Serialize)]
 struct HoverData {
     markdown: String,
@@ -561,6 +557,8 @@ struct HoverData {
 struct DiagnosticsData {
     items: Vec<DiagnosticItem>,
     state: &'static str,
+    /// The cap cut the list; `items` is exactly the cap.
+    truncated: bool,
 }
 
 /// Sole success shape for document_symbol and workspace_symbol.
@@ -568,6 +566,8 @@ struct DiagnosticsData {
 struct SymbolsData {
     symbols: Vec<SymbolItem>,
     state: &'static str,
+    /// The cap cut the list; `symbols` is exactly the cap.
+    truncated: bool,
 }
 
 fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCallResult {
@@ -586,6 +586,7 @@ fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCall
         crate::tool::outcome::ok_data(LocationsData {
             locations,
             state: out.readiness.as_str(),
+            truncated,
         }),
         out.readiness,
         out.content_modified,
@@ -628,6 +629,7 @@ fn finish_diagnostics(out: crate::lsp::LspToolOutput, file_path: &str) -> ToolCa
         crate::tool::outcome::ok_data(DiagnosticsData {
             items,
             state: out.readiness.as_str(),
+            truncated,
         }),
         out.readiness,
         out.content_modified,
@@ -654,6 +656,7 @@ fn finish_symbols(
         crate::tool::outcome::ok_data(SymbolsData {
             symbols,
             state: out.readiness.as_str(),
+            truncated,
         }),
         out.readiness,
         out.content_modified,
@@ -973,6 +976,61 @@ mod tests {
         );
     }
 
+    /// The cap is a fact the model has to see: a cut list must not read like
+    /// a complete one.
+    #[test]
+    fn a_capped_list_says_it_was_cut() {
+        let uri = "file:///workspace/src/a.rs";
+        let location = |line: usize| {
+            serde_json::json!({
+                "uri": uri,
+                "range": { "start": { "line": line, "character": 0 } },
+            })
+        };
+        let many: Vec<Value> = (0..(MAX_LOCATIONS + 1)).map(location).collect();
+        let out = crate::lsp::LspToolOutput::new(
+            String::new(),
+            Value::Array(many),
+            false,
+            IndexReadiness::Ready,
+        );
+        let data = finish_locations(out, &[Path::new("/workspace")]).data.expect("data");
+        assert_eq!(data["truncated"], true, "{data}");
+        assert_eq!(data["locations"].as_array().unwrap().len(), MAX_LOCATIONS);
+
+        let few: Vec<Value> = (0..3).map(location).collect();
+        let out = crate::lsp::LspToolOutput::new(
+            String::new(),
+            Value::Array(few),
+            false,
+            IndexReadiness::Ready,
+        );
+        let data = finish_locations(out, &[Path::new("/workspace")]).data.expect("data");
+        assert_eq!(data["truncated"], false, "{data}");
+
+        let symbol = |line: usize| {
+            serde_json::json!({
+                "name": format!("s{line}"),
+                "kind": 12,
+                "location": {
+                    "uri": uri,
+                    "range": { "start": { "line": line, "character": 0 } },
+                },
+            })
+        };
+        let many: Vec<Value> = (0..(MAX_SYMBOLS + 1)).map(symbol).collect();
+        let out = crate::lsp::LspToolOutput::new(
+            String::new(),
+            Value::Array(many),
+            false,
+            IndexReadiness::Ready,
+        );
+        let data = finish_symbols(out, false, &[Path::new("/workspace")])
+            .data
+            .expect("data");
+        assert_eq!(data["truncated"], true, "{data}");
+        assert_eq!(data["symbols"].as_array().unwrap().len(), MAX_SYMBOLS);
+    }
     #[test]
     fn unknown_empty_is_not_a_confirmed_miss() {
         let out = crate::lsp::LspToolOutput::new(

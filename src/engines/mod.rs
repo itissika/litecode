@@ -894,7 +894,7 @@ impl WorkspaceEngines {
         let root = resolved.workspace_root();
         if !crate::config::workspace::workspace_engine_desired(root, "code_search") {
             return Err(crate::types::LitecodeError::Config(
-                "code search engine is off; enable it in Settings → Engines".into(),
+                "code search engine is off; the user has to enable it in Settings → Engines".into(),
             ));
         }
 
@@ -1008,7 +1008,8 @@ impl WorkspaceEngines {
         };
         if !crate::config::workspace::workspace_engine_desired(&root, "code_search") {
             return Err(crate::types::LitecodeError::Config(
-                "code search engine is off; enable it in Settings → Engines".into(),
+                "code search engine is off; the user has to enable it in Settings → Engines"
+                    .into(),
             ));
         }
         let state = self.state("code_search");

@@ -222,11 +222,20 @@ pub(super) fn reminders_for_call(tool: &str, value: &Value) -> Vec<String> {
         return Vec::new();
     };
     let mut out = Vec::new();
+    // A failed call produced no fields: the envelope already says what happened,
+    // and inferring a second sentence from missing fields would turn "never ran"
+    // into "ran and found nothing".
+    if object.get("ok").and_then(Value::as_bool) == Some(false) {
+        return out;
+    }
     match tool {
         "file.read" => read_reminders(object, &mut out),
         "file.glob" => glob_reminders(object, &mut out),
         "file.grep" => grep_reminders(object, &mut out),
         tool if tool.starts_with("lsp.") => lsp_reminders(tool, object, &mut out),
+        "process.run" | "process.wait" | "process.kill" => command_reminders(object, &mut out),
+        "file.write" => write_reminders(object, &mut out),
+        "file.edit" | "file.apply_edits" => edit_reminders(tool, object, &mut out),
         _ => {}
     }
     out
@@ -234,6 +243,125 @@ pub(super) fn reminders_for_call(tool: &str, value: &Value) -> Vec<String> {
 
 /// LSP results carry an index state; `partial` and `unknown` are different
 /// facts and must not collapse into one sentence.
+fn array_len(object: &serde_json::Map<String, Value>, key: &str) -> usize {
+    object
+        .get(key)
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len)
+}
+
+/// Path risk and post-write diagnostics, shared by `write`, `edit`, and the
+/// per-item results of `apply_edits`.
+fn path_risk_reminders(
+    label: &str,
+    risk: &Value,
+    out: &mut Vec<String>,
+) {
+    if risk.get("outside_workspace").and_then(Value::as_bool) == Some(true) {
+        let resolved = risk.get("resolved").and_then(Value::as_str).unwrap_or("?");
+        out.push(format!("{label} lands outside the workspace: {resolved}"));
+    }
+    if risk.get("sensitive").and_then(Value::as_bool) == Some(true) {
+        out.push(format!("{label} targets a sensitive system location"));
+    }
+}
+
+fn write_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
+    if let Some(risk) = object.get("path_risk") {
+        path_risk_reminders("this write", risk, out);
+    }
+    lsp_diagnostics_reminder(None, object, out);
+}
+
+/// Write and edit report post-write diagnostics under the same field, so they
+/// say it with the same line. A batch item adds which edit it was.
+fn lsp_diagnostics_reminder(
+    label: Option<&str>,
+    object: &serde_json::Map<String, Value>,
+    out: &mut Vec<String>,
+) {
+    if object
+        .get("diagnostics")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty)
+    {
+        return;
+    }
+    let sentence = "the language server reported errors in this file";
+    out.push(match label {
+        Some(label) => format!("{label}: {sentence}"),
+        None => sentence.to_string(),
+    });
+}
+
+fn edit_reminders(
+    tool: &str,
+    object: &serde_json::Map<String, Value>,
+    out: &mut Vec<String>,
+) {
+    if tool == "file.edit" {
+        if let Some(risk) = object.get("path_risk") {
+            path_risk_reminders("this edit", risk, out);
+        }
+        lsp_diagnostics_reminder(None, object, out);
+        return;
+    }
+    let Some(results) = object.get("results").and_then(Value::as_array) else {
+        return;
+    };
+    for (index, item) in results.iter().enumerate() {
+        if let Some(risk) = item.get("path_risk") {
+            path_risk_reminders(&format!("edit #{}", index + 1), risk, out);
+        }
+        if let Some(item) = item.as_object() {
+            lsp_diagnostics_reminder(Some(&format!("edit #{}", index + 1)), item, out);
+        }
+        // A miss names the nearest line: the model fixes one typo instead of
+        // re-reading the whole file.
+        if let Some(line) = item.get("nearest_line").and_then(Value::as_u64) {
+            out.push(format!(
+                "edit #{}: closest match is at line {line}",
+                index + 1
+            ));
+        }
+    }
+}
+/// A command result keeps process output and process state apart: the text is
+/// the text, and everything the tool learned about the run is a field here.
+fn command_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
+    if object.get("exit_code").is_none_or(Value::is_null) {
+        out.push("still running; use tools.process.wait or tools.process.kill".to_string());
+    }
+    if object.get("timed_out").and_then(Value::as_bool) == Some(true) {
+        out.push("this call's time budget ran out while the process kept running".to_string());
+    }
+    if object.get("killed").and_then(Value::as_bool) == Some(true) {
+        out.push("the process was killed".to_string());
+    }
+    if object.get("draining").and_then(Value::as_bool) == Some(true) {
+        out.push("a pipe is still open, so the streams can still grow".to_string());
+    }
+    if object.get("path_conversion").and_then(Value::as_bool) == Some(true) {
+        out.push(
+            "the shell may convert POSIX-style paths; write `cmd //c` or set `MSYS_NO_PATHCONV=1`"
+                .to_string(),
+        );
+    }
+    for (flag, log, label) in [
+        ("output_truncated", "output_log", "stdout"),
+        ("stderr_truncated", "stderr_log", "stderr"),
+    ] {
+        let truncated = object.get(flag).and_then(Value::as_bool) == Some(true);
+        let path = object.get(log).and_then(Value::as_str);
+        if truncated {
+            out.push(format!("{label} was truncated; the full text is in {log}"));
+        } else if let Some(path) = path {
+            out.push(format!("{label} log: {path}"));
+        }
+    }
+    out.extend(clamp_reminders(object));
+}
+
 fn lsp_reminders(
     tool: &str,
     object: &serde_json::Map<String, Value>,
@@ -264,6 +392,15 @@ fn lsp_reminders(
             .and_then(Value::as_array)
             .is_none_or(Vec::is_empty),
     };
+    if object.get("truncated").and_then(Value::as_bool) == Some(true) {
+        let shown = match tool {
+            "lsp.hover" => 0,
+            "lsp.diagnostics" => array_len(object, "items"),
+            "lsp.document_symbol" | "lsp.workspace_symbol" => array_len(object, "symbols"),
+            _ => array_len(object, "locations"),
+        };
+        out.push(format!("results were cut at {shown}; more exist"));
+    }
     let line = match (empty, state) {
         (true, "ok") => format!("no {subject} reported; the index is ready, so this is a real miss"),
         (true, "partial") => format!(
@@ -325,7 +462,7 @@ fn read_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
             numbers.join(", ")
         ));
     }
-    out.extend(clamp_reminders("read", object));
+    out.extend(clamp_reminders(object));
 }
 
 fn grep_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
@@ -341,16 +478,21 @@ fn grep_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
         };
         out.push(text.to_string());
     }
-    let total = object.get("total_hits").and_then(Value::as_u64);
     let shown = object.get("hits").and_then(Value::as_array).map_or(0, Vec::len);
-    match (object.get("at_limit_cap"), total) {
-        (Some(Value::Bool(true)), Some(total)) => out.push(format!(
-            "stopped at the hit limit; showing {shown} of {total}"
-        )),
-        (_, Some(total)) if total > shown as u64 => {
-            out.push(format!("showing {shown} of {total} matches"));
-        }
-        _ => {}
+    // The cut is the fact, not the total: a scan stops early and never learns
+    // how many matches exist, so the sentence must not depend on that number.
+    if object.get("truncated").and_then(Value::as_bool) == Some(true) {
+        out.push(format!(
+            "showing the first {shown} matches; more exist — narrow the pattern/path or raise limit"
+        ));
+    }
+    if let Some(total) = object.get("total_hits").and_then(Value::as_u64)
+        && total > shown as u64
+    {
+        out.push(format!("showing {shown} of {total} matches"));
+    }
+    if object.get("at_limit_cap").and_then(Value::as_bool) == Some(true) {
+        out.push("the limit is already at its maximum; narrow the pattern or path".to_string());
     }
     if object.get("lines_truncated").and_then(Value::as_bool) == Some(true) {
         out.push("long lines were shortened to fit the line cap".to_string());
@@ -361,7 +503,7 @@ fn grep_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
     if object.get("output_capped").and_then(Value::as_bool) == Some(true) {
         out.push("output was capped; narrow the pattern or path".to_string());
     }
-    out.extend(clamp_reminders("grep", object));
+    out.extend(clamp_reminders(object));
 }
 
 fn glob_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
@@ -388,10 +530,10 @@ fn glob_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
     if object.get("outside_workspace").and_then(Value::as_bool) == Some(true) {
         out.push("paths outside the workspace are absolute".to_string());
     }
-    out.extend(clamp_reminders("glob", object));
+    out.extend(clamp_reminders(object));
 }
 
-fn clamp_reminders(tool: &str, object: &serde_json::Map<String, Value>) -> Vec<String> {
+fn clamp_reminders(object: &serde_json::Map<String, Value>) -> Vec<String> {
     let Some(clamped) = object.get("clamped").and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -1583,7 +1725,7 @@ mod tests {
     fn grep_fields_and_their_reminder_lines() {
         let base = |extra: Value| {
             let mut value = serde_json::json!({
-                "hits": [], "total_hits": 0, "at_limit_cap": false,
+                "hits": [], "at_limit_cap": false,
                 "lines_truncated": false, "context_omitted": false, "output_capped": false,
             });
             let object = value.as_object_mut().unwrap();
@@ -1619,17 +1761,32 @@ mod tests {
             ),
             (
                 base(serde_json::json!({
-                    "total_hits": 120, "at_limit_cap": true,
+                    "at_limit_cap": true, "truncated": true,
                     "hits": [{"path": "a.rs", "line": 1, "text": "needle"}],
                 })),
-                vec!["stopped at the hit limit; showing 1 of 120"],
+                vec![
+                    "showing the first 1 matches; more exist — narrow the pattern/path or raise limit",
+                    "the limit is already at its maximum; narrow the pattern or path",
+                ],
             ),
             (
                 base(serde_json::json!({
-                    "total_hits": 9,
+                    "total_hits": 9, "truncated": true,
                     "hits": [{"path": "a.rs", "line": 1, "text": "needle"}],
                 })),
-                vec!["showing 1 of 9 matches"],
+                vec![
+                    "showing the first 1 matches; more exist — narrow the pattern/path or raise limit",
+                    "showing 1 of 9 matches",
+                ],
+            ),
+            (
+                base(serde_json::json!({
+                    "truncated": true,
+                    "hits": [{"path": "a.rs", "line": 1, "text": "needle"}],
+                })),
+                vec![
+                    "showing the first 1 matches; more exist — narrow the pattern/path or raise limit",
+                ],
             ),
             (
                 base(serde_json::json!({
@@ -1799,65 +1956,87 @@ mod tests {
         let cases: Vec<(&str, Value, Vec<String>)> = vec![
             (
                 "lsp.diagnostics",
-                json!({"items": [], "state": "ok"}),
+                json!({"items": [], "state": "ok", "truncated": false}),
                 vec![diagnostics[0].clone()],
             ),
             (
                 "lsp.diagnostics",
-                json!({"items": [], "state": "partial"}),
+                json!({"items": [], "state": "partial", "truncated": false}),
                 vec![diagnostics[1].clone()],
             ),
             (
                 "lsp.diagnostics",
-                json!({"items": [], "state": "unknown"}),
+                json!({"items": [], "state": "unknown", "truncated": false}),
                 vec![diagnostics[2].clone()],
             ),
             (
                 "lsp.diagnostics",
                 json!({"items": [{"severity": "Error", "path": "a.rs", "line": 1,
-                          "character": 1, "message": "x"}], "state": "partial"}),
+                          "character": 1, "message": "x"}], "state": "partial", "truncated": false}),
                 vec!["results may be incomplete; the index is still building".to_string()],
             ),
             (
                 "lsp.diagnostics",
                 json!({"items": [{"severity": "Error", "path": "a.rs", "line": 1,
-                          "character": 1, "message": "x"}], "state": "unknown"}),
+                          "character": 1, "message": "x"}], "state": "unknown", "truncated": false}),
                 vec!["results may be incomplete; the index state is unknown".to_string()],
             ),
             (
                 "lsp.diagnostics",
                 json!({"items": [{"severity": "Error", "path": "a.rs", "line": 1,
-                          "character": 1, "message": "x"}], "state": "ok"}),
+                          "character": 1, "message": "x"}], "state": "ok", "truncated": false}),
                 Vec::new(),
             ),
             (
                 "lsp.hover",
-                json!({"markdown": "", "state": "ok"}),
+                json!({"markdown": "", "state": "ok", "truncated": false}),
                 vec![hover[0].clone()],
             ),
             (
                 "lsp.document_symbol",
-                json!({"symbols": [], "state": "unknown"}),
+                json!({"symbols": [], "state": "unknown", "truncated": false}),
                 vec![symbols[2].clone()],
             ),
             (
                 "lsp.workspace_symbol",
-                json!({"symbols": [], "state": "partial"}),
+                json!({"symbols": [], "state": "partial", "truncated": false}),
                 vec![symbols[1].clone()],
             ),
             (
                 "lsp.find_references",
-                json!({"locations": [], "state": "partial"}),
+                json!({"locations": [], "state": "partial", "truncated": false}),
                 vec![locations[1].clone()],
             ),
             (
                 "lsp.go_to_implementation",
-                json!({"locations": [], "state": "unknown"}),
+                json!({"locations": [], "state": "unknown", "truncated": false}),
                 vec![locations[2].clone()],
             ),
             (
+                "lsp.diagnostics",
+                json!({"items": vec![json!({"severity": "Error", "path": "a.rs", "line": 1,
+                          "character": 1, "message": "x"}); 100], "state": "ok",
+                       "truncated": true}),
+                vec!["results were cut at 100; more exist".to_string()],
+            ),
+            (
+                "lsp.find_references",
+                json!({"locations": vec![json!({"path": "a.rs", "line": 1, "character": 1}); 100],
+                       "state": "ok", "truncated": true}),
+                vec!["results were cut at 100; more exist".to_string()],
+            ),
+            (
+                "lsp.workspace_symbol",
+                json!({"symbols": vec![json!({"name": "a", "kind": "Function", "line": 1,
+                          "character": 1}); 200], "state": "partial", "truncated": true}),
+                vec![
+                    "results were cut at 200; more exist".to_string(),
+                    "results may be incomplete; the index is still building".to_string(),
+                ],
+            ),
+            (
                 "lsp.go_to_definition",
-                json!({"locations": [{"path": "a.rs", "line": 1, "character": 1}], "state": "ok"}),
+                json!({"locations": [{"path": "a.rs", "line": 1, "character": 1}], "state": "ok", "truncated": false}),
                 Vec::new(),
             ),
         ];
@@ -1878,6 +2057,227 @@ mod tests {
                 let line = format!("↳ #7 {tool}: {text}");
                 assert!(out.contains(&line), "{out}");
                 assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
+            }
+        }
+    }
+    /// A command result keeps process text and process state apart: every
+    /// state fact is a field, and the reminder is the only prose.
+    #[test]
+    fn command_fields_and_their_reminder_lines() {
+        let base = |extra: Value| {
+            let mut value = json!({
+                "id": "bg_1", "exit_code": 0, "output": "", "stderr": "",
+                "shell": "bash", "timed_out": false, "draining": false,
+                "output_truncated": false, "stderr_truncated": false,
+                "path_conversion": false,
+            });
+            let object = value.as_object_mut().unwrap();
+            for (key, item) in extra.as_object().unwrap() {
+                object.insert(key.clone(), item.clone());
+            }
+            value
+        };
+        let cases: Vec<(Value, Vec<&str>)> = vec![
+            (
+                base(json!({"path_conversion": true})),
+                vec!["the shell may convert POSIX-style paths; write `cmd //c` or set `MSYS_NO_PATHCONV=1`"],
+            ),
+            (
+                base(json!({"timed_out": true, "exit_code": null})),
+                vec![
+                    "still running; use tools.process.wait or tools.process.kill",
+                    "this call's time budget ran out while the process kept running",
+                ],
+            ),
+            (
+                base(json!({"killed": true})),
+                vec!["the process was killed"],
+            ),
+            (
+                base(json!({"draining": true})),
+                vec!["a pipe is still open, so the streams can still grow"],
+            ),
+            (
+                base(json!({"output_truncated": true, "output_log": "logs/out.log"})),
+                vec!["stdout was truncated; the full text is in output_log"],
+            ),
+            (
+                base(json!({"stderr_truncated": true, "stderr_log": "logs/err.log"})),
+                vec!["stderr was truncated; the full text is in stderr_log"],
+            ),
+            (
+                base(json!({"output_log": "logs/out.log"})),
+                vec!["stdout log: logs/out.log"],
+            ),
+            (
+                base(json!({"stderr_log": "logs/err.log"})),
+                vec!["stderr log: logs/err.log"],
+            ),
+            (
+                base(json!({"clamped": [{"parameter": "sec", "requested": 600, "applied": 300}]})),
+                vec!["sec 300 used instead of 600"],
+            ),
+            (base(json!({})), Vec::new()),
+        ];
+        for (value, expected) in cases {
+            let lines = reminders_for_call("process.run", &value);
+            assert_eq!(lines, expected, "{value}");
+            let mut report = base_report();
+            report.reminders = lines
+                .iter()
+                .map(|text| CallReminder {
+                    seq: 7,
+                    tool: "process.run".to_string(),
+                    text: text.clone(),
+                })
+                .collect();
+            let out = render_model_view(&report);
+            for text in &expected {
+                let line = format!("↳ #7 process.run: {text}");
+                assert!(out.contains(&line), "{out}");
+                assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
+            }
+        }
+    }
+    #[test]
+    fn write_and_edit_fields_and_their_reminder_lines() {
+        let write = |extra: Value| {
+            let mut value = json!({
+                "created": true,
+                "file": {"path": "a.txt", "bytes": 5, "hash": "h"},
+            });
+            let object = value.as_object_mut().unwrap();
+            for (key, item) in extra.as_object().unwrap() {
+                object.insert(key.clone(), item.clone());
+            }
+            value
+        };
+        let risk = |resolved: &str| {
+            json!({
+                "outside_workspace": true,
+                "sensitive": false,
+                "resolved": resolved,
+            })
+        };
+        let cases: Vec<(&str, Value, Vec<&str>)> = vec![
+            (
+                "file.write",
+                write(json!({ "path_risk": risk("/tmp/x.txt") })),
+                vec!["this write lands outside the workspace: /tmp/x.txt"],
+            ),
+            (
+                "file.write",
+                write(json!({ "path_risk": {"outside_workspace": false, "sensitive": true} })),
+                vec!["this write targets a sensitive system location"],
+            ),
+            (
+                "file.write",
+                write(json!({
+                    "diagnostics": [{"code": "lsp_error", "severity": "warning", "message": "m"}]
+                })),
+                vec!["the language server reported errors in this file"],
+            ),
+            ("file.write", write(json!({})), Vec::new()),
+            (
+                "file.edit",
+                json!({
+                    "path": "a.txt",
+                    "diagnostics": [{"code": "lsp_error", "severity": "warning", "message": "m"}],
+                    "path_risk": risk("/tmp/y.txt"),
+                }),
+                vec![
+                    "this edit lands outside the workspace: /tmp/y.txt",
+                    "the language server reported errors in this file",
+                ],
+            ),
+            (
+                "file.apply_edits",
+                json!({
+                    "results": [
+                        {
+                            "ok": true,
+                            "path": "a.txt",
+                            "reason": null,
+                            "diagnostics": [
+                                {"code": "lsp_error", "severity": "warning", "message": "m"}
+                            ],
+                        },
+                        {
+                            "ok": false,
+                            "path": "/tmp/z.txt",
+                            "reason": "no_match",
+                            "nearest_line": 12,
+                            "path_risk": risk("/tmp/z.txt"),
+                        },
+                    ]
+                }),
+                vec![
+                    "edit #1: the language server reported errors in this file",
+                    "edit #2 lands outside the workspace: /tmp/z.txt",
+                    "edit #2: closest match is at line 12",
+                ],
+            ),
+        ];
+        for (tool, value, expected) in cases {
+            let lines = reminders_for_call(tool, &value);
+            assert_eq!(lines, expected, "{value}");
+            let mut report = base_report();
+            report.reminders = lines
+                .iter()
+                .map(|text| CallReminder {
+                    seq: 3,
+                    tool: tool.to_string(),
+                    text: text.clone(),
+                })
+                .collect();
+            let out = render_model_view(&report);
+            for text in &expected {
+                let line = format!("↳ #3 {tool}: {text}");
+                assert!(out.contains(&line), "{out}");
+                assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
+            }
+        }
+    }
+
+    /// A failed call never produces a line: it reported no fields, so any
+    /// sentence built from their absence would be a guess.
+    #[test]
+    fn a_failed_call_produces_no_reminder_lines() {
+        let tools = [
+            "file.read",
+            "file.glob",
+            "file.grep",
+            "lsp.workspace_symbol",
+            "lsp.diagnostics",
+            "lsp.hover",
+            "process.run",
+            "process.wait",
+            "file.write",
+            "file.edit",
+            "file.apply_edits",
+        ];
+        let envelopes = [
+            json!({
+                "ok": false,
+                "reason": "unavailable",
+                "message": "language server I/O failed",
+            }),
+            // Plausible fields do not change the rule: no fields were reported.
+            json!({
+                "ok": false,
+                "reason": "no_match",
+                "message": "x",
+                "state": "unknown",
+                "symbols": [],
+                "locations": [],
+                "items": [],
+                "truncated": true,
+            }),
+        ];
+        for tool in tools {
+            for envelope in &envelopes {
+                let lines = reminders_for_call(tool, envelope);
+                assert!(lines.is_empty(), "{tool} {envelope} -> {lines:?}");
             }
         }
     }

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use crate::tool::trait_::ToolExecutionContext;
+use crate::tools::edit::matcher;
 use crate::tools::edit::planner::{self, EditSpec, PlanFail};
 use crate::tools::edit::result::EditResult;
 use crate::workspace::text_codec;
@@ -19,13 +20,13 @@ impl EditEngine {
     }
 
     /// Attempt one replacement. Match/IO/path failures become typed failures with
-    /// guidance in `message`. Only cancellation is `Err` so a batch can abort.
+    /// guidance in `message` (the failure envelope). Only cancellation is `Err`
+    /// so a batch can abort.
     pub(crate) async fn apply_one(
         &self,
         execution: &ToolExecutionContext,
         raw_path: &str,
         spec: &EditSpec,
-        success_label: &str,
     ) -> Result<EditResult, Cancelled> {
         if crate::session::transcript_file::is_virtual_session_path(raw_path) {
             return Ok(EditResult::failure(
@@ -108,7 +109,15 @@ impl EditEngine {
                     "no_match" | "multiple_matches" => "no_match",
                     _ => "invalid_input",
                 };
-                return Ok(EditResult::failure(raw_path, reason.message()).because(code));
+                // A miss names its nearest line so the model fixes one typo
+                // instead of re-reading the file. `multiple_matches` already
+                // carries exact lines in its own text.
+                let nearest = (reason.code() == "no_match")
+                    .then(|| matcher::nearest_line(&content, &spec.old_string))
+                    .flatten();
+                return Ok(EditResult::failure(raw_path, reason.message())
+                    .because(code)
+                    .with_nearest_line(nearest));
             }
         };
         if execution.cancel.is_cancelled() {
@@ -143,57 +152,18 @@ impl EditEngine {
             ide.apply_document_if_ready(&path, &edited).await;
         }
 
-        let mut message = if spec.new_string.is_empty() {
-            "deleted".to_string()
-        } else {
-            success_label.to_string()
-        };
-
-        // Fold LSP / path-risk notes into message (no structured details tree).
-        // lsp_feedback attaches `lsp_error` as diagnostics (content stays empty
-        // until finalize); pull those into message for the EditResult contract.
-        if let Some(engines) = self.ide.as_ref().map(|ide| ide.engines.as_ref()) {
-            let stub = crate::types::ToolCallResult::ok(String::new());
-            let annotated = crate::tools::lsp_feedback::maybe_append_local_lsp_errors(
-                Some(engines),
+        // Same producer and same field as write: post-edit LSP diagnostics are
+        // data, not prose folded into a message.
+        let diagnostics = crate::tools::lsp_feedback::diagnostics_field(
+            crate::tools::lsp_feedback::local_lsp_error_diagnostics(
+                self.ide.as_ref().map(|ide| ide.engines.as_ref()),
                 &path_display,
-                stub,
             )
-            .await;
-            for diag in &annotated.diagnostics {
-                if diag.code != "lsp_error" {
-                    continue;
-                }
-                message.push('\n');
-                message.push_str(&diag.message);
-                if let Some(text) = diag
-                    .details
-                    .as_ref()
-                    .and_then(|d| d.get("text"))
-                    .and_then(|t| t.as_str())
-                {
-                    message.push('\n');
-                    message.push_str(text);
-                }
-            }
-            let finalized = annotated.finalize_signals();
-            if !finalized.content.is_empty() {
-                message.push('\n');
-                message.push_str(finalized.content.trim());
-            }
-        }
-        let risk = crate::tools::file_path::with_path_risk_warning(
-            crate::types::ToolCallResult::ok(String::new()),
-            &execution.workspace_root,
-            raw_path,
-            &path,
-            "editing",
+            .await,
         );
-        if !risk.content.is_empty() {
-            message.push('\n');
-            message.push_str(risk.content.trim());
-        }
-
-        Ok(EditResult::success(raw_path, message))
+        let risk = crate::tools::file_path::path_risk(&execution.workspace_root, raw_path, &path);
+        Ok(EditResult::success(raw_path)
+            .with_path_risk(risk)
+            .with_diagnostics(diagnostics))
     }
 }

@@ -301,6 +301,65 @@ pub(super) fn truncate_hint(s: &str, max_chars: usize) -> String {
     format!("{kept}…")
 }
 
+/// The line a failed `old_string` most likely meant to point at.
+///
+/// One number is the cheapest correction a model can act on without re-reading
+/// the whole file. The first non-blank line of `old_string` is compared with
+/// every file line; the closest one wins when enough of it survives, so a typo
+/// or an indentation drift still lands somewhere useful. `None` when nothing is
+/// close enough: a wrong line is worse than no line.
+pub(super) fn nearest_line(content: &str, old_string: &str) -> Option<u32> {
+    let needle = old_string.lines().find(|line| !line.trim().is_empty())?.trim();
+    let needle_len = needle.chars().count();
+    // Too short to be evidence: half of a two-character needle is noise.
+    if needle_len < 4 {
+        return None;
+    }
+    let mut best: Option<(usize, u32)> = None;
+    for (index, line) in content.lines().take(5000).enumerate() {
+        let hay = line.trim();
+        if hay.is_empty() {
+            continue;
+        }
+        let shared = shared_chars(hay, needle);
+        if shared < 4 {
+            continue;
+        }
+        if best.is_none_or(|(top, _)| shared > top) {
+            best = Some((shared, index as u32 + 1));
+        }
+        if shared == needle_len {
+            break;
+        }
+    }
+    let (shared, line) = best?;
+    (shared * 2 >= needle_len).then_some(line)
+}
+
+/// Longest common subsequence of two trimmed lines, in characters.
+///
+/// A subsequence survives a typo in the middle, where a common prefix does not —
+/// the one-character-mistake case is exactly the one worth pointing at.
+fn shared_chars(a: &str, b: &str) -> usize {
+    const CAP: usize = 400;
+    let a: Vec<char> = a.chars().take(CAP).collect();
+    let b: Vec<char> = b.chars().take(CAP).collect();
+    let mut prev = vec![0usize; b.len() + 1];
+    let mut cur = vec![0usize; b.len() + 1];
+    for &ca in &a {
+        for (index, &cb) in b.iter().enumerate() {
+            cur[index + 1] = if ca == cb {
+                prev[index] + 1
+            } else {
+                cur[index].max(prev[index + 1])
+            };
+        }
+        std::mem::swap(&mut prev, &mut cur);
+        cur.fill(0);
+    }
+    prev[b.len()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,4 +375,37 @@ mod tests {
         let indent = diagnose_structural_miss(&format!("{line}\n"), &format!("    {line}"));
         assert!(matches!(indent, Some(RejectReason::WhitespaceOnly { .. })));
     }
+    #[test]
+    fn a_one_character_typo_points_at_its_line() {
+        let content = "fn alpha() {}
+fn beta() {}
+fn gamma() {}
+";
+        assert_eq!(nearest_line(content, "fn betta() {}"), Some(2));
+    }
+
+    #[test]
+    fn an_indentation_drift_points_at_its_line() {
+        let content = "fn alpha() {}
+    fn beta() {}
+fn gamma() {}
+";
+        assert_eq!(nearest_line(content, "fn beta() {}"), Some(2));
+    }
+
+    #[test]
+    fn nothing_close_is_no_line() {
+        let content = "alpha
+beta
+gamma
+";
+        assert_eq!(nearest_line(content, "fn main() {}"), None);
+    }
+
+    #[test]
+    fn a_too_short_needle_is_no_line() {
+        assert_eq!(nearest_line("abc
+", "ab"), None);
+    }
+
 }

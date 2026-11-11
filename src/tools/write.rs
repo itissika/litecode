@@ -9,12 +9,17 @@ use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::ResourceKey;
 use crate::tools::lsp_feedback;
 
-/// Success facts for write. The message property is not a field here: it is
-/// added from the diagnostics that the local LSP and path-risk checks attach.
+/// Success facts for write: the file identity, the path risk, and the
+/// language-server diagnostics that used to be flattened into a message.
 #[derive(serde::Serialize)]
 struct WriteData {
     file: crate::tool::outcome::FileRef,
     created: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path_risk: Option<crate::tools::file_path::PathRisk>,
+    /// Warnings recorded after the write; absent when the write was clean.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostics: Option<Vec<crate::tool::outcome::Diagnostic>>,
 }
 
 pub struct WriteTool {
@@ -44,26 +49,23 @@ impl WriteTool {
             raw_path,
         );
         let file = crate::tool::file_identity::file_ref(located, written);
-        let data = WriteData { file, created };
-        let result = lsp_feedback::maybe_append_local_lsp_errors(
-            self.ide.as_ref().map(|ide| ide.engines.as_ref()),
-            &resolved.to_string_lossy(),
-            crate::tool::outcome::ToolOutcome::ok(data).into_call_result(""),
-        )
-        .await;
-        let mut result = crate::tools::file_path::with_path_risk_warning(
-            result,
-            &execution.workspace_root,
-            raw_path,
-            resolved,
-            "writing",
-        );
-        if let Some(message) = diagnostic_message(&result.diagnostics)
-            && let Some(data) = result.data.as_mut().and_then(Value::as_object_mut)
-        {
-            data.insert("message".into(), Value::String(message));
-        }
-        result
+        let data = WriteData {
+            file,
+            created,
+            path_risk: crate::tools::file_path::path_risk(
+                &execution.workspace_root,
+                raw_path,
+                resolved,
+            ),
+            diagnostics: lsp_feedback::diagnostics_field(
+                lsp_feedback::local_lsp_error_diagnostics(
+                    self.ide.as_ref().map(|ide| ide.engines.as_ref()),
+                    &resolved.to_string_lossy(),
+                )
+                .await,
+            ),
+        };
+        crate::tool::outcome::ToolOutcome::ok(data).into_call_result("")
     }
 
     fn test_execution_context(&self) -> ToolExecutionContext {
@@ -81,27 +83,6 @@ impl WriteTool {
             session: None,
         }
     }
-}
-
-fn diagnostic_message(diagnostics: &[crate::tool::outcome::Diagnostic]) -> Option<String> {
-    let mut parts = Vec::new();
-    for diagnostic in diagnostics {
-        let mut text = diagnostic.message.clone();
-        if diagnostic.code == "lsp_error"
-            && let Some(block) = diagnostic
-                .details
-                .as_ref()
-                .and_then(|details| details.get("text"))
-                .and_then(Value::as_str)
-        {
-            text.push('\n');
-            text.push_str(block);
-        }
-        if !text.trim().is_empty() {
-            parts.push(text);
-        }
-    }
-    (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
 
 impl Default for WriteTool {
@@ -377,14 +358,16 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
             .expect("test runtime")
             .block_on(tool.call_for_execution(input, execution))
     };
+    // Outside the workspace plus a recorded LSP error: `file.abs`, `path_risk`,
+    // and `diagnostics` all appear.
+    let _hook = crate::tools::lsp_feedback::arm_lsp_error_hook("outside.txt", "error[E1]: boom");
     vec![DriftCase {
         tool: "write",
-        // Outside the workspace: file.abs and the path-risk message both appear.
         all_optional_present: run(serde_json::json!({
             "path": outside.path().join("outside.txt").to_string_lossy(),
             "content": "hello",
         })),
-        // Inside the workspace with no diagnostics: both are absent.
+        // Inside the workspace with no diagnostics: all three are absent.
         all_optional_absent: run(serde_json::json!({
             "path": "inside.txt",
             "content": "hello",
@@ -523,6 +506,96 @@ mod expected_hash_tests {
         .await
     }
 
+
+    /// The path risk is a field, and the write succeeds anyway: the model is
+    /// told where the file landed, not warned out of doing its job.
+    #[test]
+    fn write_outside_the_workspace_reports_path_risk() {
+        let tool = WriteTool::new();
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        let mut execution = tool.test_execution_context();
+        execution.workspace_root = workspace.path().to_path_buf();
+        let target = outside.path().join("note.txt");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let result = runtime.block_on(tool.call_for_execution(
+            serde_json::json!({
+                "path": target.to_string_lossy(),
+                "content": "hello",
+            }),
+            execution,
+        ));
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().expect("data");
+        assert_eq!(data["path_risk"]["outside_workspace"], true, "{data}");
+        assert_eq!(data["path_risk"]["sensitive"], false, "{data}");
+        assert!(
+            data["path_risk"]["resolved"]
+                .as_str()
+                .is_some_and(|path| !path.is_empty()),
+            "{data}"
+        );
+        assert!(data.get("message").is_none(), "{data}");
+    }
+
+
+    /// Reported repro: with the workspace at `.../litecode`, writing
+    /// `.../litecode-outside-probe.txt` is outside, so `path_risk` must speak.
+    #[test]
+    fn a_sibling_of_the_workspace_is_outside_and_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("litecode");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let target = tmp.path().join("litecode-outside-probe.txt");
+        let tool = WriteTool::new();
+        let mut execution = tool.test_execution_context();
+        execution.workspace_root = workspace.clone();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let result = runtime.block_on(tool.call_for_execution(
+            serde_json::json!({
+                "path": target.to_string_lossy(),
+                "content": "hello",
+            }),
+            execution,
+        ));
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().expect("data");
+        assert_eq!(data["path_risk"]["outside_workspace"], true, "{data}");
+    }
+    /// Diagnostics used to be folded into a message; run_code never reads that
+    /// channel, so they live in the data now.
+    #[test]
+    fn write_diagnostics_are_data() {
+        let _hook = crate::tools::lsp_feedback::arm_lsp_error_hook("note.txt", "error[E1]: boom");
+        let tool = WriteTool::new();
+        let workspace = tempfile::tempdir().expect("workspace");
+        let mut execution = tool.test_execution_context();
+        execution.workspace_root = workspace.path().to_path_buf();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let result = runtime.block_on(tool.call_for_execution(
+            serde_json::json!({ "path": "note.txt", "content": "hello" }),
+            execution,
+        ));
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().expect("data");
+        assert_eq!(data["diagnostics"][0]["code"], "lsp_error", "{data}");
+        assert!(
+            data["diagnostics"][0]["details"]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("boom")),
+            "{data}"
+        );
+        assert!(data.get("message").is_none(), "{data}");
+    }
     #[test]
     fn write_expected_hash_mismatch_is_stale() {
         let dir = tempfile::tempdir().unwrap();

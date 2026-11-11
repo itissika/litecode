@@ -102,12 +102,5 @@ pub(crate) fn sync_pct_for_workspace(
     Some(crate::engines::retrieval_progress_for_workspace(engines, &root).total)
 }
 
-pub(crate) fn prepend_sync_pct(
-    sync: Option<&crate::engines::progress::CorpusProgress>,
-    body: &str,
-) -> String {
-    format!("{}\n{}", format_sync_pct_line(sync), body)
-}
-
 #[cfg(test)]
 mod sync_line_tests {}

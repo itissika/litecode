@@ -15,6 +15,10 @@ use crate::lsp::status::LspLifecycle;
 use crate::lsp::uri::publish_diagnostics_uri_matches;
 use crate::types::{LitecodeError, Result};
 
+/// Text a pending request sees when the pipe died. The hub matches on it to
+/// tell a transport failure from a real answer.
+pub(crate) const IO_FAILED_TEXT: &str = "language server I/O failed";
+
 pub(crate) static NEXT_RPC_ID: AtomicU64 = AtomicU64::new(1);
 
 const MAX_LSP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -307,7 +311,7 @@ impl LspIo {
         if let Ok(mut g) = self.last_error.lock() {
             *g = Some(err.into());
         }
-        self.fail_all_pending("language server I/O failed");
+        self.fail_all_pending(IO_FAILED_TEXT);
     }
 
     fn fail_all_pending(&self, msg: &str) {

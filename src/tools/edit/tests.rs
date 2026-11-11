@@ -29,20 +29,56 @@ fn single_success_reports_edit_result() {
     let result = call_edit(&path, "fn main() {}", "fn start() {}");
     assert!(result.error.is_none());
     let data = result.data.expect("edit data");
-    assert_eq!(
-        data["message"]
-            .as_str()
-            .unwrap()
-            .split('\n')
-            .next()
-            .unwrap(),
-        "replaced"
-    );
+    // Success is the path and the absence of prose: the envelope already says ok.
+    assert!(data["path"].as_str().is_some_and(|p| p.ends_with("a.rs")), "{data}");
+    assert!(data.get("message").is_none(), "{data}");
+    // A clean edit records no diagnostics, and the field is the same as write's.
+    assert!(data.get("diagnostics").is_none(), "{data}");
     assert!(data.get("blocks").is_none());
     assert!(data.get("applied").is_none());
     assert!(data.get("file").is_none());
 }
 
+
+/// The risk warning used to be written into a throwaway result's content, so
+/// it never reached anything; it is a field now.
+#[test]
+fn an_edit_outside_the_workspace_reports_path_risk() {
+    let (_dir, path) = write_temp("a.rs", "fn main() {}\n");
+    let result = call_edit(&path, "fn main() {}", "fn start() {}");
+    assert!(result.error.is_none(), "{result:?}");
+    let data = result.data.expect("edit data");
+    assert_eq!(data["path_risk"]["outside_workspace"], true, "{data}");
+    assert_eq!(data["path_risk"]["sensitive"], false, "{data}");
+    assert!(
+        data["path_risk"]["resolved"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()),
+        "{data}"
+    );
+}
+
+#[test]
+fn an_edit_inside_the_workspace_carries_no_path_risk() {
+    let (dir, path) = write_temp("b.rs", "fn main() {}\n");
+    let mut execution = tool().test_execution_context();
+    execution.workspace_root = dir.path().to_path_buf();
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(tool().call_for_execution(
+            serde_json::json!({
+                "path": path.to_str().unwrap(),
+                "old_string": "fn main() {}",
+                "new_string": "fn start() {}",
+            }),
+            execution,
+        ));
+    assert!(result.error.is_none(), "{result:?}");
+    let data = result.data.expect("edit data");
+    assert!(data.get("path_risk").is_none(), "{data}");
+}
 #[test]
 fn edit_tool_rejects_nul_bytes() {
     let (_dir, path) = write_temp("bin.txt", b"ok\x00still-utf8");

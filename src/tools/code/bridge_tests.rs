@@ -289,9 +289,11 @@ impl Tool for GrepLike {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let mut result = ToolCallResult::ok(String::new());
         result.data = Some(json!({
-            "hits": [{"path": "a", "line": 1}],
-            "message": "",
-            "truncated": false
+            "hits": [{"path": "a", "line": 1, "text": "a"}],
+            "at_limit_cap": false,
+            "lines_truncated": false,
+            "context_omitted": false,
+            "output_capped": false
         }));
         Box::pin(std::future::ready(result))
     }
@@ -461,7 +463,7 @@ async fn lsp_state_reaches_the_model_as_a_reminder_line() {
             Box::pin(async move {
                 let state = if input["path"] == "b.rs" { "unknown" } else { "partial" };
                 let mut result = ToolCallResult::ok(String::new());
-                result.data = Some(json!({ "items": [], "state": state }));
+                result.data = Some(json!({ "items": [], "state": state, "truncated": false }));
                 result
             })
         }
@@ -498,6 +500,169 @@ const b = await tools.lsp.diagnostics({ path: "b.rs" }); return a.state + b.stat
             .map(str::to_string),
         "{content}"
     );
+}
+/// The defect this guards: a hit limit cut the result, but the reminder only
+/// fired when a known total exceeded the shown count, so the commonest cut
+/// said nothing at all.
+#[tokio::test]
+async fn a_capped_grep_says_more_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    let body: String = (0..45).map(|i| format!("fn f{i}() {{}}\n")).collect();
+    std::fs::write(dir.path().join("a.rs"), body).unwrap();
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(crate::tools::grep::GrepTool)],
+        r#"const r = await tools.file.grep({ pattern: "fn ", path: "a.rs", limit: 5 });
+return r.hits.length;"#,
+    )
+    .await;
+    let content = result.content;
+    assert!(
+        content.contains(
+            "↳ #1 file.grep: showing the first 5 matches; more exist — narrow the pattern/path or raise limit"
+        ),
+        "{content}"
+    );
+}
+/// A POSIX-looking argument reaches the model as a flag and one line, not as
+/// prose glued onto the command output.
+#[tokio::test]
+async fn a_path_like_argument_reaches_the_model_as_a_field_and_a_line() {
+    if !crate::terminal::decode::shell_identity().contains("MINGW") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let tool = crate::tools::run::RunTool::with_window(
+        Arc::new(crate::terminal::AgentJobRegistry::new()),
+        std::time::Duration::from_secs(5),
+    );
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(tool)],
+        r#"const r = await tools.process.run({ command: "cmd /c echo hi" });
+return r.path_conversion;"#,
+    )
+    .await;
+    let content = result.content;
+    assert!(
+        content.contains(
+            "↳ #1 process.run: the shell may convert POSIX-style paths; write `cmd //c` or set `MSYS_NO_PATHCONV=1`"
+        ),
+        "{content}"
+    );
+}
+
+/// The path risk used to hide in a side channel; a program sees the field and
+/// the model sees one line that names the resolved target.
+#[tokio::test]
+async fn an_outside_write_reaches_the_model_as_a_field_and_a_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().join("note.txt");
+    let literal = serde_json::to_string(&target.to_string_lossy().to_string()).unwrap();
+    let code = format!(
+        "const r = await tools.file.write({{ path: {literal}, content: \"hi\" }});\nreturn r.path_risk;"
+    );
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(crate::tools::write::WriteTool::new())],
+        &code,
+    )
+    .await;
+    let content = result.content;
+    assert!(content.contains("outside_workspace"), "{content}");
+    let expected = format!(
+        "↳ #1 file.write: this write lands outside the workspace: {}",
+        target.to_string_lossy()
+    );
+    assert!(content.contains(&expected), "{content}\n{expected}");
+}
+
+/// Claims to be `workspace_symbol` and fails like a dead language server: the
+/// call never ran, so it must add no line of its own.
+struct UnavailableSymbols;
+
+impl Tool for UnavailableSymbols {
+    fn name(&self) -> &str {
+        "workspace_symbol"
+    }
+
+    fn surface(&self) -> ToolSurface {
+        ToolSurface::Code
+    }
+
+    fn execute(
+        &self,
+        _input: Value,
+        _execution: ToolExecutionContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        let mut result = ToolCallResult::error_with_kind(
+            crate::types::ToolErrorKind::Unavailable,
+            "language server I/O failed",
+            false,
+        );
+        result.error_code = Some("unavailable".into());
+        Box::pin(std::future::ready(result))
+    }
+}
+
+/// The reported defect: a failed `lsp.workspace_symbol` was followed by
+/// "no symbols reported; the index state is unknown", as if it had run.
+#[tokio::test]
+async fn a_failed_lsp_call_adds_no_line_to_the_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(UnavailableSymbols)],
+        r#"
+        const r = await tools.lsp.workspace_symbol({ query: "x" });
+        console.log("saw", r.ok, r.reason);
+        return 1;
+        "#,
+    )
+    .await;
+    let content = result.content;
+    assert!(
+        content.contains("[log] saw false unavailable"),
+        "the failure must reach the program as a value: {content}"
+    );
+    assert!(
+        !content.contains("no symbols reported"),
+        "a failed call guessed a result: {content}"
+    );
+    // The ledger row stays; no renderer line may be added.
+    assert!(!content.contains("↳"), "a failed call added a line: {content}");
+}
+/// Item failures stay item-level: an unknown or internal reason must not end
+/// the program, and every reason a program sees is one of the six values.
+#[tokio::test]
+async fn a_bad_edit_item_never_terminates_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(crate::tools::apply_edits::ApplyEditsTool::new())],
+        r#"
+        const bad = [
+            { path: "missing.txt", old_string: "a", new_string: "b" },
+            { path: "a.txt", old_string: "zzz", new_string: "b" },
+            { path: "a.txt", old_string: "alpha", new_string: "alpha" },
+            { path: "a.txt", old_string: "a", new_string: "a" },
+        ];
+        const r = await tools.file.apply_edits({ edits: bad });
+        return r.results.map((item) => item.reason).join(",");
+        "#,
+    )
+    .await;
+    let content = result.content;
+    assert!(!content.contains("invalid_output"), "{content}");
+    assert!(result.error.is_none(), "{content}");
+    for reason in ["not_found", "no_match", "invalid_args"] {
+        assert!(content.contains(reason), "{reason} missing: {content}");
+    }
+    for leaked in ["empty_old_string", "no_op", "permission_denied", "invalid_input"] {
+        assert!(!content.contains(leaked), "{leaked} leaked: {content}");
+    }
 }
 /// A hits shaped result from another tool must not borrow grep wording.
 #[tokio::test]

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "01190a8eb7d8085c090655a4e529abeda6172104746c670adf5a919152fce956",
+  "sdk_hash": "1257b42fcffe08f802cb26c73b444b2af4e93599b6259d9c41c0bdf954b7853f",
   "tools": {
     "apply_edits": {
       "path": [
@@ -19,7 +19,10 @@
         "EditFailureReason",
         "EditInput",
         "EditResult",
-        "Path"
+        "Integer",
+        "Path",
+        "PathRisk",
+        "ToolDiagnostic"
       ],
       "input_schema": {
         "type": "object",
@@ -65,9 +68,6 @@
             "items": {
               "type": "object",
               "properties": {
-                "message": {
-                  "type": "string"
-                },
                 "ok": {
                   "type": "boolean"
                 },
@@ -75,21 +75,100 @@
                   "type": "string"
                 },
                 "reason": {
-                  "type": "string",
-                  "enum": [
-                    "not_found",
-                    "no_match",
-                    "invalid_args",
-                    "empty",
-                    "permission",
-                    "io"
-                  ]
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "not_found",
+                        "no_match",
+                        "invalid_args",
+                        "empty",
+                        "permission",
+                        "io"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Why this item failed; `null` when `ok` is true."
+                },
+                "nearest_line": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "description": "Whole JSON number. The host rejects fractional values."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "1-based line of the closest match when `old_string` was not found; `null` otherwise."
+                },
+                "path_risk": {
+                  "type": "object",
+                  "properties": {
+                    "outside_workspace": {
+                      "type": "boolean",
+                      "description": "The target resolves outside the workspace root."
+                    },
+                    "sensitive": {
+                      "type": "boolean",
+                      "description": "The target is a sensitive system location."
+                    },
+                    "resolved": {
+                      "type": "string",
+                      "description": "Absolute path the target resolved to; present when it is outside."
+                    }
+                  },
+                  "required": [
+                    "outside_workspace",
+                    "sensitive"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Outside-workspace or sensitive-path target; absent when there is none."
+                },
+                "diagnostics": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "type": "string",
+                        "description": "Machine code such as `lsp_error`."
+                      },
+                      "severity": {
+                        "type": "string",
+                        "enum": [
+                          "info",
+                          "warning"
+                        ],
+                        "description": "Severity name mapped from the LSP number."
+                      },
+                      "message": {
+                        "type": "string",
+                        "description": "Human-readable summary."
+                      },
+                      "details": {
+                        "description": "Extra structured detail, such as the LSP error block under `text`."
+                      }
+                    },
+                    "required": [
+                      "code",
+                      "severity",
+                      "message"
+                    ],
+                    "additionalProperties": false,
+                    "description": "One warning a tool attached to a successful write."
+                  },
+                  "description": "Warnings recorded after the edit; absent when there were none."
                 }
               },
               "required": [
-                "message",
                 "ok",
-                "path"
+                "path",
+                "reason",
+                "nearest_line"
               ],
               "additionalProperties": false,
               "description": "One item in a serial apply_edits batch. Item failures stay item-level."
@@ -122,7 +201,9 @@
       "type_deps": [
         "EditData",
         "EditInput",
-        "Path"
+        "Path",
+        "PathRisk",
+        "ToolDiagnostic"
       ],
       "input_schema": {
         "type": "object",
@@ -150,11 +231,66 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "message": {
-            "type": "string"
-          },
           "path": {
             "type": "string"
+          },
+          "path_risk": {
+            "type": "object",
+            "properties": {
+              "outside_workspace": {
+                "type": "boolean",
+                "description": "The target resolves outside the workspace root."
+              },
+              "sensitive": {
+                "type": "boolean",
+                "description": "The target is a sensitive system location."
+              },
+              "resolved": {
+                "type": "string",
+                "description": "Absolute path the target resolved to; present when it is outside."
+              }
+            },
+            "required": [
+              "outside_workspace",
+              "sensitive"
+            ],
+            "additionalProperties": false,
+            "description": "Outside-workspace or sensitive-path target; absent when there is none."
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "description": "Machine code such as `lsp_error`."
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "warning"
+                  ],
+                  "description": "Severity name mapped from the LSP number."
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Human-readable summary."
+                },
+                "details": {
+                  "description": "Extra structured detail, such as the LSP error block under `text`."
+                }
+              },
+              "required": [
+                "code",
+                "severity",
+                "message"
+              ],
+              "additionalProperties": false,
+              "description": "One warning a tool attached to a successful write."
+            },
+            "description": "Warnings recorded after the edit; absent when the edit was clean."
           },
           "ok": {
             "type": "boolean",
@@ -163,7 +299,6 @@
         },
         "required": [
           "ok",
-          "message",
           "path"
         ],
         "additionalProperties": false,
@@ -395,7 +530,7 @@
           },
           "total_hits": {
             "type": "integer",
-            "description": "Matches found before any limit was applied."
+            "description": "Matches found before the result was cut; absent when the scan stopped at a limit and never counted the rest. Do not treat a missing value as zero."
           },
           "at_limit_cap": {
             "type": "boolean",
@@ -448,7 +583,6 @@
         "required": [
           "ok",
           "hits",
-          "total_hits",
           "at_limit_cap",
           "lines_truncated",
           "context_omitted",
@@ -594,6 +728,8 @@
         "FileRef",
         "Integer",
         "Path",
+        "PathRisk",
+        "ToolDiagnostic",
         "WriteData",
         "WriteInput"
       ],
@@ -659,9 +795,63 @@
             "additionalProperties": false,
             "description": "File identity after the write."
           },
-          "message": {
-            "type": "string",
-            "description": "Post-write warnings such as LSP errors or path-risk notes."
+          "path_risk": {
+            "type": "object",
+            "properties": {
+              "outside_workspace": {
+                "type": "boolean",
+                "description": "The target resolves outside the workspace root."
+              },
+              "sensitive": {
+                "type": "boolean",
+                "description": "The target is a sensitive system location."
+              },
+              "resolved": {
+                "type": "string",
+                "description": "Absolute path the target resolved to; present when it is outside."
+              }
+            },
+            "required": [
+              "outside_workspace",
+              "sensitive"
+            ],
+            "additionalProperties": false,
+            "description": "Outside-workspace or sensitive-path target; absent when there is none."
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "description": "Machine code such as `lsp_error`."
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "warning"
+                  ],
+                  "description": "Severity name mapped from the LSP number."
+                },
+                "message": {
+                  "type": "string",
+                  "description": "Human-readable summary."
+                },
+                "details": {
+                  "description": "Extra structured detail, such as the LSP error block under `text`."
+                }
+              },
+              "required": [
+                "code",
+                "severity",
+                "message"
+              ],
+              "additionalProperties": false,
+              "description": "One warning a tool attached to a successful write."
+            },
+            "description": "Warnings recorded after the write; absent when the write was clean."
           },
           "ok": {
             "type": "boolean",
@@ -688,6 +878,7 @@
       "input_type": "CodeSearchInput",
       "output_type": "CodeSearchData",
       "type_deps": [
+        "ClampedParam",
         "CodeSearchData",
         "CodeSearchHit",
         "CodeSearchInput",
@@ -784,8 +975,32 @@
             },
             "description": "Empty if the search completed but found no matching chunks."
           },
-          "message": {
-            "type": "string"
+          "clamped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "parameter": {
+                  "type": "string",
+                  "description": "Parameter name as the caller wrote it."
+                },
+                "requested": {
+                  "type": "number",
+                  "description": "Value the caller asked for."
+                },
+                "applied": {
+                  "type": "number",
+                  "description": "Value the tool used instead."
+                }
+              },
+              "required": [
+                "parameter",
+                "requested",
+                "applied"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Parameters adjusted to a legal value; absent when nothing moved."
           },
           "ok": {
             "type": "boolean",
@@ -811,6 +1026,7 @@
       "input_type": "SessionSearchInput",
       "output_type": "SessionSearchData",
       "type_deps": [
+        "ClampedParam",
         "Integer",
         "SessionSearchData",
         "SessionSearchHit",
@@ -906,8 +1122,36 @@
             "type": "boolean",
             "description": "True when `total` exceeds the returned rows."
           },
-          "message": {
-            "type": "string"
+          "semantic": {
+            "type": "boolean",
+            "description": "False when the semantic leg was unavailable: the hits are lexical only."
+          },
+          "clamped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "parameter": {
+                  "type": "string",
+                  "description": "Parameter name as the caller wrote it."
+                },
+                "requested": {
+                  "type": "number",
+                  "description": "Value the caller asked for."
+                },
+                "applied": {
+                  "type": "number",
+                  "description": "Value the tool used instead."
+                }
+              },
+              "required": [
+                "parameter",
+                "requested",
+                "applied"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Parameters adjusted to a legal value; absent when nothing moved."
           },
           "ok": {
             "type": "boolean",
@@ -918,7 +1162,8 @@
           "ok",
           "hits",
           "total",
-          "truncated"
+          "truncated",
+          "semantic"
         ],
         "additionalProperties": false
       }
@@ -935,6 +1180,7 @@
       "input_type": "KillInput",
       "output_type": "KillData",
       "type_deps": [
+        "ClampedParam",
         "CommandData",
         "Integer",
         "KillData",
@@ -974,7 +1220,7 @@
           },
           "output": {
             "type": "string",
-            "description": "Stdout plus truncation notes, spill path, or status line. Always present, may be empty."
+            "description": "Stdout exactly as the process wrote it: no notes, no status line. A truncated stream keeps its `... (truncated)` marker in place."
           },
           "shell": {
             "type": "string",
@@ -982,15 +1228,66 @@
           },
           "stderr": {
             "type": "string",
-            "description": "Stderr plus truncation notes. Empty when nothing was written."
+            "description": "Stderr exactly as the process wrote it. Empty when nothing was written."
           },
           "killed": {
             "type": "boolean",
             "description": "True when wait observes a kill."
           },
-          "message": {
+          "timed_out": {
+            "type": "boolean",
+            "description": "This call's own time budget ran out while the process kept running."
+          },
+          "draining": {
+            "type": "boolean",
+            "description": "The shell exited but a pipe is still open, so the streams can still grow."
+          },
+          "output_truncated": {
+            "type": "boolean",
+            "description": "The in-memory window froze stdout; the full text is in output_log."
+          },
+          "stderr_truncated": {
+            "type": "boolean",
+            "description": "The same fact for stderr."
+          },
+          "path_conversion": {
+            "type": "boolean",
+            "description": "The shell may rewrite POSIX-looking arguments such as `cmd /c`."
+          },
+          "output_log": {
             "type": "string",
-            "description": "Warning about the command itself or a still-alive signal."
+            "description": "Full stdout log, present when the text outgrew the inline window."
+          },
+          "stderr_log": {
+            "type": "string",
+            "description": "Full stderr log, with the same rule."
+          },
+          "clamped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "parameter": {
+                  "type": "string",
+                  "description": "Parameter name as the caller wrote it."
+                },
+                "requested": {
+                  "type": "number",
+                  "description": "Value the caller asked for."
+                },
+                "applied": {
+                  "type": "number",
+                  "description": "Value the tool used instead."
+                }
+              },
+              "required": [
+                "parameter",
+                "requested",
+                "applied"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Parameters adjusted to a legal value; absent when nothing moved."
           },
           "ok": {
             "type": "boolean",
@@ -1003,7 +1300,12 @@
           "id",
           "output",
           "shell",
-          "stderr"
+          "stderr",
+          "timed_out",
+          "draining",
+          "output_truncated",
+          "stderr_truncated",
+          "path_conversion"
         ],
         "additionalProperties": false
       }
@@ -1020,6 +1322,7 @@
       "input_type": "RunInput",
       "output_type": "RunData",
       "type_deps": [
+        "ClampedParam",
         "CommandData",
         "Integer",
         "RunData",
@@ -1064,7 +1367,7 @@
           },
           "output": {
             "type": "string",
-            "description": "Stdout plus truncation notes, spill path, or status line. Always present, may be empty."
+            "description": "Stdout exactly as the process wrote it: no notes, no status line. A truncated stream keeps its `... (truncated)` marker in place."
           },
           "shell": {
             "type": "string",
@@ -1072,15 +1375,66 @@
           },
           "stderr": {
             "type": "string",
-            "description": "Stderr plus truncation notes. Empty when nothing was written."
+            "description": "Stderr exactly as the process wrote it. Empty when nothing was written."
           },
           "killed": {
             "type": "boolean",
             "description": "True when wait observes a kill."
           },
-          "message": {
+          "timed_out": {
+            "type": "boolean",
+            "description": "This call's own time budget ran out while the process kept running."
+          },
+          "draining": {
+            "type": "boolean",
+            "description": "The shell exited but a pipe is still open, so the streams can still grow."
+          },
+          "output_truncated": {
+            "type": "boolean",
+            "description": "The in-memory window froze stdout; the full text is in output_log."
+          },
+          "stderr_truncated": {
+            "type": "boolean",
+            "description": "The same fact for stderr."
+          },
+          "path_conversion": {
+            "type": "boolean",
+            "description": "The shell may rewrite POSIX-looking arguments such as `cmd /c`."
+          },
+          "output_log": {
             "type": "string",
-            "description": "Warning about the command itself or a still-alive signal."
+            "description": "Full stdout log, present when the text outgrew the inline window."
+          },
+          "stderr_log": {
+            "type": "string",
+            "description": "Full stderr log, with the same rule."
+          },
+          "clamped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "parameter": {
+                  "type": "string",
+                  "description": "Parameter name as the caller wrote it."
+                },
+                "requested": {
+                  "type": "number",
+                  "description": "Value the caller asked for."
+                },
+                "applied": {
+                  "type": "number",
+                  "description": "Value the tool used instead."
+                }
+              },
+              "required": [
+                "parameter",
+                "requested",
+                "applied"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Parameters adjusted to a legal value; absent when nothing moved."
           },
           "ok": {
             "type": "boolean",
@@ -1093,7 +1447,12 @@
           "id",
           "output",
           "shell",
-          "stderr"
+          "stderr",
+          "timed_out",
+          "draining",
+          "output_truncated",
+          "stderr_truncated",
+          "path_conversion"
         ],
         "additionalProperties": false,
         "description": "Command payload shared by run, wait, and kill; exit_code carries command status."
@@ -1111,6 +1470,7 @@
       "input_type": "WaitInput",
       "output_type": "WaitData",
       "type_deps": [
+        "ClampedParam",
         "CommandData",
         "Integer",
         "WaitData",
@@ -1155,7 +1515,7 @@
           },
           "output": {
             "type": "string",
-            "description": "Stdout plus truncation notes, spill path, or status line. Always present, may be empty."
+            "description": "Stdout exactly as the process wrote it: no notes, no status line. A truncated stream keeps its `... (truncated)` marker in place."
           },
           "shell": {
             "type": "string",
@@ -1163,15 +1523,66 @@
           },
           "stderr": {
             "type": "string",
-            "description": "Stderr plus truncation notes. Empty when nothing was written."
+            "description": "Stderr exactly as the process wrote it. Empty when nothing was written."
           },
           "killed": {
             "type": "boolean",
             "description": "True when wait observes a kill."
           },
-          "message": {
+          "timed_out": {
+            "type": "boolean",
+            "description": "This call's own time budget ran out while the process kept running."
+          },
+          "draining": {
+            "type": "boolean",
+            "description": "The shell exited but a pipe is still open, so the streams can still grow."
+          },
+          "output_truncated": {
+            "type": "boolean",
+            "description": "The in-memory window froze stdout; the full text is in output_log."
+          },
+          "stderr_truncated": {
+            "type": "boolean",
+            "description": "The same fact for stderr."
+          },
+          "path_conversion": {
+            "type": "boolean",
+            "description": "The shell may rewrite POSIX-looking arguments such as `cmd /c`."
+          },
+          "output_log": {
             "type": "string",
-            "description": "Warning about the command itself or a still-alive signal."
+            "description": "Full stdout log, present when the text outgrew the inline window."
+          },
+          "stderr_log": {
+            "type": "string",
+            "description": "Full stderr log, with the same rule."
+          },
+          "clamped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "parameter": {
+                  "type": "string",
+                  "description": "Parameter name as the caller wrote it."
+                },
+                "requested": {
+                  "type": "number",
+                  "description": "Value the caller asked for."
+                },
+                "applied": {
+                  "type": "number",
+                  "description": "Value the tool used instead."
+                }
+              },
+              "required": [
+                "parameter",
+                "requested",
+                "applied"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Parameters adjusted to a legal value; absent when nothing moved."
           },
           "ok": {
             "type": "boolean",
@@ -1184,7 +1595,12 @@
           "id",
           "output",
           "shell",
-          "stderr"
+          "stderr",
+          "timed_out",
+          "draining",
+          "output_truncated",
+          "stderr_truncated",
+          "path_conversion"
         ],
         "additionalProperties": false
       }
@@ -1232,11 +1648,9 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "message": {
-            "type": "string"
-          },
           "body": {
-            "type": "string"
+            "type": "string",
+            "description": "Empty for a non-2xx answer: the status carries the fact."
           },
           "format": {
             "type": "string",
@@ -1248,7 +1662,7 @@
           },
           "status": {
             "type": "integer",
-            "description": "Whole JSON number. The host rejects fractional values."
+            "description": "HTTP status of the final response, 2xx or not."
           },
           "url": {
             "type": "string"
@@ -1258,11 +1672,10 @@
             "const": true
           }
         },
+        "additionalProperties": false,
         "required": [
-          "ok",
-          "message"
-        ],
-        "additionalProperties": false
+          "ok"
+        ]
       }
     },
     "websearch": {
@@ -1277,6 +1690,7 @@
       "input_type": "WebsearchInput",
       "output_type": "WebsearchData",
       "type_deps": [
+        "ClampedParam",
         "Integer",
         "WebsearchData",
         "WebsearchHit",
@@ -1303,9 +1717,6 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "message": {
-            "type": "string"
-          },
           "results": {
             "type": "array",
             "items": {
@@ -1329,10 +1740,37 @@
               ],
               "additionalProperties": false
             },
-            "description": "At most top_k hits, best first."
+            "description": "At most top_k hits, best first; empty when the search found nothing."
           },
           "query": {
             "type": "string"
+          },
+          "clamped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "parameter": {
+                  "type": "string",
+                  "description": "Parameter name as the caller wrote it."
+                },
+                "requested": {
+                  "type": "number",
+                  "description": "Value the caller asked for."
+                },
+                "applied": {
+                  "type": "number",
+                  "description": "Value the tool used instead."
+                }
+              },
+              "required": [
+                "parameter",
+                "requested",
+                "applied"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Parameters adjusted to a legal value; absent when nothing moved."
           },
           "ok": {
             "type": "boolean",
@@ -1341,7 +1779,6 @@
         },
         "required": [
           "ok",
-          "message",
           "results"
         ],
         "additionalProperties": false
@@ -1865,6 +2302,10 @@
             ],
             "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the cap cut the list: more results exist."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -1873,7 +2314,8 @@
         "required": [
           "ok",
           "items",
-          "state"
+          "state",
+          "truncated"
         ],
         "additionalProperties": false
       }
@@ -1967,6 +2409,10 @@
             ],
             "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the cap cut the list: more results exist."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -1975,7 +2421,8 @@
         "required": [
           "ok",
           "symbols",
-          "state"
+          "state",
+          "truncated"
         ],
         "additionalProperties": false
       }
@@ -2070,6 +2517,10 @@
             ],
             "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the cap cut the list: more results exist."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -2078,7 +2529,8 @@
         "required": [
           "ok",
           "locations",
-          "state"
+          "state",
+          "truncated"
         ],
         "additionalProperties": false
       }
@@ -2173,6 +2625,10 @@
             ],
             "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the cap cut the list: more results exist."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -2181,7 +2637,8 @@
         "required": [
           "ok",
           "locations",
-          "state"
+          "state",
+          "truncated"
         ],
         "additionalProperties": false
       }
@@ -2276,6 +2733,10 @@
             ],
             "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the cap cut the list: more results exist."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -2284,7 +2745,8 @@
         "required": [
           "ok",
           "locations",
-          "state"
+          "state",
+          "truncated"
         ],
         "additionalProperties": false
       }
@@ -2357,7 +2819,8 @@
           "markdown",
           "state"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "One hover answer. A hover is a single value, so there is no truncation."
       }
     },
     "workspace_symbol": {
@@ -2451,6 +2914,10 @@
             ],
             "description": "ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss."
           },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the cap cut the list: more results exist."
+          },
           "ok": {
             "type": "boolean",
             "const": true
@@ -2459,7 +2926,8 @@
         "required": [
           "ok",
           "symbols",
-          "state"
+          "state",
+          "truncated"
         ],
         "additionalProperties": false
       }

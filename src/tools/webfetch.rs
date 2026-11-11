@@ -50,7 +50,7 @@ impl WebFetchTool {
             return FetchOutcome::Hard {
                 code: "unavailable",
                 message: format!(
-                    "webfetch engine failed to start: {e}. Enable webfetch in Settings → Engines and wait until Warm"
+                    "webfetch engine failed to start: {e}. The user has to enable webfetch in Settings → Engines; retry once it is warm"
                 ),
             };
         }
@@ -66,7 +66,7 @@ impl WebFetchTool {
         if warmed.is_none() {
             return FetchOutcome::Hard {
                 code: "unavailable",
-                message: "webfetch engine not warmed. Enable webfetch in Settings → Engines and wait until Warm"
+                message: "webfetch engine not warmed. The user has to enable webfetch in Settings → Engines; retry once it is warm"
                     .to_string(),
             };
         }
@@ -88,6 +88,12 @@ enum FetchOutcome {
         url: String,
         status: u16,
         body: String,
+    },
+    /// A non-2xx answer is a fact, not a failure: the status says what
+    /// happened and there is no body to hand over.
+    Http {
+        url: String,
+        status: u16,
     },
     Soft {
         message: String,
@@ -154,8 +160,9 @@ fn fetch_hops(start_url: String) -> FetchOutcome {
         let status = response.status();
         let status_code = status.as_u16();
         if !status.is_success() {
-            return FetchOutcome::Soft {
-                message: format!("http error: {status}"),
+            return FetchOutcome::Http {
+                url: current,
+                status: status_code,
             };
         }
         return match response.text() {
@@ -348,7 +355,16 @@ struct WebFetchData {
     format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     body: Option<String>,
-    message: String,
+}
+
+/// A non-2xx answer: the status is the answer, and the body is empty.
+fn http_status_data(url: String, status: u16, format: String) -> WebFetchData {
+    WebFetchData {
+        url: Some(url),
+        status: Some(status),
+        format: Some(format),
+        body: Some(String::new()),
+    }
 }
 
 fn present_webfetch(data: WebFetchData) -> ToolCallResult {
@@ -366,14 +382,12 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
             status: Some(200),
             format: Some("markdown".into()),
             body: Some("# Example".into()),
-            message: "Fetched.".into(),
         }),
         all_optional_absent: present_webfetch(WebFetchData {
             url: None,
             status: None,
             format: None,
             body: None,
-            message: "Fetch failed.".into(),
         }),
     }]
 }
@@ -442,8 +456,10 @@ impl Tool for WebFetchTool {
                     status: Some(status),
                     format: Some(format),
                     body: Some(truncated),
-                    message: "Fetched.".to_string(),
                 })
+            }
+            FetchOutcome::Http { url, status } => {
+                present_webfetch(http_status_data(url, status, format))
             }
             FetchOutcome::Soft { message } => coded_error("io", message),
             FetchOutcome::Hard { code, message } => coded_error(code, message),
@@ -649,9 +665,30 @@ mod tests {
     }
 
     #[test]
-    fn soft_http_error_is_io_failure() {
-        let result = coded_error("io", "http error: 404 Not Found");
-        assert_eq!(result.error_code.as_deref(), Some("io"));
-        assert!(result.data.is_none(), "{result:?}");
+    fn non_2xx_keeps_status_and_empty_body() {
+        let result = present_webfetch(http_status_data(
+            "https://example.com/x".into(),
+            404,
+            "markdown".into(),
+        ));
+        assert_eq!(result.level, ToolSignalLevel::Ok);
+        let data = result.data.expect("data");
+        assert_eq!(data["status"], 404);
+        assert_eq!(data["body"], "");
+        assert_eq!(data["url"], "https://example.com/x");
+        assert!(data.get("message").is_none(), "{data}");
+    }
+
+    #[test]
+    fn successful_fetch_has_no_message_field() {
+        let result = present_webfetch(WebFetchData {
+            url: Some("https://example.com/".into()),
+            status: Some(200),
+            format: Some("markdown".into()),
+            body: Some("# Example".into()),
+        });
+        let data = result.data.expect("data");
+        assert_eq!(data["status"], 200);
+        assert!(data.get("message").is_none(), "{data}");
     }
 }

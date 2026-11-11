@@ -48,7 +48,7 @@ impl WebSearchTool {
             return SearchOutcome::Hard {
                 code: "unavailable",
                 message: format!(
-                    "websearch engine failed to start: {e}. Set an Exa API key in Settings → Advanced, or EXA_API_KEY in the environment"
+                    "websearch engine failed to start: {e}. The user has to set an Exa API key in Settings → Advanced, or EXA_API_KEY in the environment"
                 ),
             };
         }
@@ -66,7 +66,7 @@ impl WebSearchTool {
             None => {
                 return SearchOutcome::Hard {
                     code: "unavailable",
-                    message: "websearch engine not warmed. Set an Exa API key in Settings → Advanced, or EXA_API_KEY in the environment"
+                    message: "websearch engine not warmed. The user has to set an Exa API key in Settings → Advanced, or EXA_API_KEY in the environment"
                         .to_string(),
                 };
             }
@@ -85,7 +85,7 @@ impl WebSearchTool {
             None => {
                 return SearchOutcome::Hard {
                     code: "unavailable",
-                    message: "websearch is not configured. Set an Exa API key in Settings → Advanced, or EXA_API_KEY in the environment"
+                    message: "websearch is not configured. The user has to set an Exa API key in Settings → Advanced, or EXA_API_KEY in the environment"
                         .to_string(),
                 };
             }
@@ -116,7 +116,9 @@ struct WebSearchData {
     #[serde(skip_serializing_if = "Option::is_none")]
     query: Option<String>,
     results: Vec<SearchHit>,
-    message: String,
+    /// Parameters adjusted to a legal value; absent when nothing moved.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    clamped: Vec<crate::tool::clamp::Clamp>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -191,12 +193,17 @@ fn push_snippet(snippet: &mut String, text: &str) {
     snippet.push_str(text);
 }
 
-fn parse_top_k(input: &Value) -> Result<(u32, Option<String>), String> {
+fn parse_top_k(
+    input: &Value,
+) -> Result<(u32, Vec<crate::tool::clamp::Clamp>), String> {
     let clamped =
         crate::tool::clamp::clamp_int(input, "top_k", 1, u64::from(MAX_TOP_K), "results")?;
     Ok(match clamped {
-        None => (DEFAULT_TOP_K, None),
-        Some(clamped) => (clamped.value as u32, clamped.note),
+        None => (DEFAULT_TOP_K, Vec::new()),
+        Some(clamped) => (
+            clamped.value as u32,
+            clamped.as_clamp("top_k").into_iter().collect(),
+        ),
     })
 }
 
@@ -217,12 +224,16 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
         all_optional_present: present_websearch(WebSearchData {
             query: Some("example".into()),
             results: vec![hit()],
-            message: "Search note.".into(),
+            clamped: vec![crate::tool::clamp::Clamp {
+                parameter: "top_k".into(),
+                requested: serde_json::json!(500),
+                applied: serde_json::json!(MAX_TOP_K),
+            }],
         }),
         all_optional_absent: present_websearch(WebSearchData {
             query: None,
             results: vec![hit()],
-            message: String::new(),
+            clamped: Vec::new(),
         }),
     }]
 }
@@ -266,26 +277,19 @@ impl Tool for WebSearchTool {
             Ok(s) => s.to_string(),
             Err(e) => return coded_error("invalid_input", e),
         };
-        let (top_k, top_k_note) = match parse_top_k(&input) {
+        let (top_k, clamped) = match parse_top_k(&input) {
             Ok(parsed) => parsed,
             Err(e) => return coded_error("invalid_input", e),
         };
 
         match self.search_outcome(&query, top_k) {
             SearchOutcome::Ok { text } => {
+                // The results are the answer: an empty list is "nothing found".
                 let results = parse_hits(&text, top_k as usize);
-                let mut message = if results.is_empty() {
-                    "No results.".to_string()
-                } else {
-                    format!("{} results.", results.len())
-                };
-                if let Some(note) = top_k_note {
-                    message = format!("{message} {note}");
-                }
                 present_websearch(WebSearchData {
                     query: Some(query),
                     results,
-                    message,
+                    clamped,
                 })
             }
             SearchOutcome::Soft { message } => coded_error("io", message),
@@ -327,6 +331,18 @@ mod tests {
     }
 
     #[test]
+    fn empty_results_are_data_without_a_message() {
+        let result = present_websearch(WebSearchData {
+            query: Some("nothing".into()),
+            results: Vec::new(),
+            clamped: Vec::new(),
+        });
+        let data = result.data.expect("data");
+        assert_eq!(data["results"], serde_json::json!([]));
+        assert!(data.get("message").is_none(), "{data}");
+    }
+
+    #[test]
     fn soft_search_error_is_io_failure() {
         let result = coded_error("io", "exa http 500");
         assert_eq!(result.error_code.as_deref(), Some("io"));
@@ -356,23 +372,32 @@ mod tests {
         );
         assert_eq!(
             parse_top_k(&serde_json::json!({})).unwrap(),
-            (DEFAULT_TOP_K, None)
+            (DEFAULT_TOP_K, Vec::new())
         );
         assert_eq!(
             parse_top_k(&serde_json::json!({"top_k": 50})).unwrap(),
-            (50, None)
+            (50, Vec::new())
         );
-        let (top_k, note) = parse_top_k(&serde_json::json!({"top_k": 500})).unwrap();
+        // An over-budget top_k is a field, not a sentence.
+        let (top_k, clamped) = parse_top_k(&serde_json::json!({"top_k": 500})).unwrap();
         assert_eq!(top_k, MAX_TOP_K);
         assert_eq!(
-            note.as_deref(),
-            Some("`top_k` was reduced from 500 to 100 results.")
+            clamped,
+            vec![crate::tool::clamp::Clamp {
+                parameter: "top_k".into(),
+                requested: serde_json::json!(500),
+                applied: serde_json::json!(MAX_TOP_K),
+            }]
         );
-        let (top_k, note) = parse_top_k(&serde_json::json!({"top_k": 0})).unwrap();
+        let (top_k, clamped) = parse_top_k(&serde_json::json!({"top_k": 0})).unwrap();
         assert_eq!(top_k, 1);
         assert_eq!(
-            note.as_deref(),
-            Some("`top_k` was raised from 0 to 1 results.")
+            clamped,
+            vec![crate::tool::clamp::Clamp {
+                parameter: "top_k".into(),
+                requested: serde_json::json!(0),
+                applied: serde_json::json!(1),
+            }]
         );
         let tool: std::sync::Arc<dyn crate::tool::Tool> = Arc::new(WebSearchTool::new(
             Arc::new(RwLock::new(None)),

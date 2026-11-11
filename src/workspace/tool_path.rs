@@ -132,6 +132,30 @@ pub fn raw_path_outside_workspace(workspace_root: &Path, raw: &str) -> bool {
 mod tests {
     use super::*;
 
+
+    /// The workspace `litecode` must not claim a sibling named `litecode-x`.
+    #[test]
+    fn a_sibling_with_the_workspace_name_prefix_is_outside() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("litecode");
+        std::fs::create_dir_all(&root).unwrap();
+        let sibling = tmp.path().join("litecode-outside-probe.txt");
+        std::fs::write(&sibling, "x").unwrap();
+        assert!(raw_path_outside_workspace(
+            &root,
+            &sibling.to_string_lossy()
+        ));
+        assert!(matches!(
+            resolve_tool_path_from(&root, &sibling.to_string_lossy(), ToolPathMode::Safe),
+            Err(ToolPathError::OutsideWorkspace)
+        ));
+        let sibling_dir = tmp.path().join("litecode-x");
+        std::fs::create_dir_all(sibling_dir.join("inner")).unwrap();
+        assert!(raw_path_outside_workspace(
+            &root,
+            &sibling_dir.join("inner/a.txt").to_string_lossy()
+        ));
+    }
     #[test]
     fn relative_traversal_is_rejected_in_all_modes() {
         let root = tempfile::tempdir().unwrap();

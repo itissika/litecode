@@ -62,29 +62,23 @@ impl KillTool {
         execution: &ToolExecutionContext,
         job_id: &str,
         exit_code: Option<i32>,
-        note: Option<&str>,
         killed: bool,
         still_alive: bool,
     ) -> ToolCallResult {
-        let drain = command_job::exit_drain_note(&self.jobs, job_id, &execution.workspace_root);
-        let mut notes: Vec<&str> = note.into_iter().collect();
-        if killed {
-            notes.push("process was killed");
-        }
-        if let Some(drain) = &drain {
-            notes.push(drain);
-        }
-        let Some(output) = command_job::format_job_output(
-            &self.jobs,
-            job_id,
-            &execution.workspace_root,
-            exit_code,
-            &notes,
-        ) else {
+        let Some(output) = command_job::format_job_output(&self.jobs, job_id, &execution.workspace_root)
+        else {
             return coded_error("io", "kill lost the job logs");
         };
         if !still_alive {
-            present_command(job_id, exit_code, output, None)
+            present_command(
+                job_id,
+                exit_code,
+                output,
+                command_job::CallFacts {
+                    killed: killed.then_some(true),
+                    ..command_job::CallFacts::default()
+                },
+            )
         } else {
             coded_error(
                 "still_alive",
@@ -123,7 +117,6 @@ impl KillTool {
                 &execution,
                 &job_id,
                 command_job::code_i32(killed.exit_code),
-                Some("process had already exited; remaining job processes were stopped"),
                 true,
                 false,
             );
@@ -135,7 +128,6 @@ impl KillTool {
                 &execution,
                 &job_id,
                 command_job::code_i32(killed.exit_code),
-                Some("job had already exited"),
                 false,
                 false,
             );
@@ -150,7 +142,6 @@ impl KillTool {
                     &execution,
                     &job_id,
                     command_job::code_i32(exit_code),
-                    None,
                     true,
                     false,
                 )
@@ -159,7 +150,7 @@ impl KillTool {
                 // The stop did not land. Drop the latch so a later natural exit
                 // is not reported as killed, and keep the notice for the seam.
                 self.jobs.clear_tool_kill_if_alive(&job_id);
-                self.present(&execution, &job_id, None, None, false, true)
+                self.present(&execution, &job_id, None, false, true)
             }
         }
     }
@@ -236,7 +227,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn kill_stops_process_and_notes_output() {
+    async fn kill_stops_the_process_and_says_so() {
         let dir = tempfile::tempdir().unwrap();
         let (tool, jobs) = tool();
         let session = "sess-kill";
@@ -267,13 +258,9 @@ mod tests {
             data.get("reason").is_none() || data["reason"].is_null(),
             "{data}"
         );
-        assert!(
-            data["output"]
-                .as_str()
-                .unwrap()
-                .contains("process was killed"),
-            "{data}"
-        );
+        assert_eq!(data["killed"], true, "{data}");
+        // The stream is process output only: the kill is a field, not a note.
+        assert_eq!(data["output"], "", "{data}");
         // Give the OS a moment; pid should die.
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline && pid_alive(pid) {
@@ -309,13 +296,8 @@ mod tests {
             .await;
         assert!(result.error.is_none(), "{result:?}");
         let data = result.data.as_ref().unwrap();
-        assert!(
-            data["output"]
-                .as_str()
-                .unwrap()
-                .contains("remaining job processes were stopped"),
-            "{data}"
-        );
+        assert_eq!(data["killed"], true, "{data}");
+        assert_eq!(data["output"], "", "{data}");
 
         // The marker is written at 2s; the tree kill must reach the descendant
         // that outlived the shell long before that.
@@ -355,11 +337,9 @@ mod tests {
             data.get("reason").is_none() || data["reason"].is_null(),
             "{data}"
         );
+        // The exit is the fact: a sealed job keeps the code it exited with.
         assert!(
-            data["output"]
-                .as_str()
-                .unwrap()
-                .contains("job had already exited"),
+            data.get("killed").is_none() || data["killed"].as_bool() == Some(false),
             "{data}"
         );
     }

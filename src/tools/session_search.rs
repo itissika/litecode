@@ -15,7 +15,6 @@ use crate::types::{ToolCallResult, ToolErrorKind};
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 50;
-const VIRTUAL_TRANSCRIPT_NOTE: &str = "Hits are lines in the read-only virtual transcript `.litecode/sessions/<session>.md` (not a file on disk); read it with `read` at `start_line=line`, or `grep` the same path.";
 
 pub struct SessionSearchTool {
     engines: WorkspaceEngines,
@@ -28,8 +27,11 @@ struct SessionSearchData {
     hits: Vec<session_search::SessionTableHit>,
     total: usize,
     truncated: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
+    /// False when the semantic leg was unavailable: the hits are lexical only.
+    semantic: bool,
+    /// Parameters adjusted to a legal value; absent when nothing moved.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    clamped: Vec<crate::tool::clamp::Clamp>,
 }
 
 #[cfg(test)]
@@ -50,14 +52,20 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
             hits: vec![hit(Some("bot"))],
             total: 1,
             truncated: false,
-            message: Some("note".into()),
+            semantic: true,
+            clamped: vec![crate::tool::clamp::Clamp {
+                parameter: "limit".into(),
+                requested: serde_json::json!(500),
+                applied: serde_json::json!(MAX_LIMIT),
+            }],
         })
         .into_call_result(""),
         all_optional_absent: ToolOutcome::ok(SessionSearchData {
             hits: vec![hit(None)],
             total: 1,
             truncated: false,
-            message: None,
+            semantic: true,
+            clamped: Vec::new(),
         })
         .into_call_result(""),
     }]
@@ -87,7 +95,7 @@ impl SessionSearchTool {
         session_id: Option<&str>,
         active_session_id: Option<&str>,
         limit: usize,
-        limit_note: Option<String>,
+        limit_clamp: Option<crate::tool::clamp::Clamp>,
     ) -> ToolCallResult {
         let include_session = match session_id {
             Some(refer) if !refer.trim().is_empty() => {
@@ -150,36 +158,16 @@ impl SessionSearchTool {
 
         let sync = crate::tools::sync_pct_for_workspace(&self.engines, Some(workspace_root));
         let truncated = table.total > table.hits.len();
-        let mut notes = Vec::new();
-        if !table.hits.is_empty() {
-            notes.push(VIRTUAL_TRANSCRIPT_NOTE.to_string());
-        }
-        if !semantic_ready {
-            // Honest degradation: never look like a full lexical+semantic fusion.
-            notes.push("semantic: unavailable (lexical only)".to_string());
-        }
-        if table.hits.is_empty() {
-            notes.push(format!(
-                "No matching session transcript context for query '{query}'."
-            ));
-        } else if truncated {
-            notes.push(format!(
-                "Showing {} of {} hits; narrow the query or raise limit.",
-                table.hits.len(),
-                table.total
-            ));
-        }
-        if let Some(note) = limit_note {
-            notes.push(note);
-        }
-        let message = (!notes.is_empty()).then(|| notes.join("\n"));
-        let content =
-            crate::tools::prepend_sync_pct(sync.as_ref(), message.as_deref().unwrap_or(""));
+        // The result is the fields: an empty table is an empty table, a cut
+        // table says `truncated` + `total`, and a lexical-only answer says so.
+        let clamped: Vec<_> = limit_clamp.into_iter().collect();
+        let content = crate::tools::format_sync_pct_line(sync.as_ref());
         let data = SessionSearchData {
             hits: table.hits,
             total: table.total,
             truncated,
-            message,
+            semantic: semantic_ready,
+            clamped,
         };
         ToolOutcome::ok(data).into_call_result(content)
     }
@@ -245,9 +233,9 @@ impl SessionSearchTool {
         let session_id = input["session_id"]
             .as_str()
             .filter(|s| !s.trim().is_empty());
-        let (limit, limit_note) =
+        let (limit, limit_clamp) =
             match crate::tool::clamp::clamp_int(&input, "limit", 1, MAX_LIMIT as u64, "hits") {
-                Ok(Some(clamped)) => (clamped.value as usize, clamped.note),
+                Ok(Some(clamped)) => (clamped.value as usize, clamped.as_clamp("limit")),
                 Ok(None) => (DEFAULT_LIMIT, None),
                 Err(error) => {
                     return ToolCallResult::error_with_kind(
@@ -292,7 +280,7 @@ impl SessionSearchTool {
             session_scope.as_deref(),
             active,
             limit,
-            limit_note,
+            limit_clamp,
         )
     }
 }
@@ -468,10 +456,14 @@ mod tests {
             via.split('+').any(|part| part == "lex" || part == "exact"),
             "{via}"
         );
+        // Lexical-only is a fact on the result, not a sentence in content.
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["semantic"], false);
+        assert!(data.get("message").is_none(), "{data}");
         assert!(
-            result
-                .content
-                .contains("semantic: unavailable (lexical only)")
+            !result.content.contains("semantic: unavailable"),
+            "{}",
+            result.content
         );
     }
 
@@ -495,20 +487,27 @@ mod tests {
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["total"], 25);
         assert_eq!(data["truncated"], true);
-        assert!(
-            data["message"]
-                .as_str()
-                .unwrap()
-                .contains("Showing 5 of 25")
+        // Cut at the limit is carried by total + truncated; nothing to say.
+        assert!(data.get("message").is_none(), "{data}");
+    }
+
+    #[test]
+    fn over_budget_limit_is_a_clamped_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        seed_session(root, "CLAMP_TOKEN alpha");
+        let tool = warmed_tool(root);
+        let result = call_ok(
+            &tool,
+            root,
+            serde_json::json!({ "query": "CLAMP_TOKEN", "limit": 500 }),
+            "",
         );
-        assert!(
-            data["message"]
-                .as_str()
-                .unwrap()
-                .contains("virtual transcript"),
-            "must point at the virtual transcript path: {:?}",
-            data["message"]
-        );
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["clamped"][0]["parameter"], "limit");
+        assert_eq!(data["clamped"][0]["requested"], 500);
+        assert_eq!(data["clamped"][0]["applied"], MAX_LIMIT);
+        assert!(data.get("message").is_none(), "{data}");
     }
 
     #[test]
@@ -556,10 +555,7 @@ mod tests {
             &sid,
         );
         assert!(
-            live.data.as_ref().unwrap()["message"]
-                .as_str()
-                .unwrap()
-                .contains("No matching session transcript"),
+            hits(&live).is_empty(),
             "live window must stay excluded: {:?}",
             live.data
         );
@@ -643,11 +639,9 @@ mod tests {
             "first line must be sync_pct, got: {first:?}\n{}",
             result.content
         );
-        assert!(
-            result.data.as_ref().unwrap()["message"]
-                .as_str()
-                .unwrap()
-                .contains("semantic: unavailable (lexical only)"),
+        assert_eq!(
+            result.data.as_ref().unwrap()["semantic"],
+            false,
             "must declare lexical-only degradation: {:?}",
             result.data
         );

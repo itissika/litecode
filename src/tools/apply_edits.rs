@@ -109,7 +109,7 @@ impl ApplyEditsTool {
             }
             match self
                 .engine
-                .apply_one(&execution, path, spec, "applied")
+                .apply_one(&execution, path, spec)
                 .await
             {
                 Ok(result) => results.push(result),
@@ -275,6 +275,49 @@ mod tests {
         assert_eq!(results[1]["ok"], false);
         assert_eq!(results[2]["ok"], true);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "ALPHA\nBETA\n");
+    }
+
+    /// A miss names the nearest line as a field: the model fixes one typo
+    /// without re-reading the file, and no prose is needed to say so.
+    #[test]
+    fn a_near_miss_names_its_nearest_line() {
+        let (dir, path) = write_temp("a.txt", "fn alpha() {}
+fn beta() {}
+fn gamma() {}
+");
+        let rel = path.file_name().unwrap().to_str().unwrap();
+        let execution = ToolExecutionContext {
+            path_mode: crate::workspace::ToolPathMode::All,
+            workspace_root: dir.path().to_path_buf(),
+            call_id: String::new(),
+            cancel: CancellationToken::new(),
+            output_limit: 8_000,
+            session_id: String::new(),
+            session: None,
+        };
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(tool().call_for_execution(
+                serde_json::json!({
+                    "edits": [{"path": rel, "old_string": "fn betta() {}", "new_string": "fn delta() {}"}]
+                }),
+                execution,
+            ));
+        assert!(result.error.is_none(), "{}", result.content);
+        let item = &result.data.as_ref().unwrap()["results"][0];
+        assert_eq!(item["ok"], false, "{item}");
+        assert_eq!(item["reason"], "no_match", "{item}");
+        assert_eq!(item["nearest_line"], 2, "{item}");
+        assert!(item.get("message").is_none(), "{item}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "fn alpha() {}
+fn beta() {}
+fn gamma() {}
+"
+        );
     }
 
     #[test]

@@ -47,6 +47,21 @@ pub enum LspDiagFeedback {
     Unavailable(String),
 }
 
+/// The liveness check ran just after the process died; another pass may find
+/// the instance gone and start a fresh one.
+const NOT_READY_TEXT: &str = "language server is not ready";
+
+/// A transport failure means the instance died mid-call, not that the query was
+/// answered. Both strings come from the IO layer and the liveness check; no
+/// other error reuses them.
+fn transport_failure(error: &LitecodeError) -> bool {
+    matches!(
+        error,
+        LitecodeError::ToolExecution(message)
+            if message == crate::lsp::conn::IO_FAILED_TEXT || message == NOT_READY_TEXT
+    )
+}
+
 pub(crate) fn short_feedback_reason(err: &str) -> String {
     let trimmed = err.trim();
     const MAX: usize = 160;
@@ -941,7 +956,7 @@ impl LspHub {
             [server] => Arc::clone(server),
             [] => {
                 return Err(LitecodeError::ToolExecution(
-                    "no language server is running for workspace symbol search; open a source file, pass a path, or wait for Settings → Engines → LSP"
+                    "no language server is running for workspace symbol search; open a source file or pass a path to start one. If no LSP engine is configured, the user has to enable one in Settings → Engines → LSP"
                         .into(),
                 ));
             }
@@ -953,8 +968,13 @@ impl LspHub {
             }
         };
         let mut modified = false;
+        let deadline = server.index_wait_deadline();
         let (reply, readiness) = server
-            .request_nav_with_retry("workspace/symbol", serde_json::json!({ "query": query }))
+            .request_nav_with_retry(
+                "workspace/symbol",
+                serde_json::json!({ "query": query }),
+                deadline,
+            )
             .await?;
         let result = take_reply(reply, &mut modified);
         let root = self.workspace_root();
@@ -1028,6 +1048,31 @@ impl LspHub {
         character: Option<u64>,
         query: Option<&str>,
     ) -> Result<LspToolOutput> {
+        match self
+            .tool_action_once(action, file_path, line, character, query)
+            .await
+        {
+            // A kill can land between the liveness check and the write, so the
+            // first pass may hit an already-dead pipe. One more pass resolves
+            // the key again — which starts a fresh server — instead of
+            // reporting that race as the answer to the query.
+            Err(error) if transport_failure(&error) => {
+                self.tool_action_once(action, file_path, line, character, query)
+                    .await
+            }
+            other => other,
+        }
+    }
+
+    /// One pass: resolve (spawn if needed), then ask.
+    async fn tool_action_once(
+        &self,
+        action: &str,
+        file_path: &Path,
+        line: Option<u64>,
+        character: Option<u64>,
+        query: Option<&str>,
+    ) -> Result<LspToolOutput> {
         let action = normalize_lsp_action(action);
         // Set when any request got -32801 ContentModified (ISSUE-047).
         let mut modified = false;
@@ -1040,10 +1085,11 @@ impl LspHub {
         let key = self.resolve_server_key(&file_path).await?;
         let server = self.server_arc(&key)?;
         if !server.is_running() {
-            return Err(LitecodeError::ToolExecution(
-                "language server is not ready".into(),
-            ));
+            return Err(LitecodeError::ToolExecution(NOT_READY_TEXT.into()));
         }
+        // One deadline for the whole call, fallbacks included: the call that
+        // started the server is also the one that waits for it.
+        let deadline = server.index_wait_deadline();
         if file_path.is_file() {
             ensure_open_document(&server, &file_path, &uri).await?;
         }
@@ -1056,7 +1102,9 @@ impl LspHub {
                     "position": position
                 });
                 match server
-                    .request_nav_with_retry("textDocument/definition", params.clone())
+                    .request_nav_with_retry("textDocument/definition", params.clone(),
+                        deadline,
+                    )
                     .await
                 {
                     Ok((LspReply::ContentModified, current)) => {
@@ -1072,7 +1120,9 @@ impl LspHub {
                         } else {
                             // Settled empty definition — try typeDefinition before confirming miss.
                             match server
-                                .request_nav_with_retry("textDocument/typeDefinition", params)
+                                .request_nav_with_retry("textDocument/typeDefinition", params,
+                                    deadline,
+                                )
                                 .await
                             {
                                 Ok((LspReply::Value(typed), current)) => {
@@ -1095,7 +1145,9 @@ impl LspHub {
                     Err(inconclusive) => {
                         // Index not ready for definition — typeDefinition may still hit.
                         match server
-                            .request_nav_with_retry("textDocument/typeDefinition", params)
+                            .request_nav_with_retry("textDocument/typeDefinition", params,
+                                deadline,
+                            )
                             .await
                         {
                             Ok((LspReply::Value(typed), current))
@@ -1119,6 +1171,7 @@ impl LspHub {
                             "position": position,
                             "context": { "includeDeclaration": true }
                         }),
+                        deadline,
                     )
                     .await?,
                 &mut modified,
@@ -1132,6 +1185,7 @@ impl LspHub {
                             "textDocument": { "uri": uri },
                             "position": position
                         }),
+                        deadline,
                     )
                     .await?,
                 &mut modified,
@@ -1145,6 +1199,7 @@ impl LspHub {
                             "textDocument": { "uri": uri },
                             "position": position
                         }),
+                        deadline,
                     )
                     .await?,
                 &mut modified,
@@ -1155,6 +1210,7 @@ impl LspHub {
                     .request_nav_with_retry(
                         "textDocument/documentSymbol",
                         serde_json::json!({ "textDocument": { "uri": uri } }),
+                        deadline,
                     )
                     .await?,
                 &mut modified,
@@ -1167,6 +1223,7 @@ impl LspHub {
                         .request_nav_with_retry(
                             "workspace/symbol",
                             serde_json::json!({ "query": query.unwrap_or("") }),
+                            deadline,
                         )
                         .await?,
                     &mut modified,

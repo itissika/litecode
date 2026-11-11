@@ -85,22 +85,17 @@ impl RunTool {
         job_id: &str,
         exit_code: Option<i32>,
         running: bool,
-        message: Option<String>,
+        facts: command_job::CallFacts,
     ) -> ToolCallResult {
-        let notes: &[&str] = if running {
-            &["still running; use tools.process.wait or tools.process.kill"]
-        } else {
-            &[]
-        };
         let output = if running {
-            command_job::format_job_output(&self.jobs, job_id, workspace_root, exit_code, notes)
+            command_job::format_job_output(&self.jobs, job_id, workspace_root)
         } else {
-            command_job::format_exited_output(&self.jobs, job_id, workspace_root, exit_code, notes)
+            command_job::format_exited_output(&self.jobs, job_id, workspace_root)
         };
         let Some(output) = output else {
             return coded_error("io", "run lost the job logs");
         };
-        present_command(job_id, exit_code, output, message)
+        present_command(job_id, exit_code, output, facts)
     }
 
     async fn run(&self, input: Value, execution: ToolExecutionContext) -> ToolCallResult {
@@ -122,7 +117,7 @@ impl RunTool {
             return coded_error("cancelled", "run cancelled before spawn");
         }
 
-        let message = command_message(&command);
+        let path_conversion = path_conversion(&command);
         let scope = crate::tool::run_scope::current().unwrap_or_default();
         let background_window = if run_in_background {
             Duration::ZERO
@@ -167,12 +162,35 @@ impl RunTool {
                     &job_id,
                     exit_code,
                     false,
-                    message,
+                    command_job::CallFacts {
+                        path_conversion,
+                        ..command_job::CallFacts::default()
+                    },
                 )
             }
-            PipeDecision::Background { job_id } | PipeDecision::Promoted { job_id } => {
-                self.command_result(&execution.workspace_root, &job_id, None, true, message)
-            }
+            PipeDecision::Background { job_id } => self.command_result(
+                &execution.workspace_root,
+                &job_id,
+                None,
+                true,
+                command_job::CallFacts {
+                    path_conversion,
+                    ..command_job::CallFacts::default()
+                },
+            ),
+            // Promoted: the foreground window ran out while the process kept
+            // running, so the call itself timed out.
+            PipeDecision::Promoted { job_id } => self.command_result(
+                &execution.workspace_root,
+                &job_id,
+                None,
+                true,
+                command_job::CallFacts {
+                    timed_out: true,
+                    path_conversion,
+                    ..command_job::CallFacts::default()
+                },
+            ),
             PipeDecision::Cancelled { job_id } => {
                 self.discard_cancelled(&job_id);
                 coded_error("cancelled", "run cancelled")
@@ -183,12 +201,10 @@ impl RunTool {
 }
 
 /// MSYS path-conversion hint, only when Git Bash is the shell (WP-210 F/Q8).
-fn command_message(command: &str) -> Option<String> {
-    if crate::terminal::decode::shell_identity().contains("MINGW") {
-        crate::terminal::decode::msys_path_hint(command)
-    } else {
-        None
-    }
+/// True when the shell may rewrite a POSIX-looking argument in `command`.
+fn path_conversion(command: &str) -> bool {
+    crate::terminal::decode::shell_identity().contains("MINGW")
+        && crate::terminal::decode::msys_path_hint(command).is_some()
 }
 
 impl Tool for RunTool {
@@ -297,6 +313,29 @@ mod tests {
 
     use crate::tools::command_job::{StopJob, pid_alive, sleep_shell, test_execution};
     use std::time::Instant;
+
+    /// Process output must be nothing but process output: state lives in
+    /// fields, so no bracketed note can leak into what the process wrote.
+    #[tokio::test(flavor = "current_thread")]
+    async fn output_carries_no_bracketed_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, _jobs) = tool();
+        let result = tool
+            .execute(
+                serde_json::json!({"command": "echo hi"}),
+                test_execution(dir.path(), "sess-notes"),
+            )
+            .await;
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().expect("data");
+        let output = data["output"].as_str().unwrap();
+        let stderr = data["stderr"].as_str().unwrap();
+        assert!(!output.contains("[still running"), "{data}");
+        assert!(!output.contains("[process was killed"), "{data}");
+        assert!(!stderr.contains("["), "{data}");
+        assert_eq!(output.trim(), "hi", "{data}");
+        assert_eq!(data["exit_code"], 0, "{data}");
+    }
 
     fn tool() -> (RunTool, Arc<AgentJobRegistry>) {
         let jobs = Arc::new(AgentJobRegistry::new());
@@ -454,10 +493,7 @@ mod tests {
             jobs.readers_open(&id),
             "the descendant must still hold the pipe: {data}"
         );
-        assert!(
-            data["output"].as_str().unwrap().contains("still draining"),
-            "{data}"
-        );
+        assert_eq!(data["draining"], true, "{data}");
         assert!(
             jobs.running("test-session").is_empty(),
             "an exited shell must not stay in the running list: {data}"

@@ -24,6 +24,39 @@ pub(crate) const MAX_AUTO_RESTARTS: u32 = 2;
 /// A server that survived at least this long is a healthy start: its exit
 /// resets the restart budget (only rapid crash loops count against it).
 pub(crate) const RESTART_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// How long one call may wait for an index that is still being built.
+///
+/// A call that starts a server also answers from it: an index reported as
+/// building gets this long to produce data before the call says the server is
+/// still starting. Test seam: `LITECODE_LSP_INDEX_WAIT_MS` overrides both
+/// budgets.
+pub(crate) const INDEX_WAIT_BUDGET: Duration = Duration::from_secs(20);
+/// A server with no index report, or one already settled, answers at once;
+/// keep its wait brief so a genuinely empty result returns quickly.
+pub(crate) const INDEX_WAIT_BUDGET_WARM: Duration = Duration::from_secs(6);
+/// A server younger than this is treated as cold even before it reports
+/// anything: nothing has proven it settled yet.
+pub(crate) const COLD_SERVER_WINDOW: Duration = Duration::from_secs(30);
+/// How long one call keeps waiting once the server has said it is indexing.
+///
+/// A server that reports "indexing" is answering for itself; the call hands the
+/// result back after this grace so the model can do something else instead of
+/// spending the whole budget in here. The grace is paid once per indexing epoch
+/// per server process: every later call in the same epoch returns at once, and
+/// a restarted server starts a new epoch. Only a server that never reports a
+/// state is worth the full budget — there the wait is the only way to learn
+/// anything.
+pub(crate) const INDEX_GRACE: Duration = Duration::from_secs(3);
+
+/// `LITECODE_LSP_INDEX_WAIT_MS` overrides the index wait, for tests that must
+/// not sit out the production budget.
+fn index_wait_override() -> Option<Duration> {
+    std::env::var("LITECODE_LSP_INDEX_WAIT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+}
 const MAX_LSP_STDERR_BYTES: usize = 64 * 1024;
 
 const SEMANTIC_TOKEN_TYPES: &[&str] = &[
@@ -148,6 +181,17 @@ pub(crate) struct LspServer {
     pub(crate) stderr_buf: Arc<tokio::sync::Mutex<Vec<u8>>>,
     pub(crate) spawned_at: Instant,
     pub(crate) restart_count: u32,
+    /// Set once a call has spent the short grace on this process's current
+    /// indexing epoch. Cleared when the server reports that indexing settled.
+    ///
+    /// It belongs to the instance, not to the hub: the fact is about one
+    /// process's index build. The hub drops the instance whenever a server
+    /// restarts, is killed, or is stopped, and spawns a new one, so a fresh
+    /// process starts here at `false` and never inherits the previous
+    /// process's epoch. On the hub, a restart would read as "already paid" and
+    /// every call after it would be told "still indexing" with nothing to
+    /// wait for.
+    index_grace_spent: std::sync::atomic::AtomicBool,
     server_capabilities: std::sync::Mutex<Value>,
 }
 
@@ -223,6 +267,7 @@ impl LspServer {
             stderr_buf: stderr_buf.clone(),
             spawned_at: Instant::now(),
             restart_count: 0,
+            index_grace_spent: std::sync::atomic::AtomicBool::new(false),
             server_capabilities: std::sync::Mutex::new(Value::Null),
         };
 
@@ -303,6 +348,40 @@ impl LspServer {
         conn::configuration_response(request)
     }
 
+    /// Deadline for this call's empty-result retries.
+    ///
+    /// A server that says it is indexing is treated as cold: the call that
+    /// started it may legitimately take a while, so it waits. Otherwise the
+    /// warm budget keeps an empty answer quick.
+    pub(crate) fn index_wait_deadline(&self) -> Instant {
+        let cold = self.index_readiness() == IndexReadiness::Indexing
+            || self.spawned_at.elapsed() < COLD_SERVER_WINDOW;
+        let base = if cold {
+            INDEX_WAIT_BUDGET
+        } else {
+            INDEX_WAIT_BUDGET_WARM
+        };
+        Instant::now() + index_wait_override().unwrap_or(base)
+    }
+
+    /// True when an earlier call in this process already paid the grace for the
+    /// current indexing epoch. A later call hands the honest "still indexing"
+    /// answer back at once instead of holding the model for the same seconds
+    /// again, so the time can go to a different tool.
+    fn index_grace_spent(&self) -> bool {
+        self.index_grace_spent.load(Ordering::SeqCst)
+    }
+
+    fn mark_index_grace_spent(&self) {
+        self.index_grace_spent.store(true, Ordering::SeqCst);
+    }
+
+    /// A new epoch (the server reported that indexing settled) gets its own
+    /// grace; nothing carries over from the previous one.
+    fn clear_index_grace(&self) {
+        self.index_grace_spent.store(false, Ordering::SeqCst);
+    }
+
     pub(crate) fn index_readiness(&self) -> IndexReadiness {
         if self.io.index_settled.load(Ordering::SeqCst) {
             IndexReadiness::Ready
@@ -339,10 +418,17 @@ impl LspServer {
         }
     }
 
+    /// Navigate with empty-result retries, bounded by `deadline`.
+    ///
+    /// An empty result on a server whose index is still being built is not an
+    /// answer: the same call that started the server keeps asking until it gets
+    /// data or runs out of time. Running out of time while the server says
+    /// `Indexing` is reported as "still starting", never as a confirmed miss.
     pub(crate) async fn request_nav_with_retry(
         &self,
         method: &str,
         params: Value,
+        deadline: Instant,
     ) -> Result<(crate::lsp::conn::LspReply, IndexReadiness)> {
         use crate::lsp::conn::LspReply;
 
@@ -356,12 +442,39 @@ impl LspServer {
         if !nav_empty(method, &result) {
             return Ok((LspReply::Value(result), self.index_readiness()));
         }
-        if self.index_readiness() == IndexReadiness::Ready {
+        let mut readiness = self.index_readiness();
+        if readiness == IndexReadiness::Ready {
+            self.clear_index_grace();
             return Ok((LspReply::Value(result), IndexReadiness::Ready));
         }
+        // The server already said it is indexing and an earlier call in this
+        // process paid the grace for this epoch: answer at once. The model can
+        // use the time on another tool and ask again when the index is ready.
+        if readiness == IndexReadiness::Indexing && self.index_grace_spent() {
+            return Err(index_not_ready_error(method));
+        }
 
-        for delay_ms in [500_u64, 1000, 2000, 3000] {
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        let mut backoff = Duration::from_millis(250);
+        let mut indexing_since: Option<Instant> = None;
+        loop {
+            // A server that says it is indexing is answering for itself: wait a
+            // short grace, then hand the call back instead of burning the whole
+            // budget on a build that may take a minute.
+            if indexing_since.is_some_and(|since| since.elapsed() >= INDEX_GRACE) {
+                self.mark_index_grace_spent();
+                break;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            // Never sleep past the grace: the call should hand back as soon as
+            // the short wait it promised is over.
+            let mut wait = backoff.min(deadline - now);
+            if let Some(since) = indexing_since {
+                wait = wait.min(INDEX_GRACE.saturating_sub(since.elapsed()));
+            }
+            tokio::time::sleep(wait).await;
             result = match self.send_request_outcome(method, params.clone()).await? {
                 LspReply::Value(v) => v,
                 LspReply::ContentModified => {
@@ -371,10 +484,19 @@ impl LspServer {
             if !nav_empty(method, &result) {
                 return Ok((LspReply::Value(result), self.index_readiness()));
             }
-            let readiness = self.index_readiness();
+            readiness = self.index_readiness();
             if readiness == IndexReadiness::Ready {
+                self.clear_index_grace();
                 return Ok((LspReply::Value(result), readiness));
             }
+            if readiness == IndexReadiness::Indexing {
+                // Another call spent the grace for this epoch while we waited.
+                if self.index_grace_spent() {
+                    break;
+                }
+                indexing_since.get_or_insert_with(Instant::now);
+            }
+            backoff = (backoff * 2).min(Duration::from_secs(2));
         }
 
         let readiness = self.index_readiness();
@@ -959,8 +1081,8 @@ fn eof_position(text: &str) -> (u32, u32) {
 /// Shared "index not ready" error; `tools/lsp.rs` maps the text to `unavailable`.
 pub(crate) fn index_not_ready_error(method: &str) -> LitecodeError {
     LitecodeError::ToolExecution(format!(
-        "language server index not ready (method={method}); result would be inconclusive. \
-         Retry in a few seconds — do not treat this as 'symbol not found'."
+        "language server is still starting: index not ready (method={method}), so no result \
+         was produced. Retry in a few seconds — do not treat this as 'not found'."
     ))
 }
 

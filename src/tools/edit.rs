@@ -84,7 +84,7 @@ impl EditTool {
         }
         match self
             .engine
-            .apply_one(&execution, &raw_path, &spec, "replaced")
+            .apply_one(&execution, &raw_path, &spec)
             .await
         {
             Ok(result) => result::present_edit(result),

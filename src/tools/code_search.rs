@@ -21,7 +21,8 @@ const SNIPPET_MAX_LINES: u32 = 24;
 /// Guard against minified/generated lines blowing up one snippet.
 const SNIPPET_MAX_LINE_CHARS: usize = 500;
 
-const ENGINE_OFF_MESSAGE: &str = "Code search engine is off. Enable it in Settings.";
+const ENGINE_OFF_MESSAGE: &str =
+    "Code search engine is off. The user has to enable it in Settings → Engines.";
 const WARMING_MESSAGE: &str = "Code search engine is warming; no results yet.";
 const BUSY_MESSAGE: &str = "Code search is busy; try again shortly.";
 
@@ -32,8 +33,9 @@ pub struct CodeSearchTool {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct CodeSearchData {
     hits: Vec<CodeSearchHit>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
+    /// Parameters adjusted to a legal value; absent when nothing moved.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    clamped: Vec<crate::tool::clamp::Clamp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -72,14 +74,18 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
         all_optional_present: CodeSearchTool::present(
             CodeSearchData {
                 hits: vec![hit(Some("a"))],
-                message: Some("note".into()),
+                clamped: vec![crate::tool::clamp::Clamp {
+                    parameter: "top_k".into(),
+                    requested: serde_json::json!(500),
+                    applied: serde_json::json!(MAX_TOP_K),
+                }],
             },
             String::new(),
         ),
         all_optional_absent: CodeSearchTool::present(
             CodeSearchData {
                 hits: vec![hit(None)],
-                message: None,
+                clamped: Vec::new(),
             },
             String::new(),
         ),
@@ -87,8 +93,8 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
 }
 
 impl CodeSearchData {
-    fn success(hits: Vec<CodeSearchHit>, message: Option<String>) -> Self {
-        Self { hits, message }
+    fn success(hits: Vec<CodeSearchHit>, clamped: Vec<crate::tool::clamp::Clamp>) -> Self {
+        Self { hits, clamped }
     }
 }
 
@@ -168,23 +174,21 @@ impl CodeSearchTool {
         let glob = input["include_pattern"]
             .as_str()
             .filter(|glob| !glob.is_empty());
-        let mut notes: Vec<String> = Vec::new();
-        let (top_k, top_k_note) = match parse_top_k(&input) {
+        let (top_k, mut clamped) = match parse_top_k(&input) {
             Ok(parsed) => parsed,
             Err(error) => {
                 return ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, error, false)
                     .with_error_code("invalid_input");
             }
         };
-        notes.extend(top_k_note);
-        let (min_score, min_score_note) = match parse_min_score(&input) {
+        let (min_score, min_score_clamped) = match parse_min_score(&input) {
             Ok(parsed) => parsed,
             Err(error) => {
                 return ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, error, false)
                     .with_error_code("invalid_input");
             }
         };
-        notes.extend(min_score_note);
+        clamped.extend(min_score_clamped);
 
         if let Some(result) = self.not_ready_result() {
             return result;
@@ -221,20 +225,7 @@ impl CodeSearchTool {
                     .iter()
                     .filter_map(|hit| code_hit(root.as_deref(), query, hit))
                     .collect();
-                let mut message = hits.is_empty().then(|| {
-                    let scope = glob
-                        .map(|pattern| format!(" for include_pattern '{pattern}'"))
-                        .unwrap_or_default();
-                    format!("No matching code chunks found{scope}.")
-                });
-                if !notes.is_empty() {
-                    let note = notes.join(" ");
-                    message = Some(match message {
-                        Some(message) => format!("{message} {note}"),
-                        None => note,
-                    });
-                }
-                let data = CodeSearchData::success(hits, message);
+                let data = CodeSearchData::success(hits, clamped);
                 Self::present(data, Self::success_progress_content(sync.as_ref()))
             }
             Err(_error) if cancel.is_some_and(|token| token.is_cancelled()) => {
@@ -312,19 +303,29 @@ impl Tool for CodeSearchTool {
     }
 }
 
-fn parse_top_k(input: &Value) -> Result<(usize, Option<String>), String> {
+fn parse_top_k(
+    input: &Value,
+) -> Result<(usize, Vec<crate::tool::clamp::Clamp>), String> {
     let clamped = crate::tool::clamp::clamp_int(input, "top_k", 1, MAX_TOP_K as u64, "hits")?;
     Ok(match clamped {
-        None => (DEFAULT_TOP_K, None),
-        Some(clamped) => (clamped.value as usize, clamped.note),
+        None => (DEFAULT_TOP_K, Vec::new()),
+        Some(clamped) => (
+            clamped.value as usize,
+            clamped.as_clamp("top_k").into_iter().collect(),
+        ),
     })
 }
 
-fn parse_min_score(input: &Value) -> Result<(Option<f64>, Option<String>), String> {
+fn parse_min_score(
+    input: &Value,
+) -> Result<(Option<f64>, Vec<crate::tool::clamp::Clamp>), String> {
     let clamped = crate::tool::clamp::clamp_float(input, "min_score", 0.0, 1.0, "")?;
     Ok(match clamped {
-        None => (Some(DEFAULT_MIN_SCORE), None),
-        Some(clamped) => ((clamped.value > 0.0).then_some(clamped.value), clamped.note),
+        None => (Some(DEFAULT_MIN_SCORE), Vec::new()),
+        Some(clamped) => (
+            (clamped.value > 0.0).then_some(clamped.value),
+            clamped.as_clamp("min_score").into_iter().collect(),
+        ),
     })
 }
 
@@ -918,34 +919,46 @@ mod tests {
         assert!(properties["min_score"].get("maximum").is_none());
         assert_eq!(
             parse_min_score(&serde_json::json!({})),
-            Ok((Some(0.8), None))
+            Ok((Some(0.8), Vec::new()))
         );
         assert_eq!(
             parse_min_score(&serde_json::json!({"min_score": 0})),
-            Ok((None, None))
+            Ok((None, Vec::new()))
         );
-        let (score, note) = parse_min_score(&serde_json::json!({"min_score": 1.1})).unwrap();
+        // A clamp is a field on the result, not a sentence about the result.
+        let (score, clamped) = parse_min_score(&serde_json::json!({"min_score": 1.1})).unwrap();
         assert_eq!(score, Some(1.0));
         assert_eq!(
-            note.as_deref(),
-            Some("`min_score` was reduced from 1.1 to 1.")
+            clamped,
+            vec![crate::tool::clamp::Clamp {
+                parameter: "min_score".into(),
+                requested: serde_json::json!(1.1),
+                applied: serde_json::json!(1.0),
+            }]
         );
-        let (top_k, note) = parse_top_k(&serde_json::json!({"top_k": 30})).unwrap();
+        let (top_k, clamped) = parse_top_k(&serde_json::json!({"top_k": 30})).unwrap();
         assert_eq!(top_k, MAX_TOP_K);
         assert_eq!(
-            note.as_deref(),
-            Some("`top_k` was reduced from 30 to 20 hits.")
+            clamped,
+            vec![crate::tool::clamp::Clamp {
+                parameter: "top_k".into(),
+                requested: serde_json::json!(30),
+                applied: serde_json::json!(MAX_TOP_K),
+            }]
         );
     }
 
     #[test]
     fn zero_hits_are_success_payload_not_a_soft_failure() {
         let surface = code_search_surface();
-        let data =
-            CodeSearchData::success(Vec::new(), Some("No matching code chunks found.".into()));
+        let data = CodeSearchData::success(Vec::new(), Vec::new());
         let mut value = serde_json::to_value(&data).expect("serialize empty success");
         assert!(value.get("ok").is_none(), "{value}");
         assert!(value.get("status").is_none(), "{value}");
+        // No chunk matched: the empty list is the whole answer, there is no
+        // prose field left to explain it.
+        assert_eq!(value["hits"], serde_json::json!([]));
+        assert!(value.get("message").is_none(), "{value}");
         value["ok"] = serde_json::json!(true);
         assert!(
             crate::tool::schema_validate(&surface.tools["code_search"].output_schema, &value)
@@ -985,7 +998,7 @@ mod tests {
                 0.0,
                 true,
             )],
-            None,
+            Vec::new(),
         );
         let mut value = serde_json::to_value(&success).expect("serialize success");
         value["ok"] = serde_json::json!(true);

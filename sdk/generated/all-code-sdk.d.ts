@@ -209,7 +209,8 @@ type ClampedParam = {
 type CodeSearchData = {
   /** Empty if the search completed but found no matching chunks. */
   hits: CodeSearchHit[];
-  message?: string;
+  /** Parameters adjusted to a legal value; absent when nothing moved. */
+  clamped?: ClampedParam[];
 };
 
 type CodeSearchHit = {
@@ -252,16 +253,33 @@ type CommandData = {
   exit_code: Integer | null;
   /** While exit_code is null, use with tools.process.wait / tools.process.kill in this session. */
   id: string;
-  /** Stdout plus truncation notes, spill path, or status line. Always present, may be empty. */
+  /**
+   * Stdout exactly as the process wrote it: no notes, no status line.
+   * A truncated stream keeps its `... (truncated)` marker in place.
+   */
   output: string;
   /** Shell that ran the command. */
   shell: string;
-  /** Stderr plus truncation notes. Empty when nothing was written. */
+  /** Stderr exactly as the process wrote it. Empty when nothing was written. */
   stderr: string;
   /** True when wait observes a kill. */
   killed?: boolean;
-  /** Warning about the command itself or a still-alive signal. */
-  message?: string;
+  /** This call's own time budget ran out while the process kept running. */
+  timed_out: boolean;
+  /** The shell exited but a pipe is still open, so the streams can still grow. */
+  draining: boolean;
+  /** The in-memory window froze stdout; the full text is in output_log. */
+  output_truncated: boolean;
+  /** The same fact for stderr. */
+  stderr_truncated: boolean;
+  /** The shell may rewrite POSIX-looking arguments such as `cmd /c`. */
+  path_conversion: boolean;
+  /** Full stdout log, present when the text outgrew the inline window. */
+  output_log?: string;
+  /** Full stderr log, with the same rule. */
+  stderr_log?: string;
+  /** Parameters adjusted to a legal value; absent when nothing moved. */
+  clamped?: ClampedParam[];
 };
 
 type DiagnosticItem = {
@@ -285,6 +303,8 @@ type DiagnosticsData = {
    * partial/unknown is not a confirmed miss.
    */
   state: LspDataState;
+  /** True when the cap cut the list: more results exist. */
+  truncated: boolean;
 };
 
 type DiagnosticsInput = PathInput;
@@ -295,8 +315,11 @@ type DocumentSymbolInput = PathInput;
 
 /** Successful single-edit payload. Failures use ToolFailure. */
 type EditData = {
-  message: string;
   path: string;
+  /** Outside-workspace or sensitive-path target; absent when there is none. */
+  path_risk?: PathRisk;
+  /** Warnings recorded after the edit; absent when the edit was clean. */
+  diagnostics?: ToolDiagnostic[];
 };
 
 type EditFailureReason =
@@ -318,10 +341,16 @@ type EditInput = {
 
 /** One item in a serial apply_edits batch. Item failures stay item-level. */
 type EditResult = {
-  message: string;
   ok: boolean;
   path: string;
-  reason?: EditFailureReason;
+  /** Why this item failed; `null` when `ok` is true. */
+  reason: EditFailureReason | null;
+  /** 1-based line of the closest match when `old_string` was not found; `null` otherwise. */
+  nearest_line: Integer | null;
+  /** Outside-workspace or sensitive-path target; absent when there is none. */
+  path_risk?: PathRisk;
+  /** Warnings recorded after the edit; absent when there were none. */
+  diagnostics?: ToolDiagnostic[];
 };
 
 type FileRef = {
@@ -391,8 +420,11 @@ type GrepData = {
     | "file_unreadable"
     | "binary"
     | "hidden_by_filters";
-  /** Matches found before any limit was applied. */
-  total_hits: Integer;
+  /**
+   * Matches found before the result was cut; absent when the scan stopped at a
+   * limit and never counted the rest. Do not treat a missing value as zero.
+   */
+  total_hits?: Integer;
   /** True when the hit limit stopped the scan. */
   at_limit_cap: boolean;
   /** True when a match or context line was shortened to the per-line cap. */
@@ -438,6 +470,7 @@ type GrepInput = {
   path?: Path;
 };
 
+/** One hover answer. A hover is a single value, so there is no truncation. */
 type HoverData = {
   /** Flattened hover text, not raw LSP JSON. */
   markdown: string;
@@ -482,6 +515,8 @@ type LocationsData = {
    * partial/unknown is not a confirmed miss.
    */
   state: LspDataState;
+  /** True when the cap cut the list: more results exist. */
+  truncated: boolean;
 };
 
 /** Truthful index state of the language server that produced this result. */
@@ -555,6 +590,15 @@ type PathInput = {
   path: Path;
 };
 
+type PathRisk = {
+  /** The target resolves outside the workspace root. */
+  outside_workspace: boolean;
+  /** The target is a sensitive system location. */
+  sensitive: boolean;
+  /** Absolute path the target resolved to; present when it is outside. */
+  resolved?: string;
+};
+
 type RangeInput = {
   /** 1-based line number. */
   line: Integer;
@@ -625,7 +669,10 @@ type SessionSearchData = {
   total: Integer;
   /** True when `total` exceeds the returned rows. */
   truncated: boolean;
-  message?: string;
+  /** False when the semantic leg was unavailable: the hits are lexical only. */
+  semantic: boolean;
+  /** Parameters adjusted to a legal value; absent when nothing moved. */
+  clamped?: ClampedParam[];
 };
 
 type SessionSearchHit = {
@@ -681,6 +728,20 @@ type SymbolsData = {
    * partial/unknown is not a confirmed miss.
    */
   state: LspDataState;
+  /** True when the cap cut the list: more results exist. */
+  truncated: boolean;
+};
+
+/** One warning a tool attached to a successful write. */
+type ToolDiagnostic = {
+  /** Machine code such as `lsp_error`. */
+  code: string;
+  /** Severity name mapped from the LSP number. */
+  severity: "info" | "warning";
+  /** Human-readable summary. */
+  message: string;
+  /** Extra structured detail, such as the LSP error block under `text`. */
+  details?: unknown;
 };
 
 type WaitData = CommandData;
@@ -693,9 +754,10 @@ type WaitInput = {
 };
 
 type WebfetchData = {
-  message: string;
+  /** Empty for a non-2xx answer: the status carries the fact. */
   body?: string;
   format?: WebfetchFormat;
+  /** HTTP status of the final response, 2xx or not. */
   status?: Integer;
   url?: string;
 };
@@ -710,10 +772,11 @@ type WebfetchInput = {
 };
 
 type WebsearchData = {
-  message: string;
-  /** At most top_k hits, best first. */
+  /** At most top_k hits, best first; empty when the search found nothing. */
   results: WebsearchHit[];
   query?: string;
+  /** Parameters adjusted to a legal value; absent when nothing moved. */
+  clamped?: ClampedParam[];
 };
 
 type WebsearchHit = {
@@ -747,8 +810,10 @@ type WriteData = {
   created: boolean;
   /** File identity after the write. */
   file: FileRef;
-  /** Post-write warnings such as LSP errors or path-risk notes. */
-  message?: string;
+  /** Outside-workspace or sensitive-path target; absent when there is none. */
+  path_risk?: PathRisk;
+  /** Warnings recorded after the write; absent when the write was clean. */
+  diagnostics?: ToolDiagnostic[];
 };
 
 type WriteInput = {

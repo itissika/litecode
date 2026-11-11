@@ -99,6 +99,10 @@ def publish_diagnostics(uri, text=None):
 
 last_version = {}
 pending_hover = []
+# Cold-start simulation: report indexing, answer empty, then settle once the
+# window elapsed. `MOCK_LSP_COLD_MS` is the window length.
+cold_until = None
+cold_ms = int(os.environ.get("MOCK_LSP_COLD_MS", "0") or "0")
 
 
 def main():
@@ -133,6 +137,16 @@ def main():
                     "result": {"capabilities": {"textDocumentSync": 2}},
                 }
             )
+            if cold_ms > 0:
+                global cold_until
+                cold_until = time.monotonic() + cold_ms / 1000.0
+                write_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "$/rust-analyzer/status",
+                        "params": {"quiescent": False},
+                    }
+                )
         elif os.environ.get("MOCK_LSP_HANG") == "1" and method == "textDocument/hover":
             continue
         elif method == "textDocument/definition":
@@ -246,6 +260,25 @@ def main():
                 }
             )
         elif method == "workspace/symbol":
+            # `MOCK_LSP_DIE_ON_FIRST_SYMBOL=<flag>`: the first process handling
+            # this request dies without answering; a later one behaves.
+            die_flag = os.environ.get("MOCK_LSP_DIE_ON_FIRST_SYMBOL")
+            if die_flag and not os.path.exists(die_flag):
+                with open(die_flag, "w") as _f:
+                    _f.write("1")
+                os._exit(1)
+            if cold_until is not None:
+                if time.monotonic() < cold_until:
+                    write_message({"jsonrpc": "2.0", "id": req_id, "result": []})
+                    continue
+                write_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "$/rust-analyzer/status",
+                        "params": {"quiescent": True},
+                    }
+                )
+                cold_until = None
             write_message(
                 {
                     "jsonrpc": "2.0",

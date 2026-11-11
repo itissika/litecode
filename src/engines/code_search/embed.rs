@@ -124,9 +124,9 @@ pub fn model_dir() -> Result<PathBuf> {
         .map(|root| bundled_model_path(&root))
         .unwrap_or_else(|| bundled_model_path(Path::new("<product_root>")));
     Err(LitecodeError::Config(format!(
-        "embed model not installed (expected at {}). In the desktop app open \
-         Settings \u{2192} Engines and download it; for dev builds run \
-         scripts/bundle_embed_model.sh or set LITECODE_MODEL_DIR",
+        "embed model not installed (expected at {}). The user has to download it in \
+         Settings \u{2192} Engines in the desktop app; dev builds can provide it via \
+         scripts/bundle_embed_model.sh or LITECODE_MODEL_DIR",
         expected.display()
     )))
 }

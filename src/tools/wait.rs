@@ -1,7 +1,7 @@
 //! Code-surface wait on a `run` job (`wait`).
 //!
 //! `sec` is required. Values outside the budget are clamped and the clamp is
-//! reported in the job notes.
+//! reported as a `clamped` entry on the result.
 //! A positive wait registers a snapshot waiter. The cancel token is only for
 //! that wait; it does not kill the job.
 
@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::terminal::{AgentJobRegistry, WaitOutcome};
 use crate::tool::Tool;
+use crate::tool::clamp::Clamp;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tools::command_job::{self, EndWait};
 use crate::tools::file_path::coded_error;
@@ -30,10 +31,11 @@ impl WaitTool {
     }
 
     /// Parse required `sec` and clamp it into `1..=MAX_WAIT_SECS`.
-    fn parse_sec(input: &Value) -> Result<(u64, Option<String>), String> {
+    fn parse_sec(input: &Value) -> Result<(u64, Vec<Clamp>), String> {
         let clamped = crate::tool::clamp::clamp_int(input, "sec", 1, MAX_WAIT_SECS, "seconds")?
             .ok_or_else(|| crate::tool::must_be("sec", "a positive integer"))?;
-        Ok((clamped.value, clamped.note))
+        let clamps = clamped.as_clamp("sec").into_iter().collect();
+        Ok((clamped.value, clamps))
     }
 
     fn present(
@@ -41,27 +43,25 @@ impl WaitTool {
         execution: &ToolExecutionContext,
         job_id: &str,
         exit_code: Option<i32>,
-        note: Option<&str>,
+        timed_out: bool,
         killed: bool,
+        clamped: Vec<Clamp>,
     ) -> ToolCallResult {
-        let drain = command_job::exit_drain_note(&self.jobs, job_id, &execution.workspace_root);
-        let mut notes: Vec<&str> = note.into_iter().collect();
-        if killed {
-            notes.push("process was killed");
-        }
-        if let Some(drain) = &drain {
-            notes.push(drain);
-        }
-        let Some(output) = command_job::format_job_output(
-            &self.jobs,
-            job_id,
-            &execution.workspace_root,
-            exit_code,
-            &notes,
-        ) else {
+        let Some(output) = command_job::format_job_output(&self.jobs, job_id, &execution.workspace_root)
+        else {
             return coded_error("io", "wait lost the job logs");
         };
-        command_job::present_command_full(job_id, exit_code, output, None, killed.then_some(true))
+        command_job::present_command(
+            job_id,
+            exit_code,
+            output,
+            command_job::CallFacts {
+                killed: killed.then_some(true),
+                timed_out,
+                clamped,
+                ..command_job::CallFacts::default()
+            },
+        )
     }
 
     async fn run(&self, input: Value, execution: ToolExecutionContext) -> ToolCallResult {
@@ -108,16 +108,13 @@ impl WaitTool {
                     &execution,
                     &job_id,
                     command_job::code_i32(notice.exit_code),
-                    sec_note.as_deref(),
+                    false,
                     killed,
+                    sec_note,
                 )
             }
             WaitOutcome::TimedOut => {
-                let timed_out = match sec_note.as_deref() {
-                    Some(note) => format!("{note} wait budget elapsed; process still running"),
-                    None => "wait budget elapsed; process still running".to_string(),
-                };
-                self.present(&execution, &job_id, None, Some(&timed_out), false)
+                self.present(&execution, &job_id, None, true, false, sec_note)
             }
             WaitOutcome::Cancelled => coded_error("cancelled", "wait cancelled"),
             WaitOutcome::UnknownId(_) => {
@@ -179,16 +176,19 @@ mod tests {
     }
 
     #[test]
-    fn sec_is_clamped_with_a_note_instead_of_rejected() {
-        let (sec, note) = WaitTool::parse_sec(&serde_json::json!({"sec": 900})).unwrap();
+    fn sec_is_clamped_into_a_clamped_entry_instead_of_rejected() {
+        let (sec, clamped) = WaitTool::parse_sec(&serde_json::json!({"sec": 900})).unwrap();
         assert_eq!(sec, MAX_WAIT_SECS);
-        assert_eq!(
-            note.as_deref(),
-            Some("`sec` was reduced from 900 to 300 seconds.")
-        );
-        let (sec, note) = WaitTool::parse_sec(&serde_json::json!({"sec": 0})).unwrap();
+        assert_eq!(clamped.len(), 1);
+        assert_eq!(clamped[0].parameter, "sec");
+        assert_eq!(clamped[0].requested, serde_json::json!(900));
+        assert_eq!(clamped[0].applied, serde_json::json!(300));
+        let (sec, clamped) = WaitTool::parse_sec(&serde_json::json!({"sec": 0})).unwrap();
         assert_eq!(sec, 1);
-        assert!(note.unwrap().contains("raised from 0"));
+        assert_eq!(clamped[0].applied, serde_json::json!(1));
+        let (sec, clamped) = WaitTool::parse_sec(&serde_json::json!({"sec": 5})).unwrap();
+        assert_eq!(sec, 5);
+        assert!(clamped.is_empty());
         assert!(WaitTool::parse_sec(&serde_json::json!({})).is_err());
     }
 
@@ -272,13 +272,8 @@ mod tests {
         assert!(result.error.is_none(), "{result:?}");
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["killed"], true, "{data}");
-        assert!(
-            data["output"]
-                .as_str()
-                .unwrap()
-                .contains("process was killed"),
-            "{data}"
-        );
+        // The kill is a field; the stream holds process output only.
+        assert_eq!(data["output"], "", "{data}");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -350,12 +345,7 @@ mod tests {
         assert!(result.error.is_none(), "{result:?}");
         let data = result.data.as_ref().unwrap();
         assert!(data["exit_code"].is_null(), "{data}");
-        assert!(
-            data["output"]
-                .as_str()
-                .unwrap()
-                .contains("wait budget elapsed"),
-            "{data}"
-        );
+        // The budget that ran out is a field, not a line in the stream.
+        assert_eq!(data["timed_out"], true, "{data}");
     }
 }

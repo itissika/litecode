@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use crate::engines::{EngineState, WorkspaceEngines};
 use crate::lsp::LspDiagFeedback;
 use crate::tool::outcome::Diagnostic;
-use crate::types::ToolCallResult;
 
 const LSP_ERROR_MESSAGE: &str =
     "LSP reported errors in this file. Safe to ignore if intentional — fix when convenient.";
@@ -55,19 +54,27 @@ fn hooked_lsp_diagnostic(file_path: &str) -> Option<Diagnostic> {
     }
 }
 
-/// Append file-local Error diagnostics to a successful write/edit result.
-/// Any non-Error outcome is returned unchanged.
-pub async fn maybe_append_local_lsp_errors(
+/// The `diagnostics` field value: nothing to report stays absent, so a caller
+/// never sees an empty array it has to ignore.
+pub fn diagnostics_field(diagnostics: Vec<Diagnostic>) -> Option<Vec<Diagnostic>> {
+    (!diagnostics.is_empty()).then_some(diagnostics)
+}
+
+/// File-local Error diagnostics recorded after a successful write or edit.
+///
+/// The only producer for both tools: `write` and `edit` expose the result under
+/// the same `diagnostics` field with the same element shape, so the wording and
+/// the shape cannot drift apart. Any non-Error outcome is no diagnostics.
+pub async fn local_lsp_error_diagnostics(
     engines: Option<&WorkspaceEngines>,
     file_path: &str,
-    result: ToolCallResult,
-) -> ToolCallResult {
+) -> Vec<Diagnostic> {
     #[cfg(test)]
     if let Some(diagnostic) = hooked_lsp_diagnostic(file_path) {
-        return result.with_diagnostic(diagnostic);
+        return vec![diagnostic];
     }
     let Some(engines) = engines else {
-        return result;
+        return Vec::new();
     };
 
     let path = {
@@ -81,16 +88,16 @@ pub async fn maybe_append_local_lsp_errors(
 
     let hub = engines.lsp_hub();
     if !hub.file_has_lsp_coverage(&path) {
-        return result;
+        return Vec::new();
     }
 
     if engines.state("lsp") != Some(EngineState::Warm) {
-        return result;
+        return Vec::new();
     }
 
     match hub.file_error_diagnostics_feedback_ex(&path).await {
-        LspDiagFeedback::Errors(block) => result.with_diagnostic(lsp_error_diagnostic(&block)),
-        LspDiagFeedback::Unavailable(_) | LspDiagFeedback::Silence => result,
+        LspDiagFeedback::Errors(block) => vec![lsp_error_diagnostic(&block)],
+        LspDiagFeedback::Unavailable(_) | LspDiagFeedback::Silence => Vec::new(),
     }
 }
 

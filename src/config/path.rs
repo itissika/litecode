@@ -112,20 +112,23 @@ pub fn canon_join_nonexistent(root: &Path, path: &Path) -> io::Result<PathBuf> {
 }
 
 /// True if `path` equals or is strictly inside `ancestor` after both are LAP.
+///
+/// Containment is decided per path segment, never per character: a sibling
+/// named `litecode-outside` is not under `litecode`. On Windows the same
+/// location can be spelled in any case, so the comparison is case-folded
+/// first and stays component-wise.
 pub fn is_under(path: &Path, ancestor: &Path) -> bool {
     let path = canon_abs_lossy(path);
     let ancestor = canon_abs_lossy(ancestor);
     #[cfg(windows)]
     {
-        // Windows paths are case-insensitive: normalize before comparing so a
-        // different-case spelling of the same location is still "under".
         let path = path.to_string_lossy().to_ascii_lowercase();
         let ancestor = ancestor.to_string_lossy().to_ascii_lowercase();
-        path == ancestor || path.starts_with(&ancestor)
+        Path::new(&path).starts_with(Path::new(&ancestor))
     }
     #[cfg(not(windows))]
     {
-        path == ancestor || path.starts_with(&ancestor)
+        path.starts_with(&ancestor)
     }
 }
 
@@ -133,6 +136,45 @@ pub fn is_under(path: &Path, ancestor: &Path) -> bool {
 mod tests {
     use super::*;
 
+
+    /// The reported defect: a sibling whose name merely starts with the root's
+    /// name (`litecode-x` next to `litecode`) used to count as inside.
+    #[test]
+    fn is_under_compares_whole_segments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("litecode");
+        let sibling = tmp.path().join("litecode-x");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let touch = |path: std::path::PathBuf| {
+            std::fs::write(&path, "x").unwrap();
+            path
+        };
+        // A sibling with a shared character prefix is outside.
+        assert!(!is_under(&touch(sibling.join("a.txt")), &root));
+        // A real child is inside.
+        assert!(is_under(&touch(root.join("sub").join("a.txt")), &root));
+        // The root itself is inside, with and without a trailing separator.
+        assert!(is_under(&root, &root));
+        assert!(is_under(&root, &root.join("")));
+    }
+
+    /// Windows spells one location in any case; that must stay inside, and the
+    /// segment rule must hold across spellings too.
+    #[cfg(windows)]
+    #[test]
+    fn is_under_folds_case_on_windows() {
+        let root = Path::new(r"C:\litecode");
+        assert!(is_under(Path::new(r"C:\LITECODE"), root));
+        assert!(is_under(Path::new(r"C:\LiteCode\sub\a.txt"), root));
+        assert!(!is_under(Path::new(r"C:\LITECODE-X\a.txt"), root));
+        // A real location, spelled in another case, is still inside.
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("litecode");
+        std::fs::create_dir_all(real.join("sub")).unwrap();
+        let upper = std::path::PathBuf::from(real.to_string_lossy().to_uppercase());
+        assert!(is_under(&upper, &real));
+    }
     #[test]
     fn strip_verbatim_drive_and_unc() {
         assert_eq!(

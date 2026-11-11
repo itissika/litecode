@@ -817,8 +817,9 @@ fn context_block(hit: &GrepHit) -> String {
 struct GrepFacts {
     /// Why `hits` is empty; absent when it is not. Only what grep produces.
     empty_reason: Option<&'static str>,
-    /// Matches found before any limit was applied.
-    total_hits: usize,
+    /// Matches found before the result was cut; absent when the scan stopped
+    /// before it knew the total.
+    total_hits: Option<usize>,
     /// The hit limit stopped the scan.
     at_limit_cap: bool,
     /// Match or context lines were shortened to the line cap.
@@ -837,12 +838,14 @@ fn hits_data(hits: &[GrepHit], with_context: bool, facts: &GrepFacts) -> Value {
     let rows: Vec<Value> = hits.iter().map(|hit| hit_row(hit, with_context)).collect();
     let mut data = serde_json::json!({
         "hits": rows,
-        "total_hits": facts.total_hits,
         "at_limit_cap": facts.at_limit_cap,
         "lines_truncated": facts.lines_truncated,
         "context_omitted": facts.context_omitted,
         "output_capped": facts.output_capped,
     });
+    if let Some(total) = facts.total_hits {
+        data["total_hits"] = Value::from(total);
+    }
     if facts.truncated {
         data["truncated"] = Value::Bool(true);
     }
@@ -873,7 +876,7 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
             false,
             &GrepFacts {
                 empty_reason: Some("no_match"),
-                total_hits: 0,
+                total_hits: Some(0),
                 truncated: true,
                 clamped: vec![crate::tool::clamp::Clamp {
                     parameter: "limit".into(),
@@ -887,7 +890,6 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
             hits,
             false,
             &GrepFacts {
-                total_hits: 1,
                 ..GrepFacts::default()
             },
         )),
@@ -901,7 +903,6 @@ fn data_fits(data: &Value) -> bool {
 }
 
 fn finish_hits(options: &GrepOptions, mut hits: Vec<GrepHit>, mut facts: GrepFacts) -> ToolCallResult {
-    facts.total_hits = hits.len();
     facts.clamped = options.clamped.clone();
     let initial = hits_data(&hits, true, &facts);
     if data_fits(&initial) {
@@ -931,7 +932,7 @@ fn finish_hits(options: &GrepOptions, mut hits: Vec<GrepHit>, mut facts: GrepFac
     capped.context_omitted = had_context;
     capped.output_capped = true;
     capped.truncated = true;
-    capped.total_hits = total;
+    capped.total_hits = Some(total);
     let mut low = 0usize;
     let mut high = total;
     while low < high {
@@ -1231,6 +1232,28 @@ mod tests {
             .join("\n")
     }
 
+
+    /// A hit limit cuts the result without ever counting the rest; the fact
+    /// the model needs is "more exist", which `truncated` carries on its own.
+    #[test]
+    fn hit_limit_cuts_without_a_total_and_still_says_more_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut body = String::new();
+        for index in 0..45 {
+            body.push_str(&format!("fn f{index}() {{}}
+"));
+        }
+        write(dir.path(), "a.rs", &body);
+        let result = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": "fn ", "path": "a.rs", "limit": 5}),
+        );
+        let data = grep_data(&result);
+        assert_eq!(data["hits"].as_array().unwrap().len(), 5, "{data}");
+        assert_eq!(data["truncated"], true, "{data}");
+        assert!(data.get("total_hits").is_none(), "{data}");
+    }
+
     #[test]
     fn limit_defaults_to_forty_and_notes_truncation_without_pagination() {
         let dir = tempfile::tempdir().unwrap();
@@ -1243,7 +1266,10 @@ mod tests {
         assert_eq!(hits.len(), 40);
         assert_eq!(data["truncated"], true);
         assert_eq!(data["at_limit_cap"], false, "{data}");
-        assert_eq!(data["total_hits"], 40, "{data}");
+        // The scan stops at the limit, so it never learns how many matches
+        // exist; `total_hits` is only present when the token budget cut a
+        // result whose full count was known.
+        assert!(data.get("total_hits").is_none(), "{data}");
         assert!(data.get("message").is_none(), "{data}");
         assert!(data.get("page").is_none());
         assert!(data.get("matches").is_none());
