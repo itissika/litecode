@@ -97,9 +97,9 @@ fn check_call(
         out.push(message);
         return;
     };
-    // Arguments are reported under the SDK path the schema message uses
-    // ("file.read"), so the warning and the call's own failure read as one.
-    check_arguments(call, src, &key, contract, out);
+    // Arguments are reported under the path the program writes
+    // ("tools.file.read"), the same spelling the block's call lines use.
+    check_arguments(call, src, &full, contract, out);
 }
 
 fn check_arguments(
@@ -440,6 +440,12 @@ mod tests {
             "{findings:?}"
         );
         assert!(findings[0].contains("limit"), "{findings:?}");
+        // The block spells a tool the way the program writes it, so a warning
+        // that lands there uses the same path.
+        assert!(
+            findings[0].contains("invalid input for 'tools.file.read'"),
+            "{findings:?}"
+        );
     }
 
     #[test]

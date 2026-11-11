@@ -540,13 +540,13 @@ const b = await tools.lsp.diagnostics({ path: "b.rs" }); return a.state + b.stat
     let content = result.content;
     assert!(
         content.contains(
-            "↳ #1 lsp.diagnostics: no diagnostics reported; the index is still building, "
+            "↳ #1 tools.lsp.diagnostics: no diagnostics reported; the index is still building, "
         ),
         "{content}"
     );
     assert!(
         content.contains(
-            "↳ #2 lsp.diagnostics: no diagnostics reported; the index state is unknown, "
+            "↳ #2 tools.lsp.diagnostics: no diagnostics reported; the index state is unknown, "
         ),
         "{content}"
     );
@@ -580,7 +580,7 @@ return r.hits.length;"#,
     let content = result.content;
     assert!(
         content.contains(
-            "↳ #1 file.grep: showing the first 5 matches; more exist — narrow the pattern/path or raise limit"
+            "↳ #1 tools.file.grep: showing the first 5 matches; more exist — narrow the pattern/path or raise limit"
         ),
         "{content}"
     );
@@ -607,7 +607,7 @@ return r.path_conversion;"#,
     let content = result.content;
     assert!(
         content.contains(
-            "↳ #1 process.run: the shell may convert POSIX-style paths; write `cmd //c` or set `MSYS_NO_PATHCONV=1`"
+            "↳ #1 tools.process.run: the shell may convert POSIX-style paths; write `cmd //c` or set `MSYS_NO_PATHCONV=1`"
         ),
         "{content}"
     );
@@ -633,7 +633,7 @@ async fn an_outside_write_reaches_the_model_as_a_field_and_a_line() {
     let content = result.content;
     assert!(content.contains("outside_workspace"), "{content}");
     let expected = format!(
-        "↳ #1 file.write: this write lands outside the workspace: {}",
+        "↳ #1 tools.file.write: this write lands outside the workspace: {}",
         target.to_string_lossy()
     );
     assert!(content.contains(&expected), "{content}\n{expected}");
@@ -668,9 +668,11 @@ impl Tool for UnavailableSymbols {
 }
 
 /// The reported defect: a failed `lsp.workspace_symbol` was followed by
-/// "no symbols reported; the index state is unknown", as if it had run.
+/// "no symbols reported; the index state is unknown", as if it had run. Now the
+/// call gets exactly one line of its own — the failure, anchored to the call —
+/// and no guessed result.
 #[tokio::test]
-async fn a_failed_lsp_call_adds_no_line_to_the_view() {
+async fn a_swallowed_failure_reads_as_one_line() {
     let dir = tempfile::tempdir().unwrap();
     let result = run_program(
         dir.path(),
@@ -683,6 +685,7 @@ async fn a_failed_lsp_call_adds_no_line_to_the_view() {
     )
     .await;
     let content = result.content;
+    assert!(result.error.is_none(), "{content}");
     assert!(
         content.contains("[log] saw false unavailable"),
         "the failure must reach the program as a value: {content}"
@@ -691,8 +694,211 @@ async fn a_failed_lsp_call_adds_no_line_to_the_view() {
         !content.contains("no symbols reported"),
         "a failed call guessed a result: {content}"
     );
-    // The ledger row stays; no renderer line may be added.
-    assert!(!content.contains("↳"), "a failed call added a line: {content}");
+    let lines: Vec<&str> = content.lines().collect();
+    let reported: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| line.starts_with("↳ #1 "))
+        .collect();
+    assert_eq!(
+        reported,
+        ["↳ #1 tools.lsp.workspace_symbol: failed(unavailable); the program kept going"],
+        "{content}"
+    );
+    // Above the stream, and the stream still ends the view.
+    let anchor = lines
+        .iter()
+        .position(|line| line.starts_with("↳ #1 "))
+        .unwrap();
+    let stream = lines
+        .iter()
+        .position(|line| line.starts_with("[log] saw"))
+        .unwrap();
+    assert!(anchor < stream, "{content}");
+    assert_eq!(lines.last().copied(), Some("1"), "{content}");
+}
+/// A run that stopped on the failure says it in the manifest, so the block
+/// stays out of it: one fact, one line.
+#[tokio::test]
+async fn a_failed_run_states_a_swallowed_failure_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(UnavailableSymbols)],
+        r#"
+        const r = await tools.lsp.workspace_symbol({ query: "x" });
+        throw new Error("boom");
+        "#,
+    )
+    .await;
+    let content = result.content;
+    assert!(result.error.is_some(), "{content}");
+    assert_eq!(content.matches("failed(unavailable)").count(), 1, "{content}");
+    assert!(!content.contains("the program kept going"), "{content}");
+    assert!(
+        content
+            .lines()
+            .any(|line| line.starts_with("#1 tools.lsp.workspace_symbol")),
+        "the manifest keeps the row: {content}"
+    );
+}
+
+/// The other half of the rule: a call that succeeded says no failure line.
+#[tokio::test]
+async fn a_successful_call_reports_no_failure_line() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(CountingRead {
+            runs: Arc::clone(&runs),
+        })],
+        r#"const r = await tools.file.read({ path: "a.txt" }); return r.ok;"#,
+    )
+    .await;
+    let content = result.content;
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "{content}");
+    assert!(!content.contains("failed("), "{content}");
+    assert!(!content.contains("invalid_args"), "{content}");
+    assert!(!content.contains("↳"), "{content}");
+}
+/// The defect this batch closes: a key the precheck cannot prove (it lives in
+/// a variable) reaches the host, the host refuses the call before running it,
+/// and the view said nothing at all. It now says it once, above the stream,
+/// with the reason code and the names the next call may use.
+#[tokio::test]
+async fn a_computed_unknown_parameter_is_one_line_above_the_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(crate::tools::read::ReadTool::default())],
+        r#"
+        const key = "pth";
+        const args = { path: "a.txt", [key]: "a.txt" };
+        const r = await tools.file.read(args);
+        console.log("saw", r.ok, r.reason);
+        return "done";
+        "#,
+    )
+    .await;
+    let content = result.content;
+    assert!(result.error.is_none(), "{content}");
+    let lines: Vec<&str> = content.lines().collect();
+    let reported: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| line.starts_with("↳ #1 "))
+        .collect();
+    assert_eq!(reported.len(), 1, "{content}");
+    let line = reported[0];
+    assert!(
+        line.starts_with("↳ #1 tools.file.read: invalid_args"),
+        "{content}"
+    );
+    assert!(line.contains("unknown parameter 'pth'"), "{content}");
+    assert!(
+        line.contains("parameters: limit, path, start_line"),
+        "the legal names are the actionable half: {content}"
+    );
+    let anchor = lines
+        .iter()
+        .position(|line| line.starts_with("↳ #1 "))
+        .unwrap();
+    let stream = lines
+        .iter()
+        .position(|line| line.starts_with("[log] saw"))
+        .unwrap();
+    assert!(anchor < stream, "{content}");
+    assert_eq!(lines.last().copied(), Some("done"), "{content}");
+}
+
+/// A literal key is said by the precheck and again by the host; one line is
+/// enough, and the anchored one is the line that can be located.
+#[tokio::test]
+async fn a_literal_unknown_parameter_is_stated_once() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(crate::tools::read::ReadTool::default())],
+        r#"
+        const r = await tools.file.read({ path: "a.txt", pth: "x" });
+        return r.reason;
+        "#,
+    )
+    .await;
+    let content = result.content;
+    assert_eq!(content.matches("unknown parameter 'pth'").count(), 1, "{content}");
+    assert!(
+        content.contains("↳ #1 tools.file.read: invalid_args — unknown parameter 'pth'"),
+        "{content}"
+    );
+    assert!(content.contains("parameters: limit, path, start_line"), "{content}");
+    // The precheck sentence would be the second line for the same fact.
+    assert!(!content.contains("invalid input for"), "{content}");
+}
+
+
+/// A value the schema refuses names the legal values: the validator complaint
+/// is copied into the line verbatim, so the next call can be right.
+#[tokio::test]
+async fn an_illegal_value_names_the_legal_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(crate::tools::webfetch::WebFetchTool::new(Arc::new(
+            std::sync::RwLock::new(None),
+        )))],
+        r#"
+        const format = "pdf";
+        const r = await tools.web.fetch({ url: "https://example.com", format });
+        console.log("saw", r.reason);
+        return "done";
+        "#,
+    )
+    .await;
+    let content = result.content;
+    let reported: Vec<&str> = content
+        .lines()
+        .filter(|line| line.starts_with("↳ #1 "))
+        .collect();
+    assert_eq!(reported.len(), 1, "{content}");
+    let line = reported[0];
+    assert!(
+        line.starts_with("↳ #1 tools.web.fetch: invalid_args"),
+        "{content}"
+    );
+    assert!(
+        line.contains("parameter 'format' expected one of text, markdown, html, got string \"pdf\""),
+        "{content}"
+    );
+    assert!(line.contains("parameters: format, url"), "{content}");
+}
+/// Wrong arity keeps exactly the line it had: the precheck names it, and no
+/// second, host-side line is added for the same call.
+#[tokio::test]
+async fn two_arguments_keep_their_single_line() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(crate::tools::read::ReadTool::default())],
+        r#"
+        const r = await tools.file.read({ path: "a.txt" }, { path: "b.txt" });
+        return r.reason;
+        "#,
+    )
+    .await;
+    let content = result.content;
+    let lines: Vec<&str> = content.lines().filter(|line| line.starts_with("↳")).collect();
+    assert_eq!(lines.len(), 1, "{content}");
+    assert!(
+        lines[0].contains("accepts exactly one argument, got 2"),
+        "{content}"
+    );
+    assert!(!lines[0].contains("#1 "), "the arity line keeps no anchor: {content}");
 }
 /// Item failures stay item-level: an unknown or internal reason must not end
 /// the program, and every reason a program sees is one of the six values.

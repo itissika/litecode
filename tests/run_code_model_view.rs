@@ -118,8 +118,10 @@ async fn timeout_keeps_the_log_tail_and_names_the_budget() {
     assert!(text.len() <= 65_536, "{}", text.len());
 }
 
+/// A caught failure is counted in the head and stated once above the stream:
+/// the call the model would otherwise never hear about.
 #[tokio::test(flavor = "current_thread")]
-async fn caught_tool_error_is_counted_and_not_listed() {
+async fn caught_tool_error_is_counted_and_stated_once() {
     let text = captured_run_code(
         r#"
         // WP-210 G: not_found is a domain failure and resolves { ok: false }.
@@ -132,9 +134,19 @@ async fn caught_tool_error_is_counted_and_not_listed() {
     assert!(text.contains("\"not_found\""), "{text}");
     assert!(text.contains("\"read\""), "{text}");
     assert!(text.contains("\"string\""), "{text}");
-    assert!(text.contains("tool calls: 0 ok / 1 failed"), "{text}");
+    assert!(text.starts_with("run_code ok"), "the run itself succeeded: {text}");
     assert!(!text.contains("rejected"), "{text}");
-    assert!(!text.contains("#1 "), "{text}");
+    assert_eq!(text.matches("#1 ").count(), 1, "{text}");
+    let lines: Vec<&str> = text.lines().collect();
+    let anchor = lines
+        .iter()
+        .position(|line| line.starts_with("↳ #1 tools.file.read: failed(not_found)"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(
+        anchor < lines.len() - 1,
+        "the line sits above the returned value: {text}"
+    );
+    assert_eq!(lines.last().copied(), Some("[false,\"not_found\",\"read\",\"string\"]"), "{text}");
     assert!(!text.contains("calls ("), "{text}");
 }
 
@@ -170,7 +182,7 @@ async fn uncaught_tool_error_names_the_call() {
     )
     .await;
     assert!(
-        text.contains("uncaught ToolError unsupported from call #1 file.read path=pic.png"),
+        text.contains("uncaught ToolError unsupported from call #1 tools.file.read path=pic.png"),
         "{text}"
     );
     assert!(text.contains("unsupported file:"), "{text}");

@@ -1002,7 +1002,7 @@ fn contract_warn_native<'js>(
 /// Wraps one tool call so its resolved value is read through the contract.
 ///
 /// Top level only. A property the tool's output schema does not declare is
-/// reported at the end of the run, naming that tool's real field list, and the
+/// reported once, above the output, naming that tool's real field list, and the
 /// read yields `undefined`; a failed result (`ok === false`) is checked
 /// against the failure envelope the same way, naming the real reason and
 /// message. The program keeps going: a wrong field name is not a reason to

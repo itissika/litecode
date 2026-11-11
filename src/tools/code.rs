@@ -709,6 +709,16 @@ async fn invoke_binding(
         }
         Err(DecodeFail::Illegal(illegal)) => {
             ledger.begin(seq, &sdk_name, &illegal.summary);
+            // No source-level check can see this one (it is the value shape at
+            // run time), so the block is its only voice.
+            remind(
+                &reminders,
+                seq,
+                &sdk_name,
+                render::ReminderKind::Failure,
+                None,
+                render::rejected_arguments(&illegal.message, &[]),
+            );
             return Ok(reject_as_failure(&ledger, seq, illegal.message));
         }
     };
@@ -736,6 +746,17 @@ async fn invoke_binding(
     };
     if let Err(error) = surface.validate_input(&tool_name, &input_value) {
         let message = format!("invalid input for '{sdk_name}': {error}");
+        // The host refused the call before running it. A literal key is also
+        // in the precheck, but a computed one is invisible there, and the
+        // program may read the envelope and carry on.
+        remind(
+            &reminders,
+            index,
+            &sdk_name,
+            render::ReminderKind::Failure,
+            Some(error.clone()),
+            render::rejected_arguments(&error, &legal_parameters(&surface, &tool_name)),
+        );
         return Ok(reject_as_failure(&ledger, index, message));
     }
 
@@ -776,19 +797,53 @@ async fn invoke_binding(
     ledger.record(index, &result);
     let value = outcome::program_result(&result)?;
     // Facts are anchored to the call, not to a line of output: the program may
-    // return only a slice of this value, or none of it.
-    let texts = render::reminders_for_call(&sdk_name, &value);
-    if !texts.is_empty() {
-        let mut collected = reminders.lock().expect("reminder buffer");
-        for text in texts {
-            collected.push(render::CallReminder {
-                seq,
-                tool: sdk_name.clone(),
-                text,
-            });
-        }
+    // return only a slice of this value, or none of it. A failure envelope is
+    // one of those facts — the program may read it and carry on, and the view
+    // would otherwise say nothing at all about that call.
+    let mut texts: Vec<(render::ReminderKind, String)> =
+        render::reminders_for_call(&sdk_name, &value)
+            .into_iter()
+            .map(|text| (render::ReminderKind::Boundary, text))
+            .collect();
+    if let Some(text) = render::swallowed_failure(&value) {
+        texts.insert(0, (render::ReminderKind::Failure, text));
+    }
+    for (kind, text) in texts {
+        remind(&reminders, seq, &sdk_name, kind, None, text);
     }
     Ok(value)
+}
+
+/// Push one upfloat line for this call.
+fn remind(
+    reminders: &std::sync::Mutex<Vec<render::CallReminder>>,
+    seq: u64,
+    tool: &str,
+    kind: render::ReminderKind,
+    dedupe: Option<String>,
+    text: String,
+) {
+    reminders.lock().expect("reminder buffer").push(render::CallReminder {
+        seq,
+        tool: tool.to_string(),
+        kind,
+        dedupe,
+        text,
+    });
+}
+
+/// Parameter names a call may use, sorted: the actionable half of a rejection
+/// line, read from the same input schema the validator just refused.
+fn legal_parameters(surface: &crate::tool::code_contract::CodeSurface, tool: &str) -> Vec<String> {
+    let mut names: Vec<String> = surface
+        .tools
+        .get(tool)
+        .and_then(|spec| spec.input_schema.get("properties"))
+        .and_then(serde_json::Value::as_object)
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default();
+    names.sort();
+    names
 }
 
 /// Fail the call, not the run: the program gets a failure envelope and can

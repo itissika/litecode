@@ -1,10 +1,17 @@
 //! Model-facing text for one `run_code` execution.
 //!
-//! The view is a header, then **one ordered stream**: console lines and the
-//! program's return value in the order they happened, the value last. There is
-//! no `logs:` half and no `result:` half, and exactly one token budget
-//! ([`RUN_CODE_VIEW_TOKENS`]) covers the whole stream. On failure the header is
-//! followed by a brief of the calls that already settled, then the same stream.
+//! The view is a header, one **upfloat block**, then **one ordered stream**:
+//! console lines and the program's return value in the order they happened, the
+//! value last. There is no `logs:` half and no `result:` half, and exactly one
+//! token budget ([`RUN_CODE_VIEW_TOKENS`]) covers everything. On failure the
+//! header is followed by a brief of the calls that already settled, then the
+//! block, then the same stream.
+//!
+//! The block sits **above** the stream because its facts are what the stream
+//! cannot say: a cut, a path outside the workspace, a clamped argument, a
+//! failure the program swallowed. Read after the output, "the first 40 of 213"
+//! arrives after the model has already taken 40 for all of them. Nothing this
+//! module generates may follow the stream.
 //!
 //! Uniformly shaped object arrays render as `[N]{a,b}:` tables (columns in
 //! first-seen key order, a key a row omits renders as an empty cell); other
@@ -64,10 +71,27 @@ pub(super) struct UncaughtToolError {
 pub(super) struct CallReminder {
     /// Call sequence number, matching the numbering used elsewhere in the view.
     pub seq: u64,
-    /// Dotted tool name as the program sees it (\`file.read\`).
+    /// Dotted tool name as the program sees it (`file.read`).
     pub tool: String,
+    /// Which fact this line states; see [`ReminderKind`].
+    pub kind: ReminderKind,
+    /// For a line built from a validator complaint: the complaint itself
+    /// (e.g. `unknown parameter 'pth'`). A contract warning that already says it
+    /// is dropped — one fact, and the anchored line is the one to keep.
+    pub dedupe: Option<String>,
     /// Rendered by this module from the call's result fields.
     pub text: String,
+}
+
+/// What a call-anchored line in the upfloat block says.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum ReminderKind {
+    /// The program got a failure envelope and kept running. The manifest says
+    /// the same thing when the program died on it, so it is never both.
+    Failure,
+    /// A field-only fact about a call that succeeded: a cut, a path risk, a
+    /// clamped argument, a process left running, an edit annotation.
+    Boundary,
 }
 
 /// One reminder takes one line, at most this many characters, and is charged to
@@ -91,9 +115,12 @@ pub(super) struct RunReport {
     /// Console text and, last, the return value — in the order they happened.
     pub entries: Vec<EntryView>,
     /// One-line summaries, one per call that has facts; see [`CallReminder`].
+    /// Sorted by call sequence when the run report is built.
     pub reminders: Vec<CallReminder>,
-    /// Contract violations the run survived, in first-seen order. Rendered
-    /// with the same `↳` shape as reminders, without a call prefix.
+    /// Contract violations the run survived, in first-seen order: source
+    /// precheck findings and fields read that the contract does not declare.
+    /// Rendered with the same `↳` shape as reminders, without a call
+    /// prefix (they name the tool and the field, not one call of it).
     pub warnings: Vec<String>,
     pub failure_text: Option<String>,
     pub failure_kind: Option<FailureKind>,
@@ -122,41 +149,28 @@ pub(super) struct RunReport {
 
 pub(super) fn render_model_view(report: &RunReport) -> String {
     let header = render_header_block(report);
-    // One budget covers everything the model sees: header, manifest, stream.
+    // One budget covers everything the model sees: header, manifest, block, stream.
     let mut budget = RUN_CODE_VIEW_TOKENS.saturating_sub(count_tokens(&header));
     let manifest = render_completed_calls(report);
     if let Some(manifest) = &manifest {
         budget = budget.saturating_sub(count_tokens(manifest));
     }
     let output_limited = report.failure_kind == Some(FailureKind::OutputLimit);
-    // Reminders describe calls, so they follow the stream and share its budget.
-    let reminders = render_reminder_lines(&report.reminders, budget / 4);
-    // A warning the failure text already states verbatim adds a line, not a fact.
-    let warning_texts: Vec<String> = match report.failure_text.as_deref() {
-        Some(failure) => report
-            .warnings
-            .iter()
-            .filter(|warning| !failure.contains(warning.as_str()))
-            .cloned()
-            .collect(),
-        None => report.warnings.clone(),
-    };
-    let warnings = render_warning_lines(&warning_texts, budget / 4);
+    // Facts the stream cannot state come first: a cut or a risk read after the
+    // output is read too late to change what the model took the output for.
+    let upfloat = render_upfloat(report, budget / 2, manifest.as_deref());
     let stream = render_stream(
         &report.entries,
-        budget.saturating_sub(count_tokens(&reminders) + count_tokens(&warnings)),
+        budget.saturating_sub(count_tokens(&upfloat)),
         output_limited,
     );
     let mut sections = vec![header];
     sections.extend(manifest);
+    if !upfloat.is_empty() {
+        sections.push(upfloat);
+    }
     if !stream.is_empty() {
         sections.push(stream);
-    }
-    if !warnings.is_empty() {
-        sections.push(warnings);
-    }
-    if !reminders.is_empty() {
-        sections.push(reminders);
     }
     let text = sections.join("\n\n");
     if text.len() <= RUN_CODE_VIEW_MAX_BYTES {
@@ -211,7 +225,8 @@ fn render_completed_calls(report: &RunReport) -> Option<String> {
         };
         lines.push(format!(
             "#{} {}{summary} → {status}: {brief}",
-            call.seq, call.tool
+            call.seq,
+            tool_path(&call.tool)
         ));
     }
     let hidden = call_total(report).saturating_sub(report.calls.len());
@@ -259,6 +274,26 @@ pub(super) fn reminders_for_call(tool: &str, value: &Value) -> Vec<String> {
         _ => {}
     }
     out
+}
+
+/// One line for a call that failed while the program kept running.
+///
+/// A failure envelope carries no result fields, so [`reminders_for_call`] says
+/// nothing about it: the sentence is built here from the reason code, which is
+/// the only part of the envelope that is a field rather than prose. A run that
+/// stopped on this call says it in the manifest instead, so the caller drops
+/// this line there.
+pub(super) fn swallowed_failure(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    if object.get("ok").and_then(Value::as_bool) != Some(false) {
+        return None;
+    }
+    let reason = object
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("error");
+    Some(format!("failed({reason}); the program kept going"))
 }
 
 /// LSP results carry an index state; `partial` and `unknown` are different
@@ -336,15 +371,9 @@ fn edit_reminders(
         if let Some(item) = item.as_object() {
             lsp_diagnostics_reminder(Some(&format!("edit #{}", index + 1)), item, out);
         }
-        // A failed item explains itself in one sentence; the batch table has
-        // the cell, and the reminder repeats it where the model reads last.
-        if let Some(detail) = item
-            .get("detail")
-            .and_then(Value::as_str)
-            .filter(|detail| !detail.is_empty())
-        {
-            out.push(format!("edit #{}: {detail}", index + 1));
-        }
+        // `detail` is already one sentence inside the result, so this block
+        // never says it again: the line would be a second copy of the row the
+        // model has in front of it, and the batch table already anchors it.
     }
 }
 /// A command result keeps process output and process state apart: the text is
@@ -646,52 +675,138 @@ fn render_stream(entries: &[EntryView], budget: usize, output_limited: bool) -> 
     }
 }
 
-/// One line per call, in call order, charged to the same budget.
-fn render_reminder_lines(reminders: &[CallReminder], budget: usize) -> String {
-    let mut lines: Vec<String> = Vec::with_capacity(reminders.len());
+/// The one block above the stream: every fact the program's own output cannot
+/// state, in a fixed order — contract violations, a failure the program
+/// swallowed, then the per-call boundary facts. One budget for the block: the
+/// two trailing sections it replaces could use `budget / 4` each, so this can
+/// never cost the stream more than before.
+fn render_upfloat(report: &RunReport, budget: usize, manifest: Option<&str>) -> String {
+    // Failure lines are built first: a contract warning that one of them already
+    // states is the same fact, and the anchored line is the one that can be
+    // located, so the warning gives way to it.
+    let failures: Vec<(&CallReminder, String)> = report
+        .reminders
+        .iter()
+        .filter(|reminder| reminder.kind == ReminderKind::Failure)
+        // The manifest already says this call failed; one fact, one line.
+        .filter(|reminder| !listed_in_manifest(manifest, report, reminder.seq))
+        .map(|reminder| (reminder, failure_line(reminder)))
+        .collect();
+    let mut lines: Vec<String> = Vec::new();
+    // A warning the failure text already states verbatim adds a line, not a fact.
+    for warning in &report.warnings {
+        if report
+            .failure_text
+            .as_deref()
+            .is_some_and(|failure| failure.contains(warning.as_str()))
+        {
+            continue;
+        }
+        if failures.iter().any(|(reminder, _)| {
+            reminder
+                .dedupe
+                .as_deref()
+                .is_some_and(|fact| warning.contains(fact))
+        }) {
+            continue;
+        }
+        lines.push(warning_line(warning));
+    }
+    lines.extend(failures.into_iter().map(|(_, line)| line));
+    for reminder in report
+        .reminders
+        .iter()
+        .filter(|reminder| reminder.kind == ReminderKind::Boundary)
+    {
+        lines.push(reminder_line(&anchor_line(reminder)));
+    }
+    let mut kept: Vec<String> = Vec::with_capacity(lines.len());
     let mut used = 0usize;
-    for reminder in reminders {
-        let line = reminder_line(&format!(
-            "#{} {}: {}",
-            reminder.seq, reminder.tool, reminder.text
-        ));
+    for line in lines {
         let cost = count_tokens(&line);
-        if used + cost > budget && !lines.is_empty() {
+        if used + cost > budget && !kept.is_empty() {
             break;
         }
         used += cost;
-        lines.push(line);
+        kept.push(line);
     }
-    lines.join("\n")
+    // BPE counts are not additive across the line joins; trim until it fits.
+    while kept.len() > 1 && count_tokens(&kept.join("\n")) > budget {
+        kept.pop();
+    }
+    kept.join("\n")
 }
 
-/// One line per surviving contract violation, charged to the same budget.
-fn render_warning_lines(warnings: &[String], budget: usize) -> String {
-    let mut lines: Vec<String> = Vec::with_capacity(warnings.len());
-    let mut used = 0usize;
-    for warning in warnings {
-        let line = warning_line(warning);
-        let cost = count_tokens(&line);
-        if used + cost > budget && !lines.is_empty() {
-            break;
-        }
-        used += cost;
-        lines.push(line);
+/// `#7 tools.file.read: …` — the anchor every call line carries.
+fn anchor_line(reminder: &CallReminder) -> String {
+    format!(
+        "#{} {}: {}",
+        reminder.seq,
+        tool_path(&reminder.tool),
+        reminder.text
+    )
+}
+
+/// One spelling for a tool in this block: the path the program writes.
+fn tool_path(tool: &str) -> String {
+    if tool.starts_with("tools.") {
+        tool.to_string()
+    } else {
+        format!("tools.{tool}")
     }
-    lines.join("
-")
+}
+
+/// A failure line carries the reason code and what to fix, so it gets the
+/// wider cap: a legal-parameter list cut at the reminder length would drop the
+/// only actionable part.
+fn failure_line(reminder: &CallReminder) -> String {
+    warning_line(&anchor_line(reminder))
+}
+
+/// One line for a call the host refused before running it.
+///
+/// The validator names the field it refused (`unknown parameter 'pth'`); the
+/// legal list comes from the same input schema, so the line says what to write
+/// instead — "invalid arguments" alone would leave the next call as wrong as
+/// this one. The envelope's prose is deliberately not copied in: the model
+/// has the reason code and the fix, and the sentence is this module's.
+pub(super) fn rejected_arguments(detail: &str, parameters: &[String]) -> String {
+    if parameters.is_empty() {
+        return format!("invalid_args — {detail}");
+    }
+    format!(
+        "invalid_args — {detail}; parameters: {}",
+        parameters.join(", ")
+    )
+}
+
+/// True when the failed-run manifest already carries this call's row.
+fn listed_in_manifest(manifest: Option<&str>, report: &RunReport, seq: u64) -> bool {
+    manifest.is_some()
+        && report
+            .calls
+            .iter()
+            .any(|call| call.seq == seq && call.brief.is_some())
+}
+
+/// One line under `cap` chars. When the text does not fit, the cut is visible:
+/// the tail says `…`, so half a sentence never reads as a whole one.
+fn marker_line(text: &str, cap: usize) -> String {
+    let one_line = text.lines().next().unwrap_or("").trim();
+    let room = cap.saturating_sub(REMINDER_MARK.chars().count());
+    if one_line.chars().count() <= room {
+        return format!("{REMINDER_MARK}{one_line}");
+    }
+    let body: String = one_line.chars().take(room.saturating_sub(1)).collect();
+    format!("{REMINDER_MARK}{body}…")
 }
 
 fn warning_line(text: &str) -> String {
-    let one_line = text.lines().next().unwrap_or("").trim();
-    let room = WARNING_MAX_CHARS.saturating_sub(REMINDER_MARK.chars().count());
-    format!("{REMINDER_MARK}{}", prefix_utf8(one_line, room))
+    marker_line(text, WARNING_MAX_CHARS)
 }
 
 fn reminder_line(text: &str) -> String {
-    let one_line = text.lines().next().unwrap_or("").trim();
-    let room = REMINDER_MAX_CHARS.saturating_sub(REMINDER_MARK.chars().count());
-    format!("{REMINDER_MARK}{}", prefix_utf8(one_line, room))
+    marker_line(text, REMINDER_MAX_CHARS)
 }
 
 /// Render one entry inside its share of the budget.
@@ -1483,7 +1598,10 @@ fn header_line(report: &RunReport) -> String {
             .map(|line| prefix_utf8(line, HEAD_MESSAGE_CAP));
         let mut line = format!(
             "run_code failed: uncaught ToolError {} from call #{} {} {} · {duration}",
-            error.code, error.seq, error.tool, error.summary
+            error.code,
+            error.seq,
+            tool_path(&error.tool),
+            error.summary
         );
         if let Some(detail) = detail {
             line.push_str(" · ");
@@ -1870,6 +1988,53 @@ mod tests {
             }
         }
     }
+    /// A line that does not fit ends with a mark: the cut costs one character
+    /// of body, never a character of cap.
+    #[test]
+    fn a_line_that_does_not_fit_ends_with_a_mark() {
+        let long = "y".repeat(WARNING_MAX_CHARS * 2);
+        for (line, cap) in [
+            (reminder_line(&long), REMINDER_MAX_CHARS),
+            (warning_line(&long), WARNING_MAX_CHARS),
+        ] {
+            assert!(line.ends_with('…'), "{line}");
+            assert_eq!(line.chars().count(), cap, "{line}");
+        }
+        // A line that fits is left exactly as it was: no mark, nothing lost.
+        assert_eq!(
+            reminder_line("the pattern was not found"),
+            "↳ the pattern was not found"
+        );
+        assert_eq!(warning_line("step 3 failed"), "↳ step 3 failed");
+
+        // End to end: a long boundary fact and a long failure fact both carry
+        // the mark, and the block stays inside the cap.
+        let mut report = base_report();
+        report.reminders = vec![
+            CallReminder {
+                seq: 1,
+                tool: "file.grep".into(),
+                kind: ReminderKind::Boundary,
+                dedupe: None,
+                text: long.clone(),
+            },
+            CallReminder {
+                seq: 2,
+                tool: "file.read".into(),
+                kind: ReminderKind::Failure,
+                dedupe: None,
+                text: format!("failed(not_found); the program kept going {long}"),
+            },
+        ];
+        let out = render_model_view(&report);
+        let lines: Vec<&str> = out.lines().filter(|line| line.starts_with("↳ #")).collect();
+        assert_eq!(lines.len(), 2, "{out}");
+        assert!(lines[0].ends_with('…'), "{out}");
+        assert!(lines[1].ends_with('…'), "{out}");
+        assert_eq!(lines[0].chars().count(), WARNING_MAX_CHARS, "{out}");
+        assert_eq!(lines[1].chars().count(), REMINDER_MAX_CHARS, "{out}");
+    }
+
     /// Every read fact that lost its prose is still a field plus one line.
     #[test]
     fn read_fields_and_their_reminder_lines() {
@@ -2108,12 +2273,14 @@ mod tests {
                 .map(|text| CallReminder {
                     seq: 7,
                     tool: tool.to_string(),
+                    kind: ReminderKind::Boundary,
+                    dedupe: None,
                     text: text.clone(),
                 })
                 .collect();
             let out = render_model_view(&report);
             for text in &expected {
-                let line = format!("↳ #7 {tool}: {text}");
+                let line = format!("↳ #7 tools.{tool}: {text}");
                 assert!(out.contains(&line), "{out}");
                 assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
             }
@@ -2187,12 +2354,14 @@ mod tests {
                 .map(|text| CallReminder {
                     seq: 7,
                     tool: "process.run".to_string(),
+                    kind: ReminderKind::Boundary,
+                    dedupe: None,
                     text: text.clone(),
                 })
                 .collect();
             let out = render_model_view(&report);
             for text in &expected {
-                let line = format!("↳ #7 process.run: {text}");
+                let line = format!("↳ #7 tools.process.run: {text}");
                 assert!(out.contains(&line), "{out}");
                 assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
             }
@@ -2272,10 +2441,10 @@ mod tests {
                         },
                     ]
                 }),
+                // `detail` is a sentence in the result; the block adds none for it.
                 vec![
                     "edit #1: the language server reported errors in this file",
                     "edit #2 lands outside the workspace: /tmp/z.txt",
-                    "edit #2: old_string was not found; closest match is at line 12",
                 ],
             ),
         ];
@@ -2288,12 +2457,14 @@ mod tests {
                 .map(|text| CallReminder {
                     seq: 3,
                     tool: tool.to_string(),
+                    kind: ReminderKind::Boundary,
+                    dedupe: None,
                     text: text.clone(),
                 })
                 .collect();
             let out = render_model_view(&report);
             for text in &expected {
-                let line = format!("↳ #3 {tool}: {text}");
+                let line = format!("↳ #3 tools.{tool}: {text}");
                 assert!(out.contains(&line), "{out}");
                 assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
             }
@@ -2342,20 +2513,24 @@ mod tests {
             }
         }
     }
-    /// Reminders describe calls, so they follow the stream in call order.
+    /// Reminders describe calls, so they sit above the stream in call order.
     #[test]
-    fn call_reminders_follow_the_stream_in_call_order() {
+    fn call_reminders_sit_above_the_stream_in_call_order() {
         let mut report = base_report();
         report.entries = vec![text("log", "one")];
         report.reminders = vec![
             CallReminder {
                 seq: 3,
                 tool: "file.read".into(),
+                kind: ReminderKind::Boundary,
+                dedupe: None,
                 text: "showing lines 1-2000 of 5000; continue with start_line 2001".into(),
             },
             CallReminder {
                 seq: 4,
                 tool: "file.grep".into(),
+                kind: ReminderKind::Boundary,
+                dedupe: None,
                 text: "the pattern was not found".into(),
             },
         ];
@@ -2365,15 +2540,393 @@ mod tests {
             vec![
                 "run_code ok · 0 calls · 12ms",
                 "",
-                "[log] one",
+                "↳ #3 tools.file.read: showing lines 1-2000 of 5000; continue with start_line 2001",
+                "↳ #4 tools.file.grep: the pattern was not found",
                 "",
-                "↳ #3 file.read: showing lines 1-2000 of 5000; continue with start_line 2001",
-                "↳ #4 file.grep: the pattern was not found",
+                "[log] one",
             ],
             "{out}"
         );
     }
 
+
+    /// A failure the program swallowed is one line, anchored to the call. A
+    /// success says nothing here, and a run that died on the failure lets the
+    /// manifest say it instead: the same fact never gets two lines.
+    #[test]
+    fn a_swallowed_failure_is_one_line_above_the_stream() {
+        let envelope = json!({
+            "ok": false,
+            "reason": "not_found",
+            "message": "missing.txt does not exist",
+        });
+        assert_eq!(
+            swallowed_failure(&envelope).as_deref(),
+            Some("failed(not_found); the program kept going")
+        );
+        assert!(swallowed_failure(&json!({ "ok": true, "path": "a.txt" })).is_none());
+        assert!(swallowed_failure(&json!({})).is_none());
+        assert!(swallowed_failure(&json!("text")).is_none());
+
+        let mut report = base_report();
+        set_value(&mut report, envelope);
+        report.reminders = vec![CallReminder {
+            seq: 1,
+            tool: "file.read".into(),
+            kind: ReminderKind::Failure,
+            dedupe: None,
+            text: "failed(not_found); the program kept going".into(),
+        }];
+        let out = render_model_view(&report);
+        let lines: Vec<&str> = out.lines().collect();
+        let anchor = lines
+            .iter()
+            .position(|line| line.starts_with("↳ #1 tools.file.read: failed(not_found)"))
+            .expect("one failure line");
+        assert_eq!(out.matches("failed(not_found)").count(), 1, "{out}");
+        assert!(anchor + 1 < lines.len(), "the stream follows the line: {out}");
+        assert!(lines.last().unwrap().contains("\"not_found\""), "{out}");
+    }
+
+    /// A failed run already lists the call; the block must not say it again.
+    #[test]
+    fn the_manifest_and_the_block_never_state_the_same_failure() {
+        let mut report = base_report();
+        report.failure_kind = Some(FailureKind::Exception);
+        report.failure_text = Some("boom".into());
+        report.failure_location = Some(SourceLocation { line: 1, column: 1 });
+        report.source = "boom();".into();
+        report.calls = vec![LedgerSnap {
+            seq: 1,
+            tool: "file.read".into(),
+            summary: "path=missing.txt".into(),
+            state: "error:not_found".into(),
+            error_code: Some("not_found".into()),
+            session_read: false,
+            brief: Some("not_found".into()),
+        }];
+        report.call_total = Some(1);
+        report.reminders = vec![CallReminder {
+            seq: 1,
+            tool: "file.read".into(),
+            kind: ReminderKind::Failure,
+            dedupe: None,
+            text: "failed(not_found); the program kept going".into(),
+        }];
+        let out = render_model_view(&report);
+        assert_eq!(out.matches("failed(not_found)").count(), 1, "{out}");
+        assert!(!out.contains("the program kept going"), "{out}");
+    }
+
+    /// Nothing this module writes follows the stream, with every kind present.
+    #[test]
+    fn nothing_of_ours_follows_the_stream() {
+        let mut report = base_report();
+        report.warnings = vec!["a contract warning".into()];
+        report.entries = vec![
+            text("log", "one"),
+            EntryView::Value(json!({ "ok": true, "n": 1 })),
+        ];
+        report.reminders = vec![
+            CallReminder {
+                seq: 1,
+                tool: "file.read".into(),
+                kind: ReminderKind::Boundary,
+                dedupe: None,
+                text: "showing lines 1-2 of 9".into(),
+            },
+            CallReminder {
+                seq: 2,
+                tool: "file.grep".into(),
+                kind: ReminderKind::Failure,
+                dedupe: None,
+                text: "failed(not_found); the program kept going".into(),
+            },
+        ];
+        let out = render_model_view(&report);
+        let lines: Vec<&str> = out.lines().collect();
+        let last_stream = lines
+            .iter()
+            .rposition(|line| line.starts_with("[log] ") || line.starts_with('{'))
+            .expect("the stream");
+        assert_eq!(last_stream, lines.len() - 1, "{out}");
+        assert!(
+            !lines[last_stream + 1..].iter().any(|line| line.starts_with("↳")),
+            "{out}"
+        );
+        for needle in [
+            "↳ a contract warning",
+            "↳ #1 tools.file.read: showing lines 1-2 of 9",
+            "↳ #2 tools.file.grep: failed(not_found)",
+        ] {
+            assert!(out.contains(needle), "{needle} missing: {out}");
+        }
+    }
+
+
+    /// The failed view keeps the same shape: head, manifest, block, stream —
+    /// and a failure the manifest does not carry still gets its line.
+    #[test]
+    fn nothing_of_ours_follows_the_stream_on_a_failed_run() {
+        let mut report = base_report();
+        report.failure_kind = Some(FailureKind::Exception);
+        report.failure_text = Some("boom".into());
+        report.failure_location = Some(SourceLocation { line: 1, column: 1 });
+        report.source = "boom();".into();
+        report.calls = vec![settled(1, "file.read", "path=a.txt", "ok", "a.txt")];
+        report.call_total = Some(1);
+        report.unsettled_total = Some(0);
+        report.warnings = vec!["a contract warning".into()];
+        report.reminders = vec![
+            CallReminder {
+                seq: 1,
+                tool: "file.read".into(),
+                kind: ReminderKind::Boundary,
+                dedupe: None,
+                text: "showing lines 1-2 of 9".into(),
+            },
+            CallReminder {
+                seq: 2,
+                tool: "file.grep".into(),
+                kind: ReminderKind::Failure,
+                dedupe: None,
+                text: "failed(not_found); the program kept going".into(),
+            },
+        ];
+        report.entries = vec![text("log", "before"), text("log", "after")];
+        let out = render_model_view(&report);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.last().copied(), Some("[log] after"), "{out}");
+        let at = |needle: &str| {
+            lines
+                .iter()
+                .position(|line| line.starts_with(needle))
+                .unwrap_or_else(|| panic!("{needle} missing: {out}"))
+        };
+        assert!(
+            at("run_code failed") < at("#1 tools.file.read")
+                && at("#1 tools.file.read") < at("↳")
+                && at("↳") < at("[log] before"),
+            "{out}"
+        );
+        assert!(out.contains("↳ #2 tools.file.grep: failed(not_found)"), "{out}");
+        assert!(!lines[at("[log] before")..].iter().any(|line| line.starts_with("↳")), "{out}");
+    }
+
+    /// A rejection line and the precheck warning state one fact: the anchored
+    /// line wins and keeps the legal names. When the manifest carries the call
+    /// instead (the run died), the warning is the one that keeps them.
+    #[test]
+    fn a_rejection_line_and_its_warning_never_both_appear() {
+        let parameters = vec![
+            "limit".to_string(),
+            "path".to_string(),
+            "start_line".to_string(),
+        ];
+        let detail = "unknown parameter 'pth'";
+        assert_eq!(
+            rejected_arguments(detail, &parameters),
+            "invalid_args — unknown parameter 'pth'; parameters: limit, path, start_line"
+        );
+        let warning = format!(
+            "invalid input for 'tools.file.read': {detail}. parameters: {}",
+            parameters.join(", ")
+        );
+        let reminder = CallReminder {
+            seq: 1,
+            tool: "file.read".into(),
+            kind: ReminderKind::Failure,
+            dedupe: Some(detail.into()),
+            text: rejected_arguments(detail, &parameters),
+        };
+
+        let mut report = base_report();
+        set_value(
+            &mut report,
+            json!({ "ok": false, "reason": "invalid_args", "message": "x" }),
+        );
+        report.warnings = vec![warning.clone()];
+        report.reminders = vec![reminder];
+        let out = render_model_view(&report);
+        assert_eq!(out.matches("unknown parameter 'pth'").count(), 1, "{out}");
+        assert!(
+            out.contains(
+                "↳ #1 tools.file.read: invalid_args — unknown parameter 'pth'; parameters: limit, path, start_line"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("invalid input for"), "{out}");
+
+        let mut died = base_report();
+        died.failure_kind = Some(FailureKind::Exception);
+        died.failure_text = Some("boom".into());
+        died.failure_location = Some(SourceLocation { line: 1, column: 1 });
+        died.source = "boom();".into();
+        died.calls = vec![LedgerSnap {
+            seq: 1,
+            tool: "file.read".into(),
+            summary: "path=a.txt".into(),
+            state: "error:invalid_args".into(),
+            error_code: Some("invalid_args".into()),
+            session_read: false,
+            brief: Some("x".into()),
+        }];
+        died.call_total = Some(1);
+        died.warnings = vec![warning];
+        died.reminders = vec![CallReminder {
+            seq: 1,
+            tool: "file.read".into(),
+            kind: ReminderKind::Failure,
+            dedupe: Some(detail.into()),
+            text: rejected_arguments(detail, &parameters),
+        }];
+        let out = render_model_view(&died);
+        assert!(!out.contains("↳ #1 tools.file.read: invalid_args"), "{out}");
+        assert!(
+            out.contains("invalid input for 'tools.file.read': unknown parameter 'pth'"),
+            "the legal names must still reach the model: {out}"
+        );
+    }
+
+    /// Every call line in the view spells the tool the way the program writes
+    /// it; a line that already carries that path is not prefixed twice.
+    #[test]
+    fn call_lines_name_the_tool_the_way_the_program_writes_it() {
+        let mut report = base_report();
+        report.calls = vec![settled(3, "file.write", "path=a.txt", "ok", "a.txt")];
+        report.call_total = Some(3);
+        report.reminders = vec![
+            CallReminder {
+                seq: 1,
+                tool: "file.grep".into(),
+                kind: ReminderKind::Boundary,
+                dedupe: None,
+                text: "the pattern was not found".into(),
+            },
+            CallReminder {
+                seq: 2,
+                tool: "tools.file.read".into(),
+                kind: ReminderKind::Failure,
+                dedupe: None,
+                text: "failed(not_found); the program kept going".into(),
+            },
+        ];
+        let out = render_model_view(&report);
+        assert!(out.contains("↳ #1 tools.file.grep: the pattern was not found"), "{out}");
+        assert!(out.contains("↳ #2 tools.file.read: failed(not_found)"), "{out}");
+        assert!(!out.contains("tools.tools."), "{out}");
+        // A manifest row uses the same spelling.
+        let mut failed = report;
+        failed.failure_kind = Some(FailureKind::Exception);
+        failed.failure_text = Some("boom".into());
+        failed.failure_location = Some(SourceLocation { line: 1, column: 1 });
+        failed.source = "boom();".into();
+        let out = render_model_view(&failed);
+        assert!(out.contains("#3 tools.file.write path=a.txt → ok: a.txt"), "{out}");
+    }
+    /// A cut is a field, so its sentence is written here — and it is written
+    /// before the output it would otherwise be read too late for.
+    #[test]
+    fn a_cut_is_reported_above_the_stream() {
+        let value = json!({
+            "paths": ["a.txt"],
+            "total": 9,
+            "truncated": true,
+            "outside_workspace": false,
+            "empty_reason": null,
+        });
+        let mut report = base_report();
+        set_value(&mut report, value.clone());
+        report.reminders = reminders_for_call("file.glob", &value)
+            .into_iter()
+            .map(|text| CallReminder {
+                seq: 1,
+                tool: "file.glob".into(),
+                kind: ReminderKind::Boundary,
+                dedupe: None,
+                text,
+            })
+            .collect();
+        let out = render_model_view(&report);
+        let lines: Vec<&str> = out.lines().collect();
+        let cut = lines
+            .iter()
+            .position(|line| line.starts_with("↳ #1 tools.file.glob: showing first 1 of 9 paths"))
+            .expect("the cut line");
+        let stream = lines
+            .iter()
+            .position(|line| line.contains("\"truncated\""))
+            .expect("the value");
+        assert!(cut < stream, "{out}");
+    }
+
+    /// `detail` is already one sentence inside the result; a second copy above
+    /// the stream would say the same thing twice.
+    #[test]
+    fn an_edit_detail_is_not_repeated_above_the_stream() {
+        let detail = "old_string was not found; closest match is at line 12";
+        let value = json!({
+            "results": [{
+                "ok": false,
+                "path": "a.txt",
+                "reason": "no_match",
+                "detail": detail,
+                "nearest_line": 12,
+            }]
+        });
+        let lines = reminders_for_call("file.apply_edits", &value);
+        assert!(!lines.iter().any(|line| line.contains(detail)), "{lines:?}");
+        assert!(lines.is_empty(), "{lines:?}");
+        let mut report = base_report();
+        set_value(&mut report, value);
+        report.reminders = lines
+            .into_iter()
+            .map(|text| CallReminder {
+                seq: 1,
+                tool: "file.apply_edits".into(),
+                kind: ReminderKind::Boundary,
+                dedupe: None,
+                text,
+            })
+            .collect();
+        let out = render_model_view(&report);
+        assert_eq!(out.matches(detail).count(), 1, "{out}");
+    }
+
+    /// Moving the block above the stream does not buy it a second allowance:
+    /// it gets one share, no larger than the two trailing sections could use.
+    #[test]
+    fn the_block_shares_the_one_budget() {
+        let mut report = base_report();
+        report.warnings = (0..50)
+            .map(|i| format!("contract warning {i} {}", "w".repeat(120)))
+            .collect();
+        report.entries = (0..200)
+            .map(|i| text("log", &format!("line {i}")))
+            .collect();
+        report.reminders = (0..50)
+            .map(|i| CallReminder {
+                seq: i as u64,
+                tool: "file.grep".into(),
+                kind: ReminderKind::Boundary,
+                dedupe: None,
+                text: format!("reminder {i} {}", "z".repeat(100)),
+            })
+            .collect();
+        let out = render_model_view(&report);
+        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tokens", tokens(&out));
+        let block: String = out
+            .lines()
+            .filter(|line| line.starts_with("↳"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!block.is_empty(), "{out}");
+        assert!(
+            tokens(&block) <= RUN_CODE_VIEW_TOKENS / 2,
+            "{} tokens",
+            tokens(&block)
+        );
+    }
     /// One line, at most REMINDER_MAX_CHARS, and newlines are collapsed.
     #[test]
     fn a_reminder_is_one_short_line() {
@@ -2383,12 +2936,14 @@ mod tests {
         report.reminders = vec![CallReminder {
             seq: 1,
             tool: "file.read".into(),
+            kind: ReminderKind::Boundary,
+            dedupe: None,
             text: long,
         }];
         let out = render_model_view(&report);
         let reminder = out
             .lines()
-            .find(|line| line.starts_with("↳ #1 file.read: yyy"))
+            .find(|line| line.starts_with("↳ #1 tools.file.read: yyy"))
             .expect("reminder line");
         assert!(!reminder.contains("second line"), "{out}");
         assert_eq!(reminder.chars().count(), REMINDER_MAX_CHARS);
@@ -2403,6 +2958,8 @@ mod tests {
             .map(|i| CallReminder {
                 seq: i as u64,
                 tool: "file.grep".into(),
+                kind: ReminderKind::Boundary,
+                dedupe: None,
                 text: format!("reminder {i} {}", "z".repeat(100)),
             })
             .collect();
@@ -2421,6 +2978,8 @@ mod tests {
         report.reminders = vec![CallReminder {
             seq: 2,
             tool: "file.read".into(),
+            kind: ReminderKind::Boundary,
+            dedupe: None,
             text: "showing lines 1-500 of 5000".into(),
         }];
         let out = render_model_view(&report);
@@ -2430,7 +2989,7 @@ mod tests {
             "the bare value keeps no mark: {out}"
         );
         assert!(
-            lines.iter().any(|line| line.starts_with("↳ #2 file.read: ")),
+            lines.iter().any(|line| line.starts_with("↳ #2 tools.file.read: ")),
             "the reminder carries the mark: {out}"
         );
     }
@@ -2487,7 +3046,7 @@ mod tests {
         // Snapshot: header, then the settled-call brief, then the same stream.
         assert_eq!(
             out,
-            "run_code failed: exception · 12ms · line 3, column 5 · boom(); · boom\n\n#1 write path=a.txt → ok: a.txt\n\n[log] before",
+            "run_code failed: exception · 12ms · line 3, column 5 · boom(); · boom\n\n#1 tools.write path=a.txt → ok: a.txt\n\n[log] before",
             "{out}"
         );
     }
@@ -2677,7 +3236,7 @@ mod tests {
         report.call_total = Some(2);
         let line = header_line(&report);
         assert!(line.contains("uncaught ToolError invalid_args"), "{line}");
-        assert!(line.contains("from call #2 write"), "{line}");
+        assert!(line.contains("from call #2 tools.write"), "{line}");
         assert!(!line.contains("tool calls:"), "{line}");
     }
 

@@ -7,7 +7,7 @@
  * contract is wrong, not just one call.
  *
  * Not fatal, so the run continues: a result field the contract does not declare
- * is reported once at the end of the run and reads as `undefined`; an argument
+ * is reported once, before the output, and reads as `undefined`; an argument
  * the input contract rejects resolves as `ToolFailure` with
  * `reason: "invalid_args"`, and the program can correct it on the next call.
  */
