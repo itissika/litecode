@@ -106,7 +106,10 @@ impl EditEngine {
             }
             Err(PlanFail::Reject(reason)) => {
                 let code = match reason.code() {
-                    "no_match" | "multiple_matches" => "no_match",
+                    "no_match" => "no_match",
+                    // Two matches are their own public reason: the fix is to
+                    // add context, not to hunt for a typo.
+                    "multiple_matches" => "ambiguous",
                     _ => "invalid_input",
                 };
                 // A miss names its nearest line so the model fixes one typo
@@ -115,7 +118,13 @@ impl EditEngine {
                 let nearest = (reason.code() == "no_match")
                     .then(|| matcher::nearest_line(&content, &spec.old_string))
                     .flatten();
-                return Ok(EditResult::failure(raw_path, reason.message())
+                // One plain sentence for the batch table: the cause plus the
+                // line hint, so a miss is fixable without re-reading the file.
+                let mut detail = reason.message();
+                if let Some(line) = nearest {
+                    detail.push_str(&format!("; closest match is at line {line}"));
+                }
+                return Ok(EditResult::failure(raw_path, detail)
                     .because(code)
                     .with_nearest_line(nearest));
             }

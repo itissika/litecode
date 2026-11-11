@@ -123,10 +123,10 @@ impl Tool for BadRead {
     }
 }
 
-/// S2: an unknown parameter ends the run and names the parameter.
-/// (Expected red before B2: today it resolves as a value.)
+/// S2: an unknown parameter fails the call, not the run. The program gets a
+/// failure envelope, keeps going, and the manifest row is a failure.
 #[tokio::test]
-async fn s2_unknown_parameter_ends_the_run() {
+async fn s2_unknown_parameter_fails_the_call_and_the_run_continues() {
     let dir = tempfile::tempdir().unwrap();
     let runs = Arc::new(AtomicUsize::new(0));
     let result = run_program(
@@ -135,17 +135,18 @@ async fn s2_unknown_parameter_ends_the_run() {
             runs: Arc::clone(&runs),
         })],
         r#"
-        try { await tools.file.read({ path: "a.txt", nope: 1 }); } catch (e) { return "swallowed"; }
-        return "continued";
+        const r = await tools.file.read({ path: "a.txt", nope: 1 });
+        return r.ok + " " + r.reason + " " + r.message;
         "#,
     )
     .await;
     assert!(
-        result.error.is_some(),
-        "a contract failure must end the run: {}",
+        result.error.is_none(),
+        "the run must survive a bad argument: {}",
         result.content
     );
-    assert!(result.content.contains("nope"), "{}", result.content);
+    assert!(result.content.contains("false invalid_args"), "{}", result.content);
+    assert!(result.content.contains("unknown parameter"), "{}", result.content);
     assert_eq!(
         runs.load(Ordering::SeqCst),
         0,
@@ -154,10 +155,10 @@ async fn s2_unknown_parameter_ends_the_run() {
     );
 }
 
-/// S2: a missing required parameter ends the run and names the parameter.
-/// (Expected red before B2.)
+/// S2: a missing required parameter fails the call, not the run, and names
+/// the parameter.
 #[tokio::test]
-async fn s2_missing_required_parameter_ends_the_run() {
+async fn s2_missing_required_parameter_fails_the_call() {
     let dir = tempfile::tempdir().unwrap();
     let runs = Arc::new(AtomicUsize::new(0));
     let result = run_program(
@@ -166,24 +167,24 @@ async fn s2_missing_required_parameter_ends_the_run() {
             runs: Arc::clone(&runs),
         })],
         r#"
-        try { await tools.file.read({}); } catch (e) { return "swallowed"; }
-        return "continued";
+        const r = await tools.file.read({});
+        return r.ok + " " + r.reason + " " + r.message;
         "#,
     )
     .await;
     assert!(
-        result.error.is_some(),
-        "a contract failure must end the run: {}",
+        result.error.is_none(),
+        "the run must survive a missing argument: {}",
         result.content
     );
+    assert!(result.content.contains("false invalid_args"), "{}", result.content);
     assert!(result.content.contains("path"), "{}", result.content);
     assert_eq!(runs.load(Ordering::SeqCst), 0, "{}", result.content);
 }
 
-/// S2: after a contract failure the run stops dispatching, so a later valid
-/// call never reaches the host. (Expected red before B2.)
+/// S2: a rejected call does not stop the next one: only the call failed.
 #[tokio::test]
-async fn s2_no_dispatch_after_a_contract_failure() {
+async fn s2_a_rejected_call_does_not_stop_the_next() {
     let dir = tempfile::tempdir().unwrap();
     let runs = Arc::new(AtomicUsize::new(0));
     let result = run_program(
@@ -192,17 +193,18 @@ async fn s2_no_dispatch_after_a_contract_failure() {
             runs: Arc::clone(&runs),
         })],
         r#"
-        try { await tools.file.read({ path: "a.txt", nope: 1 }); } catch (e) {}
-        try { await tools.file.read({ path: "a.txt" }); } catch (e) {}
-        return "finished";
+        const first = await tools.file.read({ path: "a.txt", nope: 1 });
+        const second = await tools.file.read({ path: "a.txt" });
+        return first.ok + " " + second.ok;
         "#,
     )
     .await;
-    assert!(result.error.is_some(), "{}", result.content);
+    assert!(result.error.is_none(), "{}", result.content);
+    assert!(result.content.contains("false true"), "{}", result.content);
     assert_eq!(
         runs.load(Ordering::SeqCst),
-        0,
-        "no call may run after a contract failure: {}",
+        1,
+        "the valid call must still run: {}",
         result.content
     );
 }
@@ -327,10 +329,10 @@ impl Tool for FailingRead {
     }
 }
 
-/// S4 (was P4): reading a field the result does not have ends the run and lists
-/// the real fields.
+/// S4 (was P4): reading a field the result does not have is reported at the
+/// end, lists the real fields, and the read yields `undefined`.
 #[tokio::test]
-async fn s4_unknown_result_field_names_the_real_fields() {
+async fn s4_unknown_result_field_is_a_warning() {
     let dir = tempfile::tempdir().unwrap();
     let result = run_program(
         dir.path(),
@@ -339,30 +341,33 @@ async fn s4_unknown_result_field_names_the_real_fields() {
         })],
         r#"
         const r = await tools.file.read({ path: "a.txt" });
-        return r.data;
+        const data = r.data;
+        return typeof data;
         "#,
     )
     .await;
-    assert_eq!(result.error_code.as_deref(), Some("not_found"), "{}", result.content);
+    assert!(result.error.is_none(), "the run must survive a wrong field: {}", result.content);
     assert!(result.content.contains("'data'"), "{}", result.content);
     assert!(result.content.contains("start_line"), "{}", result.content);
+    assert!(result.content.contains("undefined"), "{}", result.content);
 }
 
-/// S4 (was P9): reading a success-only field on a failed result names the real
-/// reason and message.
+/// S4 (was P9): reading a success-only field on a failed result is reported
+/// with the real reason and message, and the run continues.
 #[tokio::test]
-async fn s4_failed_result_read_names_the_real_reason() {
+async fn s4_failed_result_read_is_a_warning() {
     let dir = tempfile::tempdir().unwrap();
     let result = run_program(
         dir.path(),
         vec![Arc::new(FailingRead)],
         r#"
         const r = await tools.file.read({ path: "p" });
-        return r.lines;
+        const lines = r.lines;
+        return r.reason;
         "#,
     )
     .await;
-    assert_eq!(result.error_code.as_deref(), Some("not_found"), "{}", result.content);
+    assert!(result.error.is_none(), "{}", result.content);
     assert!(result.content.contains("not_found"), "{}", result.content);
     assert!(result.content.contains("p does not exist"), "{}", result.content);
 }
@@ -379,16 +384,51 @@ async fn s4_field_list_comes_from_each_tools_contract() {
         })],
         r#"
         const g = await tools.file.grep({ pattern: "a" });
-        return g.lines;
+        const lines = g.lines;
+        return g.hits.length;
         "#,
     )
     .await;
+    assert!(result.error.is_none(), "{}", result.content);
     assert!(result.content.contains("hits"), "{}", result.content);
     assert!(
         !result.content.contains("start_line"),
         "the message must not leak another tool's fields: {}",
         result.content
     );
+}
+
+/// The pre-execution check reaches the model, and it does not stop the run:
+/// a field the result does not have is one warning line, reported once.
+#[tokio::test]
+async fn a_static_typo_is_reported_once_and_the_run_still_happens() {
+    let dir = tempfile::tempdir().unwrap();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(CountingRead {
+            runs: Arc::clone(&runs),
+        })],
+        r#"
+        const r = await tools.file.read({ path: "a.txt" });
+        const data = r.data;
+        return "ran";
+        "#,
+    )
+    .await;
+    assert!(result.error.is_none(), "{}", result.content);
+    assert!(
+        result.content.contains("no field 'data'"),
+        "{}",
+        result.content
+    );
+    assert_eq!(
+        result.content.matches("no field 'data'").count(),
+        1,
+        "one typo must read as one line: {}",
+        result.content
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "{}", result.content);
 }
 
 /// A tool result reaches the model as fields plus exactly one reminder line.
@@ -440,6 +480,27 @@ async fn a_slice_of_a_result_still_reaches_the_model() {
         content.contains("file.read: showing lines 1-2 of 5; continue with start_line 3"),
         "{content}"
     );
+}
+
+/// The most natural program shape: hand a tool result straight back.
+///
+/// The result arrives behind the contract proxy, so the output walker has to
+/// read through it; calling its own result "unsupported object" was the bug.
+#[tokio::test]
+async fn a_returned_tool_result_is_presented() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(crate::tools::glob::GlobTool)],
+        r#"return await tools.file.glob({ pattern: "*.txt" });"#,
+    )
+    .await;
+    let content = result.content;
+    assert!(result.error.is_none(), "{content}");
+    assert!(content.contains("a.txt"), "{content}");
+    assert!(!content.contains("unsupported object"), "{content}");
+    assert!(!content.contains("not JSON"), "{content}");
 }
 
 /// A program that asks the language server twice gets the state it was given,
@@ -683,7 +744,16 @@ async fn a_hits_shape_from_another_tool_produces_no_grep_line() {
         {
             let mut result = ToolCallResult::ok(String::new());
             result.data = Some(json!({
-                "hits": [{"path": "a.rs", "anchor_line": 1, "text": "x"}],
+                "hits": [{
+                    "path": "a.rs",
+                    "anchor_line": 1,
+                    "start_line": 1,
+                    "end_line": 2,
+                    "via": "lex",
+                    "dense_similarity": 0.9,
+                    "text": "x",
+                    "snippet": "x"
+                }],
             }));
             Box::pin(std::future::ready(result))
         }
@@ -692,7 +762,7 @@ async fn a_hits_shape_from_another_tool_produces_no_grep_line() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(HitsLike)],
-        r#"const r = await tools.file.code_search({ query: "x" }); return r.hits.length;"#,
+        r#"const r = await tools.search.code_search({ query: "x" }); return r.hits.length;"#,
     )
     .await;
     let content = result.content;
@@ -777,10 +847,10 @@ async fn s1_unknown_member_ends_the_run_without_a_ledger_row() {
     assert_eq!(runs.load(Ordering::SeqCst), 0, "{}", result.content);
 }
 
-/// S2: two positional arguments end the run under the same code as any other
-/// input contract failure. (Expected red before B2.)
+/// S2: two positional arguments fail the call under the same reason as any
+/// other input contract failure, and the program reads the envelope.
 #[tokio::test]
-async fn s2_two_arguments_end_the_run() {
+async fn s2_two_arguments_fail_the_call() {
     let dir = tempfile::tempdir().unwrap();
     let runs = Arc::new(AtomicUsize::new(0));
     let result = run_program(
@@ -789,25 +859,20 @@ async fn s2_two_arguments_end_the_run() {
             runs: Arc::clone(&runs),
         })],
         r#"
-        try { await tools.file.read({ path: "a.txt" }, { path: "b.txt" }); } catch (e) { return "swallowed"; }
-        return "continued";
+        const r = await tools.file.read({ path: "a.txt" }, { path: "b.txt" });
+        return r.reason + " / " + r.message;
         "#,
     )
     .await;
-    assert_eq!(result.error_code.as_deref(), Some("invalid_args"), "{}", result.content);
-    assert!(result.content.contains("failed(invalid_args)"), "{}", result.content);
-    assert!(
-        result.content.contains("file.read") && result.content.contains("got 2"),
-        "the header must name the call and the argument count: {}",
-        result.content
-    );
+    assert!(result.error.is_none(), "{}", result.content);
+    assert!(result.content.contains("invalid_args"), "{}", result.content);
+    assert!(result.content.contains("got 2"), "{}", result.content);
     assert_eq!(runs.load(Ordering::SeqCst), 0, "{}", result.content);
 }
 
-/// S2: an argument tree too deep to own ends the run under the same code.
-/// (Expected red before B2.)
+/// S2: an argument tree too deep to own fails the call under the same reason.
 #[tokio::test]
-async fn s2_over_deep_arguments_end_the_run() {
+async fn s2_over_deep_arguments_fail_the_call() {
     let dir = tempfile::tempdir().unwrap();
     let runs = Arc::new(AtomicUsize::new(0));
     let result = run_program(
@@ -819,12 +884,13 @@ async fn s2_over_deep_arguments_end_the_run() {
         const root = {};
         let node = root;
         for (let i = 0; i < 200; i++) { node.next = {}; node = node.next; }
-        try { await tools.file.read(root); } catch (e) { return "swallowed"; }
-        return "continued";
+        const r = await tools.file.read(root);
+        return r.ok + " " + r.reason;
         "#,
     )
     .await;
-    assert_eq!(result.error_code.as_deref(), Some("invalid_args"), "{}", result.content);
+    assert!(result.error.is_none(), "{}", result.content);
+    assert!(result.content.contains("false invalid_args"), "{}", result.content);
     assert_eq!(runs.load(Ordering::SeqCst), 0, "{}", result.content);
 }
 

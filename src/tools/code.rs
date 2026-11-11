@@ -639,6 +639,10 @@ impl CodeTool {
                 return ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, error, false);
             }
         };
+        // Report-only: typo-class errors are cheap to see now and expensive at
+        // runtime, where they cost the whole run. Findings join the run's
+        // warnings; the program still runs either way.
+        let precheck = crate::ptc::precheck::check(&code, &self.surface);
 
         let ledger = Arc::new(CallLedger::new());
         let reminders: Arc<std::sync::Mutex<Vec<render::CallReminder>>> =
@@ -658,7 +662,18 @@ impl CodeTool {
             fs_root: Some(execution.workspace_root.clone()),
             cancel: execution.cancel,
         };
-        let outcome = ptc::execute(request).await;
+        let mut outcome = ptc::execute(request).await;
+        if !precheck.is_empty() {
+            // The same typo can be reported twice — once from the source, once
+            // when the read actually happens. One line is enough.
+            let mut merged = precheck;
+            for warning in outcome.warnings.drain(..) {
+                if !merged.contains(&warning) {
+                    merged.push(warning);
+                }
+            }
+            outcome.warnings = merged;
+        }
         let mut collected = reminders.lock().expect("reminder buffer").split_off(0);
         collected.sort_by_key(|reminder| reminder.seq);
         render_run_output(&ledger, &outcome, run_timeout_ms, &code, collected)
@@ -689,23 +704,12 @@ async fn invoke_binding(
         Ok(decoded) => (decoded.arguments, decoded.summary),
         Err(DecodeFail::ExtraArgument { summary, count }) => {
             ledger.begin(seq, &sdk_name, &summary);
-            return Err(contract_reject(
-                &ledger,
-                seq,
-                "invalid_args",
-                &sdk_name,
-                format!("'{sdk_name}' accepts exactly one argument, got {count}"),
-            ));
+            let message = format!("'{sdk_name}' accepts exactly one argument, got {count}");
+            return Ok(reject_as_failure(&ledger, seq, message));
         }
         Err(DecodeFail::Illegal(illegal)) => {
             ledger.begin(seq, &sdk_name, &illegal.summary);
-            return Err(contract_reject(
-                &ledger,
-                seq,
-                "invalid_args",
-                &sdk_name,
-                illegal.message,
-            ));
+            return Ok(reject_as_failure(&ledger, seq, illegal.message));
         }
     };
     ledger.begin(seq, &sdk_name, &summary);
@@ -731,13 +735,8 @@ async fn invoke_binding(
         }
     };
     if let Err(error) = surface.validate_input(&tool_name, &input_value) {
-        return Err(contract_reject(
-            &ledger,
-            index,
-            "invalid_args",
-            &sdk_name,
-            format!("invalid input for '{sdk_name}': {error}"),
-        ));
+        let message = format!("invalid input for '{sdk_name}': {error}");
+        return Ok(reject_as_failure(&ledger, index, message));
     }
 
     let call = FunctionToolCall {
@@ -790,6 +789,20 @@ async fn invoke_binding(
         }
     }
     Ok(value)
+}
+
+/// Fail the call, not the run: the program gets a failure envelope and can
+/// correct its arguments on the next call.
+///
+/// The ledger row is a failure for the same reason, so the manifest never says
+/// "ok" for a call the contract refused.
+fn reject_as_failure(ledger: &CallLedger, index: u64, message: String) -> Value {
+    ledger.record(index, &contract_record("invalid_args", &message));
+    serde_json::json!({
+        "ok": false,
+        "reason": "invalid_args",
+        "message": message,
+    })
 }
 
 /// Record one contract failure and build the error that ends the run.
@@ -1091,6 +1104,7 @@ fn run_report(
     }
     render::RunReport {
         reminders,
+        warnings: outcome.warnings.clone(),
         dropped_undefined: outcome.dropped_undefined.head_line(),
         coerced_non_finite: outcome.dropped_undefined.non_finite_head_line(),
         entries,
@@ -1334,6 +1348,7 @@ mod outcome_tests {
     fn runtime(state: CallState) -> Outcome {
         Outcome {
             entries: Vec::new(),
+            warnings: Vec::new(),
             dropped_undefined: Default::default(),
             failure: Some(Failure::cancelled()),
             duration_ms: 0,
@@ -1389,6 +1404,7 @@ mod outcome_tests {
     fn permission_denial_is_counted_as_a_failed_settled_call() {
         let completed = Outcome {
             entries: Vec::new(),
+            warnings: Vec::new(),
             dropped_undefined: Default::default(),
             failure: None,
             duration_ms: 0,
@@ -1447,6 +1463,7 @@ mod outcome_tests {
             &ToolCallResult::error_with_kind(ToolErrorKind::PermissionDenied, "denied", false),
         );
         let outcome = Outcome {
+            warnings: Vec::new(),
             entries: vec![crate::ptc::Entry {
                 order: 1,
                 body: crate::ptc::EntryBody::Value(Json::new(json!("done"))),

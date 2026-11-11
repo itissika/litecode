@@ -159,9 +159,8 @@ pub fn kind_for_code(code: &str) -> ToolErrorKind {
         // `invalid_args` is the JS-facing name of the same fault (`soft_failure_reason`
         // emits it for `invalid_input`), so a contract row labelled with it must not
         // fall through to Internal.
-        "invalid_input" | "invalid_args" | "invalid_regex" | "no_match" | "empty" => {
-            ToolErrorKind::InvalidInput
-        }
+        "invalid_input" | "invalid_args" | "invalid_regex" | "no_match" | "empty"
+        | "ambiguous" => ToolErrorKind::InvalidInput,
         "not_found" => ToolErrorKind::NotFound,
         "permission_denied" => ToolErrorKind::PermissionDenied,
         "conflict" | "stale" | "stale_cursor" | "still_alive" => ToolErrorKind::Conflict,
@@ -229,6 +228,7 @@ pub fn soft_failure_reason(code: &str) -> Option<&'static str> {
     match code {
         "not_found" => Some("not_found"),
         "invalid_input" | "invalid_regex" => Some("invalid_args"),
+        "ambiguous" => Some("ambiguous"),
         "permission_denied" => Some("permission"),
         "io" => Some("io"),
         "no_match" => Some("no_match"),

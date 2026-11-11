@@ -1,3 +1,16 @@
+/**
+ * Raised when a call does not hold under the contract and the run has to stop.
+ * It is uncatchable by design: a try/catch cannot turn it into a value.
+ *
+ * Fatal: a tool name that does not exist (a namespace typo), and a tool result
+ * that violates its own declared output. Both mean the program's model of the
+ * contract is wrong, not just one call.
+ *
+ * Not fatal, so the run continues: a result field the contract does not declare
+ * is reported once at the end of the run and reads as `undefined`; an argument
+ * the input contract rejects resolves as `ToolFailure` with
+ * `reason: "invalid_args"`, and the program can correct it on the next call.
+ */
 declare class ToolError extends Error {
   readonly name: "ToolError";
   readonly code: string;
@@ -12,6 +25,7 @@ type ToolFailure = { // A resolved domain failure. ToolError is thrown for proto
   reason:
     | "not_found"
     | "no_match"
+    | "ambiguous"
     | "invalid_args"
     | "empty"
     | "permission"
@@ -248,7 +262,8 @@ interface Tools {
         {
           ok: boolean;
           path: string;
-          reason: ("not_found" | "no_match" | "invalid_args" | "empty" | "permission" | "io") | null; // Why this item failed; `null` when `ok` is true.
+          reason: ("not_found" | "no_match" | "ambiguous" | "invalid_args" | "empty" | "permission" | "io") | null; // Why this item failed; `ambiguous` means `old_string` matched more than once. `null` when `ok` is true.
+          detail: string; // One plain sentence: why the item failed, with line hints; empty when `ok` is true.
           nearest_line: Integer | null; // 1-based line of the closest match when `old_string` was not found; `null` otherwise.
           path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.
           diagnostics?: ToolDiagnostic[]; // Warnings recorded after the edit; absent when there were none.

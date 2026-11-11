@@ -73,6 +73,9 @@ pub(super) struct CallReminder {
 /// One reminder takes one line, at most this many characters, and is charged to
 /// the same token budget as the stream.
 const REMINDER_MAX_CHARS: usize = 120;
+/// A contract warning is longer by nature: it carries the real field list, and
+/// cutting it at the reminder cap would drop the part the model has to read.
+const WARNING_MAX_CHARS: usize = 400;
 /// Marks a renderer-generated summary: without it a reminder reads exactly like
 /// the program printing a bare string, or like a returned value.
 const REMINDER_MARK: &str = "↳ ";
@@ -89,6 +92,9 @@ pub(super) struct RunReport {
     pub entries: Vec<EntryView>,
     /// One-line summaries, one per call that has facts; see [`CallReminder`].
     pub reminders: Vec<CallReminder>,
+    /// Contract violations the run survived, in first-seen order. Rendered
+    /// with the same `↳` shape as reminders, without a call prefix.
+    pub warnings: Vec<String>,
     pub failure_text: Option<String>,
     pub failure_kind: Option<FailureKind>,
     pub resource: Option<ResourceKind>,
@@ -125,15 +131,29 @@ pub(super) fn render_model_view(report: &RunReport) -> String {
     let output_limited = report.failure_kind == Some(FailureKind::OutputLimit);
     // Reminders describe calls, so they follow the stream and share its budget.
     let reminders = render_reminder_lines(&report.reminders, budget / 4);
+    // A warning the failure text already states verbatim adds a line, not a fact.
+    let warning_texts: Vec<String> = match report.failure_text.as_deref() {
+        Some(failure) => report
+            .warnings
+            .iter()
+            .filter(|warning| !failure.contains(warning.as_str()))
+            .cloned()
+            .collect(),
+        None => report.warnings.clone(),
+    };
+    let warnings = render_warning_lines(&warning_texts, budget / 4);
     let stream = render_stream(
         &report.entries,
-        budget.saturating_sub(count_tokens(&reminders)),
+        budget.saturating_sub(count_tokens(&reminders) + count_tokens(&warnings)),
         output_limited,
     );
     let mut sections = vec![header];
     sections.extend(manifest);
     if !stream.is_empty() {
         sections.push(stream);
+    }
+    if !warnings.is_empty() {
+        sections.push(warnings);
     }
     if !reminders.is_empty() {
         sections.push(reminders);
@@ -316,13 +336,14 @@ fn edit_reminders(
         if let Some(item) = item.as_object() {
             lsp_diagnostics_reminder(Some(&format!("edit #{}", index + 1)), item, out);
         }
-        // A miss names the nearest line: the model fixes one typo instead of
-        // re-reading the whole file.
-        if let Some(line) = item.get("nearest_line").and_then(Value::as_u64) {
-            out.push(format!(
-                "edit #{}: closest match is at line {line}",
-                index + 1
-            ));
+        // A failed item explains itself in one sentence; the batch table has
+        // the cell, and the reminder repeats it where the model reads last.
+        if let Some(detail) = item
+            .get("detail")
+            .and_then(Value::as_str)
+            .filter(|detail| !detail.is_empty())
+        {
+            out.push(format!("edit #{}: {detail}", index + 1));
         }
     }
 }
@@ -642,6 +663,29 @@ fn render_reminder_lines(reminders: &[CallReminder], budget: usize) -> String {
         lines.push(line);
     }
     lines.join("\n")
+}
+
+/// One line per surviving contract violation, charged to the same budget.
+fn render_warning_lines(warnings: &[String], budget: usize) -> String {
+    let mut lines: Vec<String> = Vec::with_capacity(warnings.len());
+    let mut used = 0usize;
+    for warning in warnings {
+        let line = warning_line(warning);
+        let cost = count_tokens(&line);
+        if used + cost > budget && !lines.is_empty() {
+            break;
+        }
+        used += cost;
+        lines.push(line);
+    }
+    lines.join("
+")
+}
+
+fn warning_line(text: &str) -> String {
+    let one_line = text.lines().next().unwrap_or("").trim();
+    let room = WARNING_MAX_CHARS.saturating_sub(REMINDER_MARK.chars().count());
+    format!("{REMINDER_MARK}{}", prefix_utf8(one_line, room))
 }
 
 fn reminder_line(text: &str) -> String {
@@ -1655,10 +1699,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_warning_the_failure_already_states_is_not_repeated() {
+        let mut report = base_report();
+        report.failure_kind = Some(FailureKind::IllegalOutput);
+        report.failure_text = Some("tool 'tools.file.readx' not found. available: read".into());
+        report.warnings = vec![
+            "tool 'tools.file.readx' not found. available: read".into(),
+            "invalid input for 'file.read': unknown parameter 'limt'".into(),
+        ];
+        let text = render_model_view(&report);
+        assert_eq!(text.matches("readx").count(), 1, "{text}");
+        assert!(text.contains("unknown parameter 'limt'"), "{text}");
+    }
+
     fn base_report() -> RunReport {
         RunReport {
             entries: Vec::new(),
             reminders: Vec::new(),
+            warnings: Vec::new(),
             failure_text: None,
             failure_kind: None,
             resource: None,
@@ -2198,6 +2257,7 @@ mod tests {
                             "ok": true,
                             "path": "a.txt",
                             "reason": null,
+                            "detail": "",
                             "diagnostics": [
                                 {"code": "lsp_error", "severity": "warning", "message": "m"}
                             ],
@@ -2206,6 +2266,7 @@ mod tests {
                             "ok": false,
                             "path": "/tmp/z.txt",
                             "reason": "no_match",
+                            "detail": "old_string was not found; closest match is at line 12",
                             "nearest_line": 12,
                             "path_risk": risk("/tmp/z.txt"),
                         },
@@ -2214,7 +2275,7 @@ mod tests {
                 vec![
                     "edit #1: the language server reported errors in this file",
                     "edit #2 lands outside the workspace: /tmp/z.txt",
-                    "edit #2: closest match is at line 12",
+                    "edit #2: old_string was not found; closest match is at line 12",
                 ],
             ),
         ];

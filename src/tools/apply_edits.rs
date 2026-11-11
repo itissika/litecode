@@ -311,11 +311,57 @@ fn gamma() {}
         assert_eq!(item["reason"], "no_match", "{item}");
         assert_eq!(item["nearest_line"], 2, "{item}");
         assert!(item.get("message").is_none(), "{item}");
+        let detail = item["detail"].as_str().unwrap_or_default();
+        assert!(detail.contains("closest match is at line 2"), "{item}");
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "fn alpha() {}
 fn beta() {}
 fn gamma() {}
+"
+        );
+    }
+
+    /// Two matches are their own reason: the fix is context, not a typo hunt.
+    #[test]
+    fn two_matches_are_ambiguous_with_their_lines() {
+        let (dir, path) = write_temp("a.txt", "alpha
+beta
+alpha
+");
+        let rel = path.file_name().unwrap().to_str().unwrap();
+        let execution = ToolExecutionContext {
+            path_mode: crate::workspace::ToolPathMode::All,
+            workspace_root: dir.path().to_path_buf(),
+            call_id: String::new(),
+            cancel: CancellationToken::new(),
+            output_limit: 8_000,
+            session_id: String::new(),
+            session: None,
+        };
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(tool().call_for_execution(
+                serde_json::json!({
+                    "edits": [{"path": rel, "old_string": "alpha", "new_string": "ALPHA"}]
+                }),
+                execution,
+            ));
+        assert!(result.error.is_none(), "{}", result.content);
+        let item = &result.data.as_ref().unwrap()["results"][0];
+        assert_eq!(item["ok"], false, "{item}");
+        assert_eq!(item["reason"], "ambiguous", "{item}");
+        assert_eq!(item["nearest_line"], serde_json::Value::Null, "{item}");
+        let detail = item["detail"].as_str().unwrap_or_default();
+        assert!(detail.contains("more than once"), "{item}");
+        assert!(detail.contains("1, 3"), "{item}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "alpha
+beta
+alpha
 "
         );
     }

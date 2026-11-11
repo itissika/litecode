@@ -622,11 +622,16 @@ fn reject_symbol_keys(value: &Value<'_>) -> Result<(), BoundaryError> {
 }
 
 fn is_plain_object(value: &Value<'_>) -> bool {
-    if !value.is_object()
-        || value.is_array()
-        || value.is_function()
-        || value.type_of() != Type::Object
-    {
+    if !value.is_object() || value.is_array() || value.is_function() {
+        return false;
+    }
+    // A tool result reaches the program behind a Proxy that guards field
+    // reads. A program may return that value as-is, so the walker reads
+    // through the shell instead of calling its own result unsupported.
+    if value.is_proxy() {
+        return true;
+    }
+    if value.type_of() != Type::Object {
         return false;
     }
     let class_id = unsafe { rquickjs::qjs::JS_GetClassID(value.as_raw()) };

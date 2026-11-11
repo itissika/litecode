@@ -26,6 +26,7 @@ mod fs;
 mod heap;
 mod json;
 mod output;
+pub(crate) mod precheck;
 
 use std::fmt;
 use std::future::Future;
@@ -501,6 +502,9 @@ fn program_js_site(text: &str) -> Option<(u32, u32)> {
 pub struct Outcome {
     pub entries: Vec<Entry>,
     pub failure: Option<Failure>,
+    /// Contract violations the run survived (wrong field names, rejected
+    /// arguments): reported once at the end, never a reason to stop.
+    pub warnings: Vec<String>,
     pub calls: Vec<CallRecord>,
     /// Active program time when the run settled (excludes approval pauses).
     pub duration_ms: u64,
@@ -524,6 +528,7 @@ impl Outcome {
         Self {
             entries: Vec::new(),
             failure: Some(failure),
+            warnings: Vec::new(),
             calls: Vec::new(),
             duration_ms: 0,
             dropped_undefined: Default::default(),

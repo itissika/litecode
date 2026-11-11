@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "6ea9ec768b8af383f0cb47e43737e61a32d1c2023cbea7e3476a17b76c934195",
+  "sdk_hash": "71d1ddca4c8471c65c8b0627ef6e88bae01d304e49f3832caa6ec6149e092b91",
   "tools": {
     "apply_edits": {
       "path": [
@@ -10,7 +10,7 @@
       "suite": "file",
       "tool": "apply_edits",
       "doc": "Apply several edit replacements serially.",
-      "signature": "apply_edits(args: {\n  edits: EditInput[]; // Replacements applied serially; later items on the same path see earlier successful writes.\n}): Promise<ToolResult<{\n  // Same length and order as edits.\n  results: Array<\n    // One item in a serial apply_edits batch. Item failures stay item-level.\n    {\n      ok: boolean;\n      path: string;\n      reason: (\"not_found\" | \"no_match\" | \"invalid_args\" | \"empty\" | \"permission\" | \"io\") | null; // Why this item failed; `null` when `ok` is true.\n      nearest_line: Integer | null; // 1-based line of the closest match when `old_string` was not found; `null` otherwise.\n      path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.\n      diagnostics?: ToolDiagnostic[]; // Warnings recorded after the edit; absent when there were none.\n    }\n  >;\n}>>;",
+      "signature": "apply_edits(args: {\n  edits: EditInput[]; // Replacements applied serially; later items on the same path see earlier successful writes.\n}): Promise<ToolResult<{\n  // Same length and order as edits.\n  results: Array<\n    // One item in a serial apply_edits batch. Item failures stay item-level.\n    {\n      ok: boolean;\n      path: string;\n      reason: (\"not_found\" | \"no_match\" | \"ambiguous\" | \"invalid_args\" | \"empty\" | \"permission\" | \"io\") | null; // Why this item failed; `ambiguous` means `old_string` matched more than once. `null` when `ok` is true.\n      detail: string; // One plain sentence: why the item failed, with line hints; empty when `ok` is true.\n      nearest_line: Integer | null; // 1-based line of the closest match when `old_string` was not found; `null` otherwise.\n      path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.\n      diagnostics?: ToolDiagnostic[]; // Warnings recorded after the edit; absent when there were none.\n    }\n  >;\n}>>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
       "type_deps": [
@@ -77,6 +77,7 @@
                       "enum": [
                         "not_found",
                         "no_match",
+                        "ambiguous",
                         "invalid_args",
                         "empty",
                         "permission",
@@ -87,7 +88,11 @@
                       "type": "null"
                     }
                   ],
-                  "description": "Why this item failed; `null` when `ok` is true."
+                  "description": "Why this item failed; `ambiguous` means `old_string` matched more than once. `null` when `ok` is true."
+                },
+                "detail": {
+                  "type": "string",
+                  "description": "One plain sentence: why the item failed, with line hints; empty when `ok` is true."
                 },
                 "nearest_line": {
                   "anyOf": [
@@ -164,6 +169,7 @@
                 "ok",
                 "path",
                 "reason",
+                "detail",
                 "nearest_line"
               ],
               "additionalProperties": false,

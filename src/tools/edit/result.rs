@@ -5,7 +5,7 @@ use serde::Serialize;
 use crate::tool::outcome::{Diagnostic, ToolOutcome};
 use crate::types::ToolCallResult;
 
-/// Internal failure codes, projected to the six values the contract allows.
+/// Internal failure codes, projected to the seven values the contract allows.
 ///
 /// Every item failure leaves through this table: an internal name never reaches
 /// a program, and an unknown one cannot terminate the run.
@@ -18,7 +18,9 @@ pub(crate) fn public_reason(internal: &str) -> &'static str {
         "io" => "io",
         "invalid_args" | "invalid_input" | "invalid_regex" | "empty_old_string"
         | "no_op" | "read_line_prefix" | "whitespace_only" => "invalid_args",
-        "multiple_matches" => "no_match",
+        // Two matches are not a miss: the model has to add context, not fix a
+        // typo, so the code must not collapse into no_match.
+        "multiple_matches" | "ambiguous" => "ambiguous",
         _ => "io",
     }
 }
@@ -28,14 +30,15 @@ pub(crate) fn public_reason(internal: &str) -> &'static str {
 pub struct EditResult {
     pub ok: bool,
     pub path: String,
-    /// Failure explanation for the failure envelope. Never serialized: a batch
-    /// item carries `reason`, and a success carries fields, not prose.
-    #[serde(skip)]
-    pub message: String,
     /// Internal cause when `ok` is false; item serialization projects it to
-    /// one of not_found / no_match / invalid_args / empty / permission / io.
-    /// Always on the wire: `null` when the item succeeded.
+    /// one of ambiguous / not_found / no_match / invalid_args / empty /
+    /// permission / io. Always on the wire: `null` when the item succeeded.
     pub reason: Option<&'static str>,
+    /// Failure explanation for the failure envelope, serialized as `detail`:
+    /// the batch table carries the "why" next to the machine reason. Empty on
+    /// success, so a successful row leaves the cell blank.
+    #[serde(rename = "detail")]
+    pub message: String,
     /// Outside-workspace or sensitive-path target; absent when there is none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path_risk: Option<crate::tools::file_path::PathRisk>,
@@ -126,7 +129,7 @@ struct ApplyEditsData {
 }
 
 pub fn present_apply_edits(results: Vec<EditResult>) -> ToolCallResult {
-    // One projection, at the wire: an item reason is always one of the six
+    // One projection, at the wire: an item reason is always one of the seven
     // public values, so no internal name reaches a program and the run cannot
     // be terminated by an unknown one.
     let results: Vec<serde_json::Value> = results
@@ -146,13 +149,14 @@ mod tests {
     use super::*;
 
     /// Every internal failure name used anywhere in edit flows maps to one of
-    /// the six public reasons: no internal name can reach a program, and no
+    /// the seven public reasons: no internal name can reach a program, and no
     /// unknown name can terminate a run.
     #[test]
-    fn every_internal_reason_projects_to_one_of_six() {
-        const PUBLIC: [&str; 6] = [
+    fn every_internal_reason_projects_to_one_of_seven() {
+        const PUBLIC: [&str; 7] = [
             "not_found",
             "no_match",
+            "ambiguous",
             "invalid_args",
             "empty",
             "permission",
@@ -173,6 +177,7 @@ mod tests {
             "read_line_prefix",
             "whitespace_only",
             "multiple_matches",
+            "ambiguous",
             "something_new",
         ];
         for code in internal {

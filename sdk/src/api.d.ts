@@ -212,7 +212,8 @@ interface FileTools {
       {
         ok: boolean;
         path: string;
-        reason: ("not_found" | "no_match" | "invalid_args" | "empty" | "permission" | "io") | null; // Why this item failed; `null` when `ok` is true.
+        reason: ("not_found" | "no_match" | "ambiguous" | "invalid_args" | "empty" | "permission" | "io") | null; // Why this item failed; `ambiguous` means `old_string` matched more than once. `null` when `ok` is true.
+        detail: string; // One plain sentence: why the item failed, with line hints; empty when `ok` is true.
         nearest_line: Integer | null; // 1-based line of the closest match when `old_string` was not found; `null` otherwise.
         path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.
         diagnostics?: ToolDiagnostic[]; // Warnings recorded after the edit; absent when there were none.

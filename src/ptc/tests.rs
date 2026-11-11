@@ -111,6 +111,16 @@ fn value_of(outcome: &Outcome) -> &Value {
         .as_value()
 }
 
+#[tokio::test]
+async fn a_proxy_of_a_plain_object_is_presented() {
+    let outcome = run("return new Proxy({ a: 1 }, {});", tools(vec![])).await;
+    assert!(
+        outcome.failure.is_none(),
+        "a proxy result must be presented: {outcome:?}"
+    );
+    assert_eq!(value_of(&outcome), &json!({ "a": 1 }));
+}
+
 /// `fs` has no reminder channel, so `truncated` is the only way the model
 /// learns that entries were left out. The program must see it on the value.
 #[tokio::test]
@@ -1379,14 +1389,14 @@ async fn object_keys_keep_agent_order_across_the_bridge() {
 async fn m1_contract_error_is_not_catchable() {
     let host = HostFn::new(|_, _, _, _| async move {
         Err(HostError::contract(
-            "invalid_args",
-            "invalid input for 'read': unknown parameter 'nope'",
+            "invalid_output",
+            "tool 'read' returned data that does not match its JS contract",
             "read",
         ))
     });
     let outcome = run(
         r#"
-        try { await tools.read({ nope: 1 }); } catch (e) { return "swallowed"; }
+        try { await tools.read({ path: "a.txt" }); } catch (e) { return "swallowed"; }
         return "done";
         "#,
         tools(vec![("read", host)]),
@@ -1397,7 +1407,7 @@ async fn m1_contract_error_is_not_catchable() {
         .as_ref()
         .unwrap_or_else(|| panic!("a contract error must end the run, got {outcome:?}"));
     assert!(
-        failure.message.contains("unknown parameter 'nope'"),
+        failure.message.contains("does not match its JS contract"),
         "{failure:?}"
     );
 }
@@ -1408,14 +1418,14 @@ async fn m1_contract_error_is_not_catchable() {
 async fn m2_contract_error_inside_promise_all_ends_run() {
     let host = HostFn::new(|_, _, _, _| async move {
         Err(HostError::contract(
-            "invalid_args",
-            "invalid input for 'read': unknown parameter 'nope'",
+            "invalid_output",
+            "tool 'read' returned data that does not match its JS contract",
             "read",
         ))
     });
     let outcome = run(
         r#"
-        try { await Promise.all([tools.read({ nope: 1 })]); } catch (e) { return "swallowed"; }
+        try { await Promise.all([tools.read({ path: "a.txt" })]); } catch (e) { return "swallowed"; }
         return "done";
         "#,
         tools(vec![("read", host)]),
@@ -1438,8 +1448,8 @@ async fn m3_no_host_call_after_contract_error() {
         async move {
             if counter.fetch_add(1, Ordering::SeqCst) == 0 {
                 Err(HostError::contract(
-                    "invalid_args",
-                    "invalid input for 'read': unknown parameter 'nope'",
+                    "invalid_output",
+                    "tool 'read' returned data that does not match its JS contract",
                     "read",
                 ))
             } else {

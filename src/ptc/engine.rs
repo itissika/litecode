@@ -74,6 +74,12 @@ struct Faults {
     /// A contract failure latched. Separate from `interrupt` because another
     /// fault recorded later must not un-latch it.
     contract_latched: AtomicBool,
+    /// Contract violations the run survives, deduped and capped. A wrong field
+    /// name or a rejected argument is a fact the program can act on, so the run
+    /// keeps going and the report lists them once at the end.
+    warnings: Mutex<Vec<String>>,
+    /// Distinct warnings past the cap, folded into one trailing line.
+    warnings_dropped: AtomicUsize,
 }
 
 /// One contract violation: the call does not hold under the tool's contract.
@@ -94,6 +100,10 @@ impl Faults {
     const MEMORY: u8 = 5;
     const CONTRACT: u8 = 6;
 
+    /// Distinct warnings kept for one run. A loop with dynamic field names must
+    /// not turn the report into a log file; the tail is counted, not cut dead.
+    const MAX_WARNINGS: usize = 20;
+
     fn new() -> Arc<Self> {
         Arc::new(Self {
             interrupt: AtomicU8::new(Self::NONE),
@@ -104,6 +114,8 @@ impl Faults {
             counter_offset: Arc::new(AtomicUsize::new(0)),
             contract: Mutex::new(None),
             contract_latched: AtomicBool::new(false),
+            warnings: Mutex::new(Vec::new()),
+            warnings_dropped: AtomicUsize::new(0),
         })
     }
 
@@ -152,6 +164,36 @@ impl Faults {
         if slot.is_none() {
             *slot = Some(fault);
         }
+    }
+
+    /// Record a contract violation the run survives, once per distinct message.
+    fn warn(&self, message: String) {
+        let mut slot = self
+            .warnings
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if slot.iter().any(|seen| seen == &message) {
+            return;
+        }
+        if slot.len() >= Self::MAX_WARNINGS {
+            self.warnings_dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        slot.push(message);
+    }
+
+    /// Warnings in first-seen order; a dropped tail becomes one last line.
+    fn warnings(&self) -> Vec<String> {
+        let mut lines = self
+            .warnings
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        let dropped = self.warnings_dropped.load(Ordering::Acquire);
+        if dropped > 0 {
+            lines.push(format!("{dropped} more contract warnings"));
+        }
+        lines
     }
 
     fn contract_fault(&self) -> Option<ContractFault> {
@@ -508,12 +550,14 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     };
     let entries = output.borrow().entries().to_vec();
     let dropped_undefined = output.borrow().dropped_undefined().clone();
+    let warnings = faults.warnings();
     let calls = calls.snapshot();
     let duration_ms = clock.wall_elapsed().as_millis() as u64;
     match end {
         EndKind::Success => Outcome {
             entries,
             failure: None,
+            warnings,
             calls,
             duration_ms,
             dropped_undefined,
@@ -521,6 +565,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
         EndKind::CancelledAfterReturn => Outcome {
             entries,
             failure: Some(Failure::cancelled()),
+            warnings,
             calls,
             duration_ms,
             dropped_undefined,
@@ -528,6 +573,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
         EndKind::Failure(failure) => Outcome {
             entries,
             failure: Some(failure),
+            warnings,
             calls,
             duration_ms,
             dropped_undefined,
@@ -898,8 +944,9 @@ fn install_namespace(
 ) -> Result<(), Failure> {
     let object = Object::new(ctx.clone()).map_err(|error| Failure::internal(error.to_string()))?;
     let fail = contract_fail_native(ctx, &shared.faults)?;
+    let warn = contract_warn_native(ctx, &shared.faults)?;
     for binding in &namespace.functions {
-        install_binding(ctx, &object, namespace, binding, shared, &fail)?;
+        install_binding(ctx, &object, namespace, binding, shared, &warn)?;
     }
     let value = unknown_tool_proxy(ctx, object, &namespace.name, &fail)?;
     define_const(ctx, &namespace.name, value)
@@ -936,25 +983,39 @@ fn contract_fail_native<'js>(
     .map_err(|error| Failure::internal(error.to_string()))
 }
 
+/// The surviving side of the contract channel: a wrong field name is reported
+/// at the end, and the program reads `undefined` and keeps going.
+fn contract_warn_native<'js>(
+    ctx: &Ctx<'js>,
+    faults: &Arc<Faults>,
+) -> Result<Function<'js>, Failure> {
+    let faults = Arc::clone(faults);
+    Function::new(
+        ctx.clone(),
+        move |_ctx: Ctx<'_>, _code: String, _name: String, message: String| {
+            faults.warn(message);
+        },
+    )
+    .map_err(|error| Failure::internal(error.to_string()))
+}
+
 /// Wraps one tool call so its resolved value is read through the contract.
 ///
-/// Top level only. A property the tool's output schema does not declare fails at
-/// the read, naming that tool's real field list; a failed result
-/// (`ok === false`) is checked against the failure envelope instead and the
-/// error names the real reason and message.
-///
-/// Intentional behaviour change: reading a success-only field before checking
-/// `ok` used to yield `undefined` (or a catchable TypeError one step later). It
-/// now ends the run, because the call did not hold.
+/// Top level only. A property the tool's output schema does not declare is
+/// reported at the end of the run, naming that tool's real field list, and the
+/// read yields `undefined`; a failed result (`ok === false`) is checked
+/// against the failure envelope the same way, naming the real reason and
+/// message. The program keeps going: a wrong field name is not a reason to
+/// throw away its work.
 fn wrap_result_proxy<'js>(
     ctx: &Ctx<'js>,
     function: Function<'js>,
     contract: &super::BindingContract,
     name: &str,
-    fail: &Function<'js>,
+    warn: &Function<'js>,
 ) -> Result<Function<'js>, Failure> {
     const FACTORY: &str = r#"
-        (fn, fields, failureFields, name, fail) => {
+        (fn, fields, failureFields, name, warn) => {
             const blocked = new Set([
                 "then", "toJSON", "toString", "valueOf", "inspect", "constructor"
             ]);
@@ -974,7 +1035,7 @@ fn wrap_result_proxy<'js>(
                                 return Reflect.get(target, property, receiver);
                             }
                             if (failed) {
-                                fail(
+                                warn(
                                     "not_found",
                                     name,
                                     "'" + name + "' returned " + String(target.reason) +
@@ -982,8 +1043,9 @@ fn wrap_result_proxy<'js>(
                                         ". A failed result has only ok, reason and message; there is no '" +
                                         property + "'."
                                 );
+                                return undefined;
                             }
-                            fail(
+                            warn(
                                 "not_found",
                                 name,
                                 "'" + name + "' result has no field '" + property +
@@ -1002,7 +1064,7 @@ fn wrap_result_proxy<'js>(
     let fields = js_field_list(ctx, contract.fields.as_ref())?;
     let failure = js_field_list(ctx, contract.failure_fields.as_ref())?;
     factory
-        .call::<_, Function<'js>>((function, fields, failure, name, fail.clone()))
+        .call::<_, Function<'js>>((function, fields, failure, name, warn.clone()))
         .map_err(|error| Failure::internal(error.to_string()))
 }
 
@@ -1089,7 +1151,7 @@ fn install_binding<'js>(
     namespace: &super::Namespace,
     binding: &super::HostBinding,
     shared: &Shared,
-    fail: &Function<'js>,
+    warn: &Function<'js>,
 ) -> Result<(), Failure> {
     let mut target = root.clone();
     let mut parts = binding.name.split('.').peekable();
@@ -1114,7 +1176,7 @@ fn install_binding<'js>(
                     function,
                     contract,
                     &format!("{}.{}", namespace.name, binding.name),
-                    fail,
+                    warn,
                 )?,
                 None => function,
             };
