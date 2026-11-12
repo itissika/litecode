@@ -13,7 +13,11 @@ Streaming: clients that do not ask for usage get `stream_options.include_usage`
 added on the way out, and the frame that carries the usage is swallowed on the
 way back — the client never sees a chunk shape it did not ask for, while the row
 still records the tokens. A response with no usage records nulls and
-` "usage": "missing"`; nothing is estimated.
+`"usage": "missing"`; nothing is estimated.
+
+Responses (`/responses`) is a different stream: the request has no
+`stream_options` field, so nothing is injected and nothing is swallowed; the
+usage rides on the final `response.completed` event, under `response.usage`.
 
 The key is read from a file at startup, never from argv, never logged, and not
 kept in this repository.
@@ -43,6 +47,10 @@ _RUN_PATH = re.compile(r"^/r/(?P<run>[A-Za-z0-9._-]{1,64})(?P<rest>/.*)$")
 # probe) has no usage to miss, so its row says so instead of "missing".
 _BILLABLE = re.compile(r"/(chat/completions|completions|responses)$")
 
+# Only these request bodies take `stream_options.include_usage`; sending it to
+# /responses would be a 400, and Responses reports usage without being asked.
+_USAGE_INJECTION_PATHS = ("/chat/completions", "/completions")
+
 # Headers that belong to this hop, not to the upstream request.
 _HOP_HEADERS = {
     "connection",
@@ -65,22 +73,25 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def _usage_from(payload: Any) -> dict[str, int] | None:
-    """Token counts from an OpenAI-style usage object, or None."""
-    if not isinstance(payload, dict):
-        return None
-    usage = payload.get("usage")
+def _counts_from_usage(usage: Any) -> dict[str, int] | None:
+    """Token counts from a Chat-Completions or Responses usage object."""
     if not isinstance(usage, dict):
         return None
     prompt = usage.get("prompt_tokens")
     completion = usage.get("completion_tokens")
     if not isinstance(prompt, int) or not isinstance(completion, int):
+        # Responses spells the same two counts input_tokens / output_tokens.
+        prompt = usage.get("input_tokens")
+        completion = usage.get("output_tokens")
+    if not isinstance(prompt, int) or not isinstance(completion, int):
         return None
     cached = usage.get("prompt_cache_hit_tokens")
     if not isinstance(cached, int):
-        details = usage.get("prompt_tokens_details")
-        if isinstance(details, dict) and isinstance(details.get("cached_tokens"), int):
-            cached = details["cached_tokens"]
+        for name in ("prompt_tokens_details", "input_tokens_details"):
+            details = usage.get(name)
+            if isinstance(details, dict) and isinstance(details.get("cached_tokens"), int):
+                cached = details["cached_tokens"]
+                break
     record = {
         "prompt_tokens": prompt,
         "completion_tokens": completion,
@@ -90,6 +101,20 @@ def _usage_from(payload: Any) -> dict[str, int] | None:
     if isinstance(total, int):
         record["total_tokens"] = total
     return record
+
+
+def _usage_from(payload: Any) -> dict[str, int] | None:
+    """Token counts from a JSON body or a parsed SSE event, or None."""
+    if not isinstance(payload, dict):
+        return None
+    counts = _counts_from_usage(payload.get("usage"))
+    if counts is not None:
+        return counts
+    # A Responses event carries the response object one level down.
+    response = payload.get("response")
+    if isinstance(response, dict):
+        return _counts_from_usage(response.get("usage"))
+    return None
 
 
 class Proxy:
@@ -165,7 +190,8 @@ class Handler(BaseHTTPRequestHandler):
             body = None
 
         injected = False
-        if isinstance(body, dict) and body.get("stream") is True:
+        wants_usage = rest.endswith(_USAGE_INJECTION_PATHS)
+        if wants_usage and isinstance(body, dict) and body.get("stream") is True:
             options = body.get("stream_options")
             asked = isinstance(options, dict) and options.get("include_usage") is True
             if not asked:
@@ -324,7 +350,8 @@ def build_server(host: str, port: int, proxy: Proxy) -> Server:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    description = (__doc__ or "").split("\n\n")[0]
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
         "--host",
         default="127.0.0.1",

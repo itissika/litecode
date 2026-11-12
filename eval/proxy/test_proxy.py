@@ -41,6 +41,23 @@ class FakeUpstream(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if self.path.endswith("/responses"):
+            if body.get("stream") is True:
+                self._responses_stream(body)
+            else:
+                payload = {
+                    "id": "r1",
+                    "status": "completed",
+                    "output": [],
+                    "usage": {"input_tokens": 13, "output_tokens": 2, "total_tokens": 15},
+                }
+                data = json.dumps(payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            return
         if body.get("stream") is True:
             self._stream(body)
             return
@@ -63,6 +80,44 @@ class FakeUpstream(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _responses_stream(self, body):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def event(name, payload):
+            self.wfile.write(
+                b"event: "
+                + name.encode()
+                + b"\ndata: "
+                + json.dumps(payload).encode()
+                + b"\n\n"
+            )
+            self.wfile.flush()
+
+        event(
+            "response.created",
+            {"type": "response.created", "response": {"id": "r1", "status": "in_progress"}},
+        )
+        event(
+            "response.completed",
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "r1",
+                    "status": "completed",
+                    "usage": {
+                        "input_tokens": 31,
+                        "output_tokens": 7,
+                        "total_tokens": 38,
+                        "input_tokens_details": {"cached_tokens": 24},
+                    },
+                },
+            },
+        )
+        self.close_connection = True
 
     def _stream(self, body):
         asked = (body.get("stream_options") or {}).get("include_usage") is True
@@ -211,6 +266,42 @@ class ProxyTest(unittest.TestCase):
         self.assertIsNone(row["completion_tokens"])
         self.assertIsNone(row["cached_tokens"])
         self.assertIn("no usage", row["error"])
+
+    def test_a_responses_stream_is_forwarded_and_its_usage_read(self) -> None:
+        status, body = self.call(
+            "/r/task-6/v1/responses",
+            {"model": "deepseek-flash", "input": "hi", "stream": True},
+        )
+        self.assertEqual(status, 200)
+        text = body.decode()
+        # The client gets every event, including the one that carries usage.
+        self.assertIn("response.created", text)
+        self.assertIn("response.completed", text)
+
+        # Responses has no stream_options, so nothing may be injected into it.
+        self.assertNotIn("stream_options", FakeUpstream.seen[0]["body"])
+
+        row = self.rows()[0]
+        self.assertEqual(row["path"], "/v1/responses")
+        self.assertTrue(row["stream"])
+        self.assertFalse(row["usage_injected"])
+        self.assertEqual(row["usage"], "ok")
+        self.assertEqual(
+            (row["prompt_tokens"], row["completion_tokens"], row["cached_tokens"]),
+            (31, 7, 24),
+        )
+        self.assertEqual(row["total_tokens"], 38)
+
+    def test_a_responses_call_reads_its_top_level_usage(self) -> None:
+        status, _body = self.call(
+            "/r/task-7/v1/responses", {"model": "deepseek-flash", "input": "hi"}
+        )
+        self.assertEqual(status, 200)
+        row = self.rows()[0]
+        self.assertFalse(row["stream"])
+        self.assertEqual(row["usage"], "ok")
+        self.assertEqual((row["prompt_tokens"], row["completion_tokens"]), (13, 2))
+        self.assertIsNone(row["cached_tokens"])
 
     def test_an_upstream_failure_is_logged_with_its_status(self) -> None:
         status, _body = self.call(
