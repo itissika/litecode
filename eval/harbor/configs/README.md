@@ -63,6 +63,21 @@ row in the proxy's JSONL names both the run and the harness without a join.
 DeepSeek's own default is already high, so a harness that ignores the knob
 still runs at high; the note below only concerns whether the knob is honoured.
 
+## Known cost: every trial installs its CLI
+
+Harbor's installed agents install the CLI inside each trial's container: apt
+gets curl and node, nvm installs node 22, then `npm i -g <cli>`. opencode took
+over four minutes once, and a real run is four harnesses times many tasks, so
+this is paid again and again. The fix is a pre-baked harness image per harness
+(workbuddy-bench does this with `configs/harnesses/<harness>/docker/Dockerfile`
+and a split mount), which is **not** configured here yet.
+
+Until then, `agent_setup_timeout_multiplier: 4.0` in `bench/_default.yaml` is
+what keeps the setup from timing out. A registry mirror
+(`npm_config_registry=https://registry.npmmirror.com` in the harness env) is
+being tried first; if it holds up, it belongs in the harness layer, not in this
+note.
+
 ## Not verified here
 
 * opencode's `reasoningEffort` overlay key: read from opencode's provider
