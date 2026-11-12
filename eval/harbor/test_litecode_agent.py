@@ -130,13 +130,14 @@ class FakeEnvironment:
         turn_stdout: str | None = None,
         turn_stderr: str | None = None,
         trial_db: Path | None = None,
-        logs: Path | None = None,
     ) -> None:
         self.probe = probe
         self.turn_stdout = turn_stdout
         self.turn_stderr = turn_stderr
+        # What /logs/agent/litecode/sessions.db holds inside the container; the
+        # host never sees it, because run() finishes before Harbor copies it.
         self.trial_db = trial_db
-        self.logs = logs
+        self.downloads: list[str] = []
         self.uploads: list[tuple[Path, str]] = []
         self.commands: list[str] = []
         self.saved: dict[str, Path] = {}
@@ -156,14 +157,16 @@ class FakeEnvironment:
                 raise self.probe
             return Result(self.probe)
         if "litecode-run" in command:
-            # run_turn.sh copies the turn's session database into the mounted
-            # log directory; from then on it is a file on this side.
-            if self.trial_db is not None and self.logs is not None:
-                target = self.logs / "litecode"
-                target.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(self.trial_db, target / "sessions.db")
             return Result(0, stdout=self.turn_stdout, stderr=self.turn_stderr)
         return Result(0)
+
+    async def download_file(self, source: str, target: Path | str) -> None:
+        """What the container holds under /logs/agent, and nothing else."""
+        self.downloads.append(source)
+        if source == "/logs/agent/litecode/sessions.db" and self.trial_db is not None:
+            shutil.copyfile(self.trial_db, target)
+            return
+        raise FileNotFoundError(source)
 
 
 def _find_binary() -> Path | None:
@@ -351,7 +354,7 @@ class InstallTest(unittest.TestCase):
 
     def test_the_context_carries_this_turns_streams(self) -> None:
         environment = FakeEnvironment(
-            turn_stdout=self.REAL_USAGE + "\n", trial_db=self.one_user_turn(), logs=self.logs
+            turn_stdout=self.REAL_USAGE + "\n", trial_db=self.one_user_turn()
         )
         agent = self.adapter(answer=True)
         asyncio.run(agent.install(environment))
@@ -380,7 +383,7 @@ class InstallTest(unittest.TestCase):
 
     def test_the_usage_line_is_found_on_either_stream(self) -> None:
         environment = FakeEnvironment(
-            turn_stderr=self.REAL_USAGE + "\n", trial_db=self.one_user_turn(), logs=self.logs
+            turn_stderr=self.REAL_USAGE + "\n", trial_db=self.one_user_turn()
         )
         agent = self.adapter(answer=True)
         asyncio.run(agent.install(environment))
@@ -403,7 +406,7 @@ class InstallTest(unittest.TestCase):
         )
 
     def test_no_usage_line_leaves_the_context_unset(self) -> None:
-        environment = FakeEnvironment(trial_db=self.one_user_turn(), logs=self.logs)
+        environment = FakeEnvironment(trial_db=self.one_user_turn())
         agent = self.adapter(answer=True)
         asyncio.run(agent.install(environment))
         context = AgentContext()
@@ -560,12 +563,20 @@ class InstallTest(unittest.TestCase):
         ]
         database = self.transcript(rows)
         environment = FakeEnvironment(
-            turn_stdout=self.REAL_USAGE + "\n", trial_db=database, logs=self.logs
+            turn_stdout=self.REAL_USAGE + "\n", trial_db=database
         )
         agent = self.adapter(answer=True)
         asyncio.run(agent.install(environment))
+        # The timing this test must catch: the host has no transcript when the
+        # turn finishes — Harbor collects /logs/agent only afterwards.
+        self.assertFalse((self.logs / "litecode" / "sessions.db").exists())
         context = AgentContext()
         asyncio.run(agent.run("do the thing", environment, context))
+        self.assertFalse(
+            (self.logs / "litecode" / "sessions.db").exists(),
+            "reading it in place must not be enough",
+        )
+        self.assertIn("/logs/agent/litecode/sessions.db", environment.downloads)
 
         path = self.logs / litecode_agent._TRAJECTORY_FILE
         self.assertTrue(path.is_file(), "the trial directory must carry a trajectory")
@@ -607,7 +618,7 @@ class InstallTest(unittest.TestCase):
 
     def test_a_session_without_rows_leaves_no_trajectory(self) -> None:
         database = self.transcript([])
-        environment = FakeEnvironment(trial_db=database, logs=self.logs)
+        environment = FakeEnvironment(trial_db=database)
         agent = self.adapter(answer=True)
         asyncio.run(agent.install(environment))
 
@@ -617,10 +628,22 @@ class InstallTest(unittest.TestCase):
         self.assertFalse((self.logs / litecode_agent._TRAJECTORY_FILE).exists())
         self.assertIn("no trajectory", stderr.getvalue())
 
+    def test_a_run_without_a_downloadable_database_leaves_no_trajectory(self) -> None:
+        environment = FakeEnvironment()
+        agent = self.adapter(answer=True)
+        asyncio.run(agent.install(environment))
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            asyncio.run(agent.run("do the thing", environment, AgentContext()))
+        self.assertFalse((self.logs / litecode_agent._TRAJECTORY_FILE).exists())
+        self.assertIn("no trajectory", stderr.getvalue())
+        self.assertIn("/logs/agent/litecode/sessions.db", environment.downloads)
+
     def test_an_unreadable_database_leaves_no_trajectory(self) -> None:
         broken = self.work / "broken.db"
         broken.write_bytes(b"this is not a database")
-        environment = FakeEnvironment(trial_db=broken, logs=self.logs)
+        environment = FakeEnvironment(trial_db=broken)
         agent = self.adapter(answer=True)
         asyncio.run(agent.install(environment))
 

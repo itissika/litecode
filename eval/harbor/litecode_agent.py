@@ -629,18 +629,57 @@ class LiteCode(BaseInstalledAgent):
         except OSError:
             return None
 
+    async def _download_transcript(self, environment: BaseEnvironment) -> Path | None:
+        """The turn's `sessions.db`, pulled out of the container.
+
+        When run() returns, Harbor has not copied `/logs/agent` to the host yet —
+        the host directory is still empty — so the database is fetched by name
+        instead of read in place. The WAL files travel with it when the copy
+        has them. A database that is not there is None, and the caller says so
+        once: a run with no transcript reports no trajectory, never a guess.
+        """
+        scratch = Path(tempfile.mkdtemp(prefix="litecode-transcript-"))
+        target = scratch / _SESSION_DB
+        remote = f"/logs/agent/{_ARTIFACT_DIR}/{_SESSION_DB}"
+        try:
+            await environment.download_file(remote, target)
+        except Exception:
+            shutil.rmtree(scratch, ignore_errors=True)
+            return None
+        if not target.is_file():
+            shutil.rmtree(scratch, ignore_errors=True)
+            return None
+        for suffix in ("-wal", "-shm"):
+            try:
+                await environment.download_file(
+                    remote + suffix, target.with_name(target.name + suffix)
+                )
+            except Exception:
+                # A copy without its journal is still a database.
+                continue
+        return target
+
     def _write_trajectory(
-        self, usage: tuple[int, int, int, int] | None, cost: float | None
+        self,
+        usage: tuple[int, int, int, int] | None,
+        cost: float | None,
+        database: Path | None,
     ) -> None:
         """Leave `trajectory.json`: what this turn actually did, step by step.
 
-        The rows come from the trial's own `sessions.db`, the copy the run left
-        under /logs/agent. A database that cannot be read, a session with no
-        turn rows, or a document Harbor's model refuses all mean no file: a
-        trajectory is a record, and a made-up one is worse than a missing one.
-        Each of those says so on stderr.
+        The rows come from the database `run()` downloaded, the same one the
+        trial keeps under /logs/agent. A database that could not be downloaded
+        or read, a session with no turn rows, or a document Harbor's model
+        refuses all mean no file: a trajectory is a record, and a made-up one
+        is worse than a missing one. Each of those says so on stderr.
         """
-        database = Path(self.logs_dir) / _ARTIFACT_DIR / _SESSION_DB
+        if database is None:
+            print(
+                "litecode adapter: no trajectory: the turn's sessions.db could not "
+                "be downloaded from the container",
+                file=sys.stderr,
+            )
+            return
         try:
             session_id, rows = _read_transcript(database)
         except (OSError, sqlite3.Error) as error:
@@ -824,7 +863,14 @@ class LiteCode(BaseInstalledAgent):
         # One parse, two readers: result.json and the trajectory quote the same
         # numbers because both come from this tuple.
         self._report(context, usage)
-        self._write_trajectory(usage, context.cost_usd)
+        # Harbor copies /logs/agent to the host only after this returns, so the
+        # transcript is fetched from the container while it is still there.
+        database = await self._download_transcript(environment)
+        try:
+            self._write_trajectory(usage, context.cost_usd, database)
+        finally:
+            if database is not None:
+                shutil.rmtree(database.parent, ignore_errors=True)
 
     def _report(self, context: AgentContext, usage: tuple[int, int, int, int] | None) -> None:
         """Put one usage line on the context Harbor sums into result.json."""

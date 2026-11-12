@@ -154,11 +154,15 @@ numbers in its own summary.
 
 ## 6. The trajectory
 
-`agent/trajectory.json` is written at the end of `run()`, from the trial's own
-copy of `sessions.db` (`agent/litecode/sessions.db`, table `transcript_items`, in
-`seq` order). It is ATIF-v1.8 and `harbor view` reads it from that path; no
-capability flag is involved (`AgentCapabilities.atif` only gates `harbor traces`
-export).
+`agent/trajectory.json` is written at the end of `run()`, from the turn's
+`sessions.db` — table `transcript_items`, in `seq` order. That database is
+pulled out of the container with `download_file` right after the turn: when
+`run()` returns, Harbor has not copied `/logs/agent` to the host yet, so the
+host directory is still empty and reading it in place would find nothing. The
+`-wal`/`-shm` files come along when the container has them.
+
+The file is ATIF-v1.8 and `harbor view` reads it from that path; no capability
+flag is involved (`AgentCapabilities.atif` only gates `harbor traces` export).
 
 One `item/user` row becomes a step with `source: "user"`. One model response
 becomes a step with `source: "agent"`: its text in `message`, its reasoning in
