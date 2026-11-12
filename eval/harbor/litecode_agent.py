@@ -31,6 +31,8 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, override
 
@@ -60,6 +62,16 @@ _ARTIFACT_DIR = "litecode"
 _APPLIED_FILE = "profile.applied.json"
 _PROFILE_FILE = "profile.json"
 _BUILD_INFO_FILE = "build-info.json"
+
+# ATIF is Harbor's trajectory format; the viewer reads this file and nothing
+# else. The version is the one Harbor's model defaults to today.
+_ATIF_VERSION = "ATIF-v1.8"
+_TRAJECTORY_FILE = "trajectory.json"
+_SESSION_DB = "sessions.db"
+
+# The rows that carry the turn's conversation. Everything else in the
+# database (reminders, request headers, turn markers) is bookkeeping.
+_ITEM_KINDS = ("item/user", "item/assistant", "item/tool_call", "item/tool_result")
 
 # The Exa key is the web channel's credential; without it websearch still runs,
 # keyless and rate-limited. It reaches the run the same way the provider key
@@ -139,6 +151,274 @@ def _usage(*texts: str | None) -> tuple[int, int, int, int] | None:
     return prompt, completion, cached, cache_miss
 
 
+def _json_object(text: str | None) -> dict[str, Any] | None:
+    """The row's body, when it is a JSON object."""
+    if not text:
+        return None
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _text_of(body: dict[str, Any] | None) -> str:
+    """The text a message or reasoning body carries, in part order."""
+    if body is None:
+        return ""
+    content = body.get("content")
+    if not isinstance(content, list):
+        return ""
+    parts = [
+        part["text"]
+        for part in content
+        if isinstance(part, dict) and isinstance(part.get("text"), str)
+    ]
+    return "\n".join(parts)
+
+
+def _tool_call(body: dict[str, Any] | None) -> dict[str, Any] | None:
+    """One ATIF tool call, or None when the row cannot name a complete one.
+
+    A call without a name, an id or readable arguments is not invented back:
+    the row is left out and the caller says so on stderr.
+    """
+    if body is None:
+        return None
+    name = body.get("name")
+    call_id = body.get("call_id")
+    if not isinstance(name, str) or not name:
+        return None
+    if not isinstance(call_id, str) or not call_id:
+        return None
+    raw = body.get("arguments")
+    if isinstance(raw, dict):
+        arguments = raw
+    elif isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        arguments = parsed
+    else:
+        return None
+    return {"tool_call_id": call_id, "function_name": name, "arguments": arguments}
+
+
+def _timestamp(milliseconds: Any) -> str | None:
+    """ISO 8601 UTC for a row's created_at, when it is a real time."""
+    if not isinstance(milliseconds, int) or milliseconds <= 0:
+        return None
+    return (
+        datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _build_trajectory(
+    rows: list[dict[str, Any]],
+    *,
+    session_id: str,
+    agent_name: str,
+    agent_version: str,
+    model_name: str | None,
+    usage: tuple[int, int, int, int] | None,
+    cost: float | None,
+    warn: Callable[[str], None],
+) -> dict[str, Any] | None:
+    """One ATIF document for the turn these rows describe, or None if empty.
+
+    One assistant response is one step: a `request/header` row opens a response,
+    so it closes the step before it, and the assistant/reasoning/tool_call rows
+    after it belong together. Tool results attach to the step whose calls they
+    answer, which is where ATIF puts an observation. Nothing is emitted that the
+    database does not contain: a step without text, reasoning or calls is
+    dropped, and a call or result that cannot be read is skipped out loud.
+    """
+    steps: list[dict[str, Any]] = []
+    open_step: dict[str, Any] | None = None
+
+    def start(created_at: Any) -> dict[str, Any]:
+        return {
+            "_text": [],
+            "_reasoning": [],
+            "_calls": [],
+            "_results": [],
+            "_timestamp": _timestamp(created_at),
+        }
+
+    def add(step: dict[str, Any]) -> None:
+        step["step_id"] = len(steps) + 1
+        steps.append(step)
+
+    def close() -> None:
+        nonlocal open_step
+        if open_step is None:
+            return
+        text = "\n".join(open_step["_text"])
+        reasoning = "\n".join(open_step["_reasoning"])
+        calls = open_step["_calls"]
+        results = open_step["_results"]
+        timestamp = open_step["_timestamp"]
+        open_step = None
+        if not text and not reasoning and not calls:
+            return
+        step: dict[str, Any] = {"source": "agent", "message": text}
+        if timestamp is not None:
+            step["timestamp"] = timestamp
+        if reasoning:
+            step["reasoning_content"] = reasoning
+        if calls:
+            step["tool_calls"] = calls
+            if results:
+                step["observation"] = {"results": results}
+        add(step)
+
+    for row in rows:
+        kind = row.get("kind")
+        created_at = row.get("created_at")
+        if kind == "request/header":
+            # A model response begins here, so the previous one just ended.
+            close()
+            continue
+        if kind not in _ITEM_KINDS:
+            continue
+        body = _json_object(row.get("body"))
+        if kind == "item/user":
+            close()
+            text = _text_of(body)
+            if not text:
+                warn(f"a user row at seq {row.get('seq')} has no text")
+                continue
+            step = {"source": "user", "message": text}
+            timestamp = _timestamp(created_at)
+            if timestamp is not None:
+                step["timestamp"] = timestamp
+            add(step)
+        elif kind == "item/assistant":
+            if open_step is None:
+                open_step = start(created_at)
+            text = _text_of(body)
+            if not text:
+                continue
+            if body is not None and body.get("type") == "reasoning":
+                open_step["_reasoning"].append(text)
+            else:
+                open_step["_text"].append(text)
+        elif kind == "item/tool_call":
+            if open_step is None:
+                open_step = start(created_at)
+            call = _tool_call(body)
+            if call is None:
+                warn(f"a tool call at seq {row.get('seq')} cannot be read")
+                continue
+            open_step["_calls"].append(call)
+        elif kind == "item/tool_result":
+            if open_step is None:
+                warn(f"a tool result at seq {row.get('seq')} answers no call")
+                continue
+            call_id = body.get("call_id") if body is not None else None
+            if not isinstance(call_id, str) or call_id not in {
+                call["tool_call_id"] for call in open_step["_calls"]
+            }:
+                warn(f"a tool result at seq {row.get('seq')} answers no call in its step")
+                continue
+            result: dict[str, Any] = {"source_call_id": call_id}
+            output = body.get("output") if body is not None else None
+            if isinstance(output, str):
+                result["content"] = output
+            open_step["_results"].append(result)
+    close()
+
+    if not steps:
+        return None
+
+    record: dict[str, Any] = {
+        "schema_version": _ATIF_VERSION,
+        "agent": {
+            "name": agent_name,
+            "version": agent_version,
+            "model_name": model_name,
+        },
+        "steps": steps,
+    }
+    if session_id:
+        record["session_id"] = session_id
+    if usage is not None:
+        prompt, completion, cached, _cache_miss = usage
+        metrics: dict[str, Any] = {
+            "total_prompt_tokens": prompt,
+            "total_completion_tokens": completion,
+            "total_cached_tokens": cached,
+            "total_steps": len(steps),
+        }
+        if cost is not None:
+            metrics["total_cost_usd"] = cost
+        record["final_metrics"] = metrics
+    return record
+
+
+def _read_transcript(database: Path) -> tuple[str, list[dict[str, Any]]]:
+    """The session with the newest activity and its rows, in seq order.
+
+    Copied aside first: the trial's copy may still have a WAL beside it, and a
+    read must not leave journal files in an artifact.
+    """
+    with tempfile.TemporaryDirectory(prefix="litecode-trajectory-") as scratch:
+        copy = Path(scratch) / database.name
+        shutil.copyfile(database, copy)
+        for suffix in ("-wal", "-shm"):
+            journal = database.with_name(database.name + suffix)
+            if journal.is_file():
+                shutil.copyfile(journal, copy.with_name(copy.name + suffix))
+        conn = sqlite3.connect(copy)
+        try:
+            chosen = conn.execute(
+                "SELECT session_id FROM transcript_items "
+                "GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT 1"
+            ).fetchone()
+            if chosen is None:
+                return "", []
+            session_id = str(chosen[0])
+            rows = [
+                {
+                    "seq": seq,
+                    "kind": kind,
+                    "body": body,
+                    "created_at": created_at,
+                }
+                for seq, kind, body, created_at in conn.execute(
+                    "SELECT seq, kind, body, created_at FROM transcript_items "
+                    "WHERE session_id = ? ORDER BY seq",
+                    (session_id,),
+                )
+            ]
+        finally:
+            conn.close()
+    return session_id, rows
+
+
+def _validate_trajectory(record: dict[str, Any]) -> str | None:
+    """Harbor's own ATIF model as the arbiter.
+
+    None means the model accepted it, or that this Harbor ships no model to
+    check against (an import that fails is not a verdict). Anything else is the
+    reason it refused.
+    """
+    try:
+        from harbor.models.trajectories.trajectory import Trajectory
+    except Exception:
+        return None
+    try:
+        Trajectory.model_validate(record)
+    except Exception as error:
+        return str(error)
+    return None
+
+
 def _exit_status(result: Any) -> int | None:
     """The exec status of a Harbor result, whatever field it carries it in."""
     for name in ("exit_code", "return_code", "code"):
@@ -159,6 +439,10 @@ class LiteCode(BaseInstalledAgent):
     # Set when the logs mount cannot be written during install (some Harbor
     # versions only mount it for the trial); run() writes it before the turn.
     _pending_artifact: tuple[dict[str, Any], bytes, bytes, bool, str] | None = None
+
+    # The commit the binary came from, as recorded by build.sh; the trajectory
+    # names it so a step can be traced back to the build that made it.
+    _build_version = "unknown"
 
     @staticmethod
     @override
@@ -345,6 +629,62 @@ class LiteCode(BaseInstalledAgent):
         except OSError:
             return None
 
+    def _write_trajectory(
+        self, usage: tuple[int, int, int, int] | None, cost: float | None
+    ) -> None:
+        """Leave `trajectory.json`: what this turn actually did, step by step.
+
+        The rows come from the trial's own `sessions.db`, the copy the run left
+        under /logs/agent. A database that cannot be read, a session with no
+        turn rows, or a document Harbor's model refuses all mean no file: a
+        trajectory is a record, and a made-up one is worse than a missing one.
+        Each of those says so on stderr.
+        """
+        database = Path(self.logs_dir) / _ARTIFACT_DIR / _SESSION_DB
+        try:
+            session_id, rows = _read_transcript(database)
+        except (OSError, sqlite3.Error) as error:
+            print(
+                f"litecode adapter: no trajectory: {database} unreadable ({error})",
+                file=sys.stderr,
+            )
+            return
+        announced: set[str] = set()
+
+        def warn(message: str) -> None:
+            # One line, however often the same row shape repeats.
+            if message in announced:
+                return
+            announced.add(message)
+            print(f"litecode adapter: trajectory left a row out: {message}", file=sys.stderr)
+
+        record = _build_trajectory(
+            rows,
+            session_id=session_id,
+            agent_name=self.name(),
+            agent_version=self._build_version,
+            model_name=self.model_name or None,
+            usage=usage,
+            cost=cost,
+            warn=warn,
+        )
+        if record is None:
+            print(
+                f"litecode adapter: no trajectory: {database} has no turn rows",
+                file=sys.stderr,
+            )
+            return
+        complaint = _validate_trajectory(record)
+        if complaint is not None:
+            print(
+                f"litecode adapter: no trajectory: Harbor's ATIF model refused it "
+                f"({complaint})",
+                file=sys.stderr,
+            )
+            return
+        target = Path(self.logs_dir) / _TRAJECTORY_FILE
+        target.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
     # ── install / run ────────────────────────────────────────────────────
 
     @override
@@ -385,6 +725,7 @@ class LiteCode(BaseInstalledAgent):
             raise RuntimeError(f"{build_info} is not JSON: {error}") from error
         if not provenance_record.get("commit"):
             raise RuntimeError(f"{build_info} does not name a commit")
+        self._build_version = str(provenance_record["commit"])[:12]
         dirty = bool(provenance_record.get("dirty"))
         allowed_to_be_dirty = os.environ.get(_ALLOW_DIRTY_ENV, "").strip() == "1"
         if dirty and not allowed_to_be_dirty:
@@ -478,26 +819,15 @@ class LiteCode(BaseInstalledAgent):
         # `litecode.txt` is written by Harbor after this returns, so at this point
         # the usage line exists only in this exec's streams. Both are read: the
         # CLI prints its summary to whichever one it was given.
-        self.populate_context_post_run(
-            context,
-            getattr(result, "stdout", None),
-            getattr(result, "stderr", None),
-        )
+        streams = (getattr(result, "stdout", None), getattr(result, "stderr", None))
+        usage = _usage(*streams)
+        # One parse, two readers: result.json and the trajectory quote the same
+        # numbers because both come from this tuple.
+        self._report(context, usage)
+        self._write_trajectory(usage, context.cost_usd)
 
-    @override
-    def populate_context_post_run(self, context: AgentContext, *sources: str | None) -> None:
-        """Report the run's usage in the fields Harbor sums into result.json.
-
-        Two entries share this one implementation. `run()` passes the exec
-        streams it just received. Harbor calls the hook with no sources when
-        recovering outputs from a cancelled or failed trial; then the trial's
-        `litecode.txt` is the only text left. This is the whole accounting —
-        Harbor reads `n_input_tokens` (cached tokens included), `n_cache_tokens`,
-        `n_output_tokens` and `cost_usd` from the context. No usage line means
-        the fields stay unset (None), never 0: an unmeasured run must not look
-        like a free one.
-        """
-        usage = _usage(*(sources or (self._trial_log(),)))
+    def _report(self, context: AgentContext, usage: tuple[int, int, int, int] | None) -> None:
+        """Put one usage line on the context Harbor sums into result.json."""
         if usage is None:
             return
         prompt, completion, cached, _cache_miss = usage
@@ -505,3 +835,18 @@ class LiteCode(BaseInstalledAgent):
         context.n_cache_tokens = cached
         context.n_output_tokens = completion
         context.cost_usd = _cost_usd(self.model_name, prompt, completion, cached)
+
+    @override
+    def populate_context_post_run(self, context: AgentContext, *sources: str | None) -> None:
+        """Report the run's usage in the fields Harbor sums into result.json.
+
+        Two entries share this one implementation. run() passes the exec streams
+        it just received. Harbor calls the hook with no sources when recovering
+        outputs from a cancelled or failed trial; then the trial's log file is
+        the only text left. This is the whole accounting: Harbor reads
+        n_input_tokens (cached tokens included), n_cache_tokens,
+        n_output_tokens and cost_usd from the context. No usage line means the
+        fields stay unset (None), never 0: an unmeasured run must not look like
+        a free one.
+        """
+        self._report(context, _usage(*(sources or (self._trial_log(),))))

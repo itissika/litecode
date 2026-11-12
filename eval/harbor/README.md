@@ -128,6 +128,7 @@ there is kept:
 | `agent/litecode/profile.json` | the applied profile: web resolved, tools, tiers, knobs, `network`, `websearch`, and the hashes |
 | `agent/litecode/profile.applied.json` | the same document as the CLI wrote it; `profile.json` quotes its sha256 |
 | `agent/litecode/build-info.json` | the binary's provenance, byte for byte, with the hashed copy linked from `profile.json` |
+| `agent/trajectory.json` | the turn as ATIF-v1.8, one step per message and per model response, for `harbor view` |
 
 The turn's numbers reach Harbor through the `AgentContext` that `result.json`
 sums: `n_input_tokens` (cached tokens included), `n_cache_tokens`,
@@ -142,12 +143,6 @@ Cost is Harbor's LiteLLM price table when it can price the model; otherwise (and
 zero it returns) the field stays `None`, and a run with no usage line leaves all
 four unset rather than 0.
 
-Not done, on purpose: a real ATIF trajectory (`agent/trajectory.json`, generated
-step by step from `sessions.db`) with `capabilities = AgentCapabilities(atif=True)`
-from `harbor/agents/capabilities.py`. A one-step summary would render in the
-viewer as if the whole run were one interaction, which is worse than no
-trajectory at all.
-
 The usage line looks like
 
 ```
@@ -157,7 +152,32 @@ The usage line looks like
 and the adapter parses it into `AgentContext`, so Harbor reports the same
 numbers in its own summary.
 
-## 6. Which commit did this row run?
+## 6. The trajectory
+
+`agent/trajectory.json` is written at the end of `run()`, from the trial's own
+copy of `sessions.db` (`agent/litecode/sessions.db`, table `transcript_items`, in
+`seq` order). It is ATIF-v1.8 and `harbor view` reads it from that path; no
+capability flag is involved (`AgentCapabilities.atif` only gates `harbor traces`
+export).
+
+One `item/user` row becomes a step with `source: "user"`. One model response
+becomes a step with `source: "agent"`: its text in `message`, its reasoning in
+`reasoning_content`, and the calls it made in `tool_calls` (`call_id` →
+`tool_call_id`, the `arguments` JSON string parsed into an object). A
+`item/tool_result` attaches to the step that made the call, as
+`observation.results[]` with `source_call_id`. A `request/header` row marks
+where a response begins, so it closes the step before it.
+
+`final_metrics` quotes the same four numbers `run()` puts on the `AgentContext`
+— one parse of the usage line, so the file and `result.json` cannot disagree —
+plus `total_steps`. Nothing is invented. A database that cannot be read, a
+session with no turn rows, or a document Harbor's ATIF model refuses all mean
+no file, and one line on stderr says which; rows that cannot be read (a call
+without an id or with arguments that are not JSON) are left out, also named on
+stderr.
+
+
+## 7. Which commit did this row run?
 
 Every artifact carries its provenance. The tree that builds must be a git
 checkout, and `build.sh` writes `bin/build-info.json` next to the binary:
@@ -205,7 +225,7 @@ This tree is for building and packaging the eval binary, not a general
 workspace; `git checkout -- .` will not restore files that were never
 materialised.
 
-## 7. When HEAD moves
+## 8. When HEAD moves
 
 The tree is a clone of the Windows checkout, so it has to be told when that
 checkout advances. One command, either source:

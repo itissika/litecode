@@ -9,7 +9,9 @@ is checked field by field. Without a built binary the tests skip.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -127,10 +129,14 @@ class FakeEnvironment:
         probe: int | None | BaseException = 0,
         turn_stdout: str | None = None,
         turn_stderr: str | None = None,
+        trial_db: Path | None = None,
+        logs: Path | None = None,
     ) -> None:
         self.probe = probe
         self.turn_stdout = turn_stdout
         self.turn_stderr = turn_stderr
+        self.trial_db = trial_db
+        self.logs = logs
         self.uploads: list[tuple[Path, str]] = []
         self.commands: list[str] = []
         self.saved: dict[str, Path] = {}
@@ -150,6 +156,12 @@ class FakeEnvironment:
                 raise self.probe
             return Result(self.probe)
         if "litecode-run" in command:
+            # run_turn.sh copies the turn's session database into the mounted
+            # log directory; from then on it is a file on this side.
+            if self.trial_db is not None and self.logs is not None:
+                target = self.logs / "litecode"
+                target.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(self.trial_db, target / "sessions.db")
             return Result(0, stdout=self.turn_stdout, stderr=self.turn_stderr)
         return Result(0)
 
@@ -183,6 +195,23 @@ def _seeded_db(binary: Path, work: Path) -> Path:
     return home / litecode_agent._DB_RELATIVE
 
 
+def _session_store(binary: Path, work: Path) -> Path:
+    """An empty sessions.db with the app's own schema, as a trial leaves it."""
+    home = work / "store-home"
+    workspace = work / "store-ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [str(binary), "--workspace", str(workspace), "list-sessions"],
+        env=litecode_agent.LiteCode._isolated_env(home),
+        capture_output=True,
+        check=True,
+    )
+    database = workspace / ".litecode" / "sessions.db"
+    if not database.is_file():
+        raise AssertionError(f"the CLI did not create {database}")
+    return database
+
+
 class Answered(litecode_agent.LiteCode):
     """The adapter with the probe injected: what a test asserts against."""
 
@@ -203,6 +232,7 @@ class InstallTest(unittest.TestCase):
         self.work = Path(tempfile.mkdtemp(prefix="litecode-test-"))
         self.addCleanup(shutil.rmtree, self.work, True)
         self.seed = _seeded_db(BINARY, self.work)
+        self.session_store = _session_store(BINARY, self.work)
         self.build_info = self.work / "build-info.json"
         self.build_info.write_text(
             json.dumps({"commit": "c0ffee1", "branch": "eval-branch", "dirty": False}, indent=2)
@@ -305,11 +335,32 @@ class InstallTest(unittest.TestCase):
     # The numbers are from a real trial: cache_hit + cache_miss == prompt.
     REAL_USAGE = "[litecode] completed in 41.2s — tokens prompt=57111 completion=3401 cache_hit=55424 cache_miss=1687"
 
+    def one_user_turn(self) -> Path:
+        return self.transcript(
+            [
+                (
+                    "item/user",
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "do the thing"}],
+                    },
+                )
+            ]
+        )
+
     def test_the_context_carries_this_turns_streams(self) -> None:
-        environment = FakeEnvironment(turn_stdout=self.REAL_USAGE + "\n")
+        environment = FakeEnvironment(
+            turn_stdout=self.REAL_USAGE + "\n", trial_db=self.one_user_turn(), logs=self.logs
+        )
         agent = self.adapter(answer=True)
         asyncio.run(agent.install(environment))
-        before = {path.name: path.read_bytes() for path in self.artifacts().iterdir()}
+        installed = (
+            litecode_agent._PROFILE_FILE,
+            litecode_agent._APPLIED_FILE,
+            litecode_agent._BUILD_INFO_FILE,
+        )
+        before = {name: (self.artifacts() / name).read_bytes() for name in installed}
 
         context = AgentContext()
         # The success path, with the real timing: at this point Harbor has not
@@ -324,11 +375,13 @@ class InstallTest(unittest.TestCase):
         # Priced or unpriced, never a zero placeholder.
         self.assertTrue(context.cost_usd is None or context.cost_usd > 0)
         # The three install artifacts are not rewritten by a run.
-        after = {path.name: path.read_bytes() for path in self.artifacts().iterdir()}
+        after = {name: (self.artifacts() / name).read_bytes() for name in installed}
         self.assertEqual(before, after)
 
     def test_the_usage_line_is_found_on_either_stream(self) -> None:
-        environment = FakeEnvironment(turn_stderr=self.REAL_USAGE + "\n")
+        environment = FakeEnvironment(
+            turn_stderr=self.REAL_USAGE + "\n", trial_db=self.one_user_turn(), logs=self.logs
+        )
         agent = self.adapter(answer=True)
         asyncio.run(agent.install(environment))
         context = AgentContext()
@@ -350,7 +403,7 @@ class InstallTest(unittest.TestCase):
         )
 
     def test_no_usage_line_leaves_the_context_unset(self) -> None:
-        environment = FakeEnvironment()
+        environment = FakeEnvironment(trial_db=self.one_user_turn(), logs=self.logs)
         agent = self.adapter(answer=True)
         asyncio.run(agent.install(environment))
         context = AgentContext()
@@ -413,6 +466,170 @@ class InstallTest(unittest.TestCase):
                 self.assertIn("/tmp/litecode", remotes)
                 self.assertIn("/tmp/litecode.db", remotes)
                 self.assertTrue(any("litecode --help" in c for c in environment.commands))
+
+    # ── the trajectory Harbor's viewer reads ─────────────────────────────
+
+    SESSION = "01MTESTTRAJECTORY0000000A"
+
+    _ITEM_TYPES = {
+        "item/user": "message",
+        "item/assistant": "message",
+        "item/tool_call": "function_call",
+        "item/tool_result": "function_call_output",
+        "request/header": "request/header",
+    }
+
+    def transcript(self, rows: list[tuple[str, dict]]) -> Path:
+        """The trial's sessions.db plus this turn's rows, as the CLI writes them."""
+        copy = self.work / "trial.db"
+        shutil.copyfile(self.session_store, copy)
+        conn = sqlite3.connect(copy)
+        try:
+            for seq, (kind, body) in enumerate(rows):
+                conn.execute(
+                    "INSERT INTO transcript_items "
+                    "(session_id, seq, item_type, kind, body, created_at, event_type, surface_op) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'append')",
+                    (
+                        self.SESSION,
+                        seq,
+                        self._ITEM_TYPES[kind],
+                        kind,
+                        json.dumps(body),
+                        1_700_000_000_000 + seq,
+                        kind,
+                    ),
+                )
+            conn.commit()
+            conn.execute("PRAGMA journal_mode=delete")
+        finally:
+            conn.close()
+        return copy
+
+    @staticmethod
+    def message(text: str) -> dict:
+        return {"type": "message", "role": "assistant", "content": [{"type": "text", "text": text}]}
+
+    def test_the_run_writes_the_trajectory(self) -> None:
+        rows: list[tuple[str, dict]] = [
+            (
+                "item/user",
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "fix the password reset"}],
+                },
+            ),
+            ("request/header", {"schema": 1, "step": 1}),
+            (
+                "item/assistant",
+                {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": "read the handler first"}],
+                },
+            ),
+            (
+                "item/tool_call",
+                {
+                    "type": "function_call",
+                    "arguments": json.dumps({"path": "auth.py"}),
+                    "call_id": "call_1",
+                    "name": "read",
+                },
+            ),
+            (
+                "item/tool_result",
+                {"type": "function_call_output", "call_id": "call_1", "output": "def reset(): ..."},
+            ),
+            ("request/header", {"schema": 1, "step": 2}),
+            (
+                "item/tool_call",
+                {
+                    "type": "function_call",
+                    "arguments": json.dumps({"path": "auth.py", "old": "a", "new": "b"}),
+                    "call_id": "call_2",
+                    "name": "edit",
+                },
+            ),
+            (
+                "item/tool_result",
+                {"type": "function_call_output", "call_id": "call_2", "output": "ok"},
+            ),
+            ("item/assistant", self.message("fixed the reset path")),
+        ]
+        database = self.transcript(rows)
+        environment = FakeEnvironment(
+            turn_stdout=self.REAL_USAGE + "\n", trial_db=database, logs=self.logs
+        )
+        agent = self.adapter(answer=True)
+        asyncio.run(agent.install(environment))
+        context = AgentContext()
+        asyncio.run(agent.run("do the thing", environment, context))
+
+        path = self.logs / litecode_agent._TRAJECTORY_FILE
+        self.assertTrue(path.is_file(), "the trial directory must carry a trajectory")
+        record = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(record["schema_version"], "ATIF-v1.8")
+        self.assertEqual(record["session_id"], self.SESSION)
+        self.assertEqual(record["agent"]["name"], "litecode")
+        self.assertEqual(record["agent"]["version"], "c0ffee1")
+
+        steps = record["steps"]
+        self.assertEqual([step["step_id"] for step in steps], [1, 2, 3])
+        self.assertEqual([step["source"] for step in steps], ["user", "agent", "agent"])
+        self.assertEqual(steps[0]["message"], "fix the password reset")
+
+        # One tool call per item/tool_call row, in the order the CLI wrote them.
+        calls = [call for step in steps for call in step.get("tool_calls", [])]
+        self.assertEqual(len(calls), sum(1 for kind, _ in rows if kind == "item/tool_call"))
+        self.assertEqual([call["function_name"] for call in calls], ["read", "edit"])
+        self.assertEqual(calls[0]["arguments"], {"path": "auth.py"})
+        self.assertEqual(steps[1]["reasoning_content"], "read the handler first")
+        self.assertEqual(
+            [result["source_call_id"] for result in steps[1]["observation"]["results"]],
+            ["call_1"],
+        )
+        self.assertEqual(steps[2]["message"], "fixed the reset path")
+
+        # final_metrics is the same accounting result.json gets, not a second one.
+        metrics = record["final_metrics"]
+        self.assertEqual(metrics["total_prompt_tokens"], context.n_input_tokens)
+        self.assertEqual(metrics["total_completion_tokens"], context.n_output_tokens)
+        self.assertEqual(metrics["total_cached_tokens"], context.n_cache_tokens)
+        self.assertEqual(metrics["total_steps"], len(steps))
+        if context.cost_usd is not None:
+            self.assertEqual(metrics["total_cost_usd"], context.cost_usd)
+
+        # Harbor's own model is the arbiter, when this machine has it.
+        self.assertIsNone(litecode_agent._validate_trajectory(record))
+
+    def test_a_session_without_rows_leaves_no_trajectory(self) -> None:
+        database = self.transcript([])
+        environment = FakeEnvironment(trial_db=database, logs=self.logs)
+        agent = self.adapter(answer=True)
+        asyncio.run(agent.install(environment))
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            asyncio.run(agent.run("do the thing", environment, AgentContext()))
+        self.assertFalse((self.logs / litecode_agent._TRAJECTORY_FILE).exists())
+        self.assertIn("no trajectory", stderr.getvalue())
+
+    def test_an_unreadable_database_leaves_no_trajectory(self) -> None:
+        broken = self.work / "broken.db"
+        broken.write_bytes(b"this is not a database")
+        environment = FakeEnvironment(trial_db=broken, logs=self.logs)
+        agent = self.adapter(answer=True)
+        asyncio.run(agent.install(environment))
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            asyncio.run(agent.run("do the thing", environment, AgentContext()))
+        self.assertFalse((self.logs / litecode_agent._TRAJECTORY_FILE).exists())
+        self.assertIn("unreadable", stderr.getvalue())
+
 
 
 if __name__ == "__main__":
