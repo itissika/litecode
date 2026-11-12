@@ -1,0 +1,6 @@
+harness:
+  name: grok-build
+  protocol: openai
+  params:
+    # Harbor compiles this to `grok --reasoning-effort high`.
+    reasoning_effort: high

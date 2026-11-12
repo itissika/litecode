@@ -1,0 +1,15 @@
+harness:
+  name: opencode
+  protocol: openai
+  params:
+    # opencode has no reasoning-effort flag; the level is a per-model request
+    # option in its config overlay, passed through to the provider SDK.
+    # Unverified until the WSL smoke run: if opencode drops this key, DeepSeek's
+    # own default is still high, so the run stays honest either way.
+    opencode_config:
+      provider:
+        deepseek:
+          models:
+            deepseek-flash:
+              options:
+                reasoningEffort: high

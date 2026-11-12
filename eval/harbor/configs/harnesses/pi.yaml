@@ -1,0 +1,7 @@
+# Layer 2 of 4: the agent CLI under test, run as a Harbor installed agent.
+harness:
+  name: pi
+  protocol: openai
+  params:
+    # pi's thinking level; Harbor compiles this to `pi --thinking high`.
+    reasoning_effort: high

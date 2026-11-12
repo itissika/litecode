@@ -251,3 +251,15 @@ the new commit and warns if the working tree is dirty (which would make the next
 ```bash
 bash eval/harbor/build.sh
 ```
+
+## 9. Job configs for the other harnesses
+
+`configs/` holds the four-layer job configs (bench / harness / model / job),
+the same split and merge order workbuddy-bench documents in its
+`configs/README.md`. `configs/resolve.py` deep-merges them into one Harbor job
+YAML; the endpoint root comes from `EVAL_EGRESS_BASE_URL`, never from a file,
+and a model-limit override is a hard error. See [configs/README.md](configs/README.md).
+
+Harnesses configured so far: `pi`, `grok-build`, `opencode` — each at thinking
+high, on `deepseek/deepseek-flash`, through the egress proxy. Codex is not in
+that job yet: it speaks Responses and needs a native `config.toml`.

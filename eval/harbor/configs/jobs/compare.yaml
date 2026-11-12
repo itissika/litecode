@@ -1,0 +1,7 @@
+# Layer 4 of 4: a job composes the other layers; it does not add a new surface.
+job:
+  # The same dataset, the same model, one trial per harness.
+  harnesses: [pi, grok-build, opencode]
+  model: deepseek-flash
+  # The resolver requires --dataset; this empty value is what "not given" looks like.
+  dataset: ""
