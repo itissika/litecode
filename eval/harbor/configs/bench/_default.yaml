@@ -4,6 +4,9 @@
 bench:
   n_attempts: 1
   n_concurrent_trials: 4
+  # Installing a CLI inside every trial is slow (opencode: apt + nvm + npm ran
+  # past 360 s once); the setup window is the harness's, not the task's.
+  agent_setup_timeout_multiplier: 4.0
   jobs_dir: results/harbor
   environment:
     type: docker

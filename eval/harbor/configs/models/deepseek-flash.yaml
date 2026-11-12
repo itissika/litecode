@@ -3,7 +3,8 @@
 model:
   # provider/model; Harbor splits this into provider=deepseek, model=deepseek-flash.
   name: deepseek/deepseek-flash
-  protocols: [openai]
+  # Both protocols are native to the backend; a harness must name one of them.
+  protocols: [openai, openai-responses]
   # Root of the egress proxy. The resolver appends /r/<run_id>-<harness>/v1,
   # so the run id - not the file - decides what a row belongs to.
   backend_url_env: EVAL_EGRESS_BASE_URL

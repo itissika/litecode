@@ -115,7 +115,7 @@ def resolve(
             raise ResolveError(
                 f"harnesses/{harness_name}.yaml declares name {harness.get('name')!r}"
             )
-        if harness.get("protocol") != model["protocols"][0]:
+        if harness.get("protocol") not in model["protocols"]:
             raise ResolveError(
                 f"{harness_name}: protocol {harness.get('protocol')!r} is not one "
                 f"of the model's {model['protocols']}"
@@ -123,28 +123,42 @@ def resolve(
         # bench -> harness -> model -> job, later wins.
         kwargs = _merge(model.get("params") or {}, harness.get("params") or {})
         kwargs = _merge(kwargs, composition.get("params") or {})
-        agents.append(
-            {
-                "name": harness_name,
-                "model_name": model["name"],
-                "base_url": (
-                    egress_base_url.rstrip("/")
-                    + f"/r/{run_id}-{harness_name}/v1"
-                ),
-                "model_api_key_name": model["backend_key_env"],
-                "kwargs": kwargs,
-            }
-        )
+        # Chat harnesses talk to /v1/chat/completions; Codex appends /responses
+        # itself, so its base_url stops at the run id.
+        suffix = harness.get("base_url_suffix", "/v1")
+        if not isinstance(suffix, str) or not suffix.startswith("/"):
+            raise ResolveError(f"{harness_name}: base_url_suffix must start with /")
+        agent: dict[str, Any] = {
+            "name": harness_name,
+            "model_name": model["name"],
+            "base_url": (
+                egress_base_url.rstrip("/") + f"/r/{run_id}-{harness_name}" + suffix
+            ),
+            "model_api_key_name": model["backend_key_env"],
+        }
+        api_format = harness.get("model_api_format")
+        if api_format is not None:
+            agent["model_api_format"] = api_format
+        agent["kwargs"] = kwargs
+        agents.append(agent)
 
-    rendered = {
+    rendered: dict[str, Any] = {
         "job_name": run_id,
         "jobs_dir": bench["jobs_dir"],
         "n_attempts": bench["n_attempts"],
         "n_concurrent_trials": bench["n_concurrent_trials"],
-        "environment": bench["environment"],
-        "datasets": [{"path": dataset}],
-        "agents": agents,
     }
+    if "agent_setup_timeout_multiplier" in bench:
+        rendered["agent_setup_timeout_multiplier"] = bench[
+            "agent_setup_timeout_multiplier"
+        ]
+    rendered.update(
+        {
+            "environment": bench["environment"],
+            "datasets": [{"path": dataset}],
+            "agents": agents,
+        }
+    )
     _check_rendered(rendered)
     return rendered
 

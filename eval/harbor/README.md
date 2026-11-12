@@ -260,6 +260,7 @@ the same split and merge order workbuddy-bench documents in its
 YAML; the endpoint root comes from `EVAL_EGRESS_BASE_URL`, never from a file,
 and a model-limit override is a hard error. See [configs/README.md](configs/README.md).
 
-Harnesses configured so far: `pi`, `grok-build`, `opencode` — each at thinking
-high, on `deepseek/deepseek-flash`, through the egress proxy. Codex is not in
-that job yet: it speaks Responses and needs a native `config.toml`.
+Harnesses configured so far: `pi`, `grok-build`, `opencode`, `codex` — each at
+thinking high, on `deepseek/deepseek-flash`, through the egress proxy. Codex
+speaks Responses through a native `config.toml`; the other three speak chat
+completions.

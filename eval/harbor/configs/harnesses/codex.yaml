@@ -1,0 +1,25 @@
+# Codex speaks OpenAI Responses, not Chat Completions, and wants a native
+# config.toml. Harbor accepts that file as a JSON object here, converts it to
+# TOML, then writes the endpoint and the credential in at run time.
+harness:
+  name: codex
+  protocol: openai-responses
+  # Harbor's own enum value; without it the deepseek provider defaults to chat,
+  # which this adapter does not support.
+  model_api_format: openai_responses
+  # DeepSeek's official Codex base_url has no /v1: codex appends /responses.
+  base_url_suffix: /
+  params:
+    config:
+      model: deepseek-flash
+      model_provider: deepseek
+      model_reasoning_effort: high
+      # Skip the ChatGPT login path; the key arrives as OPENAI_API_KEY.
+      preferred_auth_method: apikey
+      forced_login_method: api
+      model_providers:
+        deepseek:
+          name: deepseek
+          wire_api: responses
+          # No base_url here on purpose: the job's per-run proxy URL is written
+          # in by Harbor, and no address belongs in this file.

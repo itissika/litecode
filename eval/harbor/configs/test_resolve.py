@@ -30,14 +30,18 @@ class LayersTest(unittest.TestCase):
         job = rendered()
         self.assertEqual(
             [agent["name"] for agent in job["agents"]],
-            ["pi", "grok-build", "opencode"],
+            ["pi", "grok-build", "opencode", "codex"],
         )
         for agent in job["agents"]:
             self.assertEqual(agent["model_name"], "deepseek/deepseek-flash")
             self.assertEqual(agent["model_api_key_name"], "DEEPSEEK_API_KEY")
             self.assertIn("/r/r1-", agent["base_url"])
-            self.assertTrue(agent["base_url"].endswith("/v1"))
+            if agent["name"] == "codex":
+                self.assertTrue(agent["base_url"].endswith("/r/r1-codex/"))
+            else:
+                self.assertTrue(agent["base_url"].endswith("/v1"))
         self.assertEqual(job["datasets"], [{"path": "datasets/ds3"}])
+        self.assertEqual(job["agent_setup_timeout_multiplier"], 4.0)
 
     def test_thinking_is_high_everywhere(self) -> None:
         agents = {agent["name"]: agent for agent in rendered()["agents"]}
@@ -50,6 +54,21 @@ class LayersTest(unittest.TestCase):
             ],
             "high",
         )
+        self.assertEqual(
+            agents["codex"]["kwargs"]["config"]["model_reasoning_effort"], "high"
+        )
+
+    def test_codex_is_responses_with_no_v1_in_its_base_url(self) -> None:
+        codex = {agent["name"]: agent for agent in rendered()["agents"]}["codex"]
+        self.assertTrue(codex["base_url"].endswith("/r/r1-codex/"))
+        self.assertNotIn("/v1", codex["base_url"])
+        self.assertEqual(codex["model_api_format"], "openai_responses")
+        config = codex["kwargs"]["config"]
+        self.assertEqual(config["model_provider"], "deepseek")
+        self.assertEqual(config["model"], "deepseek-flash")
+        self.assertEqual(config["model_providers"]["deepseek"]["wire_api"], "responses")
+        # The address is Harbor's to write; the layer file must not carry one.
+        self.assertNotIn("base_url", config["model_providers"]["deepseek"])
 
     def test_no_context_or_max_output_override_survives_resolution(self) -> None:
         job = rendered()
@@ -84,7 +103,13 @@ class LayersTest(unittest.TestCase):
         except ImportError:  # the layer test needs no Harbor install
             self.skipTest("harbor is not importable here")
         job = JobConfig.model_validate(rendered())
-        self.assertEqual([agent.name for agent in job.agents], ["pi", "grok-build", "opencode"])
+        self.assertEqual(
+            [agent.name for agent in job.agents],
+            ["pi", "grok-build", "opencode", "codex"],
+        )
+        codex = job.agents[-1]
+        self.assertEqual(codex.model_api_format.value, "openai_responses")
+        self.assertTrue(codex.base_url.endswith("/r/r1-codex/"))
 
     def test_the_layer_files_carry_no_endpoint_or_key(self) -> None:
         for path in sorted(HERE.rglob("*.yaml")):
