@@ -107,16 +107,30 @@ AgentContext = sys.modules["harbor.models.agent.context"].AgentContext
 class Result:
     """What a Harbor exec returns, as far as the adapter reads it."""
 
-    def __init__(self, status: int | None) -> None:
+    def __init__(
+        self,
+        status: int | None,
+        stdout: str | None = None,
+        stderr: str | None = None,
+    ) -> None:
         if status is not None:
             self.exit_code = status
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 class FakeEnvironment:
     """Records uploads and execs; the egress probe gets the configured answer."""
 
-    def __init__(self, probe: int | None | BaseException = 0) -> None:
+    def __init__(
+        self,
+        probe: int | None | BaseException = 0,
+        turn_stdout: str | None = None,
+        turn_stderr: str | None = None,
+    ) -> None:
         self.probe = probe
+        self.turn_stdout = turn_stdout
+        self.turn_stderr = turn_stderr
         self.uploads: list[tuple[Path, str]] = []
         self.commands: list[str] = []
         self.saved: dict[str, Path] = {}
@@ -135,6 +149,8 @@ class FakeEnvironment:
             if isinstance(self.probe, BaseException):
                 raise self.probe
             return Result(self.probe)
+        if "litecode-run" in command:
+            return Result(0, stdout=self.turn_stdout, stderr=self.turn_stderr)
         return Result(0)
 
 
@@ -286,24 +302,22 @@ class InstallTest(unittest.TestCase):
 
         self.assertEqual(self.profile_record()["websearch"], "keyless")
 
-    def test_the_context_carries_the_usage_line(self) -> None:
-        environment = FakeEnvironment()
+    # The numbers are from a real trial: cache_hit + cache_miss == prompt.
+    REAL_USAGE = "[litecode] completed in 41.2s — tokens prompt=57111 completion=3401 cache_hit=55424 cache_miss=1687"
+
+    def test_the_context_carries_this_turns_streams(self) -> None:
+        environment = FakeEnvironment(turn_stdout=self.REAL_USAGE + "\n")
         agent = self.adapter(answer=True)
         asyncio.run(agent.install(environment))
         before = {path.name: path.read_bytes() for path in self.artifacts().iterdir()}
 
-        # What run_turn.sh leaves behind after the turn (usage line only); the
-        # numbers are from a real trial.
-        (self.logs / "litecode.txt").write_text(
-            "[litecode] completed in 41.2s — tokens prompt=57111 completion=3401 "
-            "cache_hit=55424 cache_miss=1687\n",
-            encoding="utf-8",
-        )
         context = AgentContext()
-        # The success path: run() itself must report, with no recovery hook.
+        # The success path, with the real timing: at this point Harbor has not
+        # written litecode.txt yet, so the numbers must come from the exec.
         asyncio.run(agent.run("do the thing", environment, context))
+        self.assertFalse((self.logs / "litecode.txt").exists())
 
-        # The fields Harbor sums into result.json, read from the usage line.
+        # The fields Harbor sums into result.json, equal to the exec's line.
         self.assertEqual(context.n_input_tokens, 57111)
         self.assertEqual(context.n_cache_tokens, 55424)
         self.assertEqual(context.n_output_tokens, 3401)
@@ -312,6 +326,28 @@ class InstallTest(unittest.TestCase):
         # The three install artifacts are not rewritten by a run.
         after = {path.name: path.read_bytes() for path in self.artifacts().iterdir()}
         self.assertEqual(before, after)
+
+    def test_the_usage_line_is_found_on_either_stream(self) -> None:
+        environment = FakeEnvironment(turn_stderr=self.REAL_USAGE + "\n")
+        agent = self.adapter(answer=True)
+        asyncio.run(agent.install(environment))
+        context = AgentContext()
+        asyncio.run(agent.run("do the thing", environment, context))
+        self.assertEqual(
+            (context.n_input_tokens, context.n_cache_tokens, context.n_output_tokens),
+            (57111, 55424, 3401),
+        )
+
+    def test_the_recovery_hook_reads_the_trial_file(self) -> None:
+        agent = self.adapter(answer=True)
+        (self.logs / "litecode.txt").write_text(self.REAL_USAGE + "\n", encoding="utf-8")
+        context = AgentContext()
+        # Harbor calls the hook with no sources after recovering a failed trial.
+        agent.populate_context_post_run(context)
+        self.assertEqual(
+            (context.n_input_tokens, context.n_cache_tokens, context.n_output_tokens),
+            (57111, 55424, 3401),
+        )
 
     def test_no_usage_line_leaves_the_context_unset(self) -> None:
         environment = FakeEnvironment()

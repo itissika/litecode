@@ -119,6 +119,26 @@ def _cost_usd(model: str, prompt: int, completion: int, cached: int) -> float | 
     return total if total > 0 else None
 
 
+def _usage(*texts: str | None) -> tuple[int, int, int, int] | None:
+    """prompt, completion, cache_hit, cache_miss from the last usage line in `texts`.
+
+    The line is the only accounting this adapter has; each caller hands in the
+    text it actually holds — this turn's exec output, or the trial's log file
+    when recovering a failed run — so the numbers cannot come from two places.
+    """
+    latest: tuple[str, str, str, str] | None = None
+    for text in texts:
+        if not text:
+            continue
+        matches = _USAGE.findall(text)
+        if matches:
+            latest = matches[-1]
+    if latest is None:
+        return None
+    prompt, completion, cached, cache_miss = (int(value) for value in latest)
+    return prompt, completion, cached, cache_miss
+
+
 def _exit_status(result: Any) -> int | None:
     """The exec status of a Harbor result, whatever field it carries it in."""
     for name in ("exit_code", "return_code", "code"):
@@ -316,21 +336,14 @@ class LiteCode(BaseInstalledAgent):
 
     # ── what the turn used ───────────────────────────────────────────────
 
-    def _usage(self) -> tuple[int, int, int, int] | None:
-        """prompt, completion, cache_hit, cache_miss from the last usage line.
-
-        One source for every number this adapter reports: whatever Harbor reads
-        it from, it comes from this line and nowhere else.
-        """
+    def _trial_log(self) -> str | None:
+        """The trial's `litecode.txt`, when it has already been written."""
         try:
-            text = (self.logs_dir / "litecode.txt").read_text(encoding="utf-8", errors="replace")
+            return (self.logs_dir / "litecode.txt").read_text(
+                encoding="utf-8", errors="replace"
+            )
         except OSError:
             return None
-        matches = _USAGE.findall(text)
-        if not matches:
-            return None
-        prompt, completion, cached, cache_miss = (int(value) for value in matches[-1])
-        return prompt, completion, cached, cache_miss
 
     # ── install / run ────────────────────────────────────────────────────
 
@@ -459,26 +472,32 @@ class LiteCode(BaseInstalledAgent):
         )
         # No key on this command line: the turn reads it from the settings the
         # install wrote, the same way it reads the provider key.
-        await self.exec_as_agent(
+        result = await self.exec_as_agent(
             environment, command="litecode-run " + shlex.quote(instruction)
         )
-        # The successful path never reaches the recovery hook below, so the
-        # numbers are reported here, through the same implementation.
-        self.populate_context_post_run(context)
+        # `litecode.txt` is written by Harbor after this returns, so at this point
+        # the usage line exists only in this exec's streams. Both are read: the
+        # CLI prints its summary to whichever one it was given.
+        self.populate_context_post_run(
+            context,
+            getattr(result, "stdout", None),
+            getattr(result, "stderr", None),
+        )
 
     @override
-    def populate_context_post_run(self, context: AgentContext) -> None:
+    def populate_context_post_run(self, context: AgentContext, *sources: str | None) -> None:
         """Report the run's usage in the fields Harbor sums into result.json.
 
-        Two entries share this one implementation: `run()` calls it when the
-        turn succeeds, and Harbor calls it after recovering outputs from a
-        cancelled or failed trial. This is the whole accounting — Harbor reads
-        `n_input_tokens` (cached tokens included), `n_cache_tokens`,
+        Two entries share this one implementation. `run()` passes the exec
+        streams it just received. Harbor calls the hook with no sources when
+        recovering outputs from a cancelled or failed trial; then the trial's
+        `litecode.txt` is the only text left. This is the whole accounting —
+        Harbor reads `n_input_tokens` (cached tokens included), `n_cache_tokens`,
         `n_output_tokens` and `cost_usd` from the context. No usage line means
         the fields stay unset (None), never 0: an unmeasured run must not look
         like a free one.
         """
-        usage = self._usage()
+        usage = _usage(*(sources or (self._trial_log(),)))
         if usage is None:
             return
         prompt, completion, cached, _cache_miss = usage
