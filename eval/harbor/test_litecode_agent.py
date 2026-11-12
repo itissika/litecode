@@ -292,20 +292,21 @@ class InstallTest(unittest.TestCase):
         asyncio.run(agent.install(environment))
         before = {path.name: path.read_bytes() for path in self.artifacts().iterdir()}
 
-        # What run_turn.sh leaves behind after the turn (usage line only).
+        # What run_turn.sh leaves behind after the turn (usage line only); the
+        # numbers are from a real trial.
         (self.logs / "litecode.txt").write_text(
-            "[litecode] completed in 4.8s — tokens prompt=11664 completion=7 "
-            "cache_hit=3 cache_miss=11661\n",
+            "[litecode] completed in 41.2s — tokens prompt=57111 completion=3401 "
+            "cache_hit=55424 cache_miss=1687\n",
             encoding="utf-8",
         )
         context = AgentContext()
+        # The success path: run() itself must report, with no recovery hook.
         asyncio.run(agent.run("do the thing", environment, context))
-        agent.populate_context_post_run(context)  # Harbor's own post-run hook
 
         # The fields Harbor sums into result.json, read from the usage line.
-        self.assertEqual(context.n_input_tokens, 11664)
-        self.assertEqual(context.n_cache_tokens, 3)
-        self.assertEqual(context.n_output_tokens, 7)
+        self.assertEqual(context.n_input_tokens, 57111)
+        self.assertEqual(context.n_cache_tokens, 55424)
+        self.assertEqual(context.n_output_tokens, 3401)
         # Priced or unpriced, never a zero placeholder.
         self.assertTrue(context.cost_usd is None or context.cost_usd > 0)
         # The three install artifacts are not rewritten by a run.
@@ -318,7 +319,6 @@ class InstallTest(unittest.TestCase):
         asyncio.run(agent.install(environment))
         context = AgentContext()
         asyncio.run(agent.run("do the thing", environment, context))
-        agent.populate_context_post_run(context)
         self.assertIsNone(context.n_input_tokens)
         self.assertIsNone(context.n_cache_tokens)
         self.assertIsNone(context.n_output_tokens)

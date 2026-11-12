@@ -129,10 +129,13 @@ there is kept:
 | `agent/litecode/profile.applied.json` | the same document as the CLI wrote it; `profile.json` quotes its sha256 |
 | `agent/litecode/build-info.json` | the binary's provenance, byte for byte, with the hashed copy linked from `profile.json` |
 
-The turn's numbers reach Harbor through `populate_context_post_run`, which fills
-the `AgentContext` fields that `result.json` sums: `n_input_tokens` (cached
-tokens included), `n_cache_tokens`, `n_output_tokens`, and `cost_usd`. All four
-come from the usage line described below — one parser, no second accounting.
+The turn's numbers reach Harbor through the `AgentContext` that `result.json`
+sums: `n_input_tokens` (cached tokens included), `n_cache_tokens`,
+`n_output_tokens`, and `cost_usd`. `run()` fills it at the end of a successful
+turn, and Harbor's recovery hook (`populate_context_post_run`) is the same
+implementation for cancelled or failed trials — a trial that succeeds never
+reaches that hook, so reporting only there reports nothing. All four come from
+the usage line described below — one parser, no second accounting.
 Cost is Harbor's LiteLLM price table when it can price the model; otherwise (and for any
 zero it returns) the field stays `None`, and a run with no usage line leaves all
 four unset rather than 0.

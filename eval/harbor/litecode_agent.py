@@ -462,15 +462,21 @@ class LiteCode(BaseInstalledAgent):
         await self.exec_as_agent(
             environment, command="litecode-run " + shlex.quote(instruction)
         )
+        # The successful path never reaches the recovery hook below, so the
+        # numbers are reported here, through the same implementation.
+        self.populate_context_post_run(context)
 
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
         """Report the run's usage in the fields Harbor sums into result.json.
 
-        This is the whole accounting: Harbor reads `n_input_tokens` (cached
-        tokens included), `n_cache_tokens`, `n_output_tokens` and `cost_usd`
-        from here. No usage line means the fields stay unset (None), never 0 —
-        an unmeasured run must not look like a free one.
+        Two entries share this one implementation: `run()` calls it when the
+        turn succeeds, and Harbor calls it after recovering outputs from a
+        cancelled or failed trial. This is the whole accounting — Harbor reads
+        `n_input_tokens` (cached tokens included), `n_cache_tokens`,
+        `n_output_tokens` and `cost_usd` from the context. No usage line means
+        the fields stay unset (None), never 0: an unmeasured run must not look
+        like a free one.
         """
         usage = self._usage()
         if usage is None:
