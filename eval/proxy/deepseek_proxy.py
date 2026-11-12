@@ -52,6 +52,12 @@ _BILLABLE = re.compile(r"/(chat/completions|completions|responses)$")
 # /responses would be a 400, and Responses reports usage without being asked.
 _USAGE_INJECTION_PATHS = ("/chat/completions", "/completions")
 
+# Roles are a chat-completions concept; a Responses input item has no role to
+# rewrite. pi opens with role="developer", which the upstream rejects outright,
+# so the one rewrite this proxy performs stays inside this path.
+_CHAT_COMPLETIONS_PATH = "/chat/completions"
+_ROLE_REWRITES = {"developer": "system"}
+
 # Headers that belong to this hop, not to the upstream request.
 _HOP_HEADERS = {
     "connection",
@@ -72,6 +78,26 @@ _HOP_HEADERS = {
 }
 
 _LOG_LOCK = threading.Lock()
+
+
+def _rewrite_roles(body: dict[str, Any]) -> list[str]:
+    """Rewrite roles the upstream rejects, and say what was rewritten.
+
+    Mutates *body* in place and returns the distinct rewrites performed, so the
+    JSONL row can show them instead of the change staying invisible.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return []
+    rewrites: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if isinstance(role, str) and role in _ROLE_REWRITES:
+            message["role"] = _ROLE_REWRITES[role]
+            rewrites.append(f"{role}->{_ROLE_REWRITES[role]}")
+    return list(dict.fromkeys(rewrites))
 
 
 def _now() -> str:
@@ -194,6 +220,12 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             body = None
 
+        adapted: list[str] = []
+        if rest.endswith(_CHAT_COMPLETIONS_PATH) and isinstance(body, dict):
+            adapted = _rewrite_roles(body)
+            if adapted:
+                raw = json.dumps(body).encode("utf-8")
+
         injected = False
         client_asked_usage = False
         wants_usage = rest.endswith(_USAGE_INJECTION_PATHS)
@@ -222,6 +254,7 @@ class Handler(BaseHTTPRequestHandler):
             "path": rest,
             "stream": bool(isinstance(body, dict) and body.get("stream") is True),
             "usage_injected": injected,
+            "adapted_roles": adapted or None,
             "client_asked_usage": client_asked_usage,
             "stream_events": None,
             "model": body.get("model") if isinstance(body, dict) else None,

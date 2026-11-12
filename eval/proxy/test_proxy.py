@@ -306,6 +306,49 @@ class ProxyTest(unittest.TestCase):
         self.assertTrue(row["client_asked_usage"])
         self.assertEqual(row["usage"], "ok")
 
+    def test_a_developer_role_is_rewritten_and_recorded(self) -> None:
+        status, _body = self.call(
+            "/r/task-11/v1/chat/completions",
+            {
+                "model": "deepseek-flash",
+                "messages": [
+                    {"role": "developer", "content": "be brief"},
+                    {"role": "user", "content": "hi"},
+                ],
+            },
+        )
+        self.assertEqual(status, 200)
+        messages = FakeUpstream.seen[0]["body"]["messages"]
+        # The role changes; everything else about the message stays.
+        self.assertEqual([message["role"] for message in messages], ["system", "user"])
+        self.assertEqual(messages[0]["content"], "be brief")
+        self.assertEqual(messages[1]["content"], "hi")
+
+        row = self.rows()[0]
+        self.assertEqual(row["adapted_roles"], ["developer->system"])
+        self.assertEqual(row["usage"], "ok")
+
+    def test_a_request_without_developer_roles_records_no_adaptation(self) -> None:
+        status, _body = self.call(
+            "/r/task-12/v1/chat/completions",
+            {"model": "deepseek-flash", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        self.assertEqual(status, 200)
+        self.assertIsNone(self.rows()[0]["adapted_roles"])
+
+    def test_a_responses_body_is_not_role_rewritten(self) -> None:
+        status, _body = self.call(
+            "/r/task-13/v1/responses",
+            {
+                "model": "deepseek-flash",
+                "messages": [{"role": "developer", "content": "x"}],
+            },
+        )
+        self.assertEqual(status, 200)
+        forwarded = FakeUpstream.seen[0]["body"]
+        self.assertEqual(forwarded["messages"][0]["role"], "developer")
+        self.assertIsNone(self.rows()[0]["adapted_roles"])
+
     def test_a_client_gzip_header_does_not_reach_upstream(self) -> None:
         status, _body = self.call(
             "/r/task-10/v1/chat/completions",

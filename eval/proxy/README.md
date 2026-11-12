@@ -38,9 +38,9 @@ as `"usage": "ok"`.
 ## What a row says
 
 `{"ts", "request_id", "run_id", "method", "path", "stream", "usage_injected",
-"client_asked_usage", "stream_events", "model", "status", "duration_ms",
-"prompt_tokens", "completion_tokens", "cached_tokens", "total_tokens", "usage",
-"error"}`
+"adapted_roles", "client_asked_usage", "stream_events", "model", "status",
+"duration_ms", "prompt_tokens", "completion_tokens", "cached_tokens",
+"total_tokens", "usage", "error"}`
 
 * `usage` is `ok` when the upstream reported token counts, `missing` when a
   generation call came back without any — and then the token fields are `null`.
@@ -51,6 +51,25 @@ as `"usage": "ok"`.
   reports `input_tokens` / `output_tokens` / `input_tokens_details.cached_tokens`
   and is read the same way.
 * `duration_ms` is wall time from request received to response finished.
+
+## Role normalization: pi's opening `developer` turn
+
+pi sends its first chat message with `role: "developer"`. The upstream rejects
+the whole request (`messages[0].role: unknown variant 'developer'`, HTTP 422),
+so pi against the official API is unusable out of the box — a harness problem,
+not a model one.
+
+The proxy rewrites `messages[i].role == "developer"` to `"system"`, on
+`/chat/completions` only (a Responses body has no roles to rewrite), and
+changes nothing else in that message. It is not silent: the row carries
+`adapted_roles: ["developer->system"]` for exactly the requests that changed,
+and `null` for every other row.
+
+What it changes: `developer` and `system` are not the same instruction level.
+OpenAI ranks developer messages above system messages; after the rewrite that
+text is treated as system-level, so it yields to a higher-priority instruction
+instead of overriding it. For pi this is the difference between a 422 and a
+run, and the row says it happened.
 
 ## Streaming
 
@@ -85,10 +104,12 @@ row reads it from there; every event is forwarded as it arrives.
 cd eval/proxy && python -m unittest test_proxy
 ```
 
-Twelve tests against a fake upstream: forwarding and the key swap, the swallowed
+Fifteen tests against a fake upstream: forwarding and the key swap, the swallowed
 usage frame, `include_usage: false` still forced, a client that already asked
-keeping its frame, a client gzip header replaced by `identity`, a stream with
-no usage (`"usage": "missing"`), an upstream 500, a `/v1/models` probe, a path
+keeping its frame, a client gzip header replaced by `identity`, a developer
+role rewritten (and recorded) while nothing else changes, a request without
+one recording no adaptation, a Responses body left alone, a stream with no
+usage (`"usage": "missing"`), an upstream 500, a `/v1/models` probe, a path
 without a run id, a missing or empty key file, and two Responses calls
 (streamed and not) whose usage is read from `response.completed` / the
 top-level body.
