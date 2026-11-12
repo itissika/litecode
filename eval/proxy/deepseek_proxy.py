@@ -9,9 +9,10 @@ completion / cached tokens, duration, status, and whether it streamed.
 The run id is the only thing that ties a request to a task, so a whole job's
 bill is `@grep '"run_id":"<job>"'`-able without joining anything.
 
-Streaming: clients that do not ask for usage get `stream_options.include_usage`
-added on the way out, and the frame that carries the usage is swallowed on the
-way back — the client never sees a chunk shape it did not ask for, while the row
+Streaming: every streamed chat request leaves with
+`stream_options.include_usage = true`, merged into whatever the client sent
+(even a client-sent `false`). When the client did not ask for usage itself, the
+frame that carries it is swallowed on the way back — the client never sees a chunk shape it did not ask for, while the row
 still records the tokens. A response with no usage records nulls and
 `"usage": "missing"`; nothing is estimated.
 
@@ -64,6 +65,10 @@ _HOP_HEADERS = {
     "host",
     "content-length",
     "authorization",
+    # Accounting parses the body to find usage, so it must be the plain body:
+    # a harness that advertises gzip would otherwise hand us bytes we cannot
+    # read (and would explain a "carried no usage" on a healthy response).
+    "accept-encoding",
 }
 
 _LOG_LOCK = threading.Lock()
@@ -190,13 +195,20 @@ class Handler(BaseHTTPRequestHandler):
             body = None
 
         injected = False
+        client_asked_usage = False
         wants_usage = rest.endswith(_USAGE_INJECTION_PATHS)
         if wants_usage and isinstance(body, dict) and body.get("stream") is True:
+            # A streamed chat request always goes upstream with include_usage on,
+            # whatever the client put there: seeing a stream_options key is not
+            # the same as asking for usage, and a harness that sends
+            # include_usage=false still deserves a counted run.
             options = body.get("stream_options")
-            asked = isinstance(options, dict) and options.get("include_usage") is True
-            if not asked:
-                merged = dict(options) if isinstance(options, dict) else {}
-                merged["include_usage"] = True
+            client_asked_usage = (
+                isinstance(options, dict) and options.get("include_usage") is True
+            )
+            merged = dict(options) if isinstance(options, dict) else {}
+            merged["include_usage"] = True
+            if merged != options:
                 body = {**body, "stream_options": merged}
                 injected = True
                 raw = json.dumps(body).encode("utf-8")
@@ -210,6 +222,8 @@ class Handler(BaseHTTPRequestHandler):
             "path": rest,
             "stream": bool(isinstance(body, dict) and body.get("stream") is True),
             "usage_injected": injected,
+            "client_asked_usage": client_asked_usage,
+            "stream_events": None,
             "model": body.get("model") if isinstance(body, dict) else None,
             "status": None,
             "duration_ms": None,
@@ -229,13 +243,15 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 connection.putheader(name, value)
             connection.putheader("Authorization", f"Bearer {self.proxy.key}")
+            connection.putheader("Accept-Encoding", "identity")
             connection.putheader("Content-Length", str(len(raw)))
             connection.endheaders(raw)
             response = connection.getresponse()
             row["status"] = response.status
             streaming = row["stream"]
             if streaming:
-                usage = self._relay_stream(response, injected=injected)
+                usage, events = self._relay_stream(response, injected=injected)
+                row["stream_events"] = events
             else:
                 usage = self._relay_whole(response)
             if usage is not None:
@@ -276,9 +292,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _relay_stream(
         self, response: http.client.HTTPResponse, *, injected: bool
-    ) -> dict[str, int] | None:
+    ) -> tuple[dict[str, int] | None, int]:
         """Forward events as they arrive; swallow the usage frame we asked for."""
         self._swallowed_usage = None
+        events = 0
         self.send_response(response.status)
         self._copy_headers(response)
         self.send_header("Connection", "close")
@@ -290,6 +307,7 @@ class Handler(BaseHTTPRequestHandler):
             if not line:
                 break
             if line in (b"\n", b"\r\n"):
+                events += 1
                 if self._keep_event(event, injected=injected):
                     for buffered in event + [line]:
                         self.wfile.write(buffered)
@@ -298,6 +316,7 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             event.append(line)
         if event:  # a final event without its blank line
+            events += 1
             if self._keep_event(event, injected=injected):
                 self.wfile.write(b"".join(event))
                 self.wfile.flush()
@@ -305,7 +324,7 @@ class Handler(BaseHTTPRequestHandler):
         if usage_frame is not None:
             usage = usage_frame
         self.close_connection = True
-        return usage
+        return usage, events
 
     def _keep_event(self, event: list[bytes], *, injected: bool) -> bool:
         """Record the usage of one SSE event; say whether the client gets it."""

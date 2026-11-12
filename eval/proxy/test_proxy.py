@@ -174,14 +174,20 @@ class ProxyTest(unittest.TestCase):
 
     # ── helpers ──────────────────────────────────────────────────────────
 
-    def call(self, path: str, payload: dict) -> tuple[int, bytes]:
+    def call(
+        self, path: str, payload: dict, headers: dict[str, str] | None = None
+    ) -> tuple[int, bytes]:
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         data = json.dumps(payload).encode()
         connection.request(
             "POST",
             path,
             body=data,
-            headers={"Content-Type": "application/json", "Authorization": "Bearer client"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer client",
+                **(headers or {}),
+            },
         )
         response = connection.getresponse()
         body = response.read()
@@ -252,6 +258,62 @@ class ProxyTest(unittest.TestCase):
             (row["prompt_tokens"], row["completion_tokens"], row["cached_tokens"]),
             (11, 5, 3),
         )
+
+    def test_a_stream_with_include_usage_false_is_still_forced(self) -> None:
+        status, body = self.call(
+            "/r/task-8/v1/chat/completions",
+            {
+                "model": "deepseek-flash",
+                "stream": True,
+                "stream_options": {"include_usage": False},
+                "messages": [],
+            },
+        )
+        self.assertEqual(status, 200)
+        # The client did not ask for usage, so it must not start receiving it.
+        self.assertNotIn('"usage"', body.decode())
+        forwarded = FakeUpstream.seen[0]["body"]
+        self.assertIs(forwarded["stream_options"]["include_usage"], True)
+
+        row = self.rows()[0]
+        self.assertTrue(row["usage_injected"])
+        self.assertFalse(row["client_asked_usage"])
+        self.assertEqual(row["usage"], "ok")
+        self.assertEqual(
+            (row["prompt_tokens"], row["completion_tokens"], row["cached_tokens"]),
+            (11, 5, 3),
+        )
+        self.assertGreaterEqual(row["stream_events"], 2)
+
+    def test_a_stream_that_already_asked_keeps_its_usage_frame(self) -> None:
+        status, body = self.call(
+            "/r/task-9/v1/chat/completions",
+            {
+                "model": "deepseek-flash",
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                "messages": [],
+            },
+        )
+        self.assertEqual(status, 200)
+        # The client asked, so the frame is forwarded untouched.
+        self.assertIn('"usage"', body.decode())
+        forwarded = FakeUpstream.seen[0]["body"]
+        self.assertIs(forwarded["stream_options"]["include_usage"], True)
+
+        row = self.rows()[0]
+        self.assertFalse(row["usage_injected"])
+        self.assertTrue(row["client_asked_usage"])
+        self.assertEqual(row["usage"], "ok")
+
+    def test_a_client_gzip_header_does_not_reach_upstream(self) -> None:
+        status, _body = self.call(
+            "/r/task-10/v1/chat/completions",
+            {"model": "deepseek-flash", "messages": []},
+            headers={"Accept-Encoding": "gzip, deflate"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(FakeUpstream.seen[0]["headers"]["Accept-Encoding"], "identity")
 
     def test_a_stream_that_reports_no_usage_is_marked_missing(self) -> None:
         status, body = self.call(

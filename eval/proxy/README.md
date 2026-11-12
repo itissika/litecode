@@ -38,8 +38,9 @@ as `"usage": "ok"`.
 ## What a row says
 
 `{"ts", "request_id", "run_id", "method", "path", "stream", "usage_injected",
-"model", "status", "duration_ms", "prompt_tokens", "completion_tokens",
-"cached_tokens", "total_tokens", "usage", "error"}`
+"client_asked_usage", "stream_events", "model", "status", "duration_ms",
+"prompt_tokens", "completion_tokens", "cached_tokens", "total_tokens", "usage",
+"error"}`
 
 * `usage` is `ok` when the upstream reported token counts, `missing` when a
   generation call came back without any — and then the token fields are `null`.
@@ -53,10 +54,25 @@ as `"usage": "ok"`.
 
 ## Streaming
 
-When a client asks for a stream without `stream_options.include_usage`, the
-proxy adds it on the way out and swallows the frame that only carries usage on
-the way back: the client gets the same event shapes it asked for, the row still
-has the tokens. A client that asks for usage itself gets that frame untouched.
+A streamed chat request always goes upstream with
+`stream_options.include_usage = true`: the proxy merges that one key into
+whatever `stream_options` the client sent (or adds the object), even when the
+client sent `include_usage: false`. Seeing a `stream_options` key is not the
+same as asking for usage — opencode sends its own, and a run must still be
+counted.
+
+* client did **not** ask (`include_usage` absent or false): the frame that only
+  carries usage is swallowed, and `usage_injected` says the request changed;
+* client **did** ask: the request is forwarded untouched (`usage_injected:
+  false`) and the usage frame reaches the client as before.
+
+`client_asked_usage` records what the client itself asked for, and
+`stream_events` counts the SSE events seen — both exist so a "usage: missing"
+row can be explained without guessing.
+
+The outgoing hop also drops the client's `Accept-Encoding` and asks for
+`identity`. The proxy has to read the body to find usage, and a gzip body is
+unreadable to it; identity is valid for every client, so nothing else changes.
 
 `/responses` (what Codex speaks) is not that stream: it takes no
 `stream_options`, so nothing is injected and nothing is swallowed. Its usage
@@ -69,8 +85,10 @@ row reads it from there; every event is forwarded as it arrives.
 cd eval/proxy && python -m unittest test_proxy
 ```
 
-Nine tests against a fake upstream: forwarding and the key swap, the swallowed
-usage frame, a stream with no usage (`"usage": "missing"`), an upstream 500, a
-`/v1/models` probe, a path without a run id, a missing or empty key file, and
-two Responses calls (streamed and not) whose usage is read from
-`response.completed` / the top-level body.
+Twelve tests against a fake upstream: forwarding and the key swap, the swallowed
+usage frame, `include_usage: false` still forced, a client that already asked
+keeping its frame, a client gzip header replaced by `identity`, a stream with
+no usage (`"usage": "missing"`), an upstream 500, a `/v1/models` probe, a path
+without a run id, a missing or empty key file, and two Responses calls
+(streamed and not) whose usage is read from `response.completed` / the
+top-level body.
