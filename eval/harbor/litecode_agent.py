@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -80,6 +81,42 @@ _PROBE_COMMAND = (
     "'"
 )
 _PROBE_HOST_SECONDS = 8
+
+
+def _cost_usd(model: str, prompt: int, completion: int, cached: int) -> float | None:
+    """What the price table Harbor ships with (LiteLLM) says this turn cost.
+
+    Unknown models, a missing table, a table that refuses these numbers, or a
+    price that comes back as zero all mean "unpriced": the field stays None
+    rather than guessing. `prompt` counts cached tokens too, as `n_input_tokens`
+    does; when the table knows a cache-read rate, the cached part is priced at
+    it.
+    """
+    try:
+        from litellm import cost_per_token
+    except Exception:
+        return None
+    arguments: dict[str, Any] = {
+        "model": model,
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+    }
+    try:
+        parameters = inspect.signature(cost_per_token).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "cache_read_input_tokens" in parameters:
+        arguments["cache_read_input_tokens"] = cached
+    try:
+        prompt_cost, completion_cost = cost_per_token(**arguments)
+    except Exception:
+        return None
+    if prompt_cost is None or completion_cost is None:
+        return None
+    total = float(prompt_cost) + float(completion_cost)
+    # A table that returns zero for a priced model means "no price", not "free":
+    # result.json must read a number or nothing, never 0.
+    return total if total > 0 else None
 
 
 def _exit_status(result: Any) -> int | None:
@@ -277,6 +314,24 @@ class LiteCode(BaseInstalledAgent):
             json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
 
+    # ── what the turn used ───────────────────────────────────────────────
+
+    def _usage(self) -> tuple[int, int, int, int] | None:
+        """prompt, completion, cache_hit, cache_miss from the last usage line.
+
+        One source for every number this adapter reports: whatever Harbor reads
+        it from, it comes from this line and nowhere else.
+        """
+        try:
+            text = (self.logs_dir / "litecode.txt").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        matches = _USAGE.findall(text)
+        if not matches:
+            return None
+        prompt, completion, cached, cache_miss = (int(value) for value in matches[-1])
+        return prompt, completion, cached, cache_miss
+
     # ── install / run ────────────────────────────────────────────────────
 
     @override
@@ -410,15 +465,18 @@ class LiteCode(BaseInstalledAgent):
 
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
-        """Report the run's tokens from the usage line the CLI prints."""
-        try:
-            text = (self.logs_dir / "litecode.txt").read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        """Report the run's usage in the fields Harbor sums into result.json.
+
+        This is the whole accounting: Harbor reads `n_input_tokens` (cached
+        tokens included), `n_cache_tokens`, `n_output_tokens` and `cost_usd`
+        from here. No usage line means the fields stay unset (None), never 0 —
+        an unmeasured run must not look like a free one.
+        """
+        usage = self._usage()
+        if usage is None:
             return
-        matches = _USAGE.findall(text)
-        if not matches:
-            return
-        prompt, completion, cache_hit, _cache_miss = (int(v) for v in matches[-1])
+        prompt, completion, cached, _cache_miss = usage
         context.n_input_tokens = prompt
-        context.n_cache_tokens = cache_hit
+        context.n_cache_tokens = cached
         context.n_output_tokens = completion
+        context.cost_usd = _cost_usd(self.model_name, prompt, completion, cached)

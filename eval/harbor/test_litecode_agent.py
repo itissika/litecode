@@ -62,9 +62,11 @@ def _install_harbor_stubs() -> None:
         pass
 
     class AgentContext:
-        n_input_tokens = 0
-        n_output_tokens = 0
-        n_cache_tokens = 0
+        # None, not 0: an unmeasured run must not read as a free one.
+        n_input_tokens: int | None = None
+        n_output_tokens: int | None = None
+        n_cache_tokens: int | None = None
+        cost_usd: float | None = None
 
     def with_prompt_template(function):
         return function
@@ -95,6 +97,8 @@ _install_harbor_stubs()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import litecode_agent  # noqa: E402
+
+AgentContext = sys.modules["harbor.models.agent.context"].AgentContext
 
 
 # ── doubles ───────────────────────────────────────────────────────────────
@@ -281,6 +285,44 @@ class InstallTest(unittest.TestCase):
         asyncio.run(self.adapter(answer=True).install(FakeEnvironment()))
 
         self.assertEqual(self.profile_record()["websearch"], "keyless")
+
+    def test_the_context_carries_the_usage_line(self) -> None:
+        environment = FakeEnvironment()
+        agent = self.adapter(answer=True)
+        asyncio.run(agent.install(environment))
+        before = {path.name: path.read_bytes() for path in self.artifacts().iterdir()}
+
+        # What run_turn.sh leaves behind after the turn (usage line only).
+        (self.logs / "litecode.txt").write_text(
+            "[litecode] completed in 4.8s — tokens prompt=11664 completion=7 "
+            "cache_hit=3 cache_miss=11661\n",
+            encoding="utf-8",
+        )
+        context = AgentContext()
+        asyncio.run(agent.run("do the thing", environment, context))
+        agent.populate_context_post_run(context)  # Harbor's own post-run hook
+
+        # The fields Harbor sums into result.json, read from the usage line.
+        self.assertEqual(context.n_input_tokens, 11664)
+        self.assertEqual(context.n_cache_tokens, 3)
+        self.assertEqual(context.n_output_tokens, 7)
+        # Priced or unpriced, never a zero placeholder.
+        self.assertTrue(context.cost_usd is None or context.cost_usd > 0)
+        # The three install artifacts are not rewritten by a run.
+        after = {path.name: path.read_bytes() for path in self.artifacts().iterdir()}
+        self.assertEqual(before, after)
+
+    def test_no_usage_line_leaves_the_context_unset(self) -> None:
+        environment = FakeEnvironment()
+        agent = self.adapter(answer=True)
+        asyncio.run(agent.install(environment))
+        context = AgentContext()
+        asyncio.run(agent.run("do the thing", environment, context))
+        agent.populate_context_post_run(context)
+        self.assertIsNone(context.n_input_tokens)
+        self.assertIsNone(context.n_cache_tokens)
+        self.assertIsNone(context.n_output_tokens)
+        self.assertIsNone(context.cost_usd)
 
     def test_the_websearch_key_only_reaches_the_settings(self) -> None:
         key = "exa-secret-0123456789"
