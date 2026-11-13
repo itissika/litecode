@@ -88,7 +88,9 @@ pub fn non_transport_name_rejection(name: &str) -> Option<&'static str> {
 /// tools cannot reclaim them.
 pub fn reserved_command_name_rejection(name: &str) -> Option<&'static str> {
     match name {
-        "wait" | "kill" => Some("name is reserved for a code command tool"),
+        "wait" | "kill" | "exec_command" | "write_stdin" => {
+            Some("name is reserved for a code command tool")
+        }
         "apply_edits" => Some("name is reserved for a code edit tool"),
         "run_command" | "command_output" | "command_kill" | "bash" | "wait_shell"
         | "kill_shell" => Some("name is reserved and is not a custom or MCP tool"),

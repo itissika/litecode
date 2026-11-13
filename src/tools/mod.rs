@@ -9,6 +9,7 @@ pub mod command_job;
 pub mod custom;
 pub mod custom_hub;
 pub mod edit;
+pub mod exec_command;
 pub mod file_path;
 pub mod glob;
 pub mod grep;
@@ -29,6 +30,7 @@ pub mod wait;
 pub mod webfetch;
 pub mod websearch;
 pub mod write;
+pub mod write_stdin;
 
 #[cfg(test)]
 mod baseline;

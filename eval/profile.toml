@@ -27,9 +27,11 @@ on = [
   "write",          # create files
   "edit",           # change files in place
   "apply_edits",    # batch edits; same card as `edit`, comes with it
-  "run",            # shell: in a task container the work happens here
-  "wait",           # long command handles; same card as `run`
-  "kill",           # stop a runaway command; same card as `run`
+  "run",            # legacy shell job; kept for compatibility
+  "wait",           # legacy long-command handle
+  "kill",           # legacy hard stop
+  "exec_command",   # Codex-style unified exec session
+  "write_stdin",    # poll / feed / Ctrl-C an exec session
   "todo",           # progress outside the context window; survives compaction
   "run_code",       # the code transport: code tools are called through it
 ]

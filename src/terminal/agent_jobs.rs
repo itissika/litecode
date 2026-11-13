@@ -563,12 +563,19 @@ impl AgentJobRegistry {
     /// Deliver a signal to a job's process group without latching `tool_killed`.
     /// Ctrl-C is an interaction, not a hard stop; `kill` keeps its own path.
     pub fn signal_registered(&self, id: &str, signal: ProcessSignal) -> Option<SignalledJob> {
-        let (alive, pid) = {
+        let (alive, pid, io) = {
             let g = self.inner.lock().expect("jobs lock");
             let rec = g.jobs.get(id)?;
-            (rec.alive, rec.pid)
+            (rec.alive, rec.pid, rec.io.clone())
         };
-        let delivered = alive && signal_process_tree(pid.unwrap_or(0), signal);
+        let delivered = if alive {
+            match io {
+                Some(JobIo::Pty(session)) => session.signal(signal).is_ok(),
+                _ => signal_process_tree(pid.unwrap_or(0), signal),
+            }
+        } else {
+            false
+        };
         let (alive, exit_code) = self
             .get(id)
             .map(|(alive, code, _, _)| (alive, code))
@@ -578,6 +585,45 @@ impl AgentJobRegistry {
             alive,
             exit_code,
         })
+    }
+
+    pub fn read_cursor(&self, id: &str) -> Option<u64> {
+        let g = self.inner.lock().expect("jobs lock");
+        g.jobs.get(id).map(|rec| rec.read_cursor)
+    }
+
+    /// Remove a finished unified-exec session even when it was detached. The
+    /// legacy `run` path keeps detached records for the exit mailbox; an
+    /// `exec_command` session has no such consumer once its final output has
+    /// been returned.
+    pub fn discard_finished(&self, id: &str) -> bool {
+        let session_id = {
+            let mut g = self.inner.lock().expect("jobs lock");
+            let Some(rec) = g.jobs.get(id) else {
+                return false;
+            };
+            if rec.alive || !rec.reader_eof {
+                return false;
+            }
+            let Some(rec) = g.jobs.remove(id) else {
+                return false;
+            };
+            let session_id = rec.session_id;
+            if let Some(queue) = g.mailbox.get_mut(&session_id) {
+                queue.retain(|notice| notice.bash_id != id);
+            }
+            if g.mailbox
+                .get(&session_id)
+                .is_some_and(|queue| queue.is_empty())
+            {
+                g.mailbox.remove(&session_id);
+            }
+            g.generation += 1;
+            session_id
+        };
+        self.wake();
+        self.emit_jobs_changed(&session_id);
+        true
     }
 
     /// Read output produced since the previous unified-exec call. Cursor
@@ -1287,6 +1333,7 @@ pub struct PtyRequest {
     pub call_id: String,
     pub yield_window: Duration,
     pub cancel: CancellationToken,
+    pub on_spawned: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// Own a PTY child on the calling tokio runtime. The session is registered in
@@ -1305,7 +1352,7 @@ pub fn supervise_pty(
 
 async fn run_pty_supervisor(
     jobs: Arc<AgentJobRegistry>,
-    request: PtyRequest,
+    mut request: PtyRequest,
     tx: tokio::sync::oneshot::Sender<PipeDecision>,
 ) {
     if request.cancel.is_cancelled() {
@@ -1356,6 +1403,9 @@ async fn run_pty_supervisor(
             return;
         }
     };
+    if let Some(spawned) = request.on_spawned.take() {
+        let _ = spawned.send(());
+    }
     let session_id = if request.session_id.is_empty() {
         "_".to_string()
     } else {

@@ -352,7 +352,7 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
                 &mut catalog,
                 resolved,
                 "run",
-                &["run", "wait", "kill"],
+                &["run", "wait", "kill", "exec_command", "write_stdin"],
                 CapabilityKind::Core,
                 ToolOrigin::Builtin,
             ),
@@ -587,7 +587,7 @@ mod tests {
         let run = catalog.get("run").expect("run");
         assert_eq!(
             run.member_ids().collect::<Vec<_>>(),
-            ["run", "wait", "kill"]
+            ["run", "wait", "kill", "exec_command", "write_stdin"]
         );
         assert_eq!(catalog.member_capability_id("wait"), Some("run"));
         assert_eq!(catalog.member_capability_id("apply_edits"), Some("edit"));

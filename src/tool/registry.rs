@@ -24,6 +24,7 @@ use crate::tools::{
     code_search::CodeSearchTool,
     custom::CustomTool,
     edit::EditTool,
+    exec_command::ExecCommandTool,
     glob::GlobTool,
     grep::GrepTool,
     kill::KillTool,
@@ -45,6 +46,7 @@ use crate::tools::{
     webfetch::WebFetchTool,
     websearch::WebSearchTool,
     write::WriteTool,
+    write_stdin::WriteStdinTool,
 };
 
 fn builtin_tool(
@@ -55,6 +57,8 @@ fn builtin_tool(
 ) -> Option<Arc<dyn Tool>> {
     let tool: Arc<dyn Tool> = match id {
         "run" => Arc::new(RunTool::new(Arc::clone(&ide.terminal.jobs))),
+        "exec_command" => Arc::new(ExecCommandTool::new(Arc::clone(&ide.terminal.jobs))),
+        "write_stdin" => Arc::new(WriteStdinTool::new(Arc::clone(&ide.terminal.jobs))),
         "read" => Arc::new(ReadTool::with_ide(Arc::clone(&ide))),
         "write" => Arc::new(WriteTool::with_ide(Arc::clone(&ide))),
         "edit" => Arc::new(EditTool::with_ide(Arc::clone(&ide))),
@@ -649,6 +653,12 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(KillTool::new(Arc::new(
             crate::terminal::AgentJobRegistry::new(),
         ))),
+        Arc::new(ExecCommandTool::new(Arc::new(
+            crate::terminal::AgentJobRegistry::new(),
+        ))),
+        Arc::new(WriteStdinTool::new(Arc::new(
+            crate::terminal::AgentJobRegistry::new(),
+        ))),
         // WP-203: network tools are Code-only (cold stubs for settings admission).
         Arc::new(WebFetchTool::new(Arc::new(std::sync::RwLock::new(None)))),
         Arc::new(WebSearchTool::new(
@@ -1105,7 +1115,17 @@ mod tests {
         assert!(!names.contains(&"bash"));
         assert!(!names.contains(&"wait_shell"));
         assert!(!names.contains(&"kill_shell"));
-        for code in ["run", "wait", "kill", "read", "glob", "grep", "memory.list"] {
+        for code in [
+            "run",
+            "wait",
+            "kill",
+            "exec_command",
+            "write_stdin",
+            "read",
+            "glob",
+            "grep",
+            "memory.list",
+        ] {
             assert!(!names.contains(&code), "code tool {code} leaked direct");
         }
         assert!(names.contains(&"run_code"));
@@ -1129,11 +1149,7 @@ mod tests {
             .direct_spec(&dummy_ctx())
             .unwrap()
             .description;
-        for needle in [
-            "run(args: {",
-            "read(args: {",
-            "upsert(args: {",
-        ] {
+        for needle in ["run(args: {", "read(args: {", "upsert(args: {"] {
             assert!(sdk.contains(needle), "missing {needle}");
         }
     }
@@ -1531,7 +1547,10 @@ mod tests {
             let Some(spec) = tool.direct_spec(&ctx) else {
                 continue;
             };
-            assert_eq!(spec.input_schema["type"], "object", "{name} must take an object");
+            assert_eq!(
+                spec.input_schema["type"], "object",
+                "{name} must take an object"
+            );
             assert_eq!(
                 spec.input_schema["additionalProperties"],
                 serde_json::json!(false),
@@ -1655,13 +1674,15 @@ mod tests {
             [
                 "apply_edits",
                 "edit",
+                "exec_command",
                 "glob",
                 "kill",
                 "read",
                 "run",
                 "session_search",
                 "wait",
-                "write"
+                "write",
+                "write_stdin"
             ]
         );
         assert!(narrow_sdk.contains("run(args: {"));

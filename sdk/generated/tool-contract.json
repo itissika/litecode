@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "7369a73909f5784ef7f8c5123d29d852acec1572d7fce6864c31309892427ab2",
+  "sdk_hash": "cdc8d867f53eaa030f1028193e9edc585045b97d87c412399b43c088d0b46493",
   "tools": {
     "apply_edits": {
       "path": [
@@ -1153,6 +1153,98 @@
         "additionalProperties": false
       }
     },
+    "exec_command": {
+      "path": [
+        "process",
+        "exec_command"
+      ],
+      "suite": "process",
+      "tool": "exec_command",
+      "doc": "Start a command in a PTY, returning output or a session id for ongoing interaction.",
+      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Wait before yielding output. 250-30000 ms; default 10000.\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ToolResult<ExecCommandData>>;",
+      "input_type": "(inline)",
+      "output_type": "ExecCommandData",
+      "type_deps": [
+        "ExecCommandData",
+        "Integer"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "string",
+            "description": "Shell command to execute."
+          },
+          "workdir": {
+            "type": "string",
+            "description": "Working directory; defaults to the turn cwd and must stay inside it."
+          },
+          "tty": {
+            "type": "boolean",
+            "description": "True allocates a PTY; false or omitted uses plain pipes."
+          },
+          "yield_time_ms": {
+            "type": "integer",
+            "description": "Wait before yielding output. 250-30000 ms; default 10000."
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "description": "Output token budget for this call; default 10000."
+          }
+        },
+        "required": [
+          "cmd"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Live session id; present only while the process is still running."
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "Whole JSON number. The host rejects fractional values."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Process exit code when it finished before this call returned."
+          },
+          "wall_time_seconds": {
+            "type": "number",
+            "description": "Time spent inside this exec_command / write_stdin call."
+          },
+          "output": {
+            "type": "string",
+            "description": "Incremental output since the previous exec call on this session."
+          },
+          "original_token_count": {
+            "type": "integer",
+            "description": "Approximate original output size before the call's token budget."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Output was clipped by max_output_tokens."
+          },
+          "ok": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ok",
+          "wall_time_seconds",
+          "output"
+        ],
+        "additionalProperties": false
+      }
+    },
     "kill": {
       "path": [
         "process",
@@ -1580,6 +1672,94 @@
           "output_truncated",
           "stderr_truncated",
           "path_conversion"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "write_stdin": {
+      "path": [
+        "process",
+        "write_stdin"
+      ],
+      "suite": "process",
+      "tool": "write_stdin",
+      "doc": "Write characters to an existing exec session and return recent output.",
+      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding output. Empty polls default 5000 ms; writes default 250 ms.\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ToolResult<ExecCommandData>>;",
+      "input_type": "(inline)",
+      "output_type": "ExecCommandData",
+      "type_deps": [
+        "ExecCommandData",
+        "Integer"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Session id from exec_command."
+          },
+          "chars": {
+            "type": "string",
+            "description": "Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group."
+          },
+          "yield_time_ms": {
+            "type": "integer",
+            "description": "Wait before yielding output. Empty polls default 5000 ms; writes default 250 ms."
+          },
+          "max_output_tokens": {
+            "type": "integer",
+            "description": "Output token budget for this call; default 10000."
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Live session id; present only while the process is still running."
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "Whole JSON number. The host rejects fractional values."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Process exit code when it finished before this call returned."
+          },
+          "wall_time_seconds": {
+            "type": "number",
+            "description": "Time spent inside this exec_command / write_stdin call."
+          },
+          "output": {
+            "type": "string",
+            "description": "Incremental output since the previous exec call on this session."
+          },
+          "original_token_count": {
+            "type": "integer",
+            "description": "Approximate original output size before the call's token budget."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Output was clipped by max_output_tokens."
+          },
+          "ok": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "ok",
+          "wall_time_seconds",
+          "output"
         ],
         "additionalProperties": false
       }

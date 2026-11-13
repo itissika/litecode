@@ -515,6 +515,7 @@ mod tests {
         cases.extend(crate::tools::edit::result::drift_cases());
         cases.extend(crate::tools::write::drift_cases());
         cases.extend(crate::tools::command_job::drift_cases());
+        cases.extend(crate::tools::exec_command::drift_cases());
         cases.extend(crate::tools::webfetch::drift_cases());
         cases.extend(crate::tools::websearch::drift_cases());
         cases.extend(crate::tools::code_search::drift_cases());

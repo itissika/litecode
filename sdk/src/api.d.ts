@@ -128,6 +128,21 @@ type RejectedItem = {
   detail?: string;
 };
 
+type ExecCommandData = {
+  /** Live session id; present only while the process is still running. */
+  session_id?: string;
+  /** Process exit code when it finished before this call returned. */
+  exit_code?: Integer | null;
+  /** Time spent inside this exec_command / write_stdin call. */
+  wall_time_seconds: number;
+  /** Incremental output since the previous exec call on this session. */
+  output: string;
+  /** Approximate original output size before the call's token budget. */
+  original_token_count?: Integer;
+  /** Output was clipped by max_output_tokens. */
+  truncated?: boolean;
+};
+
 type CommandData = {
   /** Process exit code when finished; null when still running or unavailable. */
   exit_code: Integer | null;
@@ -310,6 +325,21 @@ interface SearchTools {
 }
 
 interface ProcessTools {
+  /** Start a command in a PTY, returning output or a session id for ongoing interaction. @tool exec_command @suite process */
+  exec_command(args: {
+    cmd: string; // Shell command to execute.
+    workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.
+    tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.
+    yield_time_ms?: Integer; // Wait before yielding output. 250-30000 ms; default 10000.
+    max_output_tokens?: Integer; // Output token budget for this call; default 10000.
+  }): Promise<ToolResult<ExecCommandData>>;
+  /** Write characters to an existing exec session and return recent output. @tool write_stdin @suite process */
+  write_stdin(args: {
+    session_id: string; // Session id from exec_command.
+    chars?: string; // Bytes to write; empty polls. "\u0003" sends SIGINT to the process group.
+    yield_time_ms?: Integer; // Wait before yielding output. Empty polls default 5000 ms; writes default 250 ms.
+    max_output_tokens?: Integer; // Output token budget for this call; default 10000.
+  }): Promise<ToolResult<ExecCommandData>>;
   /** Start one shell command; use run_in_background for a non-blocking job. @tool run @suite process */
   run(args: {
     command: string; // Shell command to run once in the workspace root. Chain with && for cd or env changes.
