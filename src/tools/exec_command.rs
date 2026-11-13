@@ -153,6 +153,14 @@ impl ExecCommandTool {
         if execution.cancel.is_cancelled() {
             return coded_error("cancelled", "exec_command cancelled before spawn");
         }
+        tracing::info!(
+            tool = "exec_command",
+            session_id = %execution.session_id,
+            tty = args.tty,
+            yield_ms = args.yield_ms,
+            max_output_tokens = args.max_output_tokens,
+            "unified exec start"
+        );
         let started = Instant::now();
         let scope = crate::tool::run_scope::current().unwrap_or_default();
         let (spawned_tx, spawned_rx) = tokio::sync::oneshot::channel();
@@ -241,6 +249,13 @@ impl ExecCommandTool {
                     None,
                     started.elapsed().as_secs_f64(),
                     delta,
+                );
+                tracing::info!(
+                    tool = "exec_command",
+                    session_id = %job_id,
+                    tty = args.tty,
+                    yield_ms = args.yield_ms,
+                    "unified exec yielded"
                 );
                 ToolOutcome::ok(data).into_call_result(format!("session_id: {job_id}\n"))
             }

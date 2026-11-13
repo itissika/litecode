@@ -340,7 +340,7 @@ interface ProcessTools {
     yield_time_ms?: Integer; // Wait before yielding output. Empty polls default 5000 ms; writes default 250 ms.
     max_output_tokens?: Integer; // Output token budget for this call; default 10000.
   }): Promise<ToolResult<ExecCommandData>>;
-  /** Start one shell command; use run_in_background for a non-blocking job. @tool run @suite process */
+  /** Legacy one-shot job; prefer exec_command for interactive commands. @tool run @suite process */
   run(args: {
     command: string; // Shell command to run once in the workspace root. Chain with && for cd or env changes.
     run_in_background?: boolean; // Return immediately after spawn with exit_code:null and keep the job as a wait/kill target. Default false: stay in the foreground until the command exits or the run_code budget runs out; a job still alive then detaches with exit_code:null. @default false
@@ -348,12 +348,12 @@ interface ProcessTools {
     // Command payload shared by run, wait, and kill; exit_code carries command status.
     CommandData
   >>;
-  /** Wait for a still-running command job; exit_code is the command status. @tool wait @suite process */
+  /** Legacy wait for a run job; exec_command sessions use write_stdin. @tool wait @suite process */
   wait(args: {
     id: string; // Command.id from a tools.process.run result whose exit_code is null.
     sec: Integer; // Seconds to block waiting for exit. 1–300.
   }): Promise<ToolResult<CommandData>>;
-  /** Terminate a command job in this session. @tool kill @suite process */
+  /** Legacy hard stop (SIGKILL tree); use write_stdin with "\u0003" for Ctrl-C. @tool kill @suite process */
   kill(args: {
     id: string; // Command.id from a tools.process.run or tools.process.wait result whose exit_code is null.
   }): Promise<ToolResult<CommandData>>;

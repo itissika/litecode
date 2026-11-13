@@ -85,6 +85,14 @@ impl WriteStdinTool {
         if !command_job::owns_session(&self.jobs, &execution.session_id, &args.session_id) {
             return command_job::not_found(&self.jobs, &execution.session_id, &args.session_id);
         }
+        tracing::info!(
+            tool = "write_stdin",
+            session_id = %args.session_id,
+            chars_len = args.chars.len(),
+            ctrl_c = args.chars == INTERRUPT,
+            yield_ms = args.yield_ms,
+            "write_stdin"
+        );
         let started = Instant::now();
         let cursor = self.jobs.read_cursor(&args.session_id).unwrap_or(0);
         let (alive_before, _, _, _) = self.jobs.get(&args.session_id).unwrap_or((

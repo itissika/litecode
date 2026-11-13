@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "cdc8d867f53eaa030f1028193e9edc585045b97d87c412399b43c088d0b46493",
+  "sdk_hash": "374b7c2a8bbd987e18146f35e74f5ba5b08caf96c4963b7c4c1c3267a3f68c3a",
   "tools": {
     "apply_edits": {
       "path": [
@@ -1252,7 +1252,7 @@
       ],
       "suite": "process",
       "tool": "kill",
-      "doc": "Terminate a command job in this session.",
+      "doc": "Legacy hard stop (SIGKILL tree); use write_stdin with \"\\u0003\" for Ctrl-C.",
       "signature": "kill(args: {\n  id: string; // Command.id from a tools.process.run or tools.process.wait result whose exit_code is null.\n}): Promise<ToolResult<CommandData>>;",
       "input_type": "(inline)",
       "output_type": "CommandData",
@@ -1392,7 +1392,7 @@
       ],
       "suite": "process",
       "tool": "run",
-      "doc": "Start one shell command; use run_in_background for a non-blocking job.",
+      "doc": "Legacy one-shot job; prefer exec_command for interactive commands.",
       "signature": "run(args: {\n  command: string; // Shell command to run once in the workspace root. Chain with && for cd or env changes.\n  run_in_background?: boolean; // Return immediately after spawn with exit_code:null and keep the job as a wait/kill target. Default false: stay in the foreground until the command exits or the run_code budget runs out; a job still alive then detaches with exit_code:null. @default false\n}): Promise<ToolResult<\n  // Command payload shared by run, wait, and kill; exit_code carries command status.\n  CommandData\n>>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
@@ -1538,7 +1538,7 @@
       ],
       "suite": "process",
       "tool": "wait",
-      "doc": "Wait for a still-running command job; exit_code is the command status.",
+      "doc": "Legacy wait for a run job; exec_command sessions use write_stdin.",
       "signature": "wait(args: {\n  id: string; // Command.id from a tools.process.run result whose exit_code is null.\n  sec: Integer; // Seconds to block waiting for exit. 1–300.\n}): Promise<ToolResult<CommandData>>;",
       "input_type": "(inline)",
       "output_type": "CommandData",

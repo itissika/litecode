@@ -260,7 +260,7 @@ fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
         )?;
     }
 
-    // WP-197: Code shell 三动作；仅绑 `run`（wait/kill 由 registry 注入）。
+    // WP-197: Code shell card; bind `run` and the registry injects wait/kill/exec_command/write_stdin.
     store::upsert_agent_tool(
         conn,
         "explore",

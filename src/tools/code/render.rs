@@ -269,6 +269,7 @@ pub(super) fn reminders_for_call(tool: &str, value: &Value) -> Vec<String> {
         "file.grep" => grep_reminders(object, &mut out),
         tool if tool.starts_with("lsp.") => lsp_reminders(tool, object, &mut out),
         "process.run" | "process.wait" | "process.kill" => command_reminders(object, &mut out),
+        "process.exec_command" | "process.write_stdin" => unified_exec_reminders(object, &mut out),
         "file.write" => write_reminders(object, &mut out),
         "file.edit" | "file.apply_edits" => edit_reminders(tool, object, &mut out),
         _ => {}
@@ -376,6 +377,20 @@ fn edit_reminders(
         // model has in front of it, and the batch table already anchors it.
     }
 }
+/// Codex-style exec sessions use a session id and incremental output, so the
+/// legacy `process.run` reminder ("use wait/kill") would be actively wrong.
+fn unified_exec_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
+    if object.get("session_id").and_then(Value::as_str).is_some() {
+        out.push(
+            "session is still running; use tools.process.write_stdin with its session_id"
+                .to_string(),
+        );
+    }
+    if object.get("truncated").and_then(Value::as_bool) == Some(true) {
+        out.push("output was clipped by max_output_tokens".to_string());
+    }
+}
+
 /// A command result keeps process output and process state apart: the text is
 /// the text, and everything the tool learned about the run is a field here.
 fn command_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {

@@ -287,8 +287,6 @@ pub struct AgentJobRecord {
     io: Option<JobIo>,
     /// Byte offset already returned by `exec_command` / `write_stdin`.
     read_cursor: u64,
-    /// True when stdout and stderr share one tee/log (unified output).
-    merged_output: bool,
 }
 
 impl AgentJobRecord {
@@ -580,6 +578,14 @@ impl AgentJobRegistry {
             .get(id)
             .map(|(alive, code, _, _)| (alive, code))
             .unwrap_or((false, None));
+        tracing::info!(
+            job_id = id,
+            ?signal,
+            delivered,
+            alive,
+            exit_code = ?exit_code,
+            "process signal"
+        );
         Some(SignalledJob {
             delivered,
             alive,
@@ -1226,7 +1232,6 @@ impl AgentJobRegistry {
                 detached: true,
                 io: None,
                 read_cursor: 0,
-                merged_output: false,
             },
         );
         Ok(stdout_path)
@@ -1434,7 +1439,6 @@ async fn run_pty_supervisor(
             detached: false,
             io: Some(JobIo::Pty(Arc::clone(&session))),
             read_cursor: 0,
-            merged_output: true,
         },
     );
     // The reaper turns PTY EOF into the registry's exit fact. The PTY reader
@@ -1680,7 +1684,6 @@ async fn run_pipe_supervisor(
             detached: false,
             io: stdin_tx.map(JobIo::Pipe),
             read_cursor: 0,
-            merged_output: merge_output,
         },
     );
 
@@ -2091,7 +2094,6 @@ mod tests {
             detached: false,
             io: None,
             read_cursor: 0,
-            merged_output: false,
         }
     }
 
