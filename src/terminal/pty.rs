@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 
+use super::ProcessSignal;
 use super::error::{TerminalError, TerminalResult};
 use super::shell::ShellSpec;
 
@@ -174,6 +175,56 @@ impl PtySession {
         spawn_inner(
             id, shell, cwd, cols, rows, on_data, on_exit, env, false, answer_cpr,
         )
+    }
+
+    /// Spawn a PTY-backed agent job. Unlike a human terminal this buffers no
+    /// output itself; the caller receives chunks through `on_data` and owns
+    /// the bounded tee/log. CPR replies stay enabled because no terminal
+    /// emulator is attached.
+    pub fn spawn_agent(
+        id: String,
+        shell: &ShellSpec,
+        cwd: &Path,
+        on_data: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+        on_exit: Option<Arc<dyn Fn(Option<u32>) + Send + Sync>>,
+        env: &[(&str, &str)],
+    ) -> TerminalResult<Self> {
+        spawn_inner(id, shell, cwd, 80, 24, on_data, on_exit, env, false, true)
+    }
+
+    pub fn pid(&self) -> Option<u32> {
+        self.child.lock().ok().and_then(|child| child.process_id())
+    }
+
+    /// Send a process-group signal. `Kill` keeps the existing tree-kill path;
+    /// `Interrupt` is the real Ctrl-C used by `write_stdin`.
+    pub fn signal(&self, signal: ProcessSignal) -> TerminalResult<()> {
+        if signal == ProcessSignal::Kill {
+            return self.kill();
+        }
+        let pid = self
+            .pid()
+            .ok_or_else(|| TerminalError::Io("pty child has no pid".into()))?;
+        #[cfg(unix)]
+        {
+            let sig = match signal {
+                ProcessSignal::Interrupt => libc::SIGINT,
+                ProcessSignal::Terminate => libc::SIGTERM,
+                ProcessSignal::Kill => unreachable!(),
+            };
+            if unsafe { libc::kill(-(pid as i32), sig) } != 0 {
+                return Err(TerminalError::Io(
+                    std::io::Error::last_os_error().to_string(),
+                ));
+            }
+            Ok(())
+        }
+        #[cfg(windows)]
+        {
+            Err(TerminalError::Io(
+                "process-group interrupt is not supported on Windows".into(),
+            ))
+        }
     }
 
     pub fn write(&self, data: &[u8]) -> TerminalResult<()> {

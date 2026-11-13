@@ -138,6 +138,8 @@ impl RunTool {
                 detach: PipeDetach::Background {
                     window: background_window,
                 },
+                open_stdin: false,
+                merge_output: false,
                 on_spawned: Some(spawned_tx),
             },
         );

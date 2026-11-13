@@ -23,9 +23,17 @@ use uuid::Uuid;
 
 pub use agent_jobs::{
     AgentJobRecord, AgentJobRegistry, BashJobWire, BashJobsSnapshot, BashTailView, BashWaitWire,
-    ExitNotice, PipeDecision, PipeDetach, PipeRequest, RUN_FOREGROUND_WINDOW, RunningJob,
-    WaitOutcome, command_preview, supervise_pipe,
+    ExitNotice, OutputDelta, PipeDecision, PipeDetach, PipeRequest, PtyRequest,
+    RUN_FOREGROUND_WINDOW, RunningJob, SignalledJob, WaitOutcome, command_preview, supervise_pipe,
+    supervise_pty,
 };
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessSignal {
+    Interrupt,
+    Terminate,
+    Kill,
+}
+
 pub use error::{TerminalError, TerminalResult};
 pub use shell::{ShellSpec, default_shell, shell_command};
 
