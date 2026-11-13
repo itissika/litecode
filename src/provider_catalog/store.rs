@@ -15,12 +15,40 @@ pub const CATALOG_SCHEMA: &str = include_str!("provider-catalog.schema.json");
 pub const CATALOG_FILE_NAME: &str = "provider-catalog.toml";
 
 /// This build's catalog. One instance for the process.
+///
+/// `LITECODE_EVAL_PROVIDER_ENDPOINT` is an evaluation-only override: it points
+/// one provider (default `deepseek`) at a recording proxy so a harness run can
+/// be accounted and traced without changing the shipped catalog. It has no
+/// effect unless set, and it is read once with the embedded catalog.
 pub fn embedded() -> Arc<ProviderCatalog> {
     static CATALOG: OnceLock<Arc<ProviderCatalog>> = OnceLock::new();
     Arc::clone(CATALOG.get_or_init(|| {
+        let catalog = ProviderCatalog::parse(DEFAULT_CATALOG, Path::new(CATALOG_FILE_NAME))
+            .expect("embedded provider catalog is valid");
+        let Some(endpoint) = std::env::var("LITECODE_EVAL_PROVIDER_ENDPOINT")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            return Arc::new(catalog);
+        };
+        let provider = std::env::var("LITECODE_EVAL_PROVIDER_ID")
+            .unwrap_or_else(|_| "deepseek".to_string());
+        let endpoint_type = std::env::var("LITECODE_EVAL_ENDPOINT_TYPE")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| {
+                super::schema::EndpointKind::parse(&value).unwrap_or_else(|| {
+                    panic!(
+                        "LITECODE_EVAL_ENDPOINT_TYPE must be responses, chat_completions or messages (got {value:?})"
+                    )
+                })
+            });
         Arc::new(
-            ProviderCatalog::parse(DEFAULT_CATALOG, Path::new(CATALOG_FILE_NAME))
-                .expect("embedded provider catalog is valid"),
+            catalog
+                .with_provider_endpoint_type(&provider, &endpoint, endpoint_type)
+                .unwrap_or_else(|error| {
+                    panic!("LITECODE_EVAL_PROVIDER_ENDPOINT is invalid: {error}")
+                }),
         )
     }))
 }

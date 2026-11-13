@@ -1,3 +1,10 @@
+> **2026-11-13 update:** the active job is `jobs/compare5.yaml` with
+> `harnesses: [litecode, codex, pi, opencode, grok-build]`. The four non-LiteCode
+> layers now point at `eval.harbor.prebaked_agents:*` so the per-trial
+> apt/nvm/npm install is skipped; LiteCode keeps the only changed default
+> config (`eval/profile.toml`) and stays off the proxy. The resolver supports
+> `--task` and repeatable `--harness` for per-task jobs and repair runs.
+> Runbook: `eval/harbor/bench5/README.md`.
 # Eval job configs
 
 Four layers, same names and the same merge order as workbuddy-bench's

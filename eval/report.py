@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""One report from two sources: Harbor's own numbers and the proxy's rows.
+"""DEPRECATED: use eval/harbor/bench5/collect.py for the five-harness panel.
+
+Harbor 0.25.0's job-level result.json is a stats rollup and does not contain
+trial rows; this script reads the rollup, so it cannot rebuild a per-trial
+table. It is kept only for old result shapes. The bench5 collector reads
+<job>/<trial>/result.json directly.
+
+One report from two sources: Harbor's own numbers and the proxy's rows.
 
 Harbor writes a job result (<job>/result.json) with stats.* totals and one
 agent_result.* per trial. The egress proxy writes one JSONL row per upstream

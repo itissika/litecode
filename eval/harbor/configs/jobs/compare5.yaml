@@ -1,0 +1,14 @@
+# Layer 4 of 4: the five-harness, three-task panel.
+#
+# The runner renders one job per task so every proxy row belongs to exactly one
+# (task, harness) cell: the run id is bench5-<task>-<attempt>, and the resolver
+# appends -<harness>. litecode is the only harness with a changed default
+# config; its scored surface is eval/profile.toml.
+job:
+  harnesses: [litecode, codex, pi, opencode, grok-build]
+  model: deepseek-flash
+  dataset: ""
+  # One attempt per cell is the score. Infra failures are repaired and rerun,
+  # not averaged into a pass rate.
+  n_attempts: 1
+  n_concurrent_trials: 5

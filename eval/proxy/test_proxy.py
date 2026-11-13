@@ -14,7 +14,7 @@ from pathlib import Path
 
 import deepseek_proxy
 
-KEY = "sk-test-secret"
+KEY = "test-key-not-real"
 
 
 class FakeUpstream(BaseHTTPRequestHandler):
@@ -194,6 +194,14 @@ class ProxyTest(unittest.TestCase):
         connection.close()
         return response.status, body
 
+    def call_get(self, path: str) -> tuple[int, bytes]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        connection.request("GET", path)
+        response = connection.getresponse()
+        body = response.read()
+        connection.close()
+        return response.status, body
+
     def rows(self, expected: int = 1) -> list[dict]:
         """The JSONL so far, waiting for the handler thread to append its row."""
         deadline = time.monotonic() + 3
@@ -211,6 +219,11 @@ class ProxyTest(unittest.TestCase):
 
     # ── tests ────────────────────────────────────────────────────────────
 
+    def test_healthz_is_free_of_run_id_and_logging(self) -> None:
+        status, body = self.call_get("/healthz")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        self.assertEqual(self.rows(0), [])
     def test_a_plain_request_is_forwarded_and_logged(self) -> None:
         status, body = self.call(
             "/r/task-1/v1/chat/completions",
@@ -234,6 +247,12 @@ class ProxyTest(unittest.TestCase):
             (7, 2, 4),
         )
         self.assertGreaterEqual(row["duration_ms"], 0)
+        # Trace shape: request/response size and message count are recorded
+        # without storing the prompt or any tool output.
+        self.assertGreater(row["request_bytes"], 0)
+        self.assertGreater(row["response_bytes"], 0)
+        self.assertEqual(row["messages_count"], 1)
+        self.assertIsNone(row["tools_count"])
 
     def test_a_stream_without_usage_asks_for_it_and_swallows_the_frame(self) -> None:
         status, body = self.call(

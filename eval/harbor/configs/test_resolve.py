@@ -25,18 +25,38 @@ def rendered(**overrides):
     return resolve.resolve(**values)
 
 
+_AGENT_KEYS = {
+    "PrebakedCodex": "codex",
+    "PrebakedPi": "pi",
+    "PrebakedOpenCode": "opencode",
+    "PrebakedGrokBuild": "grok-build",
+    "LiteCode": "litecode",
+}
+
+
+def agent_key(agent) -> str:
+    """Harness key from a rendered agent, independent of install adapter."""
+    name = agent["name"]
+    tail = name.rsplit(":", 1)[-1].rsplit(".", 1)[-1]
+    return _AGENT_KEYS.get(tail, name)
+
+
+def keyed(job):
+    return {agent_key(agent): agent for agent in job["agents"]}
+
+
 class LayersTest(unittest.TestCase):
     def test_one_agent_per_harness_on_the_one_model(self) -> None:
         job = rendered()
         self.assertEqual(
-            [agent["name"] for agent in job["agents"]],
+            [agent_key(agent) for agent in job["agents"]],
             ["pi", "grok-build", "opencode", "codex"],
         )
         for agent in job["agents"]:
             self.assertEqual(agent["model_name"], "deepseek/deepseek-flash")
             self.assertEqual(agent["model_api_key_name"], "DEEPSEEK_API_KEY")
             self.assertIn("/r/r1-", agent["base_url"])
-            if agent["name"] == "codex":
+            if agent_key(agent) == "codex":
                 self.assertTrue(agent["base_url"].endswith("/r/r1-codex/"))
             else:
                 self.assertTrue(agent["base_url"].endswith("/v1"))
@@ -44,7 +64,7 @@ class LayersTest(unittest.TestCase):
         self.assertEqual(job["agent_setup_timeout_multiplier"], 4.0)
 
     def test_thinking_is_high_everywhere(self) -> None:
-        agents = {agent["name"]: agent for agent in rendered()["agents"]}
+        agents = keyed(rendered())
         self.assertEqual(agents["pi"]["kwargs"]["reasoning_effort"], "high")
         self.assertEqual(agents["grok-build"]["kwargs"]["reasoning_effort"], "high")
         overlay = agents["opencode"]["kwargs"]["opencode_config"]
@@ -59,7 +79,7 @@ class LayersTest(unittest.TestCase):
         )
 
     def test_codex_is_responses_with_no_v1_in_its_base_url(self) -> None:
-        codex = {agent["name"]: agent for agent in rendered()["agents"]}["codex"]
+        codex = keyed(rendered())["codex"]
         self.assertTrue(codex["base_url"].endswith("/r/r1-codex/"))
         self.assertNotIn("/v1", codex["base_url"])
         self.assertEqual(codex["model_api_format"], "openai_responses")
@@ -104,13 +124,38 @@ class LayersTest(unittest.TestCase):
             self.skipTest("harbor is not importable here")
         job = JobConfig.model_validate(rendered())
         self.assertEqual(
-            [agent.name for agent in job.agents],
+            [agent_key({"name": agent.name}) for agent in job.agents],
             ["pi", "grok-build", "opencode", "codex"],
         )
         codex = job.agents[-1]
         self.assertEqual(codex.model_api_format.value, "openai_responses")
         self.assertTrue(codex.base_url.endswith("/r/r1-codex/"))
 
+    def test_the_five_harness_panel_keeps_litecode_off_the_proxy(self) -> None:
+        job = resolve.resolve(
+            job="compare5",
+            dataset="datasets/bench5",
+            run_id="bench5-task-r1",
+            egress_base_url=EGRESS,
+            task_names=["password-recovery"],
+        )
+        self.assertEqual(
+            [agent_key(agent) for agent in job["agents"]],
+            ["litecode", "codex", "pi", "opencode", "grok-build"],
+        )
+        agents = keyed(job)
+        self.assertNotIn("base_url", agents["litecode"])
+        self.assertEqual(
+            agents["litecode"]["model_api_key_name"], "LITECODE_API_KEY"
+        )
+        for harness in ("codex", "pi", "opencode", "grok-build"):
+            self.assertIn(
+                f"/r/bench5-task-r1-{harness}", agents[harness]["base_url"]
+            )
+        self.assertEqual(
+            job["datasets"][0]["task_names"], ["password-recovery"]
+        )
+        self.assertEqual(job["n_concurrent_trials"], 5)
     def test_the_layer_files_carry_no_endpoint_or_key(self) -> None:
         for path in sorted(HERE.rglob("*.yaml")):
             text = path.read_text(encoding="utf-8")

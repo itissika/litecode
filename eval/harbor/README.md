@@ -1,3 +1,9 @@
+> **2026-11-13 update:** the five-harness panel now lives in
+> [`bench5/`](bench5/README.md). It adds codex, pi, opencode and grok-build to
+> the LiteCode adapter below, prebakes the CLIs, uses one job per task for
+> per-cell token accounting, and reads per-trial result files (Harbor 0.25.0's
+> job result is only a stats rollup). See `eval/bench5-report.md` and
+> `eval/bench5-summary.md` for the result.
 # LiteCode in Terminal-Bench (Harbor)
 
 Three pieces, nothing else: a Linux build of the binary, a Harbor adapter that
@@ -193,7 +199,7 @@ checkout, and `build.sh` writes `bin/build-info.json` next to the binary:
   "dirty": false,
   "built_at": "2026-11-10T04:12:00Z",
   "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
-  "source_tree": "/home/sika/build/litecode-src"
+  "source_tree": "/path/to/litecode-src"
 }
 ```
 

@@ -16,6 +16,7 @@ const PLAN_PROVIDER_IDS: ReadonlySet<string> = new Set([
   "moonshot-coding", // Kimi Code
   "minimax-token", // M Plan
   "opencode-go", // monthly subscription
+  "cline", // ClinePass subscription
 ]);
 
 // Everything not in PLAN_PROVIDER_IDS is API (openai, deepseek, mimo, zhipu,

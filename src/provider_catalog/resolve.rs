@@ -221,6 +221,78 @@ impl ProviderCatalog {
     pub fn reference_of(provider_id: &str, model_id: &str) -> String {
         format!("{provider_id}/{model_id}")
     }
+
+    /// Eval-only: point one provider, and every model under it, at another host.
+    ///
+    /// The shipped catalog is embedded, so the product never reads an endpoint
+    /// from the environment. The evaluation adapter uses this to send LiteCode
+    /// traffic through a recording proxy without changing the catalog file.
+    pub fn with_provider_endpoint(&self, provider_id: &str, endpoint: &str) -> Result<Self> {
+        self.with_provider_endpoint_type(provider_id, endpoint, None)
+    }
+
+    /// Eval-only: also switch the provider's wire protocol.
+    ///
+    /// The evaluation bridge is the only caller. A Chat Completions override
+    /// narrows the model to text, because that codec does not serialize image
+    /// input; that is a deliberate eval-only adaptation, not a catalog edit.
+    pub fn with_provider_endpoint_type(
+        &self,
+        provider_id: &str,
+        endpoint: &str,
+        endpoint_type: Option<EndpointKind>,
+    ) -> Result<Self> {
+        validate_endpoint(endpoint).map_err(LitecodeError::Config)?;
+        let endpoint = normalize_endpoint(endpoint);
+        let mut providers = self.providers.clone();
+        let mut models = self.models.clone();
+        let mut found = false;
+        for provider in &mut providers {
+            if provider.id == provider_id {
+                found = true;
+                let provider = Arc::make_mut(provider);
+                provider.endpoint = endpoint.clone();
+                if let Some(kind) = endpoint_type {
+                    provider.endpoint_type = kind;
+                }
+            }
+        }
+        if !found {
+            return Err(LitecodeError::Config(format!(
+                "provider '{provider_id}' is not in the catalog"
+            )));
+        }
+        for model in &mut models {
+            if model.provider_id == provider_id {
+                let model = Arc::make_mut(model);
+                model.endpoint = endpoint.clone();
+                if let Some(kind) = endpoint_type {
+                    model.endpoint_type = kind;
+                    model.request_url = kind.request_url(&endpoint);
+                    if kind == EndpointKind::ChatCompletions {
+                        model.modalities.retain(|modality| *modality == Modality::Text);
+                    }
+                } else {
+                    model.request_url = model.endpoint_type.request_url(&endpoint);
+                }
+            }
+        }
+        let providers_by_id = providers
+            .iter()
+            .map(|provider| (provider.id.clone(), Arc::clone(provider)))
+            .collect();
+        let models_by_ref = models
+            .iter()
+            .map(|model| (model.reference.clone(), Arc::clone(model)))
+            .collect();
+        Ok(Self {
+            path: self.path.clone(),
+            providers,
+            models,
+            providers_by_id,
+            models_by_ref,
+        })
+    }
 }
 
 fn resolve_provider(provider: &RawProvider) -> ResolvedProvider {

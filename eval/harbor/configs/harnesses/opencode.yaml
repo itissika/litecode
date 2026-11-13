@@ -1,11 +1,12 @@
 harness:
-  name: opencode
+  id: opencode
+  name: eval.harbor.prebaked_agents:PrebakedOpenCode
   protocol: openai
   params:
     # opencode has no reasoning-effort flag; the level is a per-model request
     # option in its config overlay, passed through to the provider SDK.
-    # Unverified until the WSL smoke run: if opencode drops this key, DeepSeek's
-    # own default is still high, so the run stays honest either way.
+    # DeepSeek's own default is already high, so the knob is an explicit
+    # record of intent rather than the only thing keeping the run at high.
     opencode_config:
       provider:
         deepseek:

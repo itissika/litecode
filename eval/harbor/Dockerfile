@@ -5,7 +5,11 @@
 # and no settings: a task container only ever receives the binary plus a
 # litecode.db mounted in at run time.
 
-FROM ubuntu:24.04 AS build
+# The default build base is Ubuntu 24.04. `LITECODE_EVAL_PORTABLE=1` in
+# build.sh switches this to Debian 12 and turns ORT into a load-dynamic
+# dependency, producing a GLIBC_2.35 binary for Debian/Ubuntu eval images.
+ARG BUILD_BASE_IMAGE=ubuntu:24.04
+FROM ${BUILD_BASE_IMAGE} AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \

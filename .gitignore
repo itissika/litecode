@@ -90,3 +90,7 @@ nul
 
 # Built Linux binary for the eval adapter (built by eval/harbor/build.sh)
 eval/harbor/bin/
+.commandcode/
+eval/bench5-report.json
+eval/bench5-report.md
+eval/bench5-summary.md

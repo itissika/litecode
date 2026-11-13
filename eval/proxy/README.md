@@ -38,9 +38,10 @@ as `"usage": "ok"`.
 ## What a row says
 
 `{"ts", "request_id", "run_id", "method", "path", "stream", "usage_injected",
-"adapted_roles", "client_asked_usage", "stream_events", "model", "status",
-"duration_ms", "prompt_tokens", "completion_tokens", "cached_tokens",
-"total_tokens", "usage", "error"}`
+"adapted_roles", "client_asked_usage", "stream_events", "model",
+"request_bytes", "messages_count", "input_items_count", "tools_count",
+"response_bytes", "status", "duration_ms", "prompt_tokens",
+"completion_tokens", "cached_tokens", "total_tokens", "usage", "error"}`
 
 * `usage` is `ok` when the upstream reported token counts, `missing` when a
   generation call came back without any — and then the token fields are `null`.
@@ -113,3 +114,9 @@ usage (`"usage": "missing"`), an upstream 500, a `/v1/models` probe, a path
 without a run id, a missing or empty key file, and two Responses calls
 (streamed and not) whose usage is read from `response.completed` / the
 top-level body.
+
+Trace-shape fields are deliberately counts, not content: `request_bytes` and
+`response_bytes` are wire sizes; `messages_count` is the chat message count;
+`input_items_count` is the Responses input item count; `tools_count` is the
+number of declared tools. They make turn growth and context re-send visible
+without putting a prompt, a tool argument or a tool result into the log.

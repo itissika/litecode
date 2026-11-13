@@ -68,6 +68,51 @@ fn request_url_comes_from_endpoint_type() {
 }
 
 #[test]
+fn eval_endpoint_override_rewrites_the_provider_and_its_models() {
+    let catalog = seeded()
+        .with_provider_endpoint("deepseek", "http://127.0.0.1:9001/openai/v1")
+        .expect("valid endpoint");
+
+    assert_eq!(
+        catalog.provider("deepseek").unwrap().endpoint,
+        "http://127.0.0.1:9001/openai/v1"
+    );
+    let responses = catalog.model("deepseek/deepseek-flash").unwrap();
+    assert_eq!(responses.endpoint, "http://127.0.0.1:9001/openai/v1");
+    assert_eq!(
+        responses.request_url,
+        "http://127.0.0.1:9001/openai/v1/responses"
+    );
+    // Another provider keeps its own endpoint.
+    assert_eq!(
+        catalog
+            .model("opencode-go/deepseek-v4.1-flash")
+            .unwrap()
+            .endpoint,
+        "https://opencode.ai/inference/go/v1"
+    );
+}
+
+#[test]
+fn eval_chat_override_switches_url_and_narrows_modalities() {
+    let catalog = seeded()
+        .with_provider_endpoint_type(
+            "deepseek",
+            "http://127.0.0.1:9001/openai/v1",
+            Some(super::schema::EndpointKind::ChatCompletions),
+        )
+        .expect("valid endpoint");
+
+    let model = catalog.model("deepseek/deepseek-flash").unwrap();
+    assert_eq!(
+        model.request_url,
+        "http://127.0.0.1:9001/openai/v1/chat/completions"
+    );
+    assert_eq!(model.endpoint_type, super::schema::EndpointKind::ChatCompletions);
+    assert_eq!(model.modalities, vec![super::schema::Modality::Text]);
+}
+
+#[test]
 fn unknown_field_is_refused() {
     let message = err(
         "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\ntypo_field = 1\n",

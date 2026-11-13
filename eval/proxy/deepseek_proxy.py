@@ -159,6 +159,7 @@ class Proxy:
         self.host = parsed.hostname
         self.port = parsed.port or (443 if parsed.scheme == "https" else 80)
         self.prefix = parsed.path.rstrip("/")
+        self.upstream = upstream
         self.key = key
         self.log = log
         self.timeout = timeout
@@ -198,6 +199,17 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib name
+        if self.path == "/healthz":
+            body = json.dumps(
+                {"ok": True, "upstream": self.proxy.upstream}
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+            return
         self._proxy_request()
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib name
@@ -246,6 +258,11 @@ class Handler(BaseHTTPRequestHandler):
                 raw = json.dumps(body).encode("utf-8")
 
         billable = _BILLABLE.search(rest) is not None
+        # Request shape is trace data, not billing: it explains why one harness
+        # re-sends more context without storing prompts or tool output.
+        messages = body.get("messages") if isinstance(body, dict) else None
+        input_items = body.get("input") if isinstance(body, dict) else None
+        tools = body.get("tools") if isinstance(body, dict) else None
         row: dict[str, Any] = {
             "ts": _now(),
             "request_id": uuid.uuid4().hex,
@@ -258,6 +275,11 @@ class Handler(BaseHTTPRequestHandler):
             "client_asked_usage": client_asked_usage,
             "stream_events": None,
             "model": body.get("model") if isinstance(body, dict) else None,
+            "request_bytes": len(raw),
+            "messages_count": len(messages) if isinstance(messages, list) else None,
+            "input_items_count": len(input_items) if isinstance(input_items, list) else None,
+            "tools_count": len(tools) if isinstance(tools, list) else None,
+            "response_bytes": None,
             "status": None,
             "duration_ms": None,
             "prompt_tokens": None,
@@ -281,6 +303,7 @@ class Handler(BaseHTTPRequestHandler):
             connection.endheaders(raw)
             response = connection.getresponse()
             row["status"] = response.status
+            self._response_bytes = 0
             streaming = row["stream"]
             if streaming:
                 usage, events = self._relay_stream(response, injected=injected)
@@ -304,6 +327,7 @@ class Handler(BaseHTTPRequestHandler):
                     pass
         finally:
             connection.close()
+            row["response_bytes"] = getattr(self, "_response_bytes", None)
             row["duration_ms"] = round((time.monotonic() - started) * 1000, 1)
             self.proxy.write(row)
 
@@ -311,6 +335,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _relay_whole(self, response: http.client.HTTPResponse) -> dict[str, int] | None:
         data = response.read()
+        self._response_bytes = len(data)
         self.send_response(response.status)
         self._copy_headers(response)
         self.send_header("Content-Length", str(len(data)))
@@ -339,6 +364,7 @@ class Handler(BaseHTTPRequestHandler):
             line = response.readline()
             if not line:
                 break
+            self._response_bytes += len(line)
             if line in (b"\n", b"\r\n"):
                 events += 1
                 if self._keep_event(event, injected=injected):

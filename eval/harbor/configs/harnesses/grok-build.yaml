@@ -1,5 +1,6 @@
 harness:
-  name: grok-build
+  id: grok-build
+  name: eval.harbor.prebaked_agents:PrebakedGrokBuild
   protocol: openai
   params:
     # Harbor compiles this to `grok --reasoning-effort high`.

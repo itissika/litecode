@@ -4,6 +4,10 @@
 #
 # The tree this runs in has to be a git checkout: every artifact records the
 # commit it came from in build-info.json, next to the binary.
+#
+# LITECODE_EVAL_PORTABLE=1 builds on Debian 12 with ORT as load-dynamic. It is
+# the eval mode for Debian-bookworm task images: GLIBC_2.35, works on both
+# Debian 12 and Ubuntu 24.04. Without it the normal Ubuntu 24.04 build is used.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -37,7 +41,24 @@ cp -r "$repo_root/sdk/generated" "$stage/sdk/generated"
 cp "$repo_root/eval/harbor/Dockerfile" "$stage/Dockerfile"
 
 tag=${LITECODE_EVAL_IMAGE:-litecode-eval-build}
-docker build -f "$stage/Dockerfile" -t "$tag" "$stage"
+portable=${LITECODE_EVAL_PORTABLE:-0}
+if [ "$portable" = "1" ]; then
+  build_base=${LITECODE_BUILD_BASE_IMAGE:-debian:12-slim}
+  portable_ort=load-dynamic
+  cargo_locked=false
+else
+  build_base=${LITECODE_BUILD_BASE_IMAGE:-ubuntu:24.04}
+  portable_ort=download-binaries
+  cargo_locked=true
+fi
+if [ "$portable" = "1" ]; then
+  # ORT's downloaded archive requires GLIBC_2.38+. Eval profiles disable
+  # code_search/session_search, so a load-dynamic build is sufficient there.
+  sed -i 's/"download-binaries"/"load-dynamic"/' "$stage/Cargo.toml"
+  sed -i 's/"load-dynamic",/"load-dynamic", "api-24",/' "$stage/Cargo.toml"
+  sed -i 's/cargo build --release --locked/cargo build --release/' "$stage/Dockerfile"
+fi
+docker build --build-arg "BUILD_BASE_IMAGE=$build_base" -f "$stage/Dockerfile" -t "$tag" "$stage"
 
 mkdir -p "$out" "$stage/seed"
 container=$(docker create "$tag")
@@ -61,7 +82,7 @@ chmod 644 "$out"/litecode-seed.db*
 # The compiler that actually produced the binary: re-tagging the build stage is
 # a cache hit, so this costs seconds.
 toolchain_tag="$tag-toolchain"
-docker build --target build -t "$toolchain_tag" -f "$stage/Dockerfile" "$stage" >/dev/null
+docker build --target build --build-arg "BUILD_BASE_IMAGE=$build_base" -t "$toolchain_tag" -f "$stage/Dockerfile" "$stage" >/dev/null
 rustc_version=$(docker run --rm --entrypoint rustc "$toolchain_tag" -V)
 
 cat > "$out/build-info.json" <<JSON
@@ -71,6 +92,9 @@ cat > "$out/build-info.json" <<JSON
   "dirty": $dirty,
   "built_at": "$built_at",
   "rustc": "$rustc_version",
+  "build_base": "$build_base",
+  "portable_ort": "$portable_ort",
+  "cargo_locked": $cargo_locked,
   "source_tree": "$repo_root"
 }
 JSON
