@@ -427,6 +427,97 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn write_stdin_empty_chars_polls_new_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = Arc::new(AgentJobRegistry::new());
+        let exec = ExecCommandTool::new(Arc::clone(&jobs));
+        let stdin = WriteStdinTool::new(Arc::clone(&jobs));
+        let execution = test_execution(dir.path(), "s4");
+
+        let started = exec
+            .execute(
+                serde_json::json!({
+                    "cmd": "printf first; sleep 0.3; printf second; sleep 30",
+                    "yield_time_ms": 250
+                }),
+                execution.clone(),
+            )
+            .await;
+        let started = data(&started);
+        let session_id = started.session_id.expect("session id");
+        let polled = stdin
+            .execute(
+                serde_json::json!({
+                    "session_id": session_id,
+                    "yield_time_ms": 2000
+                }),
+                execution.clone(),
+            )
+            .await;
+        assert!(polled.error.is_none(), "{polled:?}");
+        assert!(data(&polled).output.contains("second"));
+        let _ = stdin
+            .execute(
+                serde_json::json!({
+                    "session_id": session_id,
+                    "chars": "\u{0003}",
+                    "yield_time_ms": 1000
+                }),
+                execution,
+            )
+            .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_command_honours_workdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let jobs = Arc::new(AgentJobRegistry::new());
+        let exec = ExecCommandTool::new(Arc::clone(&jobs));
+        let execution = test_execution(dir.path(), "s5");
+
+        let result = exec
+            .execute(
+                serde_json::json!({
+                    "cmd": "pwd",
+                    "workdir": "sub",
+                    "yield_time_ms": 250
+                }),
+                execution,
+            )
+            .await;
+        assert!(result.error.is_none(), "{result:?}");
+        assert!(data(&result).output.contains("sub"), "{result:?}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_command_truncates_to_output_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = Arc::new(AgentJobRegistry::new());
+        let exec = ExecCommandTool::new(Arc::clone(&jobs));
+        let execution = test_execution(dir.path(), "s6");
+
+        let result = exec
+            .execute(
+                serde_json::json!({
+                    "cmd": "printf '%02000d' 0",
+                    "max_output_tokens": 1,
+                    "yield_time_ms": 250
+                }),
+                execution,
+            )
+            .await;
+        assert!(result.error.is_none(), "{result:?}");
+        let result = data(&result);
+        assert_eq!(result.truncated, Some(true), "{result:?}");
+        assert!(result.output.len() < 1500, "{}", result.output.len());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn write_stdin_feeds_a_live_pipe_session() {
         let dir = tempfile::tempdir().unwrap();
         let jobs = Arc::new(AgentJobRegistry::new());

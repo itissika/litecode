@@ -1,8 +1,14 @@
 # Five-harness bench (Harbor 0.25.0)
 
-One panel, 15 cells: `litecode`, `codex`, `pi`, `opencode`, `grok-build` ×
-`prove-plus-comm`, `polyglot-c-py`, `password-recovery`, all on
-`deepseek/deepseek-flash` at the official DeepSeek endpoint.
+One panel, 20 cells: `litecode`, `codex`, `pi`, `opencode`, `grok-build` ×
+`prove-plus-comm`, `polyglot-c-py`, `password-recovery`, `cancel-async-tasks`,
+all on `deepseek/deepseek-flash` at the official DeepSeek endpoint.
+
+LiteCode's scored terminal surface now mirrors Codex's unified exec:
+`process.exec_command` starts a pipe/PTY session and yields either an exit or a
+live `session_id`; `process.write_stdin` polls output, feeds stdin, and maps
+`"\u0003"` to process-group SIGINT. The legacy `run` / `wait` / `kill` trio is
+still bound for compatibility but is documented as the non-interactive path.
 
 ## Why the pieces look like this
 

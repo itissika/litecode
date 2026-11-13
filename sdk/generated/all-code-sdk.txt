@@ -6,6 +6,8 @@ Call tools as `tools.<suite>.<member>(args)`. Omit `args` for no-argument tools;
 
 Tool failures resolve as `ToolFailure`; protocol and hard execution failures throw `ToolError`. Cancellation, the `run_code` budget, and hard limits end the program and cannot be caught. Non-finite numbers in a result become `null` with a warning.
 
+Terminal work uses the Codex-style session pair. Prefer `tools.process.exec_command` for every shell command: it waits at most `yield_time_ms` and returns either an exit code or a live `session_id`. Drive that session with `tools.process.write_stdin`: empty `chars` polls output, ordinary bytes go to stdin, and `"\u0003"` sends SIGINT to the process group so cleanup runs like a real Ctrl-C. The legacy `process.run` / `process.wait` / `process.kill` trio remains for compatibility, but it is not the interactive path.
+
 ```ts
 /**
  * Raised when a call does not hold under the contract and the run has to stop.
