@@ -1,6 +1,7 @@
 import type { JSX } from "react";
 
 import { AlibabaCloudLogo } from "./providerLogos/AlibabaCloudLogo";
+import { ClineLogo } from "./providerLogos/ClineLogo";
 import { CommandCodeLogo } from "./providerLogos/CommandCodeLogo";
 import { DeepSeekLogo } from "./providerLogos/DeepSeekLogo";
 import { OpenAILogo } from "./providerLogos/OpenAILogo";
@@ -24,6 +25,7 @@ const PROVIDER_LOGOS: Record<string, () => JSX.Element> = {
   zhipu: ZhipuLogo,
   "tencent-token": TencentCloudLogo,
   "aliyun-token": AlibabaCloudLogo,
+  cline: ClineLogo,
 };
 
 /** Neutral mark for providers without a brand asset. */
