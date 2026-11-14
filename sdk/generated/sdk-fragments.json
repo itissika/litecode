@@ -1,36 +1,27 @@
 {
   "version": 1,
-  "sdk_hash": "8f9d6849ceeda04ed89ad96349c8dfd0e80561b11e90b25c2cf284274c8241bd",
+  "sdk_hash": "cb7a6a5b11bee7df7b32dd29bf8c33ca3c48afcf9f73853eb79daf9495de9156",
   "prose": "`run_code` is the high-density orchestration surface: think before calling, batch or parallelize tool work, compute in JavaScript, and return compact results instead of dumping raw output. It exists to reduce round trips and token cost.\n\nThe program is an async JavaScript function body. Top-level `await` and `return` are supported, and the returned value is the result.\n\nCall tools as `tools.<suite>.<member>(args)`. Omit `args` for no-argument tools; otherwise pass exactly one object. Use tools for side effects and external IO. `fs` is a read-only probe: `ls` (one level, sorted), `stat` (type, size, mtime), `exists` (boolean), all synchronous and workspace-relative. `libs` are deterministic pure-JS helpers: `stats` (`sum`, `mean`, `median`, `variance`, `stddev`, `quantile`, `histogram`, `min`, `max`), `csv` (`parse`, `format`), `text` (`lines`, `words`, `count`, `normalizeNewlines`, `truncate`, `diffLines`), `data` (`groupBy`, `countBy`, `unique`, `sortBy`). There is no direct network or process access.\n\nTool failures resolve as `ToolFailure`; protocol and hard execution failures throw `ToolError`. Cancellation, the `run_code` budget, and hard limits end the program and cannot be caught. Non-finite numbers in a result become `null` with a warning.\n\nTerminal work uses exactly two tools: `tools.process.exec_command` starts a pipe or PTY session and returns either an exit code or a live `session_id`; `tools.process.write_stdin` drives that session. Empty `chars` polls output, ordinary bytes go to stdin, and `\"\\u0003\"` sends SIGINT to the process group so cleanup runs like a real Ctrl-C. There is no separate model-visible kill tool.",
   "declarations": "/**\n * Raised when a call does not hold under the contract and the run has to stop.\n * It is uncatchable by design: a try/catch cannot turn it into a value.\n *\n * Fatal: a tool name that does not exist (a namespace typo), and a tool result\n * that violates its own declared output. Both mean the program's model of the\n * contract is wrong, not just one call.\n *\n * Not fatal, so the run continues: a result field the contract does not declare\n * is reported once, before the output, and reads as `undefined`; an argument\n * the input contract rejects resolves as `ToolFailure` with\n * `reason: \"invalid_args\"`, and the program can correct it on the next call.\n */\ndeclare class ToolError extends Error {\n  readonly name: \"ToolError\";\n  readonly code: string;\n  readonly details?: unknown;\n  readonly retryable?: true;\n  readonly tool: string;\n  readonly seq: number;\n}\n\ntype ToolFailure = { // A resolved domain failure. ToolError is thrown for protocol and hard execution failures; this shape is the normal failure branch of ToolResult.\n  ok: false;\n  reason:\n    | \"not_found\"\n    | \"no_match\"\n    | \"ambiguous\"\n    | \"invalid_args\"\n    | \"empty\"\n    | \"permission\"\n    | \"io\"\n    | \"conflict\"\n    | \"stale\"\n    | \"unavailable\"\n    | \"still_alive\";\n  message: string;\n};\n\n/** A successful tool result. The host adds this envelope; payloads omit ok. */\ntype ToolSuccess<T> = T & { ok: true };\n\ntype ToolResult<T> = ToolSuccess<T> | ToolFailure;",
   "libs": "type CsvOptions = {\n  /** Field separator; one character. Default \",\". */\n  delimiter?: string;\n  /** Quote character; one character. Default is a double quote. */\n  quote?: string;\n  /** Trim fields while parsing. Default false. */\n  trim?: boolean;\n};\n\ntype HistogramBin = {\n  start: number;\n  end: number;\n  count: number;\n};\n\ntype DiffLine = {\n  kind: \"equal\" | \"insert\" | \"delete\";\n  text: string;\n};\n\ndeclare const libs: {\n  stats: {\n    sum(values: number[]): number;\n    mean(values: number[]): number;\n    median(values: number[]): number;\n    variance(values: number[], sample?: boolean): number;\n    stddev(values: number[], sample?: boolean): number;\n    quantile(values: number[], q: number): number;\n    histogram(values: number[], bins?: number): HistogramBin[];\n    min(values: number[]): number;\n    max(values: number[]): number;\n  };\n  csv: {\n    parse(text: string, options?: CsvOptions): string[][];\n    format(rows: Array<Array<unknown>>, options?: CsvOptions): string;\n  };\n  text: {\n    lines(text: string): string[];\n    words(text: string): string[];\n    count(text: string, needle: string): number;\n    normalizeNewlines(text: string): string;\n    truncate(text: string, maxChars: number, suffix?: string): string;\n    diffLines(left: string, right: string): DiffLine[];\n  };\n  data: {\n    groupBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, T[]>;\n    countBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, number>;\n    unique<T>(values: T[]): T[];\n    sortBy<T>(rows: T[], key: string | ((row: T) => unknown), direction?: \"asc\" | \"desc\"): T[];\n  };\n};\n\ntype FsFailure = { ok: false; reason: \"not_found\" | \"permission\" | \"io\"; message: string };\n\n/** Read-only workspace probes. Synchronous; paths are workspace-relative. */\ndeclare const fs: {\n  /** One level, sorted by name; more than 500 entries set `truncated`. */\n  ls(path: string): { ok: true; entries: Array<{ name: string; type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number }>; truncated: boolean } | FsFailure;\n  /** mtime is ms since the Unix epoch. */\n  stat(path: string): { ok: true; type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number; mtime: number } | FsFailure;\n  exists(path: string): boolean;\n};",
   "types": {
-    "BrowserPage": "type BrowserPage = {\r\n  active: boolean;\r\n  agentOwned: boolean;\r\n  id: string;\r\n  title: string;\r\n  url: string;\r\n  visible: boolean;\r\n};",
-    "ClampedParam": "type ClampedParam = {\r\n  /** Parameter name as the caller wrote it. */\r\n  parameter: string;\r\n  /** Value the caller asked for. */\r\n  requested: number;\r\n  /** Value the tool used instead. */\r\n  applied: number;\r\n};",
-    "EditInput": "type EditInput = {\r\n  /** Replacement text. Use an empty string to delete old_string. */\r\n  new_string: string;\r\n  /** Exact file text to find. Must match exactly one place. */\r\n  old_string: string;\r\n  /** Prefer a workspace-relative path. */\r\n  path: Path;\r\n};",
-    "ExecCommandData": "type ExecCommandData = {\r\n  /** Live session id; present only while the process is still running. */\r\n  session_id?: string;\r\n  /** Process exit code when it finished before this call returned. */\r\n  exit_code?: Integer | null;\r\n  /** Time spent inside this exec_command / write_stdin call. */\r\n  wall_time_seconds: number;\r\n  /** Incremental output since the previous exec call on this session. */\r\n  output: string;\r\n  /** Approximate original output size before the call's token budget. */\r\n  original_token_count?: Integer;\r\n  /** Output was clipped by max_output_tokens. */\r\n  truncated?: boolean;\r\n};",
-    "Integer": "/** Whole JSON number. The host rejects fractional values. @asType integer */\r\ntype Integer = number;",
-    "Location": "type Location = {\r\n  /** Source file path. */\r\n  path: string;\r\n  /** 1-based line number. */\r\n  line: Integer;\r\n  /** 1-based UTF-16 column on that line. */\r\n  character: Integer;\r\n  /** Optional end column. */\r\n  end_character?: Integer;\r\n  /** Optional end line. */\r\n  end_line?: Integer;\r\n};",
-    "LocationsData": "type LocationsData = {\r\n  locations: Location[];\r\n  /** ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss. */\r\n  state: LspDataState;\r\n  /** True when the cap cut the list: more results exist. */\r\n  truncated: boolean;\r\n};",
-    "LspDataState": "/** Truthful index state of the language server that produced this result. */\r\ntype LspDataState = \"ok\" | \"partial\" | \"unknown\";",
-    "NoArgs": "/** Empty input for tools that take no arguments. */\r\ntype NoArgs = {};",
-    "Path": "/** Workspace-relative path, or an absolute path when explicitly allowed. */\r\ntype Path = string;",
-    "PathInput": "type PathInput = {\r\n  /** Source file under the workspace; workspace-relative is preferred. */\r\n  path: Path;\r\n};",
-    "PathRisk": "type PathRisk = {\r\n  /** The target resolves outside the workspace root. */\r\n  outside_workspace: boolean;\r\n  /** The target is a sensitive system location. */\r\n  sensitive: boolean;\r\n  /** Absolute path the target resolved to; present when it is outside. */\r\n  resolved?: string;\r\n};",
-    "RangeInput": "type RangeInput = {\r\n  /** 1-based line number. */\r\n  line: Integer;\r\n  /** 1-based UTF-16 column on that line. */\r\n  character: Integer;\r\n  /** Source file under the workspace; workspace-relative is preferred. */\r\n  path: Path;\r\n};",
-    "RejectedItem": "type RejectedItem = {\r\n  /** 0-based input item index. */\r\n  index: Integer;\r\n  /** empty_text | text_too_long | invalid_id | unknown_id | limit_exceeded. */\r\n  reason: string;\r\n  id?: string;\r\n  /** Which limit the reason names, and by how much this item misses it. */\r\n  detail?: string;\r\n};",
-    "SymbolInfo": "type SymbolInfo = {\r\n  /** Symbol name. */\r\n  name: string;\r\n  /** Symbol kind label supplied by the language server. */\r\n  kind: string;\r\n  /** 1-based line number. */\r\n  line: Integer;\r\n  /** 1-based UTF-16 column on that line. */\r\n  character: Integer;\r\n  /** Optional end column. */\r\n  end_character?: Integer;\r\n  /** Optional end line. */\r\n  end_line?: Integer;\r\n  /** Optional source file path. */\r\n  path?: string;\r\n};",
-    "SymbolsData": "type SymbolsData = {\r\n  symbols: SymbolInfo[];\r\n  /** ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss. */\r\n  state: LspDataState;\r\n  /** True when the cap cut the list: more results exist. */\r\n  truncated: boolean;\r\n};",
-    "ToolDiagnostic": "/** One warning a tool attached to a successful write. */\r\ntype ToolDiagnostic = {\r\n  /** Machine code such as `lsp_error`. */\r\n  code: string;\r\n  /** Severity name mapped from the LSP number. */\r\n  severity: \"info\" | \"warning\";\r\n  /** Human-readable summary. */\r\n  message: string;\r\n  /** Extra structured detail, such as the LSP error block under `text`. */\r\n  details?: unknown;\r\n};"
+    "BrowserPage": "type BrowserPage = {\n  active: boolean;\n  agentOwned: boolean;\n  id: string;\n  title: string;\n  url: string;\n  visible: boolean;\n};",
+    "ExecCommandData": "type ExecCommandData = {\n  /** Live session id; present only while the process is still running. */\n  session_id?: string;\n  /** Process exit code when it finished before this call returned. */\n  exit_code?: Integer | null;\n  /** Incremental output since the previous exec call on this session. */\n  output: string;\n};",
+    "Integer": "/** Whole JSON number. The host rejects fractional values. @asType integer */\ntype Integer = number;",
+    "Location": "type Location = {\n  /** Source file path. */\n  path: string;\n  /** 1-based line number. */\n  line: Integer;\n  /** 1-based UTF-16 column on that line. */\n  character: Integer;\n  /** Optional end column. */\n  end_character?: Integer;\n  /** Optional end line. */\n  end_line?: Integer;\n};",
+    "LocationsData": "type LocationsData = {\n  locations: Location[];\n};",
+    "NoArgs": "/** Empty input for tools that take no arguments. */\ntype NoArgs = {};",
+    "Path": "/** Workspace-relative path, or an absolute path when explicitly allowed. */\ntype Path = string;",
+    "PathInput": "type PathInput = {\n  /** Source file under the workspace; workspace-relative is preferred. */\n  path: Path;\n};",
+    "RangeInput": "type RangeInput = {\n  /** 1-based line number. */\n  line: Integer;\n  /** 1-based UTF-16 column on that line. */\n  character: Integer;\n  /** Source file under the workspace; workspace-relative is preferred. */\n  path: Path;\n};",
+    "RejectedItem": "type RejectedItem = {\n  /** 0-based input item index. */\n  index: Integer;\n  /** empty_text | text_too_long | invalid_id | unknown_id | limit_exceeded. */\n  reason: string;\n  id?: string;\n  /** Which limit the reason names, and by how much this item misses it. */\n  detail?: string;\n};",
+    "SymbolInfo": "type SymbolInfo = {\n  /** Symbol name. */\n  name: string;\n  /** Symbol kind label supplied by the language server. */\n  kind: string;\n  /** 1-based line number. */\n  line: Integer;\n  /** 1-based UTF-16 column on that line. */\n  character: Integer;\n  /** Optional end column. */\n  end_character?: Integer;\n  /** Optional end line. */\n  end_line?: Integer;\n  /** Optional source file path. */\n  path?: string;\n};",
+    "SymbolsData": "type SymbolsData = {\n  symbols: SymbolInfo[];\n};"
   },
   "type_suites": {
-    "EditInput": "file",
-    "PathRisk": "file",
-    "ToolDiagnostic": "file",
     "ExecCommandData": "process",
     "BrowserPage": "browser",
     "PathInput": "lsp",
-    "LspDataState": "lsp",
     "SymbolsData": "lsp",
     "SymbolInfo": "lsp",
     "RangeInput": "lsp",
@@ -45,29 +36,10 @@
         "apply_edits"
       ],
       "suite": "file",
-      "doc": "Apply several edit replacements serially.",
-      "signature": "apply_edits(args: {\n  edits: EditInput[]; // Replacements applied serially; later items on the same path see earlier successful writes.\n}): Promise<ToolResult<{\n  // Same length and order as edits.\n  results: Array<\n    // One item in a serial apply_edits batch. Item failures stay item-level.\n    {\n      ok: boolean;\n      path: string;\n      reason: (\"not_found\" | \"no_match\" | \"ambiguous\" | \"invalid_args\" | \"empty\" | \"permission\" | \"io\") | null; // Why this item failed; `ambiguous` means `old_string` matched more than once. `null` when `ok` is true.\n      detail: string; // One plain sentence: why the item failed, with line hints; empty when `ok` is true.\n      nearest_line: Integer | null; // 1-based line of the closest match when `old_string` was not found; `null` otherwise.\n      path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.\n      diagnostics?: ToolDiagnostic[]; // Warnings recorded after the edit; absent when there were none.\n    }\n  >;\n}>>;",
+      "doc": "Apply replacements serially; a single edit is an array of one.",
+      "signature": "apply_edits(args: {\n  edits: EditInput[]; // Replacements applied serially; later items on the same path see earlier successful writes.\n}): Promise<ToolResult<{\n  results: Array<{\n    ok: boolean;\n    path: string;\n    reason: (\"not_found\" | \"no_match\" | \"ambiguous\" | \"invalid_args\" | \"empty\" | \"permission\" | \"io\") | null;\n    detail: string; // Why the item failed; empty when ok is true.\n  }>;\n}>>;",
       "type_deps": [
-        "EditInput",
-        "Integer",
-        "Path",
-        "PathRisk",
-        "ToolDiagnostic"
-      ]
-    },
-    "edit": {
-      "path": [
-        "file",
-        "edit"
-      ],
-      "suite": "file",
-      "doc": "Apply one exact-string replacement.",
-      "signature": "edit(args: EditInput): Promise<ToolResult<\n  // Successful single-edit payload. Failures use ToolFailure.\n  {\n    path: string;\n    path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.\n    diagnostics?: ToolDiagnostic[]; // Warnings recorded after the edit; absent when the edit was clean.\n  }\n>>;",
-      "type_deps": [
-        "EditInput",
-        "Path",
-        "PathRisk",
-        "ToolDiagnostic"
+        "Path"
       ]
     },
     "glob": {
@@ -77,9 +49,8 @@
       ],
       "suite": "file",
       "doc": "Find files by path glob.",
-      "signature": "glob(args: {\n  pattern: string; // Glob relative to path, or to the workspace root when path is omitted.\n  limit?: Integer; // Maximum paths to return. 1–5000. @default 1000\n  path?: Path; // Optional directory to search under.\n}): Promise<ToolResult<{\n  paths: string[]; // Matching paths, sorted by depth, then parent directory, then name.\n  total: Integer; // Matches found before the limit was applied.\n  truncated: boolean; // True when paths holds only the first limit matches.\n  outside_workspace: boolean; // True when some returned paths are outside the workspace (absolute).\n  empty_reason?: \"hidden_by_filters\" | \"no_match\"; // Why `paths` is empty; absent when it is not. Only what glob can produce: the searched path is excluded by default filters, or nothing matched.\n  clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.\n}>>;",
+      "signature": "glob(args: {\n  pattern: string; // Glob relative to path, or to the workspace root when path is omitted.\n  limit?: Integer; // Maximum paths to return. 1-5000. @default 1000\n  path?: Path; // Optional directory to search under.\n}): Promise<ToolResult<{\n  paths: string[]; // Matching paths, sorted by depth, then parent directory, then name.\n}>>;",
       "type_deps": [
-        "ClampedParam",
         "Integer",
         "Path"
       ]
@@ -91,9 +62,8 @@
       ],
       "suite": "file",
       "doc": "Search file contents.",
-      "signature": "grep(args: {\n  pattern: string; // Regular expression over file contents, unless literal is true.\n  before?: Integer; // Lines of context before each hit. 0–10. @default 0\n  after?: Integer; // Lines of context after each hit. 0–10. @default 0\n  glob?: string; // One glob or comma-separated globs. A leading ! excludes. Relative to path.\n  ignore_case?: boolean; // Ignore case when matching. @default false\n  limit?: Integer; // Maximum hits to return. 1–100. @default 40\n  literal?: boolean; // Search for pattern as plain text. @default false\n  path?: Path; // File or directory to search. Defaults to the workspace.\n}): Promise<ToolResult<{\n  hits: Array<\n    // One match. Context, when requested, is folded into `text` as one block.\n    {\n      path: string; // Source file path.\n      line: Integer; // 1-based match line.\n      text: string; // Matching line text, capped at 500 characters. With `before`/`after` this is a whole block in ripgrep notation, newline-separated: `12- before`, `13: match`, `14+ after` (real file line numbers).\n    }\n  >;\n  truncated?: boolean; // True when a limit or the token budget cut the result short.\n  empty_reason?: \"no_files\" | \"glob_no_files\" | \"no_match\" | \"file_unreadable\" | \"binary\" | \"hidden_by_filters\"; // Why `hits` is empty; absent when it is not. Only what grep can produce: nothing to search, the glob filter matched no file, no match, the file could not be read as text, the file is binary, or the searched path is excluded by default filters.\n  total_hits?: Integer; // Matches found before the result was cut; absent when the scan stopped at a limit and never counted the rest. Do not treat a missing value as zero.\n  at_limit_cap: boolean; // True when the hit limit stopped the scan.\n  lines_truncated: boolean; // True when a match or context line was shortened to the per-line cap.\n  context_omitted: boolean; // True when context lines were dropped to fit the token budget.\n  output_capped: boolean; // True when hits were dropped to fit the token budget.\n  clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.\n}>>;",
+      "signature": "grep(args: {\n  pattern: string; // Regular expression over file contents, unless literal is true.\n  before?: Integer; // Lines of context before each hit. 0-10. @default 0\n  after?: Integer; // Lines of context after each hit. 0-10. @default 0\n  glob?: string; // One glob or comma-separated globs. A leading ! excludes. Relative to path.\n  ignore_case?: boolean; // Ignore case when matching. @default false\n  limit?: Integer; // Maximum hits to return. 1-100. @default 40\n  literal?: boolean; // Search for pattern as plain text. @default false\n  path?: Path; // File or directory to search. Defaults to the workspace.\n}): Promise<ToolResult<{\n  hits: Array<{\n    path: string; // Source file path.\n    line: Integer; // 1-based match line.\n    text: string; // Matching line text, capped at 500 characters.\n  }>;\n}>>;",
       "type_deps": [
-        "ClampedParam",
         "Integer",
         "Path"
       ]
@@ -105,9 +75,8 @@
       ],
       "suite": "file",
       "doc": "Read lines from one file or archived session transcript.",
-      "signature": "read(args: {\n  path: Path; // Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md.\n  start_line?: Integer; // First line to read, 1-based, inclusive. @default 1\n  limit?: Integer; // Lines to return. 1–5000. @default 2000\n}): Promise<ToolResult<{\n  lines: string[]; // Line contents for this page, in file order.\n  path: string;\n  start_line: Integer;\n  total_lines: Integer; // Lines in the file; `has_more` compares against it.\n  has_more: boolean; // True when this page stops before the end of the file.\n  skipped_in_context: Integer; // Lines the window covered but left out because they are already in the model's context. A gap in `lines` is explained by this number.\n  lines_capped?: Integer[]; // Lines shortened to the per-line character cap, by number.\n  clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.\n}>>;",
+      "signature": "read(args: {\n  path: Path; // Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md.\n  start_line?: Integer; // First line to read, 1-based, inclusive. @default 1\n  limit?: Integer; // Lines to return. 1-5000. @default 2000\n}): Promise<ToolResult<{\n  lines: string[]; // Line contents for this page, in file order.\n}>>;",
       "type_deps": [
-        "ClampedParam",
         "Integer",
         "Path"
       ]
@@ -118,13 +87,10 @@
         "write"
       ],
       "suite": "file",
-      "doc": "Replace a file's contents; optional hash and create-only guards.",
-      "signature": "write(args: {\n  content: string; // Content to write to the file.\n  path: Path; // Prefer a workspace-relative path.\n  create_only?: boolean; // If true, refuse to overwrite an existing file. @default false\n  expected_hash?: string; // sha256 of the current file bytes. Omit to skip the check. A mismatch is ToolFailure reason stale.\n}): Promise<ToolResult<{\n  created: boolean; // True when the file did not exist before.\n  // File identity after the write.\n  file: {\n    bytes: Integer; // File size in bytes.\n    hash: string; // sha256 hex of the file bytes.\n    path: string; // Workspace-relative path inside the workspace; requested path outside it.\n    abs?: string; // Absolute path when the file is outside the workspace.\n  };\n  path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.\n  diagnostics?: ToolDiagnostic[]; // Warnings recorded after the write; absent when the write was clean.\n}>>;",
+      "doc": "Replace a file's contents.",
+      "signature": "write(args: {\n  content: string; // Content to write to the file.\n  path: Path; // Prefer a workspace-relative path.\n}): Promise<ToolResult<{\n  path: string; // Workspace-relative path inside the workspace; requested path outside it.\n}>>;",
       "type_deps": [
-        "Integer",
-        "Path",
-        "PathRisk",
-        "ToolDiagnostic"
+        "Path"
       ]
     },
     "code_search": {
@@ -134,9 +100,8 @@
       ],
       "suite": "search",
       "doc": "Semantic search over the workspace code index.",
-      "signature": "code_search(args: {\n  query: string; // One natural-language or code-token query.\n  include_pattern?: string; // Optional glob filter for workspace paths.\n  min_score?: number; // Minimum raw dense cosine similarity for dense-only hits. 0–1. Lexical hits are not subject to this floor; 0 disables it. @default 0.8\n  top_k?: Integer; // Maximum hits. 1–20. @default 8\n}): Promise<ToolResult<{\n  // Empty if the search completed but found no matching chunks.\n  hits: {\n    path: string; // Source file path.\n    anchor_line: Integer; // Query-relevant anchor line.\n    start_line: Integer; // First line in the returned snippet.\n    end_line: Integer; // Last line in the returned snippet.\n    symbol?: string; // Optional AST symbol enclosing the anchor.\n    via: \"lex\" | \"dense\" | \"both\"; // Which retrieval leg(s) admitted this chunk.\n    dense_similarity: number; // Raw dense cosine similarity; 0.0 means the hit is lexical-only.\n    text: string; // The anchor line itself, cheap enough for a table cell.\n    snippet: string; // Source excerpt, at most 24 lines; overlong lines are capped.\n  }[];\n  clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.\n}>>;",
+      "signature": "code_search(args: {\n  query: string; // One natural-language or code-token query.\n  include_pattern?: string; // Optional glob filter for workspace paths.\n  min_score?: number; // Minimum raw dense cosine similarity for dense-only hits. 0–1. Lexical hits are not subject to this floor; 0 disables it. @default 0.8\n  top_k?: Integer; // Maximum hits. 1–20. @default 8\n}): Promise<ToolResult<{\n  // Empty if the search completed but found no matching chunks.\n  hits: {\n    path: string; // Source file path.\n    anchor_line: Integer; // Query-relevant anchor line.\n    start_line: Integer; // First line in the returned snippet.\n    end_line: Integer; // Last line in the returned snippet.\n    symbol?: string; // Optional AST symbol enclosing the anchor.\n    via: \"lex\" | \"dense\" | \"both\"; // Which retrieval leg(s) admitted this chunk.\n    dense_similarity: number; // Raw dense cosine similarity; 0.0 means the hit is lexical-only.\n    text: string; // The anchor line itself, cheap enough for a table cell.\n    snippet: string; // Source excerpt, at most 24 lines; overlong lines are capped.\n  }[];\n}>>;",
       "type_deps": [
-        "ClampedParam",
         "Integer"
       ]
     },
@@ -147,9 +112,8 @@
       ],
       "suite": "search",
       "doc": "Search past session transcripts.",
-      "signature": "session_search(args: {\n  query: string; // What to find in past session transcripts. Literal words or a phrase.\n  session_id?: string; // Optional session scope: full id, unique prefix, or the handle from a result.\n  own_session?: boolean; // Search only this session's transcript: the turns already folded out of the live context window. Cannot be combined with session_id.\n  limit?: Integer; // Maximum rows. 1–50. @default 20\n}): Promise<ToolResult<{\n  // Flat rank order; not grouped by session.\n  hits: {\n    session: string; // Shortest unique session handle, also accepted by `session_id`.\n    bot_name?: string; // Derived bot name for this session, if any. Never a stored session field.\n    age: string; // Relative age of the session's last update.\n    line: Integer; // 1-based rendered transcript line of the hit.\n    role: \"conversation\" | \"reasoning\" | \"action\" | \"outcome\" | \"unknown\"; // Content role of the row.\n    via: string; // Evidence that found this row, in rank order: `exact`, `prox`, `lex`, `sem`, `fuzzy`, joined by `+`.\n    summary: string; // Collapsed one-line hit text.\n  }[];\n  total: Integer; // Total matching rows before `limit` is applied.\n  truncated: boolean; // True when `total` exceeds the returned rows.\n  semantic: boolean; // False when the semantic leg was unavailable: the hits are lexical only.\n  clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.\n}>>;",
+      "signature": "session_search(args: {\n  query: string; // What to find in past session transcripts. Literal words or a phrase.\n  session_id?: string; // Optional session scope: full id, unique prefix, or the handle from a result.\n  own_session?: boolean; // Search only this session's transcript: the turns already folded out of the live context window. Cannot be combined with session_id.\n  limit?: Integer; // Maximum rows. 1–50. @default 20\n}): Promise<ToolResult<{\n  // Flat rank order; not grouped by session.\n  hits: {\n    session: string; // Shortest unique session handle, also accepted by `session_id`.\n    bot_name?: string; // Derived bot name for this session, if any. Never a stored session field.\n    age: string; // Relative age of the session's last update.\n    line: Integer; // 1-based rendered transcript line of the hit.\n    role: \"conversation\" | \"reasoning\" | \"action\" | \"outcome\" | \"unknown\"; // Content role of the row.\n    via: string; // Evidence that found this row, in rank order: `exact`, `prox`, `lex`, `sem`, `fuzzy`, joined by `+`.\n    summary: string; // Collapsed one-line hit text.\n  }[];\n  total: Integer; // Total matching rows before `limit` is applied.\n  truncated: boolean; // True when `total` exceeds the returned rows.\n  semantic: boolean; // False when the semantic leg was unavailable: the hits are lexical only.\n}>>;",
       "type_deps": [
-        "ClampedParam",
         "Integer"
       ]
     },
@@ -198,9 +162,8 @@
       ],
       "suite": "web",
       "doc": "Search the web.",
-      "signature": "search(args: {\n  query: string; // Search query.\n  top_k?: Integer; // Number of results, best first. 1–100. @default 10\n}): Promise<ToolResult<{\n  // At most top_k hits, best first; empty when the search found nothing.\n  results: {\n    snippet: string; // Query-relevant excerpt from the page, as returned by the provider.\n    title: string;\n    url: string;\n  }[];\n  query?: string;\n  clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.\n}>>;",
+      "signature": "search(args: {\n  query: string; // Search query.\n  top_k?: Integer; // Number of results, best first. 1–100. @default 10\n}): Promise<ToolResult<{\n  // At most top_k hits, best first; empty when the search found nothing.\n  results: {\n    snippet: string; // Query-relevant excerpt from the page, as returned by the provider.\n    title: string;\n    url: string;\n  }[];\n}>>;",
       "type_deps": [
-        "ClampedParam",
         "Integer"
       ]
     },
@@ -256,7 +219,7 @@
       ],
       "suite": "browser",
       "doc": "Read the current visible browser page.",
-      "signature": "read(args: {\n  max_chars?: Integer; // Maximum body text characters. 1000–30000. @default 12000\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<ToolResult<{\n  elements: {\n    ref: string; // Element reference from the latest browser_read.\n    tag: string;\n    text: string;\n    href?: string;\n    type?: string;\n  }[];\n  message?: string; // Set when max_chars was clamped into range.\n  page_id: string;\n  text: string;\n  title: string;\n  truncated: boolean;\n  url: string;\n}>>;",
+      "signature": "read(args: {\n  max_chars?: Integer; // Maximum body text characters. 1000–30000. @default 12000\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<ToolResult<{\n  elements: {\n    ref: string; // Element reference from the latest browser_read.\n    tag: string;\n    text: string;\n    href?: string;\n    type?: string;\n  }[];\n  page_id: string;\n  text: string;\n  title: string;\n  truncated: boolean;\n  url: string;\n}>>;",
       "type_deps": [
         "Integer"
       ]
@@ -278,10 +241,9 @@
       ],
       "suite": "lsp",
       "doc": "List diagnostics for one source file.",
-      "signature": "diagnostics(args: PathInput): Promise<ToolResult<{\n  items: {\n    severity: string; // Severity name mapped from the LSP number: Error, Warning, Information, Hint; Unknown for anything else.\n    path: string; // Source file path.\n    line: Integer; // 1-based line number.\n    character: Integer; // 1-based UTF-16 column on that line.\n    message: string; // Human-readable diagnostic.\n  }[];\n  state: LspDataState; // ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss.\n  truncated: boolean; // True when the cap cut the list: more results exist.\n}>>;",
+      "signature": "diagnostics(args: PathInput): Promise<ToolResult<{\n  items: {\n    severity: string; // Severity name mapped from the LSP number: Error, Warning, Information, Hint; Unknown for anything else.\n    path: string; // Source file path.\n    line: Integer; // 1-based line number.\n    character: Integer; // 1-based UTF-16 column on that line.\n    message: string; // Human-readable diagnostic.\n  }[];\n}>>;",
       "type_deps": [
         "Integer",
-        "LspDataState",
         "Path",
         "PathInput"
       ]
@@ -296,7 +258,6 @@
       "signature": "document_symbol(args: PathInput): Promise<ToolResult<SymbolsData>>;",
       "type_deps": [
         "Integer",
-        "LspDataState",
         "Path",
         "PathInput",
         "SymbolInfo",
@@ -315,7 +276,6 @@
         "Integer",
         "Location",
         "LocationsData",
-        "LspDataState",
         "Path",
         "RangeInput"
       ]
@@ -332,7 +292,6 @@
         "Integer",
         "Location",
         "LocationsData",
-        "LspDataState",
         "Path",
         "RangeInput"
       ]
@@ -349,7 +308,6 @@
         "Integer",
         "Location",
         "LocationsData",
-        "LspDataState",
         "Path",
         "RangeInput"
       ]
@@ -361,10 +319,9 @@
       ],
       "suite": "lsp",
       "doc": "Fetch hover docs or type information at a file position.",
-      "signature": "hover(args: RangeInput): Promise<ToolResult<\n  // One hover answer. A hover is a single value, so there is no truncation.\n  {\n    markdown: string; // Flattened hover text, not raw LSP JSON.\n    state: LspDataState; // ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss.\n  }\n>>;",
+      "signature": "hover(args: RangeInput): Promise<ToolResult<\n  // One hover answer. A hover is a single value, so there is no truncation.\n  {\n    markdown: string; // Flattened hover text, not raw LSP JSON.\n  }\n>>;",
       "type_deps": [
         "Integer",
-        "LspDataState",
         "Path",
         "RangeInput"
       ]
@@ -379,7 +336,6 @@
       "signature": "workspace_symbol(args: {\n  query: string; // Symbol name or fragment to search across the workspace.\n  path?: string; // Optional source file that selects/starts the project's language server. Required only when more than one server is running.\n}): Promise<ToolResult<SymbolsData>>;",
       "type_deps": [
         "Integer",
-        "LspDataState",
         "SymbolInfo",
         "SymbolsData"
       ]

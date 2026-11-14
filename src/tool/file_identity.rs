@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::tool::outcome::{FileRef, ToolOutcome};
+use crate::tool::outcome::ToolOutcome;
 use crate::types::ToolCallResult;
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -67,15 +67,6 @@ pub fn absolute_path_string(path: &Path) -> String {
     crate::config::path::canon_abs_lossy(path)
         .to_string_lossy()
         .into_owned()
-}
-
-pub fn file_ref(located: LocatedPath, bytes: &[u8]) -> FileRef {
-    FileRef {
-        path: located.path,
-        abs: located.abs,
-        hash: sha256_hex(bytes),
-        bytes: bytes.len() as u64,
-    }
 }
 
 /// Stable query fingerprint. Field order is the caller's order.

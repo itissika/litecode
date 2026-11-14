@@ -354,6 +354,47 @@ fn audit_truncate(s: &str) -> String {
     s.chars().take(200).collect()
 }
 
+/// Top-level input names are telemetry; values never enter the audit file.
+fn audit_input_keys(raw: &str) -> (Vec<String>, usize) {
+    let mut keys = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .map(|object| object.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    keys.sort();
+    (keys, raw.len())
+}
+
+/// Top-level result-data names plus the serialized payload size. No values.
+fn audit_output_fields(data: Option<&serde_json::Value>) -> (Vec<String>, usize) {
+    let Some(value) = data else {
+        return (Vec::new(), 0);
+    };
+    let mut keys = value
+        .as_object()
+        .map(|object| object.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    keys.sort();
+    let bytes = serde_json::to_vec(value).map_or(0, |bytes| bytes.len());
+    (keys, bytes)
+}
+
+fn audit_origin(origin: &ToolCallOrigin) -> (String, Option<String>) {
+    match &origin.caller {
+        ToolCaller::Direct => ("direct".to_string(), None),
+        ToolCaller::Code { parent_call_id } => ("code".to_string(), Some(parent_call_id.clone())),
+    }
+}
+
+fn audit_tool_path(name: &str) -> String {
+    crate::tool::code_contract::builtin_sdk_path(name).unwrap_or_else(|| name.to_string())
+}
+
+fn audit_duration_ms(started: std::time::Instant) -> u64 {
+    let millis = started.elapsed().as_millis();
+    millis.min(u128::from(u64::MAX)) as u64
+}
+
 fn emit_audit(
     data_root: &std::path::Path,
     phase: &str,
@@ -462,6 +503,10 @@ pub async fn execute_tool_call(
 ) -> ToolCallResult {
     let tu_name = tool_use.name.clone();
     let tu_id = call_id(tool_use);
+    let audit_started = std::time::Instant::now();
+    let (audit_input_keys, audit_input_bytes) = audit_input_keys(&tool_use.arguments);
+    let (audit_caller, audit_parent_call_id) = audit_origin(&origin);
+    let audit_tool_path = audit_tool_path(&tu_name);
 
     if cancel.is_cancelled() {
         if let Some(tool) = callable_tool(tools, &tu_name, &origin) {
@@ -520,7 +565,13 @@ pub async fn execute_tool_call(
     }
 
     // WP-188 observe-only: start → auth_ask → authorize → auth_done (no AskOutcome change).
-    emit_audit(data_root, "start", session_id, &tu_name, &tu_id, |_| {});
+    emit_audit(data_root, "start", session_id, &tu_name, &tu_id, |event| {
+        event.caller = Some(audit_caller.clone());
+        event.parent_call_id = audit_parent_call_id.clone();
+        event.tool_path = Some(audit_tool_path.clone());
+        event.input_keys = Some(audit_input_keys.clone());
+        event.input_bytes = Some(audit_input_bytes);
+    });
     emit_audit(data_root, "auth_ask", session_id, &tu_name, &tu_id, |_| {});
 
     let auth = authorize(
@@ -782,6 +833,11 @@ pub async fn execute_tool_call(
             }
         }
     };
+    let output = if matches!(origin.caller, ToolCaller::Code { .. }) {
+        crate::tool::result_projection::project_code_result(&tu_name, output)
+    } else {
+        output
+    };
     tracing::info!(
         tool = %tu_name,
         id = %tu_id,
@@ -799,9 +855,24 @@ pub async fn execute_tool_call(
         } else {
             Some("output".into())
         };
+        let (output_fields, data_bytes) = audit_output_fields(output.data.as_ref());
+        let error_code = output.error_code.clone().or_else(|| {
+            output
+                .error
+                .as_ref()
+                .map(|error| crate::tool::outcome::error_kind_code(error.kind))
+        });
         emit_audit(data_root, "exec_done", session_id, &tu_name, &tu_id, |e| {
             e.ok = Some(ok);
             e.error_kind = err_kind;
+            e.caller = Some(audit_caller.clone());
+            e.parent_call_id = audit_parent_call_id.clone();
+            e.tool_path = Some(audit_tool_path.clone());
+            e.output_fields = Some(output_fields.clone());
+            e.content_bytes = Some(output.content.len());
+            e.data_bytes = Some(data_bytes);
+            e.duration_ms = Some(audit_duration_ms(audit_started));
+            e.error_code = error_code.clone();
             if !ok {
                 e.error = Some(audit_truncate(&output.content));
             }
@@ -1038,6 +1109,29 @@ pub fn items_from_tool_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_input_keys_are_sorted_and_do_not_include_values() {
+        let (keys, bytes) = audit_input_keys(r#"{"path":"secret.txt","cmd":"echo hi"}"#);
+        assert_eq!(keys, vec!["cmd".to_string(), "path".to_string()]);
+        assert_eq!(bytes, 37);
+    }
+
+    #[test]
+    fn audit_origin_marks_direct_calls() {
+        let (caller, parent) = audit_origin(&ToolCallOrigin::direct());
+        assert_eq!(caller, "direct");
+        assert_eq!(parent, None);
+    }
+
+    #[test]
+    fn audit_output_fields_are_sorted_and_size_the_payload() {
+        let value = serde_json::json!({"output": "ok", "exit_code": 0});
+        let (keys, bytes) = audit_output_fields(Some(&value));
+        assert_eq!(keys, vec!["exit_code".to_string(), "output".to_string()]);
+        assert!(bytes > 0);
+        assert_eq!(audit_output_fields(None), (Vec::new(), 0));
+    }
 
     /// 2.6: a blocking tool whose work runs in `spawn_blocking` (the fixed
     /// custom/webfetch pattern) must be interruptible by the pipeline timeout —
@@ -1462,7 +1556,6 @@ mod code_caller_contract_tests {
             Arc::new(crate::tools::read::ReadTool::default()),
             Arc::new(crate::tools::glob::GlobTool),
             Arc::new(crate::tools::grep::GrepTool),
-            Arc::new(crate::tools::edit::EditTool::new()),
             Arc::new(crate::tools::write::WriteTool::new()),
         ]
     }
@@ -1698,4 +1791,34 @@ mod code_caller_contract_tests {
         assert!(result.error.is_none(), "{}", result.content);
     }
 
+    #[tokio::test]
+    async fn code_call_writes_structured_audit_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("note.txt"), "hello\n").unwrap();
+        let result = call_code(dir.path(), "read", json!({"path": "note.txt"})).await;
+        assert!(result.error.is_none(), "{}", result.content);
+
+        let audit = dir
+            .path()
+            .join(".litecode/diagnostics/p1-session/tool-audit.jsonl");
+        let text = std::fs::read_to_string(audit).expect("audit file");
+        let rows: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("audit json"))
+            .collect();
+        let start = rows
+            .iter()
+            .find(|row| row["phase"] == "start" && row["tool"] == "read")
+            .expect("read start");
+        assert_eq!(start["caller"], "code");
+        assert_eq!(start["parent_call_id"], "p1");
+        assert_eq!(start["input_keys"][0], "path");
+        let done = rows
+            .iter()
+            .find(|row| row["phase"] == "exec_done" && row["tool"] == "read")
+            .expect("read done");
+        assert_eq!(done["output_fields"][0], "lines");
+        assert!(done["duration_ms"].as_u64().is_some());
+        assert!(done["content_bytes"].as_u64().is_some());
+    }
 }

@@ -1003,10 +1003,7 @@
       "g0997.txt",
       "g0998.txt",
       "g0999.txt"
-    ],
-    "total": 1001,
-    "truncated": true,
-    "outside_workspace": false
+    ]
   },
   "error": null,
   "gap": null,

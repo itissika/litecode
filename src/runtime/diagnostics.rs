@@ -147,6 +147,31 @@ pub struct AuditEvent {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_outcome: Option<String>,
+    /// `direct` or `code`; absent on older audit rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
+    /// Outer `run_code` call id for a nested tool call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_call_id: Option<String>,
+    /// Model-facing SDK path (`process.exec_command`) or the tool name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_path: Option<String>,
+    /// Top-level input names only; values are never recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_keys: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_bytes: Option<usize>,
+    /// Top-level `result.data` names only; values are never recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_fields: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
 }
 
 impl AuditEvent {
@@ -170,6 +195,16 @@ impl AuditEvent {
             error_kind: None,
             error: None,
             auth_outcome: None,
+            caller: None,
+            parent_call_id: None,
+            tool_path: None,
+            input_keys: None,
+            input_bytes: None,
+            output_fields: None,
+            content_bytes: None,
+            data_bytes: None,
+            duration_ms: None,
+            error_code: None,
         }
     }
 }
@@ -549,4 +584,42 @@ pub fn log_turn_error_wire(session_id: &str, turn_id: &str, message: &str) {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_trace_fields_are_optional_and_round_trip() {
+        let mut event = AuditEvent::new("exec_done", "s1", "exec_command", "s1:code:1");
+        event.caller = Some("code".into());
+        event.parent_call_id = Some("outer-1".into());
+        event.tool_path = Some("process.exec_command".into());
+        event.input_keys = Some(vec!["cmd".into(), "yield_time_ms".into()]);
+        event.input_bytes = Some(42);
+        event.output_fields = Some(vec!["exit_code".into(), "output".into()]);
+        event.content_bytes = Some(7);
+        event.data_bytes = Some(11);
+        event.duration_ms = Some(9);
+        event.error_code = Some("invalid_output".into());
+
+        let encoded = serde_json::to_value(&event).expect("audit event serializes");
+        let obj = encoded.as_object().expect("object");
+        assert_eq!(obj["caller"], "code");
+        assert_eq!(obj["parent_call_id"], "outer-1");
+        assert_eq!(obj["tool_path"], "process.exec_command");
+        assert_eq!(obj["input_keys"][0], "cmd");
+        assert_eq!(obj["output_fields"][1], "output");
+
+        let decoded: AuditEvent = serde_json::from_value(encoded).expect("round trip");
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn old_audit_rows_without_trace_fields_still_deserialize() {
+        let old =
+            r#"{"ts_unix_ms":1,"phase":"start","session_id":"s","tool":"read","call_id":"c"}"#;
+        let decoded: AuditEvent = serde_json::from_str(old).expect("old row");
+        assert_eq!(decoded.caller, None);
+        assert_eq!(decoded.input_keys, None);
+        assert_eq!(decoded.output_fields, None);
+    }
+}

@@ -74,6 +74,11 @@ Instructions, tests, solution and timeouts stay untouched.
 * `~/eval/bench5-report.md` — the human table and conclusions.
 * `~/eval/bench5-report.json` — every selected cell, its egress request series,
   artifact inventory, trajectory summary, both token sources and cost breakdown.
+  LiteCode cells also carry `tool_usage`: per-tool calls, input keys, output
+  fields, duration/bytes and classified up-float reminders.
+* `agent/litecode/diagnostics/<session>/tool-audit.jsonl` — the raw tool-layer
+  span file copied from the task container. One `start` and one `exec_done`
+  row per call, joined by `call_id`; it contains names, not argument values.
 * `~/eval/jobs/bench5/registry/attempts.jsonl` — every attempt, including
   repairs.
 * `~/eval/jobs/bench5/registry/selected.json` — the cell → trial mapping the

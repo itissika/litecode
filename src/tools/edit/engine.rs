@@ -126,7 +126,7 @@ impl EditEngine {
                 }
                 return Ok(EditResult::failure(raw_path, detail)
                     .because(code)
-                    .with_nearest_line(nearest));
+                    );
             }
         };
         if execution.cancel.is_cancelled() {

@@ -2,12 +2,7 @@
   "content_historical": "",
   "covered": true,
   "data": {
-    "path": "empty.txt",
-    "start_line": 1,
-    "lines": [],
-    "total_lines": 0,
-    "has_more": false,
-    "skipped_in_context": 0
+    "lines": []
   },
   "error": null,
   "gap": null,

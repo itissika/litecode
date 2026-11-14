@@ -550,8 +550,8 @@ mod tests {
         cases.extend(crate::tools::read::drift_cases());
         cases.extend(crate::tools::glob::drift_cases());
         cases.extend(crate::tools::grep::drift_cases());
-        cases.extend(crate::tools::edit::result::drift_cases());
         cases.extend(crate::tools::write::drift_cases());
+        cases.extend(crate::tools::edit::result::drift_cases());
         cases.extend(crate::tools::exec_command::drift_cases());
         cases.extend(crate::tools::webfetch::drift_cases());
         cases.extend(crate::tools::websearch::drift_cases());
@@ -616,6 +616,7 @@ mod tests {
                 (OptionalState::AllAbsent, case.all_optional_absent),
             ];
             for (state, result) in states {
+                let result = crate::tool::result_projection::project_code_result(tool, result);
                 if result.error.is_some()
                     || !matches!(result.level, ToolSignalLevel::Ok | ToolSignalLevel::Warning)
                 {
@@ -698,16 +699,9 @@ mod tests {
     fn output_gate_checks_successes_only() {
         let read: Arc<dyn Tool> = Arc::new(crate::tools::read::ReadTool::default());
         let surface = build_surface(&[read]).expect("read surface");
-        let wrong = crate::tool::outcome::ok_data(serde_json::json!({"path": 1}));
+        let wrong = crate::tool::outcome::ok_data(serde_json::json!({"lines": 1}));
         assert!(surface.output_violation("read", &wrong).is_some());
-        let right = crate::tool::outcome::ok_data(serde_json::json!({
-            "path": "a.txt",
-            "start_line": 1,
-            "lines": [],
-            "total_lines": 0,
-            "has_more": false,
-            "skipped_in_context": 0,
-        }));
+        let right = crate::tool::outcome::ok_data(serde_json::json!({"lines": []}));
         assert!(surface.output_violation("read", &right).is_none());
         let failed = ToolCallResult::error_with_kind(
             crate::types::ToolErrorKind::Io,

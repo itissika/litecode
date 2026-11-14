@@ -32,8 +32,10 @@ from typing import Any
 
 try:
     from campaign import Campaign, CampaignError, load_campaign
+    from tool_usage import summarize_reminders, summarize_tool_usage
 except ImportError:  # when imported as eval.harbor.bench5.collect
     from .campaign import Campaign, CampaignError, load_campaign
+    from .tool_usage import summarize_reminders, summarize_tool_usage
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CAMPAIGN = HERE / "campaigns" / "bench5.yaml"
@@ -309,6 +311,7 @@ class Cell:
     token_note: str = ""
     failure_hint: str | None = None
     trajectory: dict[str, Any] = field(default_factory=dict)
+    tool_usage: dict[str, Any] = field(default_factory=dict)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     cost: float | None = None
     cost_breakdown: dict[str, float | None] = field(default_factory=dict)
@@ -378,6 +381,7 @@ class Cell:
                 "trial_total": seconds_between(self.started_at, self.finished_at),
             },
             "trajectory": self.trajectory,
+            "tool_usage": self.tool_usage,
             "artifacts": self.artifacts,
             "egress_requests": [
                 {
@@ -443,7 +447,7 @@ def load_egress(path: Path) -> dict[str, EgressRows]:
 def summarize_trajectory(path: Path) -> dict[str, Any]:
     document = read_json(path)
     if not document:
-        return {"present": False}
+        return {"present": False, "reminders": summarize_reminders([])}
     steps = document.get("steps")
     if not isinstance(steps, list):
         steps = []
@@ -479,6 +483,7 @@ def summarize_trajectory(path: Path) -> dict[str, Any]:
         "n_observations": observations,
         "llm_calls": llm_calls,
         "final_metrics": final_metrics if isinstance(final_metrics, dict) else None,
+        "reminders": summarize_reminders(steps),
     }
 
 
@@ -558,6 +563,7 @@ def build_cell(
     verifier_timing = trial.get("verifier") or {}
 
     trajectory = summarize_trajectory(trial_dir / "agent/trajectory.json")
+    tool_usage = summarize_tool_usage(trial_dir, trajectory)
     artifacts = read_artifacts(trial_dir)
     run_ids = forward_run_ids(config)
     egress_run_id = run_ids.get(harness)
@@ -602,6 +608,7 @@ def build_cell(
         harbor_completion=harbor_completion,
         harbor_cost=float(harbor_cost) if harbor_cost is not None else None,
         trajectory=trajectory,
+        tool_usage=tool_usage,
         artifacts=artifacts,
     )
 
@@ -1293,6 +1300,38 @@ def build_report(
             + ((" 记账核对：" + "；".join(notes) + "。") if notes else "")
         )
     lines.append("")
+    lines.append("## 5b. LiteCode 工具接口观测")
+    lines.append("")
+    lines.append("| task | run_code | nested calls | top nested tools | reminders |")
+    lines.append("|---|---:|---:|---|---:|")
+    for task in TASKS:
+        cell = selected.get(f"{task}/litecode")
+        if cell is None:
+            lines.append(f"| {task} | missing | missing | missing | missing |")
+            continue
+        usage = cell.tool_usage or {}
+        audit = usage.get("audit") or {}
+        calls = usage.get("calls_by_tool") or {}
+        if audit.get("present"):
+            run_calls = int(calls.get("run_code") or 0)
+            nested = str(sum(v for key, v in calls.items() if key != "run_code"))
+            top = ", ".join(
+                f"{key}:{value}"
+                for key, value in sorted(
+                    calls.items(), key=lambda item: (-item[1], item[0])
+                )
+                if key != "run_code"
+            ) or "-"
+        else:
+            run_calls = cell.trajectory.get("tool_calls", {}).get("run_code", 0)
+            nested = "n/a"
+            top = "n/a"
+        reminders = usage.get("reminders") or {}
+        lines.append(
+            f"| {task} | {run_calls} | {nested} | {top} | {reminders.get('lines', 0)} |"
+        )
+    lines.append("")
+
     lines.append("## 6. 不可比项与口径边界")
     lines.append("")
     lines.append(
@@ -1392,6 +1431,15 @@ def build_report(
         },
         "egress_rows": sum(len(bucket.rows) for bucket in egress.values()),
     }
+    payload["tool_usage"] = [
+        {
+            "task": selected[key].task,
+            "harness": selected[key].harness,
+            **selected[key].tool_usage,
+        }
+        for key in sorted(selected)
+        if selected[key].harness == "litecode" and selected[key].tool_usage
+    ]
     selected_export = {
         key: {
             "task": selected[key].task,
@@ -1412,6 +1460,7 @@ def build_report(
                 "total": selected[key].total_tokens,
             },
             "requests": selected[key].requests,
+            "tool_usage": selected[key].tool_usage,
             "cost_usd": selected[key].cost,
             "agent_execution_sec": selected[key].agent_execution_sec,
             "audit_reasons": selected[key].audit_reasons,

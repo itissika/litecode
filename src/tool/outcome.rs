@@ -70,16 +70,6 @@ pub struct Page {
     pub total: Option<u64>,
 }
 
-/// File identity. Phase 1 defines the shape; hash and bytes are filled in later.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct FileRef {
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub abs: Option<String>,
-    pub hash: String,
-    pub bytes: u64,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolOutcome<T> {
     pub data: Option<T>,

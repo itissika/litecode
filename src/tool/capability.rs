@@ -360,7 +360,7 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
                 &mut catalog,
                 resolved,
                 "edit",
-                &["edit", "apply_edits"],
+                &["apply_edits"],
                 CapabilityKind::Core,
                 ToolOrigin::Builtin,
             ),

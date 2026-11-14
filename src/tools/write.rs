@@ -9,12 +9,11 @@ use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::ResourceKey;
 use crate::tools::lsp_feedback;
 
-/// Success facts for write: the file identity, the path risk, and the
-/// language-server diagnostics that used to be flattened into a message.
+/// Success facts for write: the path plus reminder-only path risk and
+/// language-server diagnostics.
 #[derive(serde::Serialize)]
 struct WriteData {
-    file: crate::tool::outcome::FileRef,
-    created: bool,
+    path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     path_risk: Option<crate::tools::file_path::PathRisk>,
     /// Warnings recorded after the write; absent when the write was clean.
@@ -37,21 +36,18 @@ impl WriteTool {
 
     async fn finish_ok(
         &self,
-        created: bool,
-        written: &[u8],
         execution: &ToolExecutionContext,
         raw_path: &str,
         resolved: &Path,
     ) -> ToolCallResult {
-        let located = crate::tool::file_identity::locate_resolved(
+        let path = crate::tool::file_identity::locate_resolved(
             &execution.workspace_root,
             resolved,
             raw_path,
-        );
-        let file = crate::tool::file_identity::file_ref(located, written);
+        )
+        .path;
         let data = WriteData {
-            file,
-            created,
+            path,
             path_risk: crate::tools::file_path::path_risk(
                 &execution.workspace_root,
                 raw_path,
@@ -125,11 +121,6 @@ impl Tool for WriteTool {
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
         crate::tools::file_path::require_code_path(input)?;
         crate::tool::require_string(input, "content")?;
-        if let Some(value) = input.get("expected_hash").filter(|value| !value.is_null())
-            && !value.is_string()
-        {
-            return Err("parameter 'expected_hash' must be a string".into());
-        }
         Ok(())
     }
 
@@ -207,21 +198,10 @@ impl WriteTool {
             Ok(path) => path,
             Err(error) => return crate::tools::file_path::tool_path_error(error),
         };
-        let create_only = input["create_only"].as_bool().unwrap_or(false);
-        let expected_hash = input.get("expected_hash").and_then(Value::as_str);
         let workspace_relative = self
             .ide
             .as_ref()
             .and_then(|ide| ide.workspace.sandbox().rel_path(&resolved).ok());
-        let current = match self.read_existing(&resolved, workspace_relative.as_deref()) {
-            Ok(bytes) => bytes,
-            Err(error) => return error,
-        };
-        if let Some(rejected) =
-            write_precondition(&resolved, create_only, expected_hash, current.as_deref())
-        {
-            return rejected;
-        }
         if execution.cancel.is_cancelled() {
             return ToolCallResult::error_with_kind(
                 ToolErrorKind::Cancelled,
@@ -229,13 +209,11 @@ impl WriteTool {
                 false,
             );
         }
-        let created = current.is_none();
         if let (Some(ide), Some(relative)) = (&self.ide, workspace_relative) {
             return match ide.workspace.write_file(&relative, content) {
                 Ok(_) => {
                     ide.apply_document_if_ready(&resolved, content).await;
-                    self.finish_ok(created, content.as_bytes(), &execution, raw_path, &resolved)
-                        .await
+                    self.finish_ok(&execution, raw_path, &resolved).await
                 }
                 Err(error) => crate::tools::file_path::workspace_error(error),
             };
@@ -243,37 +221,13 @@ impl WriteTool {
 
         // ALL-mode absolute paths outside the workspace deliberately stay direct:
         // no workspace broadcast and no editor/LSP document sync.
-        self.call_direct(&resolved, content, created, &execution, raw_path)
-            .await
-    }
-
-    fn read_existing(
-        &self,
-        resolved: &Path,
-        workspace_relative: Option<&str>,
-    ) -> Result<Option<Vec<u8>>, ToolCallResult> {
-        if let (Some(ide), Some(relative)) = (&self.ide, workspace_relative) {
-            return match ide.workspace.read_file_bytes(relative) {
-                Ok((_, bytes)) => Ok(Some(bytes)),
-                Err(crate::workspace::WorkspaceError::NotFound(_)) => Ok(None),
-                Err(error) => Err(crate::tools::file_path::workspace_error(error)),
-            };
-        }
-        match std::fs::read(resolved) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(crate::tools::file_path::coded_error(
-                "io",
-                error.to_string(),
-            )),
-        }
+        self.call_direct(&resolved, content, &execution, raw_path).await
     }
 
     async fn call_direct(
         &self,
         file_path: &Path,
         content: &str,
-        created: bool,
         execution: &ToolExecutionContext,
         raw_path: &str,
     ) -> ToolCallResult {
@@ -289,58 +243,8 @@ impl WriteTool {
             Err(e) => return crate::tools::file_path::coded_error("io", e.to_string()),
         }
 
-        self.finish_ok(created, content.as_bytes(), execution, raw_path, file_path)
-            .await
+        self.finish_ok(execution, raw_path, file_path).await
     }
-}
-
-fn write_precondition(
-    resolved: &Path,
-    create_only: bool,
-    expected_hash: Option<&str>,
-    current: Option<&[u8]>,
-) -> Option<ToolCallResult> {
-    if create_only && expected_hash.is_some() && current.is_none() {
-        let message = "create_only and expected_hash were both set, but the file does not exist";
-        return Some(
-            crate::tool::outcome::ToolOutcome::<Value>::failure("invalid_input", message, false)
-                .into_call_result(message),
-        );
-    }
-    if let Some(expected) = expected_hash {
-        let Some(bytes) = current else {
-            let message = "file does not exist, so expected_hash cannot be checked";
-            return Some(
-                crate::tool::outcome::ToolOutcome::<Value>::failure("not_found", message, false)
-                    .into_call_result(message),
-            );
-        };
-        let current_hash = crate::tool::file_identity::sha256_hex(bytes);
-        if expected != current_hash {
-            let message = "file changed since it was read; expected_hash does not match";
-            return Some(
-                crate::tool::outcome::ToolOutcome::<Value>::failure("stale", message, true)
-                    .with_error_details(serde_json::json!({ "current_hash": current_hash }))
-                    .into_call_result(message),
-            );
-        }
-    }
-    if create_only && current.is_some() {
-        let message = format!(
-            "file already exists and create_only is set: {}. Omit create_only to overwrite, or choose a new path.",
-            resolved.display()
-        );
-        return Some(
-            crate::tool::outcome::ToolOutcome::<Value>::failure("conflict", message.clone(), false)
-                .into_call_result(message),
-        );
-    }
-    None
-}
-
-/// Check if the target path is a sensitive system location (workspace-only floor).
-pub fn is_sensitive_write_path(path: &str) -> bool {
-    crate::permission::is_sensitive_system_path(path)
 }
 
 #[cfg(test)]
@@ -358,8 +262,6 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
             .expect("test runtime")
             .block_on(tool.call_for_execution(input, execution))
     };
-    // Outside the workspace plus a recorded LSP error: `file.abs`, `path_risk`,
-    // and `diagnostics` all appear.
     let _hook = crate::tools::lsp_feedback::arm_lsp_error_hook("outside.txt", "error[E1]: boom");
     vec![DriftCase {
         tool: "write",
@@ -367,299 +269,9 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
             "path": outside.path().join("outside.txt").to_string_lossy(),
             "content": "hello",
         })),
-        // Inside the workspace with no diagnostics: all three are absent.
         all_optional_absent: run(serde_json::json!({
             "path": "inside.txt",
             "content": "hello",
         })),
     }]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_write_create_only_refuses_overwrite() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("exists.txt");
-        std::fs::write(&file_path, "existing").expect("write");
-
-        let tool = WriteTool::new();
-        let input = serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-            "content": "new",
-            "create_only": true
-        });
-
-        let result = tool.call(input);
-        assert_eq!(result.error_code.as_deref(), Some("conflict"));
-        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "existing");
-    }
-
-    #[test]
-    fn virtual_session_path_is_read_only() {
-        let tool = WriteTool::new();
-        let result = tool.call(serde_json::json!({
-            "path": ".litecode/sessions/01ABCDEF.md",
-            "content": "nope"
-        }));
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Error);
-        assert!(
-            result
-                .content
-                .contains(crate::session::transcript_file::READ_ONLY_MSG),
-            "{}",
-            result.content
-        );
-    }
-}
-
-/// write expected_hash preconditions (merged from phase3_gate, WP-207).
-#[cfg(test)]
-#[allow(dead_code, unused_imports)]
-mod expected_hash_tests {
-    use std::path::Path;
-    use std::sync::Arc;
-
-    use serde_json::{Value, json};
-    use tokio_util::sync::CancellationToken;
-
-    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
-    use crate::config::schema::GlobalSettings;
-    use crate::context_pipeline::Context;
-    use crate::permission::{PermissionEngine, deny_permission_sink};
-    use crate::tool::trait_::{Tool, ToolExecutionContext};
-    use crate::tool::write_lock::WorkspaceWriteLock;
-    use crate::tools::code::{CodeTool, CodeToolHost};
-    use crate::tools::edit::EditTool;
-    use crate::tools::write::WriteTool;
-    use crate::types::ToolCallResult;
-
-    fn execution(root: &Path) -> ToolExecutionContext {
-        ToolExecutionContext {
-            path_mode: crate::workspace::ToolPathMode::Safe,
-            workspace_root: root.to_path_buf(),
-            call_id: String::new(),
-            cancel: CancellationToken::new(),
-            output_limit: usize::MAX,
-            session_id: String::new(),
-            session: None,
-        }
-    }
-
-    fn call<T: Tool>(tool: &T, root: &Path, input: Value) -> ToolCallResult {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        runtime.block_on(tool.execute(input, execution(root)))
-    }
-
-    fn allow_engine(root: &Path) -> PermissionEngine {
-        let resolved =
-            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new(root));
-        PermissionEngine::resolver(resolved, "default", 0)
-    }
-
-    fn context(root: &Path) -> Context {
-        Context {
-            cwd: root.to_path_buf(),
-            workspace_paths: crate::config::WorkspacePaths::for_legacy_root(root),
-            agents_md: None,
-            claude_md: None,
-        }
-    }
-
-    fn tools() -> Vec<Arc<dyn Tool>> {
-        vec![
-            Arc::new(crate::tools::read::ReadTool::default()),
-            Arc::new(EditTool::new()),
-            Arc::new(crate::tools::apply_edits::ApplyEditsTool::new()),
-            Arc::new(WriteTool::new()),
-        ]
-    }
-
-    async fn run_program(root: &Path, code: &str) -> ToolCallResult {
-        let host = Arc::new(CodeToolHost::new(
-            allow_engine(root),
-            context(root),
-            "default",
-            deny_permission_sink(),
-            root.join(".litecode"),
-            Arc::new(WorkspaceWriteLock::new()),
-            None,
-        ));
-        let tool = CodeTool::new(tools(), host);
-        tool.execute(
-            json!({ "code": code }),
-            ToolExecutionContext {
-                path_mode: crate::workspace::ToolPathMode::All,
-                workspace_root: root.to_path_buf(),
-                call_id: "p3-run".into(),
-                cancel: CancellationToken::new(),
-                output_limit: usize::MAX,
-                session_id: "p3-session".into(),
-                session: None,
-            },
-        )
-        .await
-    }
-
-
-    /// The path risk is a field, and the write succeeds anyway: the model is
-    /// told where the file landed, not warned out of doing its job.
-    #[test]
-    fn write_outside_the_workspace_reports_path_risk() {
-        let tool = WriteTool::new();
-        let workspace = tempfile::tempdir().expect("workspace");
-        let outside = tempfile::tempdir().expect("outside");
-        let mut execution = tool.test_execution_context();
-        execution.workspace_root = workspace.path().to_path_buf();
-        let target = outside.path().join("note.txt");
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        let result = runtime.block_on(tool.call_for_execution(
-            serde_json::json!({
-                "path": target.to_string_lossy(),
-                "content": "hello",
-            }),
-            execution,
-        ));
-        assert!(result.error.is_none(), "{result:?}");
-        let data = result.data.as_ref().expect("data");
-        assert_eq!(data["path_risk"]["outside_workspace"], true, "{data}");
-        assert_eq!(data["path_risk"]["sensitive"], false, "{data}");
-        assert!(
-            data["path_risk"]["resolved"]
-                .as_str()
-                .is_some_and(|path| !path.is_empty()),
-            "{data}"
-        );
-        assert!(data.get("message").is_none(), "{data}");
-    }
-
-
-    /// Reported repro: with the workspace at `.../litecode`, writing
-    /// `.../litecode-outside-probe.txt` is outside, so `path_risk` must speak.
-    #[test]
-    fn a_sibling_of_the_workspace_is_outside_and_says_so() {
-        let tmp = tempfile::tempdir().unwrap();
-        let workspace = tmp.path().join("litecode");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let target = tmp.path().join("litecode-outside-probe.txt");
-        let tool = WriteTool::new();
-        let mut execution = tool.test_execution_context();
-        execution.workspace_root = workspace.clone();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        let result = runtime.block_on(tool.call_for_execution(
-            serde_json::json!({
-                "path": target.to_string_lossy(),
-                "content": "hello",
-            }),
-            execution,
-        ));
-        assert!(result.error.is_none(), "{result:?}");
-        let data = result.data.as_ref().expect("data");
-        assert_eq!(data["path_risk"]["outside_workspace"], true, "{data}");
-    }
-    /// Diagnostics used to be folded into a message; run_code never reads that
-    /// channel, so they live in the data now.
-    #[test]
-    fn write_diagnostics_are_data() {
-        let _hook = crate::tools::lsp_feedback::arm_lsp_error_hook("note.txt", "error[E1]: boom");
-        let tool = WriteTool::new();
-        let workspace = tempfile::tempdir().expect("workspace");
-        let mut execution = tool.test_execution_context();
-        execution.workspace_root = workspace.path().to_path_buf();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        let result = runtime.block_on(tool.call_for_execution(
-            serde_json::json!({ "path": "note.txt", "content": "hello" }),
-            execution,
-        ));
-        assert!(result.error.is_none(), "{result:?}");
-        let data = result.data.as_ref().expect("data");
-        assert_eq!(data["diagnostics"][0]["code"], "lsp_error", "{data}");
-        assert!(
-            data["diagnostics"][0]["details"]["text"]
-                .as_str()
-                .is_some_and(|text| text.contains("boom")),
-            "{data}"
-        );
-        assert!(data.get("message").is_none(), "{data}");
-    }
-    #[test]
-    fn write_expected_hash_mismatch_is_stale() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("note.txt");
-        std::fs::write(&path, "alpha\n").unwrap();
-        let result = call(
-            &WriteTool::new(),
-            dir.path(),
-            json!({
-                "path": "note.txt",
-                "content": "beta\n",
-                "expected_hash": "0".repeat(64)
-            }),
-        );
-        assert_eq!(result.error_code.as_deref(), Some("stale"));
-        assert!(result.data.is_none());
-        assert_eq!(
-            result.error_details.as_ref().unwrap()["current_hash"],
-            crate::tool::file_identity::sha256_hex(b"alpha\n")
-        );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "alpha\n");
-    }
-
-    #[test]
-    fn write_expected_hash_match_returns_file_ref() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("note.txt");
-        std::fs::write(&path, "alpha\n").unwrap();
-        let hash = crate::tool::file_identity::sha256_hex(b"alpha\n");
-        let result = call(
-            &WriteTool::new(),
-            dir.path(),
-            json!({
-                "path": "note.txt",
-                "content": "beta\n",
-                "expected_hash": hash
-            }),
-        );
-        assert!(result.error.is_none(), "{}", result.content);
-        let data = result.data.unwrap();
-        assert_eq!(data["created"], false);
-        assert_eq!(data["file"]["path"], "note.txt");
-        assert_eq!(
-            data["file"]["hash"],
-            crate::tool::file_identity::sha256_hex(b"beta\n")
-        );
-        assert_eq!(data["file"]["bytes"], 5);
-        assert!(data["file"].get("abs").is_none());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "beta\n");
-    }
-
-    #[test]
-    fn write_expected_hash_on_missing_file_does_not_create() {
-        let dir = tempfile::tempdir().unwrap();
-        let result = call(
-            &WriteTool::new(),
-            dir.path(),
-            json!({
-                "path": "missing.txt",
-                "content": "hello",
-                "expected_hash": "ab"
-            }),
-        );
-        assert_eq!(result.error_code.as_deref(), Some("not_found"));
-        assert!(!dir.path().join("missing.txt").exists());
-    }
 }

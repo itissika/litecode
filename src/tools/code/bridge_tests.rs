@@ -20,7 +20,7 @@ use crate::tool::Tool;
 use crate::tool::trait_::{ToolExecutionContext, ToolSurface};
 use crate::tool::write_lock::WorkspaceWriteLock;
 use crate::tools::code::{CodeTool, CodeToolHost};
-use crate::tools::edit::EditTool;
+use crate::tools::apply_edits::ApplyEditsTool;
 use crate::types::ToolCallResult;
 
 fn allow_engine(root: &Path) -> PermissionEngine {
@@ -118,7 +118,7 @@ impl Tool for BadRead {
         let mut result = ToolCallResult::ok(String::new());
         // `message` is present so the only violation is `lines`: a number where
         // the contract says an array of strings.
-        result.data = Some(json!({ "path": "a.txt", "start_line": 1, "lines": 42, "message": "" }));
+        result.data = Some(json!({ "lines": 42 }));
         Box::pin(std::future::ready(result))
     }
 }
@@ -217,24 +217,17 @@ async fn edit_input_failure_resolves_as_a_value() {
     std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
     let result = run_program(
         dir.path(),
-        vec![Arc::new(EditTool::new())],
+        vec![Arc::new(ApplyEditsTool::new())],
         r#"
-        const r = await tools.file.edit({ path: "a.txt", old_string: "hello", new_string: "hello" });
-        console.log("continued", r.ok, r.reason);
-        throw new Error("after-edit");
+        const r = await tools.file.apply_edits({ edits: [{ path: "a.txt", old_string: "hello", new_string: "hello" }] });
+        return { ok: r.results[0].ok, reason: r.results[0].reason };
         "#,
     )
     .await;
-    // Reaching the throw proves the edit did not end the run.
-    assert!(result.content.contains("after-edit"), "{}", result.content);
+    assert!(result.error.is_none(), "{}", result.content);
     assert!(
-        result.content.contains("[log] continued false invalid_args"),
-        "the program must see ok:false / reason invalid_args: {}",
-        result.content
-    );
-    assert!(
-        result.content.contains("failed(invalid_args)"),
-        "the ledger row keeps the JS-facing label: {}",
+        result.content.contains("\"ok\":false") && result.content.contains("invalid_args"),
+        "the batch item must carry ok:false / reason invalid_args: {}",
         result.content
     );
 }
@@ -246,27 +239,21 @@ async fn edit_on_a_session_record_resolves_as_a_permission_value() {
     let dir = tempfile::tempdir().unwrap();
     let result = run_program(
         dir.path(),
-        vec![Arc::new(EditTool::new())],
+        vec![Arc::new(ApplyEditsTool::new())],
         r#"
-        const r = await tools.file.edit({
+        const r = await tools.file.apply_edits({ edits: [{
             path: ".litecode/sessions/01M6MH2CWCE5DJDAZBE0E3THT5.md",
             old_string: "a",
             new_string: "b",
-        });
-        console.log("continued", r.ok, r.reason);
-        throw new Error("after-edit");
+        }] });
+        return { ok: r.results[0].ok, reason: r.results[0].reason };
         "#,
     )
     .await;
-    assert!(result.content.contains("after-edit"), "{}", result.content);
+    assert!(result.error.is_none(), "{}", result.content);
     assert!(
-        result.content.contains("[log] continued false permission"),
+        result.content.contains("\"ok\":false") && result.content.contains("permission"),
         "the program must see ok:false / reason permission: {}",
-        result.content
-    );
-    assert!(
-        result.content.contains("failed(permission_denied)"),
-        "the ledger row carries the table key: {}",
         result.content
     );
 }
@@ -341,14 +328,14 @@ async fn s4_unknown_result_field_is_a_warning() {
         })],
         r#"
         const r = await tools.file.read({ path: "a.txt" });
-        const data = r.data;
+        const data = r.path;
         return typeof data;
         "#,
     )
     .await;
     assert!(result.error.is_none(), "the run must survive a wrong field: {}", result.content);
-    assert!(result.content.contains("'data'"), "{}", result.content);
-    assert!(result.content.contains("start_line"), "{}", result.content);
+    assert!(result.content.contains("'path'"), "{}", result.content);
+    assert!(result.content.contains("lines"), "{}", result.content);
     assert!(result.content.contains("undefined"), "{}", result.content);
 }
 
@@ -448,8 +435,9 @@ async fn a_tool_result_reaches_the_model_with_fields_and_a_reminder_line() {
     )
     .await;
     let content = result.content;
-    assert!(content.contains("\"total\""), "{content}");
-    assert!(content.contains("\"truncated\""), "{content}");
+    assert!(content.contains("\"paths\""), "{content}");
+    assert!(!content.contains("\"total\""), "{content}");
+    assert!(!content.contains("\"truncated\""), "{content}");
     assert!(
         content.contains("file.glob: showing first 2 of 3 paths"),
         "{content}"
@@ -585,8 +573,8 @@ return r.hits.length;"#,
         "{content}"
     );
 }
-/// The path risk used to hide in a side channel; a program sees the field and
-/// the model sees one line that names the resolved target.
+/// The path risk is reminder metadata: the program only sees the path, while
+/// the model gets one line naming the resolved target.
 #[tokio::test]
 async fn an_outside_write_reaches_the_model_as_a_field_and_a_line() {
     let dir = tempfile::tempdir().unwrap();
@@ -594,7 +582,7 @@ async fn an_outside_write_reaches_the_model_as_a_field_and_a_line() {
     let target = outside.path().join("note.txt");
     let literal = serde_json::to_string(&target.to_string_lossy().to_string()).unwrap();
     let code = format!(
-        "const r = await tools.file.write({{ path: {literal}, content: \"hi\" }});\nreturn r.path_risk;"
+        "const r = await tools.file.write({{ path: {literal}, content: \"hi\" }});\nreturn {{ path: r.path, hasRisk: Object.hasOwn(r, 'path_risk') }};"
     );
     let result = run_program(
         dir.path(),
@@ -603,7 +591,7 @@ async fn an_outside_write_reaches_the_model_as_a_field_and_a_line() {
     )
     .await;
     let content = result.content;
-    assert!(content.contains("outside_workspace"), "{content}");
+    assert!(content.contains("\"hasRisk\":false"), "{content}");
     let expected = format!(
         "↳ #1 tools.file.write: this write lands outside the workspace: {}",
         target.to_string_lossy()

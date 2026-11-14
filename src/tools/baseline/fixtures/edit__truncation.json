@@ -1,9 +1,0 @@
-{
-  "content_historical": null,
-  "covered": false,
-  "data": null,
-  "error": null,
-  "gap": "edit returns EditResult{ok,path,message} with no truncation or pagination fields. Truncation scenario remains unexpressible; suite keeps this gap.",
-  "scenario": "truncation",
-  "tool": "edit"
-}

@@ -8,11 +8,7 @@
         "line": 1,
         "text": "alpha needle"
       }
-    ],
-    "at_limit_cap": false,
-    "lines_truncated": false,
-    "context_omitted": false,
-    "output_capped": false
+    ]
   },
   "error": null,
   "gap": null,

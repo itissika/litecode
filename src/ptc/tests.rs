@@ -1250,8 +1250,12 @@ async fn host_receives_extra_arguments_as_a_json_array() {
 // WP-206 #7: undefined tolerance.
 #[tokio::test]
 async fn undefined_in_result_is_stripped_or_nulled_and_reported() {
-    let cases: [(&str, Value, &[&str], usize); 5] = [
-        ("return undefined;", json!(null), &["$"], 1),
+    let bare = run("return undefined;", Vec::new()).await;
+    assert!(bare.failure.is_none(), "{bare:?}");
+    assert!(bare.value().is_none(), "undefined must not become null");
+    assert_eq!(bare.dropped_undefined.paths, ["$"]);
+    assert_eq!(bare.dropped_undefined.total, 1);
+    let cases: [(&str, Value, &[&str], usize); 4] = [
         ("return { a: 1, b: undefined };", json!({"a": 1}), &["b"], 1),
         (
             "return { a: { b: undefined } };",

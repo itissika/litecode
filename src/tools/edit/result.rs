@@ -42,9 +42,6 @@ pub struct EditResult {
     /// Outside-workspace or sensitive-path target; absent when there is none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path_risk: Option<crate::tools::file_path::PathRisk>,
-    /// 1-based line of the closest match when `old_string` was not found;
-    /// `null` otherwise. Always on the wire: one item shape, no guessing.
-    pub nearest_line: Option<u32>,
     /// Warnings recorded after the edit; absent when the edit was clean.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Vec<Diagnostic>>,
@@ -58,7 +55,6 @@ impl EditResult {
             message: String::new(),
             reason: None,
             path_risk: None,
-            nearest_line: None,
             diagnostics: None,
         }
     }
@@ -66,11 +62,6 @@ impl EditResult {
     /// Attach the structured path risk; the caller no longer builds prose.
     pub fn with_path_risk(mut self, risk: Option<crate::tools::file_path::PathRisk>) -> Self {
         self.path_risk = risk;
-        self
-    }
-
-    pub fn with_nearest_line(mut self, nearest_line: Option<u32>) -> Self {
-        self.nearest_line = nearest_line;
         self
     }
 
@@ -86,7 +77,6 @@ impl EditResult {
             message: message.into(),
             reason: Some("io"),
             path_risk: None,
-            nearest_line: None,
             diagnostics: None,
         }
     }
@@ -216,16 +206,6 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
     }
 
     vec![
-        DriftCase {
-            tool: "edit",
-            // Outside the workspace: the structured path risk appears.
-            all_optional_present: present_edit(
-                EditResult::success("a.txt")
-                    .with_path_risk(Some(outside()))
-                    .with_diagnostics(Some(vec![lsp_error()])),
-            ),
-            all_optional_absent: present_edit(EditResult::success("a.txt")),
-        },
         DriftCase {
             tool: "apply_edits",
             // One item carries every key: `reason` is on the wire even when the

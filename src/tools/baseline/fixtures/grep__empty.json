@@ -2,12 +2,7 @@
   "content_historical": "",
   "covered": true,
   "data": {
-    "hits": [],
-    "at_limit_cap": false,
-    "lines_truncated": false,
-    "context_omitted": false,
-    "output_capped": false,
-    "empty_reason": "no_match"
+    "hits": []
   },
   "error": null,
   "gap": null,

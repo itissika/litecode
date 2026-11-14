@@ -20,7 +20,7 @@ pub struct Clamped<T> {
 ///
 /// Structured on purpose: the fact "5000 was used instead of 6000" belongs in a
 /// field the model can read, not in a prose sentence.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Clamp {
     /// Parameter name as the caller wrote it.
     pub parameter: String,

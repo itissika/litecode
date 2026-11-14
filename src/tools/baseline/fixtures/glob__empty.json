@@ -2,11 +2,7 @@
   "content_historical": "",
   "covered": true,
   "data": {
-    "paths": [],
-    "total": 0,
-    "truncated": false,
-    "outside_workspace": false,
-    "empty_reason": "no_match"
+    "paths": []
   },
   "error": null,
   "gap": null,

@@ -252,10 +252,26 @@ fn byte_cut(text: &str, cap: usize) -> String {
 /// This is the only place that writes reminder wording: tools produce fields,
 /// and the renderer turns a (tool, field) pair into one line. The tool name is
 /// the identity — a result shape could belong to any of several tools.
+#[cfg(test)]
 pub(super) fn reminders_for_call(tool: &str, value: &Value) -> Vec<String> {
-    let Some(object) = value.as_object() else {
-        return Vec::new();
-    };
+    reminders_for_call_with_metadata(tool, value, None)
+}
+
+pub(super) fn reminders_for_call_with_metadata(
+    tool: &str,
+    value: &Value,
+    metadata: Option<&Value>,
+) -> Vec<String> {
+    let mut fields = metadata
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(data) = value.as_object() {
+        for (key, field) in data {
+            fields.entry(key.clone()).or_insert_with(|| field.clone());
+        }
+    }
+    let object = &fields;
     let mut out = Vec::new();
     // A failed call produced no fields: the envelope already says what happened,
     // and inferring a second sentence from missing fields would turn "never ran"
@@ -270,7 +286,7 @@ pub(super) fn reminders_for_call(tool: &str, value: &Value) -> Vec<String> {
         tool if tool.starts_with("lsp.") => lsp_reminders(tool, object, &mut out),
         "process.exec_command" | "process.write_stdin" => unified_exec_reminders(object, &mut out),
         "file.write" => write_reminders(object, &mut out),
-        "file.edit" | "file.apply_edits" => edit_reminders(tool, object, &mut out),
+        "file.apply_edits" => edit_reminders(tool, object, &mut out),
         _ => {}
     }
     out
@@ -350,17 +366,10 @@ fn lsp_diagnostics_reminder(
 }
 
 fn edit_reminders(
-    tool: &str,
+    _tool: &str,
     object: &serde_json::Map<String, Value>,
     out: &mut Vec<String>,
 ) {
-    if tool == "file.edit" {
-        if let Some(risk) = object.get("path_risk") {
-            path_risk_reminders("this edit", risk, out);
-        }
-        lsp_diagnostics_reminder(None, object, out);
-        return;
-    }
     let Some(results) = object.get("results").and_then(Value::as_array) else {
         return;
     };
@@ -379,15 +388,15 @@ fn edit_reminders(
 /// Codex-style exec sessions use a session id and incremental output, so the
 /// old command reminder would be actively wrong.
 fn unified_exec_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
-    if object.get("session_id").and_then(Value::as_str).is_some() {
-        out.push(
-            "session is still running; use tools.process.write_stdin with its session_id"
-                .to_string(),
-        );
+    if let Some(session_id) = object.get("session_id").and_then(Value::as_str) {
+        out.push(format!(
+            "session {session_id} is live; use tools.process.write_stdin"
+        ));
     }
     if object.get("truncated").and_then(Value::as_bool) == Some(true) {
         out.push("output was clipped by max_output_tokens".to_string());
     }
+    out.extend(clamp_reminders(object));
 }
 
 fn lsp_reminders(
@@ -698,6 +707,8 @@ fn render_upfloat(report: &RunReport, budget: usize, manifest: Option<&str>) -> 
     {
         lines.push(reminder_line(&anchor_line(reminder)));
     }
+    let mut seen = std::collections::HashSet::new();
+    lines.retain(|line| seen.insert(line.clone()));
     let mut kept: Vec<String> = Vec::with_capacity(lines.len());
     let mut used = 0usize;
     for line in lines {
@@ -2304,18 +2315,6 @@ mod tests {
             ),
             ("file.write", write(json!({})), Vec::new()),
             (
-                "file.edit",
-                json!({
-                    "path": "a.txt",
-                    "diagnostics": [{"code": "lsp_error", "severity": "warning", "message": "m"}],
-                    "path_risk": risk("/tmp/y.txt"),
-                }),
-                vec![
-                    "this edit lands outside the workspace: /tmp/y.txt",
-                    "the language server reported errors in this file",
-                ],
-            ),
-            (
                 "file.apply_edits",
                 json!({
                     "results": [
@@ -2333,7 +2332,6 @@ mod tests {
                             "path": "/tmp/z.txt",
                             "reason": "no_match",
                             "detail": "old_string was not found; closest match is at line 12",
-                            "nearest_line": 12,
                             "path_risk": risk("/tmp/z.txt"),
                         },
                     ]
@@ -2382,7 +2380,6 @@ mod tests {
             "process.exec_command",
             "process.write_stdin",
             "file.write",
-            "file.edit",
             "file.apply_edits",
         ];
         let envelopes = [
@@ -2768,7 +2765,6 @@ mod tests {
                 "path": "a.txt",
                 "reason": "no_match",
                 "detail": detail,
-                "nearest_line": 12,
             }]
         });
         let lines = reminders_for_call("file.apply_edits", &value);
@@ -3537,4 +3533,35 @@ mod tests {
     }
 
 
+}
+
+#[cfg(test)]
+mod metadata_reminder_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn exec_reminders_use_data_for_identity_and_metadata_for_facts() {
+        let data = json!({"ok": true, "session_id": "bg_1", "output": ""});
+        let metadata = json!({
+            "truncated": true,
+            "clamped": [{"parameter": "yield_time_ms", "requested": 60000, "applied": 30000}]
+        });
+        let lines = reminders_for_call_with_metadata(
+            "process.exec_command",
+            &data,
+            Some(&metadata),
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "session bg_1 is live; use tools.process.write_stdin",
+                "output was clipped by max_output_tokens",
+                "yield_time_ms 30000 used instead of 60000",
+            ]
+        );
+        for line in &lines {
+            assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
+        }
+    }
 }

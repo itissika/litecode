@@ -105,14 +105,6 @@ declare const fs: {
   exists(path: string): boolean;
 };
 
-type ClampedParam = {
-  /** Parameter name as the caller wrote it. */
-  parameter: string;
-  /** Value the caller asked for. */
-  requested: number;
-  /** Value the tool used instead. */
-  applied: number;
-};
 /** Whole JSON number. The host rejects fractional values. @asType integer */
 type Integer = number;
 /** Empty input for tools that take no arguments. */
@@ -120,135 +112,57 @@ type NoArgs = {};
 /** Workspace-relative path, or an absolute path when explicitly allowed. */
 type Path = string;
 
-type EditInput = {
-  /** Replacement text. Use an empty string to delete old_string. */
-  new_string: string;
-  /** Exact file text to find. Must match exactly one place. */
-  old_string: string;
-  /** Prefer a workspace-relative path. */
-  path: Path;
-};
-type PathRisk = {
-  /** The target resolves outside the workspace root. */
-  outside_workspace: boolean;
-  /** The target is a sensitive system location. */
-  sensitive: boolean;
-  /** Absolute path the target resolved to; present when it is outside. */
-  resolved?: string;
-};
-/** One warning a tool attached to a successful write. */
-type ToolDiagnostic = {
-  /** Machine code such as `lsp_error`. */
-  code: string;
-  /** Severity name mapped from the LSP number. */
-  severity: "info" | "warning";
-  /** Human-readable summary. */
-  message: string;
-  /** Extra structured detail, such as the LSP error block under `text`. */
-  details?: unknown;
-};
-
 interface FileTools {
-  /** Apply several edit replacements serially. */
+  /** Apply replacements serially; a single edit is an array of one. */
   apply_edits(args: {
     edits: EditInput[]; // Replacements applied serially; later items on the same path see earlier successful writes.
   }): Promise<ToolResult<{
-    // Same length and order as edits.
-    results: Array<
-      // One item in a serial apply_edits batch. Item failures stay item-level.
-      {
-        ok: boolean;
-        path: string;
-        reason: ("not_found" | "no_match" | "ambiguous" | "invalid_args" | "empty" | "permission" | "io") | null; // Why this item failed; `ambiguous` means `old_string` matched more than once. `null` when `ok` is true.
-        detail: string; // One plain sentence: why the item failed, with line hints; empty when `ok` is true.
-        nearest_line: Integer | null; // 1-based line of the closest match when `old_string` was not found; `null` otherwise.
-        path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.
-        diagnostics?: ToolDiagnostic[]; // Warnings recorded after the edit; absent when there were none.
-      }
-    >;
-  }>>;
-  /** Apply one exact-string replacement. */
-  edit(args: EditInput): Promise<ToolResult<
-    // Successful single-edit payload. Failures use ToolFailure.
-    {
+    results: Array<{
+      ok: boolean;
       path: string;
-      path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.
-      diagnostics?: ToolDiagnostic[]; // Warnings recorded after the edit; absent when the edit was clean.
-    }
-  >>;
+      reason: ("not_found" | "no_match" | "ambiguous" | "invalid_args" | "empty" | "permission" | "io") | null;
+      detail: string; // Why the item failed; empty when ok is true.
+    }>;
+  }>>;
   /** Find files by path glob. */
   glob(args: {
     pattern: string; // Glob relative to path, or to the workspace root when path is omitted.
-    limit?: Integer; // Maximum paths to return. 1–5000. @default 1000
+    limit?: Integer; // Maximum paths to return. 1-5000. @default 1000
     path?: Path; // Optional directory to search under.
   }): Promise<ToolResult<{
     paths: string[]; // Matching paths, sorted by depth, then parent directory, then name.
-    total: Integer; // Matches found before the limit was applied.
-    truncated: boolean; // True when paths holds only the first limit matches.
-    outside_workspace: boolean; // True when some returned paths are outside the workspace (absolute).
-    empty_reason?: "hidden_by_filters" | "no_match"; // Why `paths` is empty; absent when it is not. Only what glob can produce: the searched path is excluded by default filters, or nothing matched.
-    clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
   }>>;
   /** Search file contents. */
   grep(args: {
     pattern: string; // Regular expression over file contents, unless literal is true.
-    before?: Integer; // Lines of context before each hit. 0–10. @default 0
-    after?: Integer; // Lines of context after each hit. 0–10. @default 0
+    before?: Integer; // Lines of context before each hit. 0-10. @default 0
+    after?: Integer; // Lines of context after each hit. 0-10. @default 0
     glob?: string; // One glob or comma-separated globs. A leading ! excludes. Relative to path.
     ignore_case?: boolean; // Ignore case when matching. @default false
-    limit?: Integer; // Maximum hits to return. 1–100. @default 40
+    limit?: Integer; // Maximum hits to return. 1-100. @default 40
     literal?: boolean; // Search for pattern as plain text. @default false
     path?: Path; // File or directory to search. Defaults to the workspace.
   }): Promise<ToolResult<{
-    hits: Array<
-      // One match. Context, when requested, is folded into `text` as one block.
-      {
-        path: string; // Source file path.
-        line: Integer; // 1-based match line.
-        text: string; // Matching line text, capped at 500 characters. With `before`/`after` this is a whole block in ripgrep notation, newline-separated: `12- before`, `13: match`, `14+ after` (real file line numbers).
-      }
-    >;
-    truncated?: boolean; // True when a limit or the token budget cut the result short.
-    empty_reason?: "no_files" | "glob_no_files" | "no_match" | "file_unreadable" | "binary" | "hidden_by_filters"; // Why `hits` is empty; absent when it is not. Only what grep can produce: nothing to search, the glob filter matched no file, no match, the file could not be read as text, the file is binary, or the searched path is excluded by default filters.
-    total_hits?: Integer; // Matches found before the result was cut; absent when the scan stopped at a limit and never counted the rest. Do not treat a missing value as zero.
-    at_limit_cap: boolean; // True when the hit limit stopped the scan.
-    lines_truncated: boolean; // True when a match or context line was shortened to the per-line cap.
-    context_omitted: boolean; // True when context lines were dropped to fit the token budget.
-    output_capped: boolean; // True when hits were dropped to fit the token budget.
-    clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
+    hits: Array<{
+      path: string; // Source file path.
+      line: Integer; // 1-based match line.
+      text: string; // Matching line text, capped at 500 characters.
+    }>;
   }>>;
   /** Read lines from one file or archived session transcript. */
   read(args: {
     path: Path; // Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md.
     start_line?: Integer; // First line to read, 1-based, inclusive. @default 1
-    limit?: Integer; // Lines to return. 1–5000. @default 2000
+    limit?: Integer; // Lines to return. 1-5000. @default 2000
   }): Promise<ToolResult<{
     lines: string[]; // Line contents for this page, in file order.
-    path: string;
-    start_line: Integer;
-    total_lines: Integer; // Lines in the file; `has_more` compares against it.
-    has_more: boolean; // True when this page stops before the end of the file.
-    skipped_in_context: Integer; // Lines the window covered but left out because they are already in the model's context. A gap in `lines` is explained by this number.
-    lines_capped?: Integer[]; // Lines shortened to the per-line character cap, by number.
-    clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
   }>>;
-  /** Replace a file's contents; optional hash and create-only guards. */
+  /** Replace a file's contents. */
   write(args: {
     content: string; // Content to write to the file.
     path: Path; // Prefer a workspace-relative path.
-    create_only?: boolean; // If true, refuse to overwrite an existing file. @default false
-    expected_hash?: string; // sha256 of the current file bytes. Omit to skip the check. A mismatch is ToolFailure reason stale.
   }): Promise<ToolResult<{
-    created: boolean; // True when the file did not exist before.
-    // File identity after the write.
-    file: {
-      bytes: Integer; // File size in bytes.
-      hash: string; // sha256 hex of the file bytes.
-      path: string; // Workspace-relative path inside the workspace; requested path outside it.
-      abs?: string; // Absolute path when the file is outside the workspace.
-    };
-    path_risk?: PathRisk; // Outside-workspace or sensitive-path target; absent when there is none.
-    diagnostics?: ToolDiagnostic[]; // Warnings recorded after the write; absent when the write was clean.
+    path: string; // Workspace-relative path inside the workspace; requested path outside it.
   }>>;
 }
 
@@ -272,7 +186,6 @@ interface SearchTools {
       text: string; // The anchor line itself, cheap enough for a table cell.
       snippet: string; // Source excerpt, at most 24 lines; overlong lines are capped.
     }[];
-    clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
   }>>;
   /** Search past session transcripts. */
   session_search(args: {
@@ -294,7 +207,6 @@ interface SearchTools {
     total: Integer; // Total matching rows before `limit` is applied.
     truncated: boolean; // True when `total` exceeds the returned rows.
     semantic: boolean; // False when the semantic leg was unavailable: the hits are lexical only.
-    clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
   }>>;
 }
 
@@ -303,14 +215,8 @@ type ExecCommandData = {
   session_id?: string;
   /** Process exit code when it finished before this call returned. */
   exit_code?: Integer | null;
-  /** Time spent inside this exec_command / write_stdin call. */
-  wall_time_seconds: number;
   /** Incremental output since the previous exec call on this session. */
   output: string;
-  /** Approximate original output size before the call's token budget. */
-  original_token_count?: Integer;
-  /** Output was clipped by max_output_tokens. */
-  truncated?: boolean;
 };
 
 interface ProcessTools {
@@ -353,8 +259,6 @@ interface WebTools {
       title: string;
       url: string;
     }[];
-    query?: string;
-    clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
   }>>;
 }
 
@@ -409,7 +313,6 @@ interface BrowserTools {
       href?: string;
       type?: string;
     }[];
-    message?: string; // Set when max_chars was clamped into range.
     page_id: string;
     text: string;
     title: string;
@@ -444,13 +347,7 @@ type Location = {
 };
 type LocationsData = {
   locations: Location[];
-  /** ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss. */
-  state: LspDataState;
-  /** True when the cap cut the list: more results exist. */
-  truncated: boolean;
 };
-/** Truthful index state of the language server that produced this result. */
-type LspDataState = "ok" | "partial" | "unknown";
 type PathInput = {
   /** Source file under the workspace; workspace-relative is preferred. */
   path: Path;
@@ -481,10 +378,6 @@ type SymbolInfo = {
 };
 type SymbolsData = {
   symbols: SymbolInfo[];
-  /** ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss. */
-  state: LspDataState;
-  /** True when the cap cut the list: more results exist. */
-  truncated: boolean;
 };
 
 interface LspTools {
@@ -497,8 +390,6 @@ interface LspTools {
       character: Integer; // 1-based UTF-16 column on that line.
       message: string; // Human-readable diagnostic.
     }[];
-    state: LspDataState; // ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss.
-    truncated: boolean; // True when the cap cut the list: more results exist.
   }>>;
   /** List symbols in one source file. */
   document_symbol(args: PathInput): Promise<ToolResult<SymbolsData>>;
@@ -513,7 +404,6 @@ interface LspTools {
     // One hover answer. A hover is a single value, so there is no truncation.
     {
       markdown: string; // Flattened hover text, not raw LSP JSON.
-      state: LspDataState; // ok means the index is ready, partial that it is still building, and unknown that the server never reported it. An empty value under partial/unknown is not a confirmed miss.
     }
   >>;
   /** Search symbols across the workspace. */

@@ -5,7 +5,7 @@
 //! interrupt (which runs `finally` cleanup) and a hard kill.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -31,6 +31,7 @@ struct ParsedArgs {
     chars: String,
     yield_ms: u64,
     max_output_tokens: usize,
+    clamped: Vec<crate::tool::clamp::Clamp>,
 }
 
 pub struct WriteStdinTool {
@@ -55,21 +56,34 @@ impl WriteStdinTool {
         } else {
             DEFAULT_WRITE_YIELD_MS
         };
-        let yield_ms = clamp_int(input, "yield_time_ms", MIN_YIELD_MS, MAX_YIELD_MS, "ms")?
-            .map_or(default_yield, |value| value.value);
-        let max_output_tokens = clamp_int(
+        let mut clamped = Vec::new();
+        let yield_value =
+            clamp_int(input, "yield_time_ms", MIN_YIELD_MS, MAX_YIELD_MS, "ms")?;
+        if let Some(note) = yield_value.as_ref().and_then(|value| value.as_clamp("yield_time_ms")) {
+            clamped.push(note);
+        }
+        let yield_ms = yield_value.map_or(default_yield, |value| value.value);
+        let max_tokens_value = clamp_int(
             input,
             "max_output_tokens",
             1,
             MAX_OUTPUT_TOKENS as u64,
             "tokens",
-        )?
-        .map_or(DEFAULT_MAX_OUTPUT_TOKENS, |value| value.value as usize);
+        )?;
+        if let Some(note) = max_tokens_value
+            .as_ref()
+            .and_then(|value| value.as_clamp("max_output_tokens"))
+        {
+            clamped.push(note);
+        }
+        let max_output_tokens =
+            max_tokens_value.map_or(DEFAULT_MAX_OUTPUT_TOKENS, |value| value.value as usize);
         Ok(ParsedArgs {
             session_id,
             chars,
             yield_ms,
             max_output_tokens,
+            clamped,
         })
     }
 
@@ -93,7 +107,6 @@ impl WriteStdinTool {
             yield_ms = args.yield_ms,
             "write_stdin"
         );
-        let started = Instant::now();
         let cursor = self.jobs.read_cursor(&args.session_id).unwrap_or(0);
         let (alive_before, _, _, _) = self.jobs.get(&args.session_id).unwrap_or((
             false,
@@ -149,12 +162,12 @@ impl WriteStdinTool {
         if !alive {
             self.jobs.discard_finished(&args.session_id);
         }
-        let data = ExecCommandData::from_delta(
+        let mut data = ExecCommandData::from_delta(
             alive.then(|| args.session_id.clone()),
             exit_code.map(|code| code as i32),
-            started.elapsed().as_secs_f64(),
             delta,
         );
+        data.clamped = args.clamped.clone();
         ToolOutcome::ok(data).into_call_result(match (alive, exit_code) {
             (true, _) => format!("session_id: {}\n", args.session_id),
             (false, Some(code)) => format!("exit_code: {code}\n"),

@@ -8,12 +8,7 @@
         "line": 1,
         "text": "hit one"
       }
-    ],
-    "at_limit_cap": false,
-    "lines_truncated": false,
-    "context_omitted": false,
-    "output_capped": false,
-    "truncated": true
+    ]
   },
   "error": null,
   "gap": null,

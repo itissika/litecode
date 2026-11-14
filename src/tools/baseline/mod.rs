@@ -1,4 +1,4 @@
-//! Phase 0 baseline for `read` / `glob` / `grep` / `edit` / `write`.
+//! Phase 0 baseline for `read` / `glob` / `grep` / `write`.
 //!
 //! Each fixture locks the current `data` and `error` seen through the nested
 //! code path (`execute_tool_call` with [`ToolCaller::Code`]). `content_historical`
@@ -201,54 +201,6 @@ fn catalog() -> (Vec<Live>, Vec<(&'static str, &'static str)>) {
             json!({"pattern":"needle","path":"a.txt"}),
         ),
         live(
-            "edit",
-            "success",
-            Lane::Allow,
-            &[("a.txt", "alpha\n")],
-            Bulk::None,
-            json!({"path":"a.txt","old_string":"alpha","new_string":"beta"}),
-        ),
-        live(
-            "edit",
-            "empty",
-            Lane::Allow,
-            &[("empty.txt", "")],
-            Bulk::None,
-            json!({"path":"empty.txt","old_string":"alpha","new_string":"beta"}),
-        ),
-        live(
-            "edit",
-            "invalid_input",
-            Lane::Allow,
-            &[],
-            Bulk::None,
-            json!({}),
-        ),
-        live(
-            "edit",
-            "permission_denied",
-            Lane::Deny,
-            &[("a.txt", "alpha\n")],
-            Bulk::None,
-            json!({"path": outside_path(),"old_string":"alpha","new_string":"beta"}),
-        ),
-        live(
-            "edit",
-            "cancelled",
-            Lane::Cancel,
-            &[("a.txt", "alpha\n")],
-            Bulk::None,
-            json!({"path":"a.txt","old_string":"alpha","new_string":"beta"}),
-        ),
-        live(
-            "edit",
-            "partial_failure",
-            Lane::Allow,
-            &[("a.txt", "alpha\nbeta\n")],
-            Bulk::None,
-            json!({"path":"a.txt","old_string":"missing_token_zz","new_string":"nope"}),
-        ),
-        live(
             "write",
             "success",
             Lane::Allow,
@@ -293,7 +245,6 @@ fn catalog() -> (Vec<Live>, Vec<(&'static str, &'static str)>) {
         ("read", "partial_failure"),
         ("glob", "partial_failure"),
         ("grep", "partial_failure"),
-        ("edit", "truncation"),
         ("write", "truncation"),
         ("write", "partial_failure"),
     ];
@@ -329,7 +280,6 @@ fn tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(crate::tools::read::ReadTool::default()),
         Arc::new(crate::tools::glob::GlobTool),
         Arc::new(crate::tools::grep::GrepTool),
-        Arc::new(crate::tools::edit::EditTool::new()),
         Arc::new(crate::tools::write::WriteTool::new()),
     ]
 }
@@ -349,7 +299,7 @@ fn outside_path() -> String {
 
 fn deny_engine(root: &Path) -> PermissionEngine {
     let mut profile = AgentProfile::default();
-    for name in ["read", "glob", "grep", "edit", "write"] {
+    for name in ["read", "glob", "grep", "write"] {
         profile.tools.insert(
             name.to_string(),
             AgentToolBinding {
@@ -447,10 +397,6 @@ async fn run_case(case: &Live, root: &Path, data_root: &Path) -> ToolCallResult 
 fn expect_shape(case: &Live, result: &ToolCallResult) {
     let label = format!("{}/{}", case.tool, case.scenario);
     match (case.tool, case.scenario) {
-        ("edit", "empty" | "partial_failure") => {
-            assert_kind(result, ToolErrorKind::InvalidInput, &label);
-            assert!(result.data.is_none(), "{label} data={}", describe(result));
-        }
         (_, "invalid_input") => {
             assert_kind(result, ToolErrorKind::InvalidInput, &label);
             assert!(result.data.is_none(), "{label} data={}", describe(result));
@@ -474,19 +420,22 @@ fn expect_shape(case: &Live, result: &ToolCallResult) {
     }
     if case.tool == "read" && case.scenario == "truncation" {
         let data = result.data.as_ref().unwrap();
+        let metadata = result.metadata.as_ref().expect("reminder metadata");
         let line = data["lines"][0].as_str().unwrap();
         assert!(line.ends_with("..."), "{data}");
-        assert_eq!(data["lines_capped"], json!([1]), "{data}");
+        assert_eq!(metadata["lines_capped"], json!([1]), "{metadata}");
     }
     if case.tool == "glob" && case.scenario == "truncation" {
         let data = result.data.as_ref().unwrap();
-        assert_eq!(data["truncated"], json!(true), "{data}");
+        let metadata = result.metadata.as_ref().expect("reminder metadata");
+        assert_eq!(metadata["truncated"], json!(true), "{metadata}");
         assert_eq!(data["paths"].as_array().unwrap().len(), 1000, "{data}");
     }
     if case.tool == "grep" && case.scenario == "truncation" {
         let data = result.data.as_ref().unwrap();
+        let metadata = result.metadata.as_ref().expect("reminder metadata");
         assert_eq!(data["hits"].as_array().unwrap().len(), 1, "{data}");
-        assert_eq!(data["truncated"], json!(true), "{data}");
+        assert_eq!(metadata["truncated"], json!(true), "{metadata}");
     }
 }
 
@@ -657,7 +606,7 @@ async fn phase0_tool_fixtures_lock_data_and_error() {
             "duplicate {tool}/{scenario}"
         );
     }
-    for tool in ["read", "glob", "grep", "edit", "write"] {
+    for tool in ["read", "glob", "grep", "write"] {
         for scenario in SCENARIOS {
             assert!(
                 covered.contains(&(tool, scenario)),

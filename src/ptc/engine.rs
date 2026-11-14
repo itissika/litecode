@@ -238,9 +238,10 @@ enum Stop {
 }
 
 enum ProgramEnd {
-    Success(Json),
+    /// `None` means the program finished without a value (`undefined`).
+    Success(Option<Json>),
     /// The user cancelled after the program had already returned.
-    CancelledAfterReturn(Json),
+    CancelledAfterReturn(Option<Json>),
     Failure(Failure),
 }
 
@@ -532,20 +533,22 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     // The return value is the last entry of the stream, not a field beside it.
     // If it cannot fit, the run is an output-limit failure instead.
     let end = match end {
-        ProgramEnd::Success(value) => {
+        ProgramEnd::Success(Some(value)) => {
             if output.borrow_mut().push_value(value) {
                 EndKind::Success
             } else {
                 EndKind::Failure(Failure::output(output_limit))
             }
         }
-        ProgramEnd::CancelledAfterReturn(value) => {
+        ProgramEnd::Success(None) => EndKind::Success,
+        ProgramEnd::CancelledAfterReturn(Some(value)) => {
             if output.borrow_mut().push_value(value) {
                 EndKind::CancelledAfterReturn
             } else {
                 EndKind::Failure(Failure::output(output_limit))
             }
         }
+        ProgramEnd::CancelledAfterReturn(None) => EndKind::CancelledAfterReturn,
         ProgramEnd::Failure(failure) => EndKind::Failure(failure),
     };
     let entries = output.borrow().entries().to_vec();
@@ -1591,7 +1594,8 @@ fn accept_value(
         Err(BoundaryError::Thrown(thrown)) => {
             ProgramEnd::Failure(Failure::exception(thrown.message, thrown.stack))
         }
-        Ok(json) => ProgramEnd::Success(json),
+        Ok(json) if value.is_undefined() => ProgramEnd::Success(None),
+        Ok(json) => ProgramEnd::Success(Some(json)),
     }
 }
 
@@ -2164,7 +2168,7 @@ mod settle_tests {
         let user = CancellationToken::new();
         let end = settle::<(), ()>(
             Either::Left((
-                ProgramEnd::Success(Json::new(serde_json::json!("kept"))),
+                ProgramEnd::Success(Some(Json::new(serde_json::json!("kept")))),
                 (),
             )),
             &output,
@@ -2180,12 +2184,12 @@ mod settle_tests {
     fn timeout_during_drain_keeps_the_returned_value() {
         let output = RefCell::new(OutputLedger::new(4096));
         let end = reconcile_drain(
-            ProgramEnd::Success(Json::new(serde_json::json!("kept"))),
+            ProgramEnd::Success(Some(Json::new(serde_json::json!("kept")))),
             Some(Failure::timeout()),
             &output,
         );
         match end {
-            ProgramEnd::Success(value) => {
+            ProgramEnd::Success(Some(value)) => {
                 assert_eq!(value.as_value(), &serde_json::json!("kept"));
             }
             _ => panic!("expected the returned value to survive a drain timeout"),
@@ -2202,7 +2206,7 @@ mod settle_tests {
     fn cancel_during_drain_keeps_the_value() {
         let output = RefCell::new(OutputLedger::new(4096));
         let end = reconcile_drain(
-            ProgramEnd::Success(Json::new(serde_json::json!("kept"))),
+            ProgramEnd::Success(Some(Json::new(serde_json::json!("kept")))),
             Some(Failure::cancelled()),
             &output,
         );
@@ -2213,7 +2217,7 @@ mod settle_tests {
     fn other_drain_failures_replace_success() {
         let output = RefCell::new(OutputLedger::new(4096));
         let end = reconcile_drain(
-            ProgramEnd::Success(Json::new(serde_json::json!("kept"))),
+            ProgramEnd::Success(Some(Json::new(serde_json::json!("kept")))),
             Some(Failure::output(32)),
             &output,
         );

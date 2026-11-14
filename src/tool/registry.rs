@@ -23,7 +23,6 @@ use crate::tools::{
     code::{CodeTool, CodeToolHost},
     code_search::CodeSearchTool,
     custom::CustomTool,
-    edit::EditTool,
     exec_command::ExecCommandTool,
     glob::GlobTool,
     grep::GrepTool,
@@ -57,7 +56,6 @@ fn builtin_tool(
         "write_stdin" => Arc::new(WriteStdinTool::new(Arc::clone(&ide.terminal.jobs))),
         "read" => Arc::new(ReadTool::with_ide(Arc::clone(&ide))),
         "write" => Arc::new(WriteTool::with_ide(Arc::clone(&ide))),
-        "edit" => Arc::new(EditTool::with_ide(Arc::clone(&ide))),
         "apply_edits" => Arc::new(ApplyEditsTool::with_ide(Arc::clone(&ide))),
         "grep" => Arc::new(GrepTool),
         "knowledge" => Arc::new(KnowledgeTool::new(Arc::clone(&ide))),
@@ -635,7 +633,6 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(ReadTool::default()),
         Arc::new(GlobTool),
         Arc::new(GrepTool),
-        Arc::new(EditTool::new()),
         Arc::new(ApplyEditsTool::new()),
         Arc::new(WriteTool::new()),
         Arc::new(ExecCommandTool::new(Arc::new(
@@ -1599,7 +1596,6 @@ mod tests {
         for needle in [
             "exec_command(args: {",
             "write_stdin(args: {",
-            "edit(args: EditInput)",
             "apply_edits(args: {",
         ] {
             assert!(child_sdk.contains(needle), "missing {needle}");
@@ -1632,7 +1628,6 @@ mod tests {
         for needle in [
             "read(args: {",
             "glob(args: {",
-            "edit(args: EditInput)",
             "write(args: {",
         ] {
             assert!(narrow_sdk.contains(needle), "missing {needle}");
@@ -1650,7 +1645,6 @@ mod tests {
             names,
             [
                 "apply_edits",
-                "edit",
                 "exec_command",
                 "glob",
                 "read",

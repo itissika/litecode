@@ -801,7 +801,7 @@ async fn invoke_binding(
     // one of those facts — the program may read it and carry on, and the view
     // would otherwise say nothing at all about that call.
     let mut texts: Vec<(render::ReminderKind, String)> =
-        render::reminders_for_call(&sdk_name, &value)
+        render::reminders_for_call_with_metadata(&sdk_name, &value, result.metadata.as_ref())
             .into_iter()
             .map(|text| (render::ReminderKind::Boundary, text))
             .collect();

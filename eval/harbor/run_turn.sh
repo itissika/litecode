@@ -14,5 +14,6 @@ status=${PIPESTATUS[0]}
 mkdir -p /logs/agent/litecode
 cp -r "$PWD/.litecode/logs" /logs/agent/litecode/ 2>/dev/null || true
 cp "$PWD"/.litecode/sessions.db* /logs/agent/litecode/ 2>/dev/null || true
+cp -r "$PWD/.litecode/diagnostics" /logs/agent/litecode/ 2>/dev/null || true
 
 exit "$status"

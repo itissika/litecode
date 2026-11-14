@@ -15,6 +15,7 @@ pub mod output;
 pub mod pipeline;
 pub mod project;
 pub mod registry;
+pub mod result_projection;
 pub mod resource_gate;
 pub mod run_scope;
 pub mod schema_validate;

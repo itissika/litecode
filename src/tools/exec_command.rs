@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -39,19 +39,17 @@ pub struct ExecCommandData {
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
-    pub wall_time_seconds: f64,
     pub output: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub original_token_count: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub clamped: Vec<crate::tool::clamp::Clamp>,
 }
 
 impl ExecCommandData {
     pub fn from_delta(
         session_id: Option<String>,
         exit_code: Option<i32>,
-        wall_time_seconds: f64,
         delta: crate::terminal::OutputDelta,
     ) -> Self {
         let mut output = delta.text;
@@ -61,10 +59,9 @@ impl ExecCommandData {
         Self {
             session_id,
             exit_code,
-            wall_time_seconds,
             output,
-            original_token_count: Some(delta.original_bytes / 4),
             truncated: delta.truncated.then_some(true),
+            clamped: Vec::new(),
         }
     }
 }
@@ -76,6 +73,7 @@ struct ParsedArgs {
     tty: bool,
     yield_ms: u64,
     max_output_tokens: usize,
+    clamped: Vec<crate::tool::clamp::Clamp>,
 }
 
 pub struct ExecCommandTool {
@@ -100,22 +98,35 @@ impl ExecCommandTool {
             Some(Value::Bool(value)) => *value,
             Some(_) => return Err("parameter 'tty' expected a boolean".into()),
         };
-        let yield_ms = clamp_int(input, "yield_time_ms", MIN_YIELD_MS, MAX_YIELD_MS, "ms")?
-            .map_or(DEFAULT_YIELD_MS, |value| value.value);
-        let max_output_tokens = clamp_int(
+        let mut clamped = Vec::new();
+        let yield_value =
+            clamp_int(input, "yield_time_ms", MIN_YIELD_MS, MAX_YIELD_MS, "ms")?;
+        if let Some(note) = yield_value.as_ref().and_then(|value| value.as_clamp("yield_time_ms")) {
+            clamped.push(note);
+        }
+        let yield_ms = yield_value.map_or(DEFAULT_YIELD_MS, |value| value.value);
+        let max_tokens_value = clamp_int(
             input,
             "max_output_tokens",
             1,
             MAX_OUTPUT_TOKENS as u64,
             "tokens",
-        )?
-        .map_or(DEFAULT_MAX_OUTPUT_TOKENS, |value| value.value as usize);
+        )?;
+        if let Some(note) = max_tokens_value
+            .as_ref()
+            .and_then(|value| value.as_clamp("max_output_tokens"))
+        {
+            clamped.push(note);
+        }
+        let max_output_tokens =
+            max_tokens_value.map_or(DEFAULT_MAX_OUTPUT_TOKENS, |value| value.value as usize);
         Ok(ParsedArgs {
             cmd,
             workdir,
             tty,
             yield_ms,
             max_output_tokens,
+            clamped,
         })
     }
 
@@ -161,7 +172,6 @@ impl ExecCommandTool {
             max_output_tokens = args.max_output_tokens,
             "unified exec start"
         );
-        let started = Instant::now();
         let scope = crate::tool::run_scope::current().unwrap_or_default();
         let (spawned_tx, spawned_rx) = tokio::sync::oneshot::channel();
         let rx = if args.tty {
@@ -220,12 +230,8 @@ impl ExecCommandTool {
                         truncated: false,
                     });
                 self.jobs.discard_finished(&job_id);
-                let data = ExecCommandData::from_delta(
-                    None,
-                    exit_code,
-                    started.elapsed().as_secs_f64(),
-                    delta,
-                );
+                let mut data = ExecCommandData::from_delta(None, exit_code, delta);
+                data.clamped = args.clamped.clone();
                 ToolOutcome::ok(data).into_call_result(format!(
                     "exit_code: {}\n",
                     exit_code
@@ -244,12 +250,8 @@ impl ExecCommandTool {
                         exit_code: None,
                         truncated: false,
                     });
-                let data = ExecCommandData::from_delta(
-                    Some(job_id.clone()),
-                    None,
-                    started.elapsed().as_secs_f64(),
-                    delta,
-                );
+                let mut data = ExecCommandData::from_delta(Some(job_id.clone()), None, delta);
+                data.clamped = args.clamped.clone();
                 tracing::info!(
                     tool = "exec_command",
                     session_id = %job_id,
@@ -341,9 +343,12 @@ impl Tool for ExecCommandTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::tools::command_job::test_execution;
+    #[cfg(unix)]
     use crate::tools::write_stdin::WriteStdinTool;
 
+    #[cfg(unix)]
     fn data(result: &ToolCallResult) -> ExecCommandData {
         serde_json::from_value(result.data.clone().expect("data")).expect("exec data")
     }
@@ -564,18 +569,20 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
     let full = ExecCommandData {
         session_id: Some("bg_00000001".into()),
         exit_code: Some(0),
-        wall_time_seconds: 0.5,
         output: "hello\n".into(),
-        original_token_count: Some(2),
         truncated: Some(true),
+        clamped: vec![crate::tool::clamp::Clamp {
+            parameter: "yield_time_ms".into(),
+            requested: serde_json::json!(60000),
+            applied: serde_json::json!(30000),
+        }],
     };
     let bare = ExecCommandData {
         session_id: None,
         exit_code: None,
-        wall_time_seconds: 0.0,
         output: String::new(),
-        original_token_count: None,
         truncated: None,
+        clamped: Vec::new(),
     };
     ["exec_command", "write_stdin"]
         .into_iter()
