@@ -128,20 +128,6 @@ type RejectedItem = {
   detail?: string;
 };
 
-type ExecCommandData = {
-  /** Live session id; present only while the process is still running. */
-  session_id?: string;
-  /** Process exit code when it finished before this call returned. */
-  exit_code?: Integer | null;
-  /** Time spent inside this exec_command / write_stdin call. */
-  wall_time_seconds: number;
-  /** Incremental output since the previous exec call on this session. */
-  output: string;
-  /** Approximate original output size before the call's token budget. */
-  original_token_count?: Integer;
-  /** Output was clipped by max_output_tokens. */
-  truncated?: boolean;
-};
 
 
 interface FileTools {
@@ -293,6 +279,21 @@ interface SearchTools {
     clamped?: ClampedParam[]; // Parameters adjusted to a legal value; absent when nothing moved.
   }>>;
 }
+
+type ExecCommandData = {
+  /** Live session id; present only while the process is still running. */
+  session_id?: string;
+  /** Process exit code when it finished before this call returned. */
+  exit_code?: Integer | null;
+  /** Time spent inside this exec_command / write_stdin call. */
+  wall_time_seconds: number;
+  /** Incremental output since the previous exec call on this session. */
+  output: string;
+  /** Approximate original output size before the call's token budget. */
+  original_token_count?: Integer;
+  /** Output was clipped by max_output_tokens. */
+  truncated?: boolean;
+};
 
 interface ProcessTools {
   /** Start a command in a PTY, returning output or a session id for ongoing interaction. @tool exec_command @suite process */

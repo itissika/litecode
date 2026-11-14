@@ -57,6 +57,10 @@ pub struct SdkFragments {
     pub declarations: String,
     pub libs: String,
     pub types: BTreeMap<String, String>,
+    /// Public types used by exactly one suite. Types used by more than one
+    /// suite stay in `types` as global declarations.
+    #[serde(default)]
+    pub type_suites: BTreeMap<String, String>,
     pub tools: BTreeMap<String, SdkToolFragment>,
 }
 
@@ -154,6 +158,14 @@ fn validate_builtins(contract: &ToolContract, fragments: &SdkFragments) -> Resul
     }
     if contract.tools.keys().collect::<Vec<_>>() != fragments.tools.keys().collect::<Vec<_>>() {
         return Err("generated contract and SDK fragment tool sets differ".into());
+    }
+    for (name, suite) in &fragments.type_suites {
+        if !fragments.types.contains_key(name) {
+            return Err(format!("type_suites names missing SDK type '{name}'"));
+        }
+        if suite.is_empty() {
+            return Err(format!("type '{name}' has an empty suite owner"));
+        }
     }
     for (name, tool) in &contract.tools {
         for dep in &tool.type_deps {
@@ -389,11 +401,32 @@ mod tests {
             Arc::new(DynamicTool { name: "deck.also" }),
         ];
         let surface = build_surface(&tools).expect("dynamic surface");
-        assert!(surface.sdk.contains("deck: {"), "{}", surface.sdk);
+        assert!(surface.sdk.contains("interface DeckTools"), "{}", surface.sdk);
+        assert!(surface.sdk.contains("deck: DeckTools"), "{}", surface.sdk);
         assert!(surface.sdk.contains("only(args: CustomDeckOnlyInput)"));
         assert!(surface.sdk.contains("also(args: CustomDeckAlsoInput)"));
         assert!(surface.tools.contains_key("deck.only"));
         assert!(surface.tools.contains_key("deck.also"));
+    }
+
+    #[test]
+    fn suite_local_shared_types_sit_next_to_their_interface() {
+        let surface = build_surface(&crate::tool::registry::builtin_code_surface_tools())
+            .expect("full builtin surface");
+        let exec = surface
+            .sdk
+            .find("type ExecCommandData =")
+            .expect("ExecCommandData");
+        let process = surface
+            .sdk
+            .find("interface ProcessTools {")
+            .expect("ProcessTools");
+        assert!(exec < process);
+        let between = &surface.sdk[exec..process];
+        assert!(
+            !between.contains("interface FileTools"),
+            "suite-local type must not be hoisted above another suite: {between}"
+        );
     }
 
     #[test]

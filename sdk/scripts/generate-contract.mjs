@@ -159,6 +159,20 @@ const publicNames = new Set();
   for (const [name, count] of counts) if (count >= 2) publicNames.add(name);
 }
 
+const typeSuites = new Map();
+for (const method of methods) {
+  const names = new Set([...closureOf(method.input_node), ...closureOf(method.output_node)]);
+  for (const name of names) {
+    if (!publicNames.has(name)) continue;
+    if (!typeSuites.has(name)) typeSuites.set(name, new Set());
+    typeSuites.get(name).add(method.suite);
+  }
+}
+const typeSuiteByName = {};
+for (const [name, suites] of typeSuites) {
+  if (suites.size === 1) typeSuiteByName[name] = [...suites][0];
+}
+
 function aliasName(tool, side) {
   let out = "";
   for (const ch of tool + "_" + side) out += /[A-Za-z0-9]/.test(ch) ? ch : "_";
@@ -406,8 +420,11 @@ function renderToolEntry(tool, indent) {
   return renderDoc(tool.doc, indent) + indentBlock(tool.signature, indent);
 }
 
-function renderToolsInterface(entries) {
-  const lines = ["interface Tools {"];
+function suiteInterfaceName(suite) {
+  return suite.charAt(0).toUpperCase() + suite.slice(1) + "Tools";
+}
+
+function renderToolsInterface(entries, localTypeBlocks) {
   const flatBySuite = new Map();
   const nestedBySuite = new Map();
   for (const tool of entries) {
@@ -429,6 +446,20 @@ function renderToolsInterface(entries) {
       .filter((suite) => !suiteOrder.includes(suite))
       .sort((left, right) => left.localeCompare(right)),
   ];
+  const lines = [];
+  for (const suite of orderedSuites) {
+    const local = localTypeBlocks[suite];
+    if (local) lines.push(local, "");
+    lines.push("interface " + suiteInterfaceName(suite) + " {");
+    for (const tool of nestedBySuite.get(suite)) lines.push(renderToolEntry(tool, "  "));
+    lines.push("}");
+    lines.push("");
+  }
+  for (const suite of [...flatBySuite.keys()].sort()) {
+    const local = localTypeBlocks[suite];
+    if (local) lines.push(local, "");
+  }
+  lines.push("interface Tools {");
   for (const suite of suiteOrder) {
     const group = flatBySuite.get(suite);
     if (!group || group.length === 0) continue;
@@ -436,14 +467,11 @@ function renderToolsInterface(entries) {
     lines.push("");
   }
   for (const suite of [...flatBySuite.keys()].filter((suite) => !suiteOrder.includes(suite)).sort()) {
-    const group = flatBySuite.get(suite);
-    for (const tool of group) lines.push(renderToolEntry(tool, "  "));
+    for (const tool of flatBySuite.get(suite)) lines.push(renderToolEntry(tool, "  "));
     lines.push("");
   }
   for (const suite of orderedSuites) {
-    lines.push("  " + suite + ": {");
-    for (const tool of nestedBySuite.get(suite)) lines.push(renderToolEntry(tool, "    "));
-    lines.push("  };");
+    lines.push("  " + suite + ": " + suiteInterfaceName(suite) + ";");
   }
   if (lines[lines.length - 1] === "") lines.pop();
   lines.push("}");
@@ -453,14 +481,29 @@ function renderToolsInterface(entries) {
 function renderTsSdk(entries) {
   const deps = new Set();
   for (const tool of entries) for (const dep of tool.type_deps) deps.add(dep);
-  const types = [...deps].sort().map((name) => typeDecls[name]).filter(Boolean).join("\n");
+  const globalNames = [];
+  const localNames = new Map();
+  for (const name of [...deps].sort()) {
+    const suite = typeSuiteByName[name];
+    if (suite && entries.some((tool) => tool.suite === suite)) {
+      if (!localNames.has(suite)) localNames.set(suite, []);
+      localNames.get(suite).push(name);
+    } else {
+      globalNames.push(name);
+    }
+  }
+  const types = globalNames.map((name) => typeDecls[name]).filter(Boolean).join("\n");
+  const localTypeBlocks = {};
+  for (const [suite, names] of localNames) {
+    localTypeBlocks[suite] = names.map((name) => typeDecls[name]).filter(Boolean).join("\n");
+  }
   const preludeDts = readSdkSource(preludeDtsPath).trim();
   const libsDts = readSdkSource(libsDtsPath).trim();
   return [
     preludeDts,
     libsDts,
     types,
-    renderToolsInterface(entries),
+    renderToolsInterface(entries, localTypeBlocks),
     "declare const tools: Tools;",
   ].join("\n\n") + "\n";
 }
@@ -487,6 +530,7 @@ const fragments = {
   declarations: readSdkSource(preludeDtsPath).trim(),
   libs: readSdkSource(libsDtsPath).trim(),
   types: typeDecls,
+  type_suites: typeSuiteByName,
   tools: Object.fromEntries(
     Object.entries(tools).map(([name, tool]) => [
       name,

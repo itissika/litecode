@@ -3,7 +3,7 @@
 //! This module only selects, orders, and renders fragments produced by
 //! `sdk/scripts/generate-contract.mjs`. It never inspects Rust tool schemas.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::tool::code_contract::{SdkFragments, SdkToolFragment};
 
@@ -66,23 +66,33 @@ fn render_tool(tool: &SdkToolFragment, indent: &str) -> String {
     out
 }
 
-fn render_tools_interface(entries: &[&SdkToolFragment]) -> Result<String, String> {
-    let mut out = String::from("interface Tools {\n");
-    let mut flat_by_suite: std::collections::BTreeMap<&str, Vec<&&SdkToolFragment>> =
-        std::collections::BTreeMap::new();
-    let mut nested_by_suite: std::collections::BTreeMap<&str, Vec<&&SdkToolFragment>> =
-        std::collections::BTreeMap::new();
+fn suite_interface_name(suite: &str) -> String {
+    let mut chars = suite.chars();
+    match chars.next() {
+        Some(first) => {
+            first.to_uppercase().collect::<String>() + chars.as_str() + "Tools"
+        }
+        None => "Tools".to_string(),
+    }
+}
+
+fn render_tools_interface(
+    entries: &[&SdkToolFragment],
+    local_types: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    let mut flat_by_suite: BTreeMap<&str, Vec<&SdkToolFragment>> = BTreeMap::new();
+    let mut nested_by_suite: BTreeMap<&str, Vec<&SdkToolFragment>> = BTreeMap::new();
     for tool in entries {
         if tool.path.len() == 1 {
             flat_by_suite
                 .entry(tool.suite.as_str())
                 .or_default()
-                .push(tool);
+                .push(*tool);
         } else if tool.path.len() == 2 {
             nested_by_suite
                 .entry(tool.path[0].as_str())
                 .or_default()
-                .push(tool);
+                .push(*tool);
         } else {
             return Err(format!(
                 "dynamic SDK paths deeper than one suite level are not supported: {}",
@@ -91,58 +101,74 @@ fn render_tools_interface(entries: &[&SdkToolFragment]) -> Result<String, String
         }
     }
 
-    let mut emitted_flat = std::collections::BTreeSet::new();
+    let mut ordered_suites: Vec<&str> = SUITE_ORDER
+        .iter()
+        .copied()
+        .filter(|suite| nested_by_suite.contains_key(suite))
+        .collect();
+    let mut custom_suites: Vec<&str> = nested_by_suite
+        .keys()
+        .copied()
+        .filter(|suite| !SUITE_ORDER.contains(suite))
+        .collect();
+    custom_suites.sort_unstable();
+    ordered_suites.extend(custom_suites);
+
+    let mut out = String::new();
+    for suite in &ordered_suites {
+        if let Some(local) = local_types.get(*suite) {
+            out.push_str(local);
+            out.push_str("\n\n");
+        }
+        out.push_str("interface ");
+        out.push_str(&suite_interface_name(suite));
+        out.push_str(" {\n");
+        for tool in nested_by_suite.get(suite).expect("ordered suite") {
+            out.push_str(&render_tool(tool, "  "));
+        }
+        out.push_str("}\n\n");
+    }
+
+    // Flat tools have no suite interface; keep any suite-local type block
+    // immediately above the top-level interface.
+    for suite in flat_by_suite.keys() {
+        if ordered_suites.contains(suite) {
+            continue;
+        }
+        if let Some(local) = local_types.get(*suite) {
+            out.push_str(local);
+            out.push_str("\n\n");
+        }
+    }
+
+    out.push_str("interface Tools {\n");
     for suite in SUITE_ORDER {
         let Some(group) = flat_by_suite.get(suite) else {
             continue;
         };
-        emitted_flat.insert(*suite);
         for tool in group {
             out.push_str(&render_tool(tool, "  "));
         }
         out.push('\n');
     }
-    for (suite, group) in flat_by_suite {
-        if emitted_flat.contains(suite) {
-            continue;
-        }
-        for tool in group {
+    for suite in flat_by_suite
+        .keys()
+        .copied()
+        .filter(|suite| !SUITE_ORDER.contains(suite))
+    {
+        for tool in flat_by_suite.get(suite).expect("flat suite") {
             out.push_str(&render_tool(tool, "  "));
         }
         out.push('\n');
     }
-
-    let mut emitted_nested = std::collections::BTreeSet::new();
-    for suite in SUITE_ORDER {
-        let Some(group) = nested_by_suite.get(suite) else {
-            continue;
-        };
-        emitted_nested.insert(*suite);
+    for suite in &ordered_suites {
         out.push_str("  ");
         out.push_str(suite);
-        out.push_str(": {\n");
-        for tool in group {
-            out.push_str(&render_tool(tool, "    "));
-        }
-        out.push_str("  };\n");
+        out.push_str(": ");
+        out.push_str(&suite_interface_name(suite));
+        out.push_str(";\n");
     }
-    for (suite, group) in nested_by_suite {
-        if emitted_nested.contains(suite) {
-            continue;
-        }
-        out.push_str("  ");
-        out.push_str(suite);
-        out.push_str(": {\n");
-        for tool in group {
-            out.push_str(&render_tool(tool, "    "));
-        }
-        out.push_str("  };\n");
-    }
-
-    while out.ends_with('\n') {
-        out.pop();
-    }
-    out.push_str("\n}\n");
+    out.push_str("}\n");
     Ok(out)
 }
 
@@ -159,17 +185,42 @@ fn render_ts(fragments: &SdkFragments, entries: &[&SdkToolFragment]) -> Result<S
             type_names.insert(dep.clone());
         }
     }
-    let types = type_names
+
+    let mut global_names = Vec::new();
+    let mut local_names: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for name in type_names {
+        let suite = fragments
+            .type_suites
+            .get(&name)
+            .filter(|suite| entries.iter().any(|tool| tool.suite == **suite));
+        match suite {
+            Some(suite) => local_names.entry(suite.clone()).or_default().push(name),
+            None => global_names.push(name),
+        }
+    }
+
+    let global_types = global_names
         .iter()
         .map(|name| fragments.types.get(name).expect("checked above").as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    let tools = render_tools_interface(entries)?;
+    let local_blocks: BTreeMap<String, String> = local_names
+        .into_iter()
+        .map(|(suite, names)| {
+            let text = names
+                .iter()
+                .map(|name| fragments.types.get(name).expect("checked above").as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            (suite, text)
+        })
+        .collect();
+    let tools = render_tools_interface(entries, &local_blocks)?;
     Ok(format!(
         "{}\n\n{}\n\n{}\n\n{}\n\ndeclare const tools: Tools;\n",
         fragments.declarations.trim(),
         fragments.libs.trim(),
-        types,
+        global_types,
         tools.trim_end(),
     ))
 }

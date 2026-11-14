@@ -1397,7 +1397,8 @@ mod tests {
             "bindings: {bindings:?}"
         );
         let sdk = transport.direct_spec(&dummy_ctx()).unwrap().description;
-        assert!(sdk.contains("deck: {"), "{sdk}");
+        assert!(sdk.contains("interface DeckTools"), "{sdk}");
+        assert!(sdk.contains("deck: DeckTools"), "{sdk}");
         assert!(sdk.contains("only(args:"), "{sdk}");
     }
 
