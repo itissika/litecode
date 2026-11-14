@@ -906,3 +906,67 @@ async fn bot_create_list_and_open_round_trip() {
         "missing session must report SessionMissing: {missing_open}"
     );
 }
+
+/// The chat-input picker used to be frozen at handshake: creating a primary
+/// agent in Settings only reached an open client after a reconnect. A commit
+/// that includes the agents document must re-project the picker list live.
+#[tokio::test]
+async fn agents_commit_reprojects_the_picker_without_reconnect() {
+    let env = env().await;
+    let mut ws = connect(&env.url).await;
+    let hello = until_method(&mut ws, "server/hello").await;
+    assert!(
+        hello["params"]["primary_agents"]
+            .as_array()
+            .expect("primary agents")
+            .iter()
+            .all(|agent| agent.get("id").and_then(Value::as_str) != Some("ws_agent")),
+        "the new agent must not exist before the write"
+    );
+
+    let origin = env
+        .url
+        .replace("ws://", "http://")
+        .split("/ws?")
+        .next()
+        .expect("origin")
+        .to_string();
+    let client = reqwest::Client::new();
+    let profile: Value = client
+        .get(format!("{origin}/api/settings/agents/default"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .expect("profile http")
+        .json()
+        .await
+        .expect("profile json");
+    let written = client
+        .put(format!("{origin}/api/settings/agents/ws_agent"))
+        .bearer_auth(TOKEN)
+        .json(&profile)
+        .send()
+        .await
+        .expect("create agent");
+    assert!(
+        written.status().is_success(),
+        "create primary agent: {}",
+        written.status()
+    );
+
+    let changed = until_method(&mut ws, "agents/changed").await;
+    let ids: Vec<&str> = changed["params"]["agents"]
+        .as_array()
+        .expect("agents")
+        .iter()
+        .filter_map(|agent| agent.get("id").and_then(Value::as_str))
+        .collect();
+    assert!(
+        ids.contains(&"ws_agent"),
+        "the new primary agent must be pushed on the open connection: {changed}"
+    );
+    assert!(
+        ids.contains(&"default"),
+        "the rest of the list must survive the push: {changed}"
+    );
+}

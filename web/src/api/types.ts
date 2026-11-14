@@ -379,6 +379,14 @@ export interface PrimaryAgentInfo {
   description: string;
 }
 
+/**
+ * Primary-agent list re-projected after a commit that includes the agents
+ * document, pushed as `agents/changed` — same projection as `server/hello`.
+ */
+export interface AgentsChanged {
+  agents: PrimaryAgentInfo[];
+}
+
 export interface ModelInfo {
   /** Stable composite reference `{provider_id}/{model_id}` — what sessions store. */
   id: string;

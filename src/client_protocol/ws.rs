@@ -247,34 +247,50 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
     }
 
     let settings_tx = response_tx.clone();
-    let models_runtime = state.runtime.clone();
+    let settings_runtime = state.runtime.clone();
     tokio::spawn(async move {
         loop {
             match settings_rx.recv().await {
                 Ok(event) => {
-                    let llm_changed = event.docs.contains(&crate::config::DocId::Llm);
                     let msg = project::settings_changed(event.revision, &event.docs, event.summary);
                     if settings_tx.send(msg).is_err() {
                         break;
                     }
-                    // A credential change changes which models are selectable: push
-                    // the fresh list so open pickers update without a reconnect.
-                    if llm_changed {
-                        let models = {
-                            let mut runtime = models_runtime.write().expect("runtime lock");
-                            // The commit broadcasts before the REST handler reloads the
-                            // runtime, so apply this event's docs here. Without it this
-                            // push can project a pre-key runtime and ship an empty model
-                            // list that no later frame ever corrects. `apply` is
-                            // revision-guarded, so this is a no-op once reloaded.
-                            if let Err(error) = runtime.apply(&event.docs) {
-                                tracing::warn!(%error, "models/changed: runtime apply failed");
-                            }
-                            project::model_infos(&runtime.resolved)
-                        };
-                        if settings_tx.send(project::models_changed(models)).is_err() {
-                            break;
+                    // Two documents feed pickers: a credential change moves the
+                    // selectable models, an agent edit moves the primary agents.
+                    let llm_changed = event.docs.contains(&crate::config::DocId::Llm);
+                    let agents_changed = event.docs.contains(&crate::config::DocId::Agents);
+                    if !llm_changed && !agents_changed {
+                        continue;
+                    }
+                    let (models, agents) = {
+                        let mut runtime = settings_runtime.write().expect("runtime lock");
+                        // The commit broadcasts before the REST handler reloads the
+                        // runtime, so apply this event's docs here. Without it these
+                        // pushes can project a pre-commit runtime and ship a stale
+                        // list that no later frame ever corrects. `apply` is
+                        // revision-guarded, so it is a no-op once reloaded.
+                        if let Err(error) = runtime.apply(&event.docs) {
+                            tracing::warn!(%error, "settings/changed: runtime apply failed");
                         }
+                        (
+                            llm_changed.then(|| project::model_infos(&runtime.resolved)),
+                            agents_changed.then(|| project::primary_agent_infos(&runtime.resolved)),
+                        )
+                    };
+                    // Push the fresh projection so an open picker updates without a
+                    // reconnect; a document absent from this commit pushes nothing.
+                    if let Some(models) = models
+                        && settings_tx.send(project::models_changed(models)).is_err()
+                    {
+                        break;
+                    }
+                    if let Some(agents) = agents
+                        && settings_tx
+                            .send(project::primary_agents_changed(agents))
+                            .is_err()
+                    {
+                        break;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,

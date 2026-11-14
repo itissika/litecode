@@ -156,6 +156,8 @@ interface SessionStore extends SessionState {
   // Server notification handlers
   onHello: (hello: WireServerHello) => void;
   onModelsChanged: (models: ModelInfo[]) => void;
+  /** Re-projected primary agents, after a commit that touched the agents doc. */
+  onPrimaryAgentsChanged: (agents: PrimaryAgentInfo[]) => void;
   applySnapshot: (snap: SessionSnapshot) => void;
   onSessionList: (sessions: SessionInfo[], folders?: SessionFolder[]) => void;
   onSessionLifecycle: (params: SessionLifecycle) => void;
@@ -407,6 +409,12 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       // Credential change: the same projection the handshake uses, pushed live
       // so an open model switcher never shows a stale list.
       set({ availableModels: models });
+    },
+
+    onPrimaryAgentsChanged: (agents: PrimaryAgentInfo[]) => {
+      // Agent edit: the same projection the handshake uses, pushed live so an
+      // open chat-input picker never shows a stale list.
+      set({ primaryAgents: agents });
     },
 
     applySnapshot,

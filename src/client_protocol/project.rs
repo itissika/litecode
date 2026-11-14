@@ -10,8 +10,8 @@ use crate::session::live::{LifecycleEvent, TurnProgress};
 use serde_json::{Value, json};
 
 use super::protocol::{
-    BufferState, ErrorCode, ModelInfo, OperationKind, SessionBindingProjection, SessionSnapshot,
-    StructuredError, TurnSnapshot, TurnTokenStats, WireEvent, WireTurnPhase,
+    BufferState, ErrorCode, ModelInfo, OperationKind, PrimaryAgentInfo, SessionBindingProjection,
+    SessionSnapshot, StructuredError, TurnSnapshot, TurnTokenStats, WireEvent, WireTurnPhase,
 };
 
 /// Project one durable SessionEvent row for `buffer/item`.
@@ -753,6 +753,23 @@ pub fn model_infos(resolved: &crate::config::ResolvedConfig) -> Vec<ModelInfo> {
 /// refreshes without a reconnect.
 pub fn models_changed(models: Vec<ModelInfo>) -> serde_json::Value {
     notification("models/changed", serde_json::json!({ "models": models }))
+}
+
+/// Primary agents for the chat-input picker.
+///
+/// The single projection: `server/hello` and `agents/changed` both use it, so an
+/// agent edit can never produce a different list than a reconnect.
+pub fn primary_agent_infos(resolved: &crate::config::ResolvedConfig) -> Vec<PrimaryAgentInfo> {
+    crate::config::bridge::primary_agent_infos(resolved)
+        .into_iter()
+        .map(|(id, description)| PrimaryAgentInfo { id, description })
+        .collect()
+}
+
+/// Pushed whenever the agents document changes, so an open agent picker
+/// refreshes without a reconnect.
+pub fn primary_agents_changed(agents: Vec<PrimaryAgentInfo>) -> serde_json::Value {
+    notification("agents/changed", serde_json::json!({ "agents": agents }))
 }
 
 pub fn settings_changed(

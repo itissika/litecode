@@ -186,3 +186,44 @@ describe("session/pending_messages → turn store", () => {
     ).toEqual([]);
   });
 });
+
+describe("agents/changed → session store", () => {
+  afterEach(() => {
+    useSessionStore.setState({ primaryAgents: [] });
+  });
+
+  it("replaces the picker list with the re-projected primary agents", () => {
+    useSessionStore.setState({
+      primaryAgents: [{ id: "default", description: "" }],
+    });
+
+    useConnectionStore.getState().dispatchEnvelope({
+      method: "agents/changed",
+      params: {
+        agents: [
+          { id: "default", description: "General" },
+          { id: "reviewer", description: "Reviewer" },
+        ],
+      },
+    });
+
+    // Authoritative list, not a merge: an agent removed in Settings is gone.
+    expect(useSessionStore.getState().primaryAgents).toEqual([
+      { id: "default", description: "General" },
+      { id: "reviewer", description: "Reviewer" },
+    ]);
+  });
+
+  it("empties the list when the frame carries none", () => {
+    useSessionStore.setState({
+      primaryAgents: [{ id: "gone", description: "" }],
+    });
+
+    useConnectionStore.getState().dispatchEnvelope({
+      method: "agents/changed",
+      params: {},
+    });
+
+    expect(useSessionStore.getState().primaryAgents).toEqual([]);
+  });
+});

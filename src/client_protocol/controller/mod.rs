@@ -1279,16 +1279,7 @@ impl SessionController {
     }
 
     pub fn server_hello(&self) -> serde_json::Value {
-        let primary_agents: Vec<crate::client_protocol::protocol::PrimaryAgentInfo> =
-            crate::config::bridge::primary_agent_infos(&self.runtime.resolved)
-                .into_iter()
-                .map(
-                    |(id, description)| crate::client_protocol::protocol::PrimaryAgentInfo {
-                        id,
-                        description,
-                    },
-                )
-                .collect();
+        let primary_agents = project::primary_agent_infos(&self.runtime.resolved);
         let models: Vec<ModelInfo> = project::model_infos(&self.runtime.resolved);
         project::server_hello(
             crate::version::VERSION.into(),

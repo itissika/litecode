@@ -9,6 +9,7 @@ import type {
   SettingsChanged,
   ServerStats,
   LogLine,
+  AgentsChanged,
   SessionSnapshot,
   ModelInfo,
   BufferLoaded,
@@ -319,6 +320,12 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
           case "models/changed": {
             const payload = params as unknown as { models?: ModelInfo[] };
             session?.onModelsChanged(payload.models ?? []);
+            return;
+          }
+
+          case "agents/changed": {
+            const payload = params as unknown as AgentsChanged;
+            session?.onPrimaryAgentsChanged(payload.agents ?? []);
             return;
           }
 
