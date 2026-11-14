@@ -27,7 +27,6 @@ use crate::tools::{
     exec_command::ExecCommandTool,
     glob::GlobTool,
     grep::GrepTool,
-    kill::KillTool,
     knowledge::KnowledgeTool,
     litecode_workspace::LitecodeWorkspaceTool,
     lsp,
@@ -35,14 +34,12 @@ use crate::tools::{
     memory::{MemoryDeleteTool, MemoryListTool, MemoryUpsertTool},
     plan::PlanTool,
     read::ReadTool,
-    run::RunTool,
     session_search::SessionSearchTool,
     subagent::{
         SubagentDeleteTool, SubagentLaunchTool, SubagentListTool, SubagentSendTool,
         SubagentStopTool, SubagentWaitTool,
     },
     todo::TodoWriteTool,
-    wait::WaitTool,
     webfetch::WebFetchTool,
     websearch::WebSearchTool,
     write::WriteTool,
@@ -56,7 +53,6 @@ fn builtin_tool(
     ide: Arc<IdeBaseHandle>,
 ) -> Option<Arc<dyn Tool>> {
     let tool: Arc<dyn Tool> = match id {
-        "run" => Arc::new(RunTool::new(Arc::clone(&ide.terminal.jobs))),
         "exec_command" => Arc::new(ExecCommandTool::new(Arc::clone(&ide.terminal.jobs))),
         "write_stdin" => Arc::new(WriteStdinTool::new(Arc::clone(&ide.terminal.jobs))),
         "read" => Arc::new(ReadTool::with_ide(Arc::clone(&ide))),
@@ -95,8 +91,6 @@ fn instantiate_builtin_member(
     }
 
     let tool: Arc<dyn Tool> = match member {
-        "wait" => Arc::new(WaitTool::new(Arc::clone(&runtime.ide.terminal.jobs))),
-        "kill" => Arc::new(KillTool::new(Arc::clone(&runtime.ide.terminal.jobs))),
         "webfetch" => Arc::new(
             WebFetchTool::new(engines.webfetch_client())
                 .with_warm_hook(engines.warm_hook("webfetch")),
@@ -644,15 +638,6 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(EditTool::new()),
         Arc::new(ApplyEditsTool::new()),
         Arc::new(WriteTool::new()),
-        Arc::new(RunTool::new(Arc::new(
-            crate::terminal::AgentJobRegistry::new(),
-        ))),
-        Arc::new(WaitTool::new(Arc::new(
-            crate::terminal::AgentJobRegistry::new(),
-        ))),
-        Arc::new(KillTool::new(Arc::new(
-            crate::terminal::AgentJobRegistry::new(),
-        ))),
         Arc::new(ExecCommandTool::new(Arc::new(
             crate::terminal::AgentJobRegistry::new(),
         ))),
@@ -1115,17 +1100,7 @@ mod tests {
         assert!(!names.contains(&"bash"));
         assert!(!names.contains(&"wait_shell"));
         assert!(!names.contains(&"kill_shell"));
-        for code in [
-            "run",
-            "wait",
-            "kill",
-            "exec_command",
-            "write_stdin",
-            "read",
-            "glob",
-            "grep",
-            "memory.list",
-        ] {
+        for code in ["exec_command", "write_stdin", "read", "glob", "grep", "memory.list"] {
             assert!(!names.contains(&code), "code tool {code} leaked direct");
         }
         assert!(names.contains(&"run_code"));
@@ -1149,7 +1124,7 @@ mod tests {
             .direct_spec(&dummy_ctx())
             .unwrap()
             .description;
-        for needle in ["run(args: {", "read(args: {", "upsert(args: {"] {
+        for needle in ["exec_command(args: {", "read(args: {", "upsert(args: {", "write_stdin(args: {"] {
             assert!(sdk.contains(needle), "missing {needle}");
         }
     }
@@ -1260,6 +1235,7 @@ mod tests {
         use crate::config::settings_writer::validate_custom_definition;
 
         for name in [
+            "run",
             "wait",
             "kill",
             "bash",
@@ -1428,6 +1404,7 @@ mod tests {
     #[test]
     fn mcp_inner_names_cannot_use_reserved_command_names() {
         for name in [
+            "run",
             "wait",
             "kill",
             "bash",
@@ -1619,9 +1596,8 @@ mod tests {
             .description;
         assert!(child_sdk.contains("declare const tools"));
         for needle in [
-            "run(args: {",
-            "wait(args: {",
-            "kill(args: {",
+            "exec_command(args: {",
+            "write_stdin(args: {",
             "edit(args: EditInput)",
             "apply_edits(args: {",
         ] {
@@ -1676,18 +1652,14 @@ mod tests {
                 "edit",
                 "exec_command",
                 "glob",
-                "kill",
                 "read",
-                "run",
                 "session_search",
-                "wait",
                 "write",
                 "write_stdin"
             ]
         );
-        assert!(narrow_sdk.contains("run(args: {"));
-        assert!(narrow_sdk.contains("wait(args: {"));
-        assert!(narrow_sdk.contains("kill(args: {"));
+        assert!(narrow_sdk.contains("exec_command(args: {"));
+        assert!(narrow_sdk.contains("write_stdin(args: {"));
         assert!(narrow_sdk.contains("apply_edits(args: {"));
     }
 

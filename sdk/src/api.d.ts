@@ -143,36 +143,6 @@ type ExecCommandData = {
   truncated?: boolean;
 };
 
-type CommandData = {
-  /** Process exit code when finished; null when still running or unavailable. */
-  exit_code: Integer | null;
-  /** While exit_code is null, use with tools.process.wait / tools.process.kill in this session. */
-  id: string;
-  /** Stdout exactly as the process wrote it: no notes, no status line. A truncated stream keeps its `... (truncated)` marker in place. */
-  output: string;
-  /** Shell that ran the command. */
-  shell: string;
-  /** Stderr exactly as the process wrote it. Empty when nothing was written. */
-  stderr: string;
-  /** True when wait observes a kill. */
-  killed?: boolean;
-  /** This call's own time budget ran out while the process kept running. */
-  timed_out: boolean;
-  /** The shell exited but a pipe is still open, so the streams can still grow. */
-  draining: boolean;
-  /** The in-memory window froze stdout; the full text is in output_log. */
-  output_truncated: boolean;
-  /** The same fact for stderr. */
-  stderr_truncated: boolean;
-  /** The shell may rewrite POSIX-looking arguments such as `cmd /c`. */
-  path_conversion: boolean;
-  /** Full stdout log, present when the text outgrew the inline window. */
-  output_log?: string;
-  /** Full stderr log, with the same rule. */
-  stderr_log?: string;
-  /** Parameters adjusted to a legal value; absent when nothing moved. */
-  clamped?: ClampedParam[];
-};
 
 interface FileTools {
   /** Read lines from one file or archived session transcript. @tool read @suite file */
@@ -340,23 +310,6 @@ interface ProcessTools {
     yield_time_ms?: Integer; // Wait before yielding output. Empty polls default 5000 ms; writes default 250 ms.
     max_output_tokens?: Integer; // Output token budget for this call; default 10000.
   }): Promise<ToolResult<ExecCommandData>>;
-  /** Legacy one-shot job; prefer exec_command for interactive commands. @tool run @suite process */
-  run(args: {
-    command: string; // Shell command to run once in the workspace root. Chain with && for cd or env changes.
-    run_in_background?: boolean; // Return immediately after spawn with exit_code:null and keep the job as a wait/kill target. Default false: stay in the foreground until the command exits or the run_code budget runs out; a job still alive then detaches with exit_code:null. @default false
-  }): Promise<ToolResult<
-    // Command payload shared by run, wait, and kill; exit_code carries command status.
-    CommandData
-  >>;
-  /** Legacy wait for a run job; exec_command sessions use write_stdin. @tool wait @suite process */
-  wait(args: {
-    id: string; // Command.id from a tools.process.run result whose exit_code is null.
-    sec: Integer; // Seconds to block waiting for exit. 1–300.
-  }): Promise<ToolResult<CommandData>>;
-  /** Legacy hard stop (SIGKILL tree); use write_stdin with "\u0003" for Ctrl-C. @tool kill @suite process */
-  kill(args: {
-    id: string; // Command.id from a tools.process.run or tools.process.wait result whose exit_code is null.
-  }): Promise<ToolResult<CommandData>>;
 }
 
 interface WebTools {

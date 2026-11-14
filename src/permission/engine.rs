@@ -167,10 +167,10 @@ impl PermissionEngine {
     }
 
     fn policy_name(tool_name: &str) -> &str {
-        if tool_name == "apply_edits" {
-            "edit"
-        } else {
-            tool_name
+        match tool_name {
+            "apply_edits" => "edit",
+            "exec_command" | "write_stdin" => "exec",
+            _ => tool_name,
         }
     }
 
@@ -421,7 +421,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut global = GlobalSettings::default();
         let mut profile = AgentProfile::default();
-        for id in ["run", "write"] {
+        for id in ["exec", "write"] {
             profile.tools.insert(
                 id.into(),
                 AgentToolBinding {
@@ -451,16 +451,16 @@ mod tests {
             action: PermissionAction::Allow,
         };
         for tools in [
-            vec![named_tool("run", vec![]), named_tool("write", vec![])],
+            vec![named_tool("exec_command", vec![]), named_tool("write", vec![])],
             vec![
-                named_tool("run", vec![open.clone()]),
+                named_tool("exec_command", vec![open.clone()]),
                 named_tool("write", vec![open]),
             ],
         ] {
             let (engine, dir) = safe_builtin_engine(tools, vec![]);
             let command = engine.evaluate_tool(
-                "run",
-                &serde_json::json!({ "command": "mkdir scratch" }),
+                "exec_command",
+                &serde_json::json!({ "cmd": "mkdir scratch" }),
                 dir.path(),
             );
             assert_eq!(command.action, PermissionAction::Deny);
@@ -472,10 +472,10 @@ mod tests {
             assert_eq!(write.action, PermissionAction::Ask);
         }
 
-        let (engine, dir) = safe_builtin_engine(vec![], vec![named_tool("run", vec![])]);
+        let (engine, dir) = safe_builtin_engine(vec![], vec![named_tool("exec_command", vec![])]);
         let command = engine.evaluate_tool(
-            "run",
-            &serde_json::json!({ "command": "mkdir scratch" }),
+            "exec_command",
+            &serde_json::json!({ "cmd": "mkdir scratch" }),
             dir.path(),
         );
         assert_eq!(command.action, PermissionAction::Deny);

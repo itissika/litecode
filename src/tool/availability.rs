@@ -285,8 +285,11 @@ mod tests {
     #[test]
     fn member_names_resolve_to_their_owning_card() {
         let resolved = resolved();
-        assert!(is_available(&resolved, "wait"));
-        assert_eq!(member_owner(&resolved, "wait").as_deref(), Some("run"));
+        assert!(is_available(&resolved, "write_stdin"));
+        assert_eq!(
+            member_owner(&resolved, "write_stdin").as_deref(),
+            Some("exec")
+        );
         assert_eq!(
             member_owner(&resolved, "apply_edits").as_deref(),
             Some("edit")

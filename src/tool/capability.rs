@@ -348,11 +348,11 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
 
     for id in core_configurable_tools() {
         match *id {
-            "run" => push_builtin(
+            "exec" => push_builtin(
                 &mut catalog,
                 resolved,
-                "run",
-                &["run", "wait", "kill", "exec_command", "write_stdin"],
+                "exec",
+                &["exec_command", "write_stdin"],
                 CapabilityKind::Core,
                 ToolOrigin::Builtin,
             ),
@@ -572,7 +572,7 @@ mod tests {
     fn catalog_has_one_capability_per_card_and_one_reverse_map() {
         let catalog = capability_catalog(&resolved());
         for id in [
-            "run",
+            "exec",
             "edit",
             "read",
             "memory",
@@ -584,12 +584,12 @@ mod tests {
         ] {
             assert!(catalog.get(id).is_some(), "missing {id}");
         }
-        let run = catalog.get("run").expect("run");
+        let exec = catalog.get("exec").expect("exec");
         assert_eq!(
-            run.member_ids().collect::<Vec<_>>(),
-            ["run", "wait", "kill", "exec_command", "write_stdin"]
+            exec.member_ids().collect::<Vec<_>>(),
+            ["exec_command", "write_stdin"]
         );
-        assert_eq!(catalog.member_capability_id("wait"), Some("run"));
+        assert_eq!(catalog.member_capability_id("write_stdin"), Some("exec"));
         assert_eq!(catalog.member_capability_id("apply_edits"), Some("edit"));
         let memory = catalog.get("memory").expect("memory");
         assert_eq!(

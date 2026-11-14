@@ -38,6 +38,7 @@ pub fn matches(matcher: &ArgMatcher, args: &Value, ctx: &MatchContext<'_>) -> bo
             .is_some_and(|path| raw_path_outside_workspace(ctx.workspace_root, path)),
         ArgMatcher::BashReadonlyCommand => args
             .get("command")
+            .or_else(|| args.get("cmd"))
             .and_then(Value::as_str)
             .is_some_and(is_readonly_command),
         ArgMatcher::AllOf { matchers } => matchers.iter().all(|m| matches(m, args, ctx)),

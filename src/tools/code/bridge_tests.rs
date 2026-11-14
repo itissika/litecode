@@ -585,34 +585,6 @@ return r.hits.length;"#,
         "{content}"
     );
 }
-/// A POSIX-looking argument reaches the model as a flag and one line, not as
-/// prose glued onto the command output.
-#[tokio::test]
-async fn a_path_like_argument_reaches_the_model_as_a_field_and_a_line() {
-    if !crate::terminal::decode::shell_identity().contains("MINGW") {
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let tool = crate::tools::run::RunTool::with_window(
-        Arc::new(crate::terminal::AgentJobRegistry::new()),
-        std::time::Duration::from_secs(5),
-    );
-    let result = run_program(
-        dir.path(),
-        vec![Arc::new(tool)],
-        r#"const r = await tools.process.run({ command: "cmd /c echo hi" });
-return r.path_conversion;"#,
-    )
-    .await;
-    let content = result.content;
-    assert!(
-        content.contains(
-            "↳ #1 tools.process.run: the shell may convert POSIX-style paths; write `cmd //c` or set `MSYS_NO_PATHCONV=1`"
-        ),
-        "{content}"
-    );
-}
-
 /// The path risk used to hide in a side channel; a program sees the field and
 /// the model sees one line that names the resolved target.
 #[tokio::test]

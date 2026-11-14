@@ -268,7 +268,6 @@ pub(super) fn reminders_for_call(tool: &str, value: &Value) -> Vec<String> {
         "file.glob" => glob_reminders(object, &mut out),
         "file.grep" => grep_reminders(object, &mut out),
         tool if tool.starts_with("lsp.") => lsp_reminders(tool, object, &mut out),
-        "process.run" | "process.wait" | "process.kill" => command_reminders(object, &mut out),
         "process.exec_command" | "process.write_stdin" => unified_exec_reminders(object, &mut out),
         "file.write" => write_reminders(object, &mut out),
         "file.edit" | "file.apply_edits" => edit_reminders(tool, object, &mut out),
@@ -378,7 +377,7 @@ fn edit_reminders(
     }
 }
 /// Codex-style exec sessions use a session id and incremental output, so the
-/// legacy `process.run` reminder ("use wait/kill") would be actively wrong.
+/// old command reminder would be actively wrong.
 fn unified_exec_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
     if object.get("session_id").and_then(Value::as_str).is_some() {
         out.push(
@@ -389,42 +388,6 @@ fn unified_exec_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec
     if object.get("truncated").and_then(Value::as_bool) == Some(true) {
         out.push("output was clipped by max_output_tokens".to_string());
     }
-}
-
-/// A command result keeps process output and process state apart: the text is
-/// the text, and everything the tool learned about the run is a field here.
-fn command_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
-    if object.get("exit_code").is_none_or(Value::is_null) {
-        out.push("still running; use tools.process.wait or tools.process.kill".to_string());
-    }
-    if object.get("timed_out").and_then(Value::as_bool) == Some(true) {
-        out.push("this call's time budget ran out while the process kept running".to_string());
-    }
-    if object.get("killed").and_then(Value::as_bool) == Some(true) {
-        out.push("the process was killed".to_string());
-    }
-    if object.get("draining").and_then(Value::as_bool) == Some(true) {
-        out.push("a pipe is still open, so the streams can still grow".to_string());
-    }
-    if object.get("path_conversion").and_then(Value::as_bool) == Some(true) {
-        out.push(
-            "the shell may convert POSIX-style paths; write `cmd //c` or set `MSYS_NO_PATHCONV=1`"
-                .to_string(),
-        );
-    }
-    for (flag, log, label) in [
-        ("output_truncated", "output_log", "stdout"),
-        ("stderr_truncated", "stderr_log", "stderr"),
-    ] {
-        let truncated = object.get(flag).and_then(Value::as_bool) == Some(true);
-        let path = object.get(log).and_then(Value::as_str);
-        if truncated {
-            out.push(format!("{label} was truncated; the full text is in {log}"));
-        } else if let Some(path) = path {
-            out.push(format!("{label} log: {path}"));
-        }
-    }
-    out.extend(clamp_reminders(object));
 }
 
 fn lsp_reminders(
@@ -2301,87 +2264,6 @@ mod tests {
             }
         }
     }
-    /// A command result keeps process text and process state apart: every
-    /// state fact is a field, and the reminder is the only prose.
-    #[test]
-    fn command_fields_and_their_reminder_lines() {
-        let base = |extra: Value| {
-            let mut value = json!({
-                "id": "bg_1", "exit_code": 0, "output": "", "stderr": "",
-                "shell": "bash", "timed_out": false, "draining": false,
-                "output_truncated": false, "stderr_truncated": false,
-                "path_conversion": false,
-            });
-            let object = value.as_object_mut().unwrap();
-            for (key, item) in extra.as_object().unwrap() {
-                object.insert(key.clone(), item.clone());
-            }
-            value
-        };
-        let cases: Vec<(Value, Vec<&str>)> = vec![
-            (
-                base(json!({"path_conversion": true})),
-                vec!["the shell may convert POSIX-style paths; write `cmd //c` or set `MSYS_NO_PATHCONV=1`"],
-            ),
-            (
-                base(json!({"timed_out": true, "exit_code": null})),
-                vec![
-                    "still running; use tools.process.wait or tools.process.kill",
-                    "this call's time budget ran out while the process kept running",
-                ],
-            ),
-            (
-                base(json!({"killed": true})),
-                vec!["the process was killed"],
-            ),
-            (
-                base(json!({"draining": true})),
-                vec!["a pipe is still open, so the streams can still grow"],
-            ),
-            (
-                base(json!({"output_truncated": true, "output_log": "logs/out.log"})),
-                vec!["stdout was truncated; the full text is in output_log"],
-            ),
-            (
-                base(json!({"stderr_truncated": true, "stderr_log": "logs/err.log"})),
-                vec!["stderr was truncated; the full text is in stderr_log"],
-            ),
-            (
-                base(json!({"output_log": "logs/out.log"})),
-                vec!["stdout log: logs/out.log"],
-            ),
-            (
-                base(json!({"stderr_log": "logs/err.log"})),
-                vec!["stderr log: logs/err.log"],
-            ),
-            (
-                base(json!({"clamped": [{"parameter": "sec", "requested": 600, "applied": 300}]})),
-                vec!["sec 300 used instead of 600"],
-            ),
-            (base(json!({})), Vec::new()),
-        ];
-        for (value, expected) in cases {
-            let lines = reminders_for_call("process.run", &value);
-            assert_eq!(lines, expected, "{value}");
-            let mut report = base_report();
-            report.reminders = lines
-                .iter()
-                .map(|text| CallReminder {
-                    seq: 7,
-                    tool: "process.run".to_string(),
-                    kind: ReminderKind::Boundary,
-                    dedupe: None,
-                    text: text.clone(),
-                })
-                .collect();
-            let out = render_model_view(&report);
-            for text in &expected {
-                let line = format!("↳ #7 tools.process.run: {text}");
-                assert!(out.contains(&line), "{out}");
-                assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
-            }
-        }
-    }
     #[test]
     fn write_and_edit_fields_and_their_reminder_lines() {
         let write = |extra: Value| {
@@ -2497,8 +2379,8 @@ mod tests {
             "lsp.workspace_symbol",
             "lsp.diagnostics",
             "lsp.hover",
-            "process.run",
-            "process.wait",
+            "process.exec_command",
+            "process.write_stdin",
             "file.write",
             "file.edit",
             "file.apply_edits",

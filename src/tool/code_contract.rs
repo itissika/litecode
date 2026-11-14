@@ -326,14 +326,19 @@ mod tests {
     }
 
     #[test]
-    fn run_contract_allows_explicit_background_start() {
-        let schema = builtin_input_schema("run").expect("run schema");
-        assert_eq!(schema["properties"]["run_in_background"]["type"], "boolean");
+    fn exec_contract_allows_tty_and_yield() {
+        let schema = builtin_input_schema("exec_command").expect("exec_command schema");
+        assert_eq!(schema["properties"]["tty"]["type"], "boolean");
+        assert_eq!(schema["properties"]["yield_time_ms"]["type"], "integer");
         schema_validate(
             &schema,
-            &serde_json::json!({"command": "sleep 30", "run_in_background": true}),
+            &serde_json::json!({
+                "cmd": "python3 t.py",
+                "tty": true,
+                "yield_time_ms": 1500
+            }),
         )
-        .expect("background run input");
+        .expect("interactive exec input");
     }
 
     #[test]
@@ -514,7 +519,6 @@ mod tests {
         cases.extend(crate::tools::grep::drift_cases());
         cases.extend(crate::tools::edit::result::drift_cases());
         cases.extend(crate::tools::write::drift_cases());
-        cases.extend(crate::tools::command_job::drift_cases());
         cases.extend(crate::tools::exec_command::drift_cases());
         cases.extend(crate::tools::webfetch::drift_cases());
         cases.extend(crate::tools::websearch::drift_cases());

@@ -4,8 +4,8 @@
 #
 # `[tools]` classifies model-visible tool ids. A test walks the capability
 # catalog and fails when a tool the registry can bind is not classified here, so
-# a new tool cannot join a scored run unnoticed. Grouped cards (`run` =
-# run/wait/kill, `edit` = edit/apply_edits, `lsp`, `browser`, `memory`,
+# a new tool cannot join a scored run unnoticed. Grouped cards (`exec` =
+# exec_command/write_stdin, `edit` = edit/apply_edits, `lsp`, `browser`, `memory`,
 # `subagent_tools`) are bound as a whole, so every member of a group has to sit
 # in the same list. `run_code` is the code transport itself: it is listed but it
 # is not a binding, and it cannot be switched off while code tools are bound.
@@ -27,9 +27,6 @@ on = [
   "write",          # create files
   "edit",           # change files in place
   "apply_edits",    # batch edits; same card as `edit`, comes with it
-  "run",            # legacy shell job; kept for compatibility
-  "wait",           # legacy long-command handle
-  "kill",           # legacy hard stop
   "exec_command",   # Codex-style unified exec session
   "write_stdin",    # poll / feed / Ctrl-C an exec session
   "todo",           # progress outside the context window; survives compaction
@@ -95,7 +92,7 @@ grep = "all"
 glob = "all"
 write = "all"
 edit = "all"
-run = "all"   # the one that matters: Safe would quietly allowlist the shell
+exec = "all"  # unified exec: Safe would quietly allowlist the shell
 
 [knobs]
 # Model comes from Harbor's `-m`. These two are session fields the CLI cannot

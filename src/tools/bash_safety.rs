@@ -466,55 +466,6 @@ pub(crate) fn is_destructive_command(command: &str) -> bool {
     DESTRUCTIVE_COMMANDS.contains(&base_cmd)
 }
 
-// ---------------------------------------------------------------------------
-// Path extraction for write-lock keys (B2-3.3)
-// ---------------------------------------------------------------------------
-
-/// Commands whose non-flag arguments are file paths (read or write side).
-const PATH_ARG_COMMANDS: &[&str] = &[
-    "cat", "rm", "rmdir", "touch", "cp", "mv", "ln", "chmod", "chown", "head", "tail", "grep",
-    "wc", "ls", "mkdir",
-];
-
-/// Best-effort extraction of file paths a bash command touches. Used for
-/// same-turn per-path resource keys. If nothing can be extracted, the caller
-/// takes no key (cross-session bash races are accepted).
-pub(crate) fn extract_bash_paths(command: &str) -> Vec<String> {
-    let normalized = preprocess_command(command);
-    let mut paths = Vec::new();
-    for segment in split_pipe_segments(&normalized) {
-        collect_redirect_targets(segment, &mut paths);
-        let tokens: Vec<&str> = segment.split_whitespace().collect();
-        if tokens.is_empty() {
-            continue;
-        }
-        let base = tokens[0];
-        if PATH_ARG_COMMANDS.contains(&base) {
-            for t in &tokens[1..] {
-                if t.starts_with('-') {
-                    continue;
-                }
-                paths.push((*t).to_string());
-            }
-        }
-    }
-    paths
-}
-
-/// Collect `> file` / `>> file` / `2> file` redirection targets (write side).
-fn collect_redirect_targets(segment: &str, out: &mut Vec<String>) {
-    let tokens: Vec<&str> = segment.split_whitespace().collect();
-    let mut prev: Option<&str> = None;
-    for token in tokens {
-        if let Some(prev_tok) = prev
-            && matches!(prev_tok, ">" | ">>" | "2>" | "&>")
-        {
-            out.push(token.to_string());
-        }
-        prev = Some(token);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

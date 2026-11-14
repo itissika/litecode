@@ -42,8 +42,8 @@ pub fn check_floor(tool_name: &str, args: &Value, _ctx: &MatchContext<'_>) -> Op
         }
     }
 
-    if tool_name == "run"
-        && let Some(command) = args.get("command").and_then(Value::as_str)
+    if matches!(tool_name, "exec_command" | "exec")
+        && let Some(command) = args.get("cmd").and_then(Value::as_str)
     {
         let action = check_dangerous_command(command);
         if action == PermissionAction::Deny {
@@ -70,12 +70,16 @@ mod tests {
     }
 
     #[test]
-    fn run_hits_the_dangerous_command_floor() {
-        let hit =
-            check_floor("run", &serde_json::json!({"command": "rm -rf /"}), &ctx()).expect("floor");
+    fn exec_hits_the_dangerous_command_floor() {
+        let hit = check_floor(
+            "exec_command",
+            &serde_json::json!({"cmd": "rm -rf /"}),
+            &ctx(),
+        )
+        .expect("floor");
         assert_eq!(hit.rule_id, "floor_dangerous_command");
         assert_eq!(hit.action, PermissionAction::Deny);
-        assert!(check_floor("run", &serde_json::json!({"command": "ls"}), &ctx()).is_none());
+        assert!(check_floor("exec_command", &serde_json::json!({"cmd": "ls"}), &ctx()).is_none());
     }
 }
 

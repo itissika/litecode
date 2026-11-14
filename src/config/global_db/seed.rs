@@ -260,12 +260,12 @@ fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
         )?;
     }
 
-    // WP-197: Code shell card; bind `run` and the registry injects wait/kill/exec_command/write_stdin.
+    // Code shell card: unified exec is the only terminal surface.
     store::upsert_agent_tool(
         conn,
         "explore",
-        "run",
-        &binding_seeded("run", ToolPreset::Safe),
+        "exec",
+        &binding_seeded("exec", ToolPreset::Safe),
     )?;
 
     for tool in network_core_tools() {
@@ -368,6 +368,9 @@ fn strip_direct_shell_bindings(conn: &Connection) -> Result<()> {
         "run_command",
         "command_output",
         "command_kill",
+        "run",
+        "wait",
+        "kill",
     ] {
         conn.execute("DELETE FROM agent_tools WHERE tool_id = ?1", [tool])?;
     }
@@ -619,12 +622,12 @@ fn ensure_explore_shared_tools(conn: &Connection) -> Result<()> {
             &binding_seeded("litecode_workspace", ToolPreset::All),
         )?;
     }
-    if !agent_has_tool(conn, "explore", "run")? {
+    if !agent_has_tool(conn, "explore", "exec")? {
         store::upsert_agent_tool(
             conn,
             "explore",
-            "run",
-            &binding_seeded("run", ToolPreset::Safe),
+            "exec",
+            &binding_seeded("exec", ToolPreset::Safe),
         )?;
     }
     for tool in subagent_none_tools() {
@@ -811,14 +814,14 @@ mod tests {
             assert_eq!(n, 0, "explore must not bind {tool}");
         }
 
-        let run_preset: Option<String> = conn
+        let exec_preset: Option<String> = conn
             .query_row(
-                "SELECT preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run'",
+                "SELECT preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'exec'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(run_preset.as_deref(), Some("SAFE"));
+        assert_eq!(exec_preset.as_deref(), Some("SAFE"));
 
         let (general_role, general_prompt): (String, String) = conn
             .query_row(
@@ -934,14 +937,14 @@ mod tests {
                     .unwrap();
                 assert_eq!(n, 0, "{agent} must not bind {tool}");
             }
-            let run_n: i64 = conn
+            let exec_n: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'run'",
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'exec'",
                     [agent],
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(run_n, 1, "{agent} should bind run");
+            assert_eq!(exec_n, 1, "{agent} should bind exec");
         }
     }
 

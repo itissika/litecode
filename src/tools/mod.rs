@@ -13,7 +13,6 @@ pub mod exec_command;
 pub mod file_path;
 pub mod glob;
 pub mod grep;
-pub mod kill;
 pub mod knowledge;
 pub mod litecode_workspace;
 pub mod lsp;
@@ -22,11 +21,9 @@ pub mod mcp_tool;
 pub mod memory;
 pub mod plan;
 pub mod read;
-pub mod run;
 pub mod session_search;
 pub mod subagent;
 pub mod todo;
-pub mod wait;
 pub mod webfetch;
 pub mod websearch;
 pub mod write;
@@ -34,8 +31,6 @@ pub mod write_stdin;
 
 #[cfg(test)]
 mod baseline;
-#[cfg(test)]
-mod run_lock_gate;
 
 /// Model-facing description of a built-in tool.
 ///

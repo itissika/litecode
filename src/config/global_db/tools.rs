@@ -10,7 +10,7 @@ pub fn core_configurable_tools() -> &'static [&'static str] {
         "glob",
         "write",
         "edit",
-        "run",
+        "exec",
         "session_search",
         "litecode_workspace",
     ]
@@ -71,9 +71,9 @@ pub fn is_reserved_builtin(id: &str) -> bool {
 /// tool name — must reject with this function. `None` means the name is free.
 ///
 /// Command-job companion names are not listed here. [`crate::tool::registry`]
-/// strips this function's hits before projection, and the real `wait` /
-/// `kill` / `apply_edits` tools must survive that strip. Those names use
-/// [`reserved_command_name_rejection`].
+/// strips this function's hits before projection, and the real `exec_command`
+/// / `write_stdin` / `apply_edits` tools must survive that strip. Those names
+/// use [`reserved_command_name_rejection`].
 pub fn non_transport_name_rejection(name: &str) -> Option<&'static str> {
     if name == "run_code" {
         Some("run_code is reserved for the code transport")
@@ -83,12 +83,12 @@ pub fn non_transport_name_rejection(name: &str) -> Option<&'static str> {
 }
 
 /// Names a custom tool or an MCP tool must not publish. The built-in
-/// `wait` / `kill` / `apply_edits` tools are registered separately and are not
-/// rejected by this check at projection time. Retired shell names stay reserved so custom
-/// tools cannot reclaim them.
+/// `exec_command` / `write_stdin` / `apply_edits` tools are registered
+/// separately and are not rejected by this check at projection time. Retired
+/// shell names stay reserved so custom tools cannot reclaim them.
 pub fn reserved_command_name_rejection(name: &str) -> Option<&'static str> {
     match name {
-        "wait" | "kill" | "exec_command" | "write_stdin" => {
+        "run" | "wait" | "kill" | "exec_command" | "write_stdin" => {
             Some("name is reserved for a code command tool")
         }
         "apply_edits" => Some("name is reserved for a code edit tool"),
