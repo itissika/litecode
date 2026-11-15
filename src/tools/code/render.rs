@@ -284,7 +284,9 @@ pub(super) fn reminders_for_call_with_metadata(
         "file.glob" => glob_reminders(object, &mut out),
         "file.grep" => grep_reminders(object, &mut out),
         tool if tool.starts_with("lsp.") => lsp_reminders(tool, object, &mut out),
-        "process.exec_command" | "process.write_stdin" => unified_exec_reminders(object, &mut out),
+        "process.exec_command" | "process.write_stdin" => {
+            unified_exec_reminders(tool, object, &mut out)
+        }
         "file.write" => write_reminders(object, &mut out),
         "file.apply_edits" => edit_reminders(tool, object, &mut out),
         _ => {}
@@ -386,11 +388,19 @@ fn edit_reminders(
     }
 }
 /// Codex-style exec sessions use a session id and incremental output, so the
-/// old command reminder would be actively wrong.
-fn unified_exec_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
-    if let Some(session_id) = object.get("session_id").and_then(Value::as_str) {
+/// old command reminder would be actively wrong. Only the start call gets the
+/// live-session line: repeating it after `write_stdin` would tell the model to
+/// call the tool it just called.
+fn unified_exec_reminders(
+    tool: &str,
+    object: &serde_json::Map<String, Value>,
+    out: &mut Vec<String>,
+) {
+    if tool == "process.exec_command"
+        && let Some(session_id) = object.get("session_id").and_then(Value::as_str)
+    {
         out.push(format!(
-            "session {session_id} is live; use tools.process.write_stdin"
+            "session {session_id} is live; poll with tools.process.write_stdin or wait for its exit reminder"
         ));
     }
     if object.get("truncated").and_then(Value::as_bool) == Some(true) {
@@ -3555,7 +3565,7 @@ mod metadata_reminder_tests {
         assert_eq!(
             lines,
             vec![
-                "session bg_1 is live; use tools.process.write_stdin",
+                "session bg_1 is live; poll with tools.process.write_stdin or wait for its exit reminder",
                 "output was clipped by max_output_tokens",
                 "yield_time_ms 30000 used instead of 60000",
             ]
@@ -3563,5 +3573,26 @@ mod metadata_reminder_tests {
         for line in &lines {
             assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
         }
+    }
+
+    #[test]
+    fn write_stdin_does_not_repeat_the_live_session_reminder() {
+        let data = json!({"ok": true, "session_id": "bg_1", "output": ""});
+        let metadata = json!({
+            "truncated": true,
+            "clamped": [{"parameter": "yield_time_ms", "requested": 600000, "applied": 300000}]
+        });
+        let lines = reminders_for_call_with_metadata(
+            "process.write_stdin",
+            &data,
+            Some(&metadata),
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "output was clipped by max_output_tokens",
+                "yield_time_ms 300000 used instead of 600000",
+            ]
+        );
     }
 }

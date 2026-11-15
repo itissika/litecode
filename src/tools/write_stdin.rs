@@ -1,5 +1,8 @@
 //! Codex-compatible `write_stdin`: poll, feed bytes, or Ctrl-C a session.
 //!
+//! Empty `chars` waits for new output or exit, whichever comes first, and can
+//! wait up to 300000 ms. Ordinary bytes go to stdin.
+//!
 //! `chars == "\u0003"` is deliberately translated to a process-group SIGINT,
 //! not written into a pipe. That is the difference between a real keyboard
 //! interrupt (which runs `finally` cleanup) and a hard kill.

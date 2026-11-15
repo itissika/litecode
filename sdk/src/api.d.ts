@@ -190,26 +190,26 @@ interface SearchTools {
 type ExecCommandData = {
   /** Live session id; present only while the process is still running. */
   session_id?: string;
-  /** Process exit code when it finished before this call returned. */
+  /** Process exit code once the session has exited; absent while it is live. */
   exit_code?: Integer | null;
-  /** Incremental output since the previous exec call on this session. */
+  /** Output since the previous call on this session; the first call returns output since spawn. */
   output: string;
 };
 
 interface ProcessTools {
-  /** Start a command in a PTY, returning output or a session id for ongoing interaction. @tool exec_command @suite process */
+  /** Start a command. Waits up to yield_time_ms; a live session_id leaves it running in the background. Poll with write_stdin for output, or leave it and wait for the background-exit reminder (exit code + output_file). @tool exec_command @suite process */
   exec_command(args: {
     cmd: string; // Shell command to execute.
     workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.
     tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.
-    yield_time_ms?: Integer; // Wait before yielding output. 250-30000 ms; default 10000.
+    yield_time_ms?: Integer; // Initial wait only; 250-30000 ms; default 10000. It does not limit the process lifetime.
     max_output_tokens?: Integer; // Output token budget for this call; default 10000.
   }): Promise<ToolResult<ExecCommandData>>;
-  /** Write characters to an existing exec session and return recent output. @tool write_stdin @suite process */
+  /** Poll, feed, or interrupt an existing exec session. Empty chars waits for new output or exit, whichever comes first; on exit, exit_code is set and session_id is absent. @tool write_stdin @suite process */
   write_stdin(args: {
     session_id: string; // Session id from exec_command.
     chars?: string; // Bytes to write; empty polls. "\u0003" sends SIGINT to the process group.
-    yield_time_ms?: Integer; // Wait before yielding output. Empty polls default 5000 ms; writes default 250 ms.
+    yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-300000 ms; empty polls default 5000, non-empty writes default 250. Long polls must fit the fixed run_code cap (600000 ms).
     max_output_tokens?: Integer; // Output token budget for this call; default 10000.
   }): Promise<ToolResult<ExecCommandData>>;
 }

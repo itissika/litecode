@@ -103,21 +103,6 @@ async fn large_result_is_budgeted_in_the_request() {
     assert!(text.starts_with("run_code ok"), "{text}");
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn timeout_keeps_the_log_tail_and_names_the_budget() {
-    let text = captured_run(
-        json!({
-            "code": "console.log('LOG_TAIL_SENTINEL'); while (true) {}",
-            "timeout_ms": 300
-        }),
-        |_| {},
-    )
-    .await;
-    assert!(text.contains("timeout after 300ms"), "{text}");
-    assert!(text.contains("LOG_TAIL_SENTINEL"), "{text}");
-    assert!(text.len() <= 65_536, "{}", text.len());
-}
-
 /// A caught failure is counted in the head and stated once above the stream:
 /// the call the model would otherwise never hear about.
 #[tokio::test(flavor = "current_thread")]

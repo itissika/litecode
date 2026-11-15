@@ -645,6 +645,26 @@ mod run_code_only {
         policy: PermissionAction,
         sink: Arc<dyn PermissionSink>,
     ) -> Hosted {
+        hosted_inner(root, bundle, policy, sink, None)
+    }
+
+    fn hosted_with_timeout(
+        root: &Path,
+        bundle: Vec<Arc<dyn Tool>>,
+        policy: PermissionAction,
+        sink: Arc<dyn PermissionSink>,
+        timeout: Duration,
+    ) -> Hosted {
+        hosted_inner(root, bundle, policy, sink, Some(timeout))
+    }
+
+    fn hosted_inner(
+        root: &Path,
+        bundle: Vec<Arc<dyn Tool>>,
+        policy: PermissionAction,
+        sink: Arc<dyn PermissionSink>,
+        run_timeout: Option<Duration>,
+    ) -> Hosted {
         let permission = engine(root, policy);
         let ctx = ctx(root);
         let data_root = root.join(".litecode");
@@ -658,7 +678,12 @@ mod run_code_only {
             process_write_lock(),
             None,
         ));
-        let code = Arc::new(CodeTool::new(bundle, host));
+        let code = CodeTool::new(bundle, host);
+        let code = match run_timeout {
+            Some(timeout) => code.with_run_timeout(timeout),
+            None => code,
+        };
+        let code = Arc::new(code);
         let code_names = code.code_bindings().unwrap_or_else(|| Arc::from([]));
         Hosted {
             tools: vec![code],
@@ -1092,8 +1117,7 @@ null"
             &hosted,
             "run_code",
             json!({
-                "code": "await tools.block({}); return { done: true };",
-                "timeout_ms": 5000
+                "code": "await tools.block({}); return { done: true };"
             }),
             &sink,
             cancel.clone(),
@@ -1128,19 +1152,19 @@ null"
     #[tokio::test(flavor = "current_thread")]
     async fn a_call_that_outlasts_the_grace_period_is_unsettled() {
         let dir = tempfile::tempdir().unwrap();
-        let hosted = hosted(
+        let hosted = hosted_with_timeout(
             dir.path(),
             vec![Arc::new(LateTool)],
             PermissionAction::Allow,
             litecode::permission::deny_permission_sink(),
+            Duration::from_millis(400),
         );
         let sink = RecordingPermissionSink::from_reply(true, false);
         let result = execute(
             &hosted,
             "run_code",
             json!({
-                "code": "await tools.late({}); return 'done';",
-                "timeout_ms": 400
+                "code": "await tools.late({}); return 'done';"
             }),
             &sink,
             CancellationToken::new(),
@@ -1174,8 +1198,7 @@ null"
             &hosted,
             "run_code",
             json!({
-                "code": "const read = await tools.file.read({ path: \"probe.txt\" }); return read.path && read.lines ? \"ok\" : \"missing\";",
-                "timeout_ms": 600
+                "code": "const read = await tools.file.read({ path: \"probe.txt\" }); return read.path && read.lines ? \"ok\" : \"missing\";"
             }),
             sink.as_ref(),
             CancellationToken::new(),
@@ -1194,7 +1217,7 @@ null"
         let dir = tempfile::tempdir().unwrap();
         let started = Arc::new(AtomicBool::new(false));
         let sealed = Arc::new(AtomicBool::new(false));
-        let hosted = hosted(
+        let hosted = hosted_with_timeout(
             dir.path(),
             vec![
                 Arc::new(GateTool::fast("fast")),
@@ -1202,14 +1225,14 @@ null"
             ],
             PermissionAction::Allow,
             litecode::permission::deny_permission_sink(),
+            Duration::from_millis(1000),
         );
         let sink = RecordingPermissionSink::from_reply(true, false);
         let result = execute(
             &hosted,
             "run_code",
             json!({
-                "code": "await tools.fast({}); await tools.hold({}); return { done: true };",
-                "timeout_ms": 1000
+                "code": "await tools.fast({}); await tools.hold({}); return { done: true };"
             }),
             &sink,
             CancellationToken::new(),
@@ -1723,7 +1746,7 @@ mod edit_write {
             &hosted,
             "phase3",
             "run_code",
-            json!({ "code": script, "timeout_ms": 5000 }),
+            json!({ "code": script }),
             &sink,
             cancel.clone(),
         ));

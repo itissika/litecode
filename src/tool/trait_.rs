@@ -127,8 +127,9 @@ pub trait Tool: Send + Sync {
     }
 
     /// Safety-net budget for one call. `None` means this tool does not arm a
-    /// deadline. The model cannot override it. `run_code.timeout_ms` is the
-    /// only program budget. Expiry cancels the call and waits for it to settle.
+    /// deadline. The model cannot override it. A nested call is additionally
+    /// capped by the enclosing `run_code` cap. Expiry cancels the call and
+    /// waits for it to settle.
     fn timeout(&self) -> Option<Duration> {
         None
     }

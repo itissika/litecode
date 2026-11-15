@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "7b4628af9eb53ab3e85c7355eb5dc4ee0a8defcc1790ff7c0cbe0ae399473fa5",
+  "sdk_hash": "3dfd3fc788bec7435c80491e2b0a9207a21971ade0afc1eaa9f320af8bb5bc9c",
   "tools": {
     "apply_edits": {
       "path": [
@@ -630,8 +630,8 @@
       ],
       "suite": "process",
       "tool": "exec_command",
-      "doc": "Start a command in a PTY, returning output or a session id for ongoing interaction.",
-      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Wait before yielding output. 250-30000 ms; default 10000.\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ToolResult<ExecCommandData>>;",
+      "doc": "Start a command. Waits up to yield_time_ms; a live session_id leaves it running in the background. Poll with write_stdin for output, or leave it and wait for the background-exit reminder (exit code + output_file).",
+      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-30000 ms; default 10000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ToolResult<ExecCommandData>>;",
       "input_type": "(inline)",
       "output_type": "ExecCommandData",
       "type_deps": [
@@ -655,7 +655,7 @@
           },
           "yield_time_ms": {
             "type": "integer",
-            "description": "Wait before yielding output. 250-30000 ms; default 10000."
+            "description": "Initial wait only; 250-30000 ms; default 10000. It does not limit the process lifetime."
           },
           "max_output_tokens": {
             "type": "integer",
@@ -684,11 +684,11 @@
                 "type": "null"
               }
             ],
-            "description": "Process exit code when it finished before this call returned."
+            "description": "Process exit code once the session has exited; absent while it is live."
           },
           "output": {
             "type": "string",
-            "description": "Incremental output since the previous exec call on this session."
+            "description": "Output since the previous call on this session; the first call returns output since spawn."
           },
           "ok": {
             "type": "boolean",
@@ -709,8 +709,8 @@
       ],
       "suite": "process",
       "tool": "write_stdin",
-      "doc": "Write characters to an existing exec session and return recent output.",
-      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding output. Empty polls default 5000 ms; writes default 250 ms.\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ToolResult<ExecCommandData>>;",
+      "doc": "Poll, feed, or interrupt an existing exec session. Empty chars waits for new output or exit, whichever comes first; on exit, exit_code is set and session_id is absent.",
+      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-300000 ms; empty polls default 5000, non-empty writes default 250. Long polls must fit the fixed run_code cap (600000 ms).\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ToolResult<ExecCommandData>>;",
       "input_type": "(inline)",
       "output_type": "ExecCommandData",
       "type_deps": [
@@ -730,7 +730,7 @@
           },
           "yield_time_ms": {
             "type": "integer",
-            "description": "Wait before yielding output. Empty polls default 5000 ms; writes default 250 ms."
+            "description": "Wait before yielding. Both modes accept 250-300000 ms; empty polls default 5000, non-empty writes default 250. Long polls must fit the fixed run_code cap (600000 ms)."
           },
           "max_output_tokens": {
             "type": "integer",
@@ -759,11 +759,11 @@
                 "type": "null"
               }
             ],
-            "description": "Process exit code when it finished before this call returned."
+            "description": "Process exit code once the session has exited; absent while it is live."
           },
           "output": {
             "type": "string",
-            "description": "Incremental output since the previous exec call on this session."
+            "description": "Output since the previous call on this session; the first call returns output since spawn."
           },
           "ok": {
             "type": "boolean",

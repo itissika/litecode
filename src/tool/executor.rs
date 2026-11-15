@@ -32,6 +32,11 @@ use crate::types::{
 /// bounds a pathological program that calls many distinct tools.
 const MAX_UI_RESULT_DATA_BYTES: usize = 16 * 1024;
 
+/// A nested tool's safety net may not outlive the run's hard cap. Built-in
+/// tools are already shorter; this bounds configurable MCP/custom timeouts.
+const MAX_NESTED_TOOL_TIMEOUT: Duration =
+    Duration::from_millis(crate::tools::code::MAX_RUN_TIMEOUT_MS);
+
 #[derive(Debug)]
 pub(crate) struct Batch {
     pub is_concurrency_safe: bool,
@@ -189,6 +194,18 @@ fn timeout_budget_label(budget: Duration) -> String {
     } else {
         format!("{}ms", budget.as_millis())
     }
+}
+
+/// Clamp only nested calls: direct tools keep their declared safety net, while
+/// a nested tool can never get a longer deadline than the enclosing run cap.
+fn effective_tool_timeout(budget: Option<Duration>, nested: bool) -> Option<Duration> {
+    budget.map(|budget| {
+        if nested {
+            budget.min(MAX_NESTED_TOOL_TIMEOUT)
+        } else {
+            budget
+        }
+    })
 }
 
 fn cancelled_tool_result(name: &str) -> ToolCallResult {
@@ -741,7 +758,11 @@ pub async fn execute_tool_call(
 
     // The tool's own budget is a safety net. On expiry, ask the tool to stop
     // and wait for it to settle before returning the timeout result.
-    let raw_result = if let Some(budget) = tool.timeout() {
+    let tool_timeout = effective_tool_timeout(
+        tool.timeout(),
+        matches!(origin.caller, ToolCaller::Code { .. }),
+    );
+    let raw_result = if let Some(budget) = tool_timeout {
         let timeout = tokio::time::sleep(budget);
         tokio::pin!(timeout);
         tokio::select! {
@@ -1131,6 +1152,23 @@ mod tests {
         assert_eq!(keys, vec!["exit_code".to_string(), "output".to_string()]);
         assert!(bytes > 0);
         assert_eq!(audit_output_fields(None), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn nested_timeout_is_clamped_to_the_run_cap() {
+        assert_eq!(
+            effective_tool_timeout(Some(Duration::from_secs(601)), true),
+            Some(Duration::from_secs(600))
+        );
+        assert_eq!(
+            effective_tool_timeout(Some(Duration::from_secs(30)), true),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            effective_tool_timeout(Some(Duration::from_secs(601)), false),
+            Some(Duration::from_secs(601))
+        );
+        assert_eq!(effective_tool_timeout(None, true), None);
     }
 
     /// 2.6: a blocking tool whose work runs in `spawn_blocking` (the fixed

@@ -1,6 +1,7 @@
 //! Real JavaScript integration for the internal CodeTool vertical slice.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use litecode::config::{ConfigManager, GlobalSettings, WorkspacePaths, WorkspaceState};
 use litecode::context_pipeline::Context;
@@ -246,4 +247,79 @@ return {
         require_state.contains("require") || require_state.contains("defined"),
         "{require_state}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fixed_run_timeout_keeps_the_log_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let resolved = ConfigManager::resolve_without_catalog(
+        GlobalSettings::default(),
+        WorkspaceState::new(root),
+    );
+    let permission = PermissionEngine::resolver(resolved, "default", 0);
+    let ctx = Context {
+        cwd: root.to_path_buf(),
+        workspace_paths: WorkspacePaths::for_legacy_root(root),
+        agents_md: None,
+        claude_md: None,
+    };
+    let data_root = root.join(".litecode");
+    std::fs::create_dir_all(&data_root).unwrap();
+
+    let host = Arc::new(CodeToolHost::new(
+        permission.clone(),
+        ctx.clone(),
+        "default",
+        deny_permission_sink(),
+        data_root.clone(),
+        process_write_lock(),
+        None,
+    ));
+    let code: Arc<dyn Tool> = Arc::new(
+        CodeTool::new(vec![Arc::new(ReadTool::default())], host)
+            .with_run_timeout(Duration::from_millis(300)),
+    );
+    let tools = vec![Arc::clone(&code)];
+    let call = FunctionToolCall {
+        arguments: json!({
+            "code": "console.log('LOG_TAIL_SENTINEL'); while (true) {}"
+        })
+        .to_string(),
+        call_id: "code-timeout-1".to_string(),
+        namespace: None,
+        name: "run_code".to_string(),
+        id: None,
+        status: None,
+    };
+
+    let result = run_tool(
+        &call,
+        &tools,
+        &permission,
+        &ctx,
+        "code-runtime-session",
+        "default",
+        deny_permission_sink().as_ref(),
+        tokio_util::sync::CancellationToken::new(),
+        &data_root,
+        32_768,
+        None,
+        process_write_lock(),
+        None,
+    )
+    .await;
+
+    assert!(result.error.is_some(), "{}", result.content);
+    assert!(
+        result.content.contains("timeout after 300ms"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("LOG_TAIL_SENTINEL"),
+        "{}",
+        result.content
+    );
+    assert!(result.content.len() <= 65_536, "{}", result.content.len());
 }

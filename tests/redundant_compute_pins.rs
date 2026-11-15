@@ -24,7 +24,7 @@ fn tool_defs() -> Vec<ToolDef> {
             description: "Run JavaScript. ".repeat(180),
             input_schema: json!({
                 "type": "object",
-                "properties": { "code": { "type": "string" }, "timeout_ms": { "type": "integer" } },
+                "properties": { "code": { "type": "string" } },
                 "required": ["code"]
             }),
         },

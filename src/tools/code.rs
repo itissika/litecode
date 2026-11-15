@@ -33,10 +33,11 @@ use crate::types::{FunctionToolCall, ToolCallResult, ToolErrorKind, ToolSignalLe
 
 /// Model-facing name of the aggregated code transport.
 pub const CODE_TOOL_NAME: &str = "run_code";
-/// Default total program budget.
-pub const DEFAULT_RUN_TIMEOUT_MS: u64 = 120_000;
-/// Maximum total program budget accepted from the model.
+/// Hard maximum run cap. Every `run_code` program is bounded by this.
 pub const MAX_RUN_TIMEOUT_MS: u64 = 600_000;
+/// Default run cap. It is the maximum itself: one cap, not a second shorter
+/// budget that competes with nested tool deadlines.
+pub const DEFAULT_RUN_TIMEOUT_MS: u64 = MAX_RUN_TIMEOUT_MS;
 /// Runtime output cap. This is the only hard cap; the outer result is not truncated again.
 pub const MAX_CODE_OUTPUT_BYTES: usize = 1_048_576;
 /// Full ledger lines kept in submission order. Later calls are counted, and a
@@ -510,6 +511,7 @@ pub struct CodeTool {
     bundle: Arc<Vec<Arc<dyn Tool>>>,
     surface: Arc<CodeSurface>,
     host: Arc<CodeToolHost>,
+    run_timeout_ms: u64,
 }
 
 impl CodeTool {
@@ -523,7 +525,16 @@ impl CodeTool {
             bundle: Arc::new(bundle),
             surface,
             host,
+            run_timeout_ms: DEFAULT_RUN_TIMEOUT_MS,
         }
+    }
+
+    /// Test-only override for the fixed run cap. This is not model-facing:
+    /// `run_code` has no timeout parameter.
+    #[doc(hidden)]
+    pub fn with_run_timeout(mut self, timeout: Duration) -> Self {
+        self.run_timeout_ms = timeout.as_millis().clamp(1, MAX_RUN_TIMEOUT_MS as u128) as u64;
+        self
     }
 
     pub fn new(bundle: Vec<Arc<dyn Tool>>, host: Arc<CodeToolHost>) -> Self {
@@ -633,12 +644,7 @@ impl CodeTool {
                 return ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, error, false);
             }
         };
-        let run_timeout_ms = match parse_run_timeout_ms(&input) {
-            Ok(timeout_ms) => timeout_ms,
-            Err(error) => {
-                return ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, error, false);
-            }
-        };
+        let run_timeout_ms = self.run_timeout_ms;
         // Report-only: typo-class errors are cheap to see now and expensive at
         // runtime, where they cost the whole run. Findings join the run's
         // warnings; the program still runs either way.
@@ -1292,14 +1298,6 @@ fn present_returned_value(value: &Json) -> Result<Value, String> {
     Ok(raw.clone())
 }
 
-fn parse_run_timeout_ms(input: &Value) -> Result<u64, String> {
-    let clamped = crate::tool::clamp::clamp_int(input, "timeout_ms", 1, MAX_RUN_TIMEOUT_MS, "ms")?;
-    Ok(match clamped {
-        None => DEFAULT_RUN_TIMEOUT_MS,
-        Some(clamped) => clamped.value,
-    })
-}
-
 impl Tool for CodeTool {
     fn name(&self) -> &str {
         CODE_TOOL_NAME
@@ -1319,11 +1317,7 @@ impl Tool for CodeTool {
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "Async JavaScript function body for the SDK below."
-                    },
-                    "timeout_ms": {
-                        "type": "integer",
-                        "description": "1–600000 ms. Default 120000."
+                        "description": "Async JavaScript function body for the SDK below. The run has a fixed 600000 ms cap."
                     }
                 },
                 "required": ["code"],
@@ -1353,7 +1347,6 @@ impl Tool for CodeTool {
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
         crate::tool::require_nonempty_string(input, "code")?;
-        parse_run_timeout_ms(input)?;
         Ok(())
     }
 
@@ -1484,7 +1477,7 @@ mod outcome_tests {
 
     #[test]
     fn a_second_javascript_argument_is_rejected_before_the_tool_runs() {
-        let payload = Json::new(json!([{"path": "a.txt"}, {"timeout_ms": 1}]));
+        let payload = Json::new(json!([{"path": "a.txt"}, {"unexpected": 1}]));
         match decode_invocation(&payload) {
             Err(DecodeFail::ExtraArgument { summary, .. }) => assert_eq!(summary, "path=a.txt"),
             other => panic!("expected the extra argument to be rejected: {other:?}"),

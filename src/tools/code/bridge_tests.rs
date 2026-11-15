@@ -49,6 +49,36 @@ fn execution(root: &Path) -> ToolExecutionContext {
     }
 }
 
+#[test]
+fn run_code_schema_has_no_timeout_knob() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let host = Arc::new(CodeToolHost::new(
+        allow_engine(root),
+        context(root),
+        "default",
+        deny_permission_sink(),
+        root.join(".litecode"),
+        Arc::new(WorkspaceWriteLock::new()),
+        None,
+    ));
+    let tool = CodeTool::new(
+        vec![Arc::new(crate::tools::read::ReadTool::default())],
+        host,
+    );
+    let spec = tool.direct_spec(&context(root)).expect("run_code spec");
+    let properties = spec.input_schema["properties"]
+        .as_object()
+        .expect("properties");
+    assert_eq!(
+        properties.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["code"]
+    );
+    assert_eq!(spec.input_schema["required"], json!(["code"]));
+    assert_eq!(spec.input_schema["additionalProperties"], json!(false));
+    assert!(!spec.input_schema.to_string().contains("timeout"));
+}
+
 async fn run_program(root: &Path, bundle: Vec<Arc<dyn Tool>>, code: &str) -> ToolCallResult {
     let host = Arc::new(CodeToolHost::new(
         allow_engine(root),

@@ -1489,14 +1489,17 @@ async fn run_pty_supervisor(
         .get(&id)
         .map(|(alive, code, _, _)| (alive, code))
         .unwrap_or((false, None));
-    let _ = tx.send(if alive {
-        PipeDecision::Background { job_id: id }
+    if alive {
+        // PTY sessions leave through the same background path as pipes, so
+        // their eventual exit must reach the mailbox/exit handler too.
+        jobs.mark_detached(&id);
+        let _ = tx.send(PipeDecision::Background { job_id: id });
     } else {
-        PipeDecision::Exited {
+        let _ = tx.send(PipeDecision::Exited {
             job_id: id,
             exit_code: exit_code.map(|code| code as i32),
-        }
-    });
+        });
+    }
 }
 
 /// Own a piped child on the calling tokio runtime.

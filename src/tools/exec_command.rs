@@ -2,8 +2,10 @@
 //!
 //! `exec_command` is deliberately not a second name for `run`: it starts a
 //! session, waits only for `yield_time_ms`, and returns either a final exit or
-//! a live session id that `write_stdin` can drive. The process registry owns
-//! the stdin, process-group signal, output cursor and cleanup.
+//! a live session id that `write_stdin` can drive. A live session keeps running
+//! after the yield; unless `write_stdin` consumes its exit, it leaves a
+//! `bash_exit` notice in the session mailbox. The process registry owns the
+//! stdin, process-group signal, output cursor and cleanup.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,7 +44,7 @@ pub struct ExecCommandData {
     pub output: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clamped: Vec<crate::tool::clamp::Clamp>,
 }
 
@@ -428,6 +430,37 @@ mod tests {
         assert!(stopped.error.is_none(), "{stopped:?}");
         let stopped = data(&stopped);
         assert!(stopped.output.contains("PTY_CLEANED"), "{stopped:?}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tty_background_exit_reaches_the_mailbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = Arc::new(AgentJobRegistry::new());
+        let exec = ExecCommandTool::new(Arc::clone(&jobs));
+        let execution = test_execution(dir.path(), "s2b");
+
+        let started = exec
+            .execute(
+                serde_json::json!({
+                    "cmd": "sleep 0.5; printf PTY_DONE",
+                    "tty": true,
+                    "yield_time_ms": 250
+                }),
+                execution,
+            )
+            .await;
+        assert!(started.error.is_none(), "{started:?}");
+        let session_id = data(&started).session_id.expect("session id");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !jobs.mailbox_pending("s2b") && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let notices = jobs.take_mailbox("s2b");
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].bash_id, session_id);
+        assert_eq!(notices[0].exit_code, Some(0));
     }
 
     #[cfg(unix)]
