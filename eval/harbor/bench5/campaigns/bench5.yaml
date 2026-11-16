@@ -1,13 +1,12 @@
-# Five-harness Terminal-Bench panel.
+# Four-harness Terminal-Bench panel on the shared harness runtime.
 #
-# To add a task: add its public source image and its prebaked eval image below,
-# then run:
+# To add a task: add its public source image below, then run:
 #   python3 eval/harbor/bench5/run_matrix.py --campaign <this file> --preflight-only
 # The runner and collector both read this file; there is no hard-coded task
-# tuple to forget.
+# tuple to forget, and no per-task toolchain image to build.
 schema_version: 1
 name: bench5
-description: LiteCode x codex/pi/opencode/grok-build on four Terminal-Bench tasks
+description: LiteCode x codex/pi/opencode on eight Terminal-Bench tasks
 run_prefix: bench5
 model: deepseek/deepseek-flash
 
@@ -16,11 +15,16 @@ dataset: ${HOME}/eval/datasets/bench5
 source_dataset: ${HOME}/tb2
 egress_log: ${HOME}/eval/logs/egress.jsonl
 egress_root: http://172.17.0.1:8399
+# Shared, read-only harness runtime; build it with
+#   bash eval/harbor/runtime/build.sh
+harness_runtime: ${HOME}/eval/runtime/current
 
 concurrency: 5
 retry_rounds: 2
 job_timeout_sec: 5400
-min_free_gb: 12
+# One runtime plus one task image at a time; the old 12GB covered all four
+# prebaked eval images. Raise this if a task image is unusually large.
+min_free_gb: 8
 
 price_usd_per_million:
   uncached_input: 0.15
@@ -45,35 +49,52 @@ harnesses:
     # LiteCode is uploaded by its adapter, not installed in the image.
   - id: codex
     token_source: egress
-    probe: ". /root/.nvm/nvm.sh; codex --version"
+    probe: "[ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh; codex --version"
   - id: pi
     token_source: egress
-    probe: ". /root/.nvm/nvm.sh; pi --version"
+    probe: "[ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh; pi --version"
   - id: opencode
     token_source: egress
-    probe: ". /root/.nvm/nvm.sh; opencode --version"
-  - id: grok-build
-    token_source: egress
-    probe: "PATH=/root/.grok/bin:$PATH grok --version"
+    probe: "[ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh; opencode --version"
 
 tasks:
   - name: prove-plus-comm
-    image: litecode-eval/prove-plus-comm:bench5
+    image: alexgshaw/prove-plus-comm:20251031
     source_image: alexgshaw/prove-plus-comm:20251031
     difficulty: easy
     category: software-engineering
   - name: polyglot-c-py
-    image: litecode-eval/polyglot-c-py:bench5
+    image: alexgshaw/polyglot-c-py:20251031
     source_image: alexgshaw/polyglot-c-py:20251031
     difficulty: medium
     category: software-engineering
   - name: password-recovery
-    image: litecode-eval/password-recovery:bench5
+    image: alexgshaw/password-recovery:20251031
     source_image: alexgshaw/password-recovery:20251031
     difficulty: hard
     category: security
   - name: cancel-async-tasks
-    image: litecode-eval/cancel-async-tasks:bench5
+    image: alexgshaw/cancel-async-tasks:20251031
     source_image: alexgshaw/cancel-async-tasks:20251031
     difficulty: hard
     category: software-engineering
+  - name: path-tracing
+    image: alexgshaw/path-tracing:20251031
+    source_image: alexgshaw/path-tracing:20251031
+    difficulty: hard
+    category: software-engineering
+  - name: regex-chess
+    image: alexgshaw/regex-chess:20251031
+    source_image: alexgshaw/regex-chess:20251031
+    difficulty: hard
+    category: software-engineering
+  - name: write-compressor
+    image: alexgshaw/write-compressor:20251031
+    source_image: alexgshaw/write-compressor:20251031
+    difficulty: hard
+    category: software-engineering
+  - name: feal-differential-cryptanalysis
+    image: alexgshaw/feal-differential-cryptanalysis:20251031
+    source_image: alexgshaw/feal-differential-cryptanalysis:20251031
+    difficulty: hard
+    category: mathematics

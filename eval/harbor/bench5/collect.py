@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the five-harness report from finished jobs and the proxy log.
+"""Build the harness report from finished jobs and the proxy log.
 
 Two accounting sources, never blended:
 
@@ -33,9 +33,11 @@ from typing import Any
 try:
     from campaign import Campaign, CampaignError, load_campaign
     from tool_usage import summarize_reminders, summarize_tool_usage
+    from trace import summarize_trace
 except ImportError:  # when imported as eval.harbor.bench5.collect
     from .campaign import Campaign, CampaignError, load_campaign
     from .tool_usage import summarize_reminders, summarize_tool_usage
+    from .trace import summarize_trace
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CAMPAIGN = HERE / "campaigns" / "bench5.yaml"
@@ -43,7 +45,7 @@ DEFAULT_CAMPAIGN = HERE / "campaigns" / "bench5.yaml"
 # Defaults keep the module importable for small unit tests; build_report()
 # overwrites all three from the campaign manifest before reading any jobs.
 TASKS = ("prove-plus-comm", "polyglot-c-py", "password-recovery")
-HARNESSES = ("litecode", "codex", "pi", "opencode", "grok-build")
+HARNESSES = ("litecode", "codex", "pi", "opencode")
 CANONICAL_AGENT = {
     "litecode": "litecode",
     "codex": "codex",
@@ -112,6 +114,18 @@ def k(value: int | float | None) -> str:
 
 def pct(value: float | None) -> str:
     return "缺失" if value is None else f"{value * 100:.1f}%"
+
+
+def cache_trusted_model(model: str | None) -> bool:
+    """Only the official provider's cache-hit split is trusted.
+
+    Resellers of DeepSeek report cache hits that move independently of the
+    request stream; using that split would silently understate cost. Unknown
+    models stay trusted so a missing trace does not change an existing number.
+    """
+    if not model:
+        return True
+    return model.split("/", 1)[0] == "deepseek"
 
 
 def cost_of(prompt: int | None, cached: int | None, completion: int | None) -> float | None:
@@ -312,9 +326,13 @@ class Cell:
     failure_hint: str | None = None
     trajectory: dict[str, Any] = field(default_factory=dict)
     tool_usage: dict[str, Any] = field(default_factory=dict)
+    trace: dict[str, Any] = field(default_factory=dict)
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     cost: float | None = None
     cost_breakdown: dict[str, float | None] = field(default_factory=dict)
+    model: str | None = None
+    cache_trusted: bool = True
+    reported_cost: float | None = None
 
     @property
     def passed(self) -> bool:
@@ -338,6 +356,7 @@ class Cell:
         return {
             "task": self.task,
             "harness": self.harness,
+            "model": self.model,
             "trial": self.trial,
             "job_name": self.job_name,
             "job_dir": str(self.job_dir),
@@ -373,6 +392,8 @@ class Cell:
             "token_note": self.token_note,
             "failure_hint": self.failure_hint,
             "cost_usd": self.cost,
+            "reported_cost_usd": self.reported_cost,
+            "cache_trusted": self.cache_trusted,
             "cost_breakdown": self.cost_breakdown,
             "timing_sec": {
                 "agent_setup": self.agent_setup_sec,
@@ -382,6 +403,7 @@ class Cell:
             },
             "trajectory": self.trajectory,
             "tool_usage": self.tool_usage,
+            "trace": self.trace,
             "artifacts": self.artifacts,
             "egress_requests": [
                 {
@@ -548,6 +570,17 @@ def build_cell(
     agent_info = trial.get("agent_info")
     if not isinstance(agent_info, dict):
         agent_info = {}
+    trial_config = trial.get("config")
+    agent_config = (
+        trial_config.get("agent") if isinstance(trial_config, dict) else None
+    )
+    model_name = (
+        agent_config.get("model_name") if isinstance(agent_config, dict) else None
+    )
+    if not isinstance(model_name, str) or not model_name:
+        model_name = agent_info.get("model_name")
+    if not isinstance(model_name, str) or not model_name:
+        model_name = None
     verifier = trial.get("verifier_result")
     rewards = verifier.get("rewards") if isinstance(verifier, dict) else None
     if not isinstance(rewards, dict):
@@ -564,6 +597,10 @@ def build_cell(
 
     trajectory = summarize_trajectory(trial_dir / "agent/trajectory.json")
     tool_usage = summarize_tool_usage(trial_dir, trajectory)
+    try:
+        trace_summary = summarize_trace(trial_dir, harness)
+    except Exception as error:  # a broken native log must not hide the cell
+        trace_summary = {"error": str(error)}
     artifacts = read_artifacts(trial_dir)
     run_ids = forward_run_ids(config)
     egress_run_id = run_ids.get(harness)
@@ -579,6 +616,7 @@ def build_cell(
     cell = Cell(
         task=task,
         harness=harness,
+        model=model_name,
         trial=trial_name,
         job_name=job_name,
         job_dir=job_dir,
@@ -609,6 +647,7 @@ def build_cell(
         harbor_cost=float(harbor_cost) if harbor_cost is not None else None,
         trajectory=trajectory,
         tool_usage=tool_usage,
+        trace=trace_summary,
         artifacts=artifacts,
     )
 
@@ -704,8 +743,27 @@ def build_cell(
                 + (f"（run_id {egress_run_id}）" if egress_run_id else "（未配置代理）")
             )
 
-    cell.cost = cost_of(cell.prompt, cell.cached, cell.completion)
-    cell.cost_breakdown = cost_parts(cell.prompt, cell.cached, cell.completion)
+    cell.cache_trusted = cache_trusted_model(cell.model)
+    if cell.cache_trusted:
+        cell.cost = cost_of(cell.prompt, cell.cached, cell.completion)
+        cell.cost_breakdown = cost_parts(
+            cell.prompt, cell.cached, cell.completion
+        )
+    else:
+        # The provider-reported cache split is a moving number; price the whole
+        # prompt at the uncached rate instead. Keep the cache-based figure next
+        # to it, clearly labelled as provider-reported.
+        cell.reported_cost = cost_of(cell.prompt, cell.cached, cell.completion)
+        cell.cost = cost_of(cell.prompt, 0, cell.completion)
+        cell.cost_breakdown = cost_parts(cell.prompt, 0, cell.completion)
+        note = (
+            "非官方 provider 的 cache 命中不可信；成本按 prompt 全未命中计算"
+        )
+        if cell.reported_cost is not None:
+            note += f"（provider 自报 cache 口径 ${cell.reported_cost:.6f}）"
+        cell.token_note = (
+            cell.token_note + "；" if cell.token_note else ""
+        ) + note
     if cell.valid and not cell.passed:
         cell.failure_hint = read_failure_hint(trial_dir)
 
@@ -911,6 +969,28 @@ def format_cell_result(cell: Cell | None) -> str:
     return text if cell.rankable else text + "⚠"
 
 
+def litecode_build_info(selected: dict[str, Cell]) -> dict[str, Any] | None:
+    """The build that actually ran, read from the LiteCode trial artifacts.
+
+    A checkout-local build-info says what could run, not what did run. When the
+    selected trials disagree, report that explicitly instead of picking one.
+    """
+    infos: dict[str, dict[str, Any]] = {}
+    for cell in selected.values():
+        if cell.harness != "litecode" or not cell.trial:
+            continue
+        info = read_json(
+            cell.job_dir / cell.trial / "agent/litecode/build-info.json"
+        )
+        if info:
+            infos[json.dumps(info, sort_keys=True)] = info
+    if len(infos) == 1:
+        return next(iter(infos.values()))
+    if len(infos) > 1:
+        return {"commit": f"{len(infos)} different builds", "branch": "", "dirty": "?", "built_at": "?"}
+    return None
+
+
 def build_report(
     campaign: Campaign,
     out_md: Path,
@@ -940,6 +1020,20 @@ def build_report(
     }
 
     lines: list[str] = []
+    litecode_models = sorted(
+        {
+            cell.model
+            for cell in selected.values()
+            if cell.harness == "litecode" and cell.model
+        }
+    )
+    if litecode_models and any(model != campaign.model for model in litecode_models):
+        model_note = (
+            f"LiteCode 使用 `{', '.join(litecode_models)}`；"
+            f"其余 harness 使用基线 `{campaign.model}`"
+        )
+    else:
+        model_note = f"所有 harness 同一模型 `{campaign.model}`"
     lines.append(f"# {campaign.name} 横评（{campaign.model}）")
     lines.append("")
     task_text = "、".join(
@@ -947,9 +1041,8 @@ def build_report(
     )
     lines.append(
         f"> 生成时间 `{datetime.now().astimezone().isoformat(timespec='seconds')}`。"
-        f" {len(campaign.tasks)} 题：{task_text}。所有 harness 同一模型 "
-        f"`{campaign.model}`，官方 DeepSeek 端点，思考强度走默认 high"
-        "（LiteCode 的 `medium` 在 DeepSeek 目录中映射到 high）。"
+        f" {len(campaign.tasks)} 题：{task_text}。{model_note}，"
+        "思考强度走默认 high（LiteCode 的 `medium` 按各自 catalog 映射）。"
     )
     lines.append("")
     lines.append("## 0. 数据来源与口径")
@@ -971,13 +1064,19 @@ def build_report(
         f"输出 `${campaign.price['output']}/M`；成本由 token 按此价目重算，"
         "LiteCode 同时保留 Harbor/LiteLLM 计价做核验。"
     )
+    if any(not cell.cache_trusted for cell in selected.values()):
+        lines.append(
+            "* **缓存口径**：非官方 DeepSeek provider 的 cache 命中会抖动且不可信；"
+            "这些 cell 的成本按 prompt 全未命中计算，provider 自报 cache 口径"
+            "另见 JSON 的 `reported_cost_usd`。"
+        )
     lines.append(
         "* **token 定义**：prompt 含缓存命中；output 含思考；"
         "total = prompt + output；cache hit = cached / prompt。"
     )
     lines.append("")
 
-    build_info = read_json(repo / "eval/harbor/bin/build-info.json")
+    build_info = litecode_build_info(selected)
     if build_info:
         lines.append(
             "* LiteCode build：commit `{}`，branch `{}`，dirty `{}`，"
@@ -988,13 +1087,16 @@ def build_report(
                 build_info.get("built_at"),
             )
         )
-    images = repo / "eval/harbor/prebake/images.txt"
-    if images.is_file():
-        lines.append("* 评测镜像与 harness 版本（`eval/harbor/prebake/images.txt`）：")
-        lines.append("")
-        lines.append("```text")
-        lines.extend(images.read_text(encoding="utf-8").splitlines())
-        lines.append("```")
+    lines.append("* 任务镜像（campaign manifest，公开 task images）：")
+    for task in campaign.tasks:
+        source = f"（source `{task.source_image}`）" if task.source_image and task.source_image != task.image else ""
+        lines.append(f"  * `{task.name}`：`{task.image}`{source}")
+    if campaign.harness_runtime:
+        lines.append(
+            "* 共享 harness runtime：`{}`，只读挂载到 `/opt/harness`。".format(
+                campaign.harness_runtime
+            )
+        )
     lines.append("")
 
     lines.append("## 1. 通过矩阵")
@@ -1170,15 +1272,20 @@ def build_report(
         name for name, total in other_totals.items() if total.passed == best_other_pass
     ]
     if lite.rankable_cells and passed_other:
-        lite_rate = lite_total.passed / len(lite.rankable_cells)
         best_summary = summaries[passed_other[0]]
-        best_rate = best_other_pass / len(best_summary.rankable_cells)
-        lines.append(
-            f"* **通过率**：LiteCode {lite_total.passed}/{len(lite.rankable_cells)}"
-            f"（{pct(lite_rate)}）；其他 harness 最高 {best_other_pass} 格"
-            f"（{pct(best_rate)}，{', '.join(passed_other)}）。"
-            f"差值 {((lite_rate or 0) - (best_rate or 0)) * 100:+.1f} 个百分点。"
-        )
+        if best_summary.rankable_cells:
+            lite_rate = lite_total.passed / len(lite.rankable_cells)
+            best_rate = best_other_pass / len(best_summary.rankable_cells)
+            lines.append(
+                f"* **通过率**：LiteCode {lite_total.passed}/{len(lite.rankable_cells)}"
+                f"（{pct(lite_rate)}）；其他 harness 最高 {best_other_pass} 格"
+                f"（{pct(best_rate)}，{', '.join(passed_other)}）。"
+                f"差值 {((lite_rate or 0) - (best_rate or 0)) * 100:+.1f} 个百分点。"
+            )
+        else:
+            lines.append(
+                "* **通过率**：本次没有其他 harness 的可排名基线，无法计算差值。"
+            )
 
     comparable = [
         (name, total)
@@ -1348,12 +1455,15 @@ def build_report(
         "3. **opencode 自报会漏思考输出**：本报告不用它的自报 token；"
         "凡是以 egress 为准的格，都在 JSON 里保留了 harness 自报值与差异。"
     )
+    unclean = sum(
+        1
+        for cell in selected.values()
+        if cell.harness == "opencode" and cell.valid and not cell.clean
+    )
     lines.append(
-        "3b. **opencode 的 EPIPE 口径**：opencode 1.19.5 在旧传输口径下"
-        "会在答完并产生 step_finish.stop 后报 EPIPE、进程非零退出；"
-        "预烤适配器改为按 JSON 流状态归零。修复前的一组 replicate 为 "
-        "verifier 3/3 通过但 3 次非零退出；主表使用修复后的干净重跑，"
-        "polyglot 仍因 cmain 残留失败一次。单题单 trial 的方差在该题上很明显。"
+        "3b. **opencode 的进程状态**：适配器把 JSON 流中的 "
+        "`step_finish.stop` 视为成功，不因流结束后的传输噪声判失败；"
+        f"本次 opencode 非零退出格数为 {unclean}。"
     )
     lines.append(
         "4. **step 定义不可横比**：各 harness 的 ATIF 轨迹由各自 adapter 生成，"
@@ -1372,9 +1482,8 @@ def build_report(
     lines.append(
         "7. **polyglot-c-py 的清理陷阱**：instruction 自己给出了 "
         "`gcc ... -o /app/polyglot/cmain`，但 verifier 要求该目录最终只剩 "
-        "`main.py.c`。LiteCode 和修复后的 opencode 都在功能验证通过后留下 "
-        "cmain 而失败；codex/pi/grok 避开了。该题失败应读作最终状态纪律/"
-        "对 verifier 约束的推断，而不是 polyglot 代码写不出来。"
+        "`main.py.c`。本次 LiteCode 和 opencode 都通过，但这个约束仍是"
+        "最终状态纪律/对 verifier 的推断，而不是 polyglot 代码写不出来。"
     )
     lines.append("")
     report_text = "\n".join(lines) + "\n"
@@ -1396,6 +1505,7 @@ def build_report(
             "name": campaign.name,
             "path": str(campaign.path),
             "model": campaign.model,
+            "litecode_models": litecode_models,
             "strict": campaign.strict,
         },
         "tasks": list(TASKS),
@@ -1440,6 +1550,15 @@ def build_report(
         for key in sorted(selected)
         if selected[key].harness == "litecode" and selected[key].tool_usage
     ]
+    payload["traces"] = [
+        {
+            "task": selected[key].task,
+            "harness": selected[key].harness,
+            **selected[key].trace,
+        }
+        for key in sorted(selected)
+        if selected[key].trace
+    ]
     selected_export = {
         key: {
             "task": selected[key].task,
@@ -1461,7 +1580,10 @@ def build_report(
             },
             "requests": selected[key].requests,
             "tool_usage": selected[key].tool_usage,
+            "trace": selected[key].trace,
             "cost_usd": selected[key].cost,
+            "reported_cost_usd": selected[key].reported_cost,
+            "cache_trusted": selected[key].cache_trusted,
             "agent_execution_sec": selected[key].agent_execution_sec,
             "audit_reasons": selected[key].audit_reasons,
         }

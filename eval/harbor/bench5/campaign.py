@@ -1,7 +1,7 @@
 """Campaign manifest: the one place that says what a run contains.
 
-The previous runner and collector hard-coded three task names and five harness
-names. That is fine for a one-off panel and a silent data-loss risk as soon as
+The previous runner and collector hard-coded task names and a fixed harness
+list. That is fine for a one-off panel and a silent data-loss risk as soon as
 the panel grows: a new task that is not in the tuple is simply filtered out.
 This module makes the matrix data: tasks, harnesses, expected cells, images,
 price version and every path come from a YAML file.
@@ -67,6 +67,7 @@ class Campaign:
     source_dataset: Path
     egress_log: Path
     egress_root: str
+    harness_runtime: Path | None
     concurrency: int
     retry_rounds: int
     job_timeout_sec: int
@@ -256,6 +257,16 @@ def load_campaign(path: str | Path) -> Campaign:
     if len({harness.id for harness in harnesses}) != len(harnesses):
         raise CampaignError(f"{campaign_path}: duplicate harness ids")
 
+    runtime_value = document.get("harness_runtime")
+    if runtime_value is None:
+        harness_runtime = None
+    elif not isinstance(runtime_value, str) or not runtime_value.strip():
+        raise CampaignError(
+            f"{campaign_path}: harness_runtime must be a non-empty path"
+        )
+    else:
+        harness_runtime = _path(runtime_value, "harness_runtime", repo)
+
     return Campaign(
         path=campaign_path,
         name=name,
@@ -266,6 +277,7 @@ def load_campaign(path: str | Path) -> Campaign:
         source_dataset=_path(document.get("source_dataset"), "source_dataset", repo),
         egress_log=_path(document.get("egress_log"), "egress_log", repo),
         egress_root=str(document.get("egress_root") or "").rstrip("/"),
+        harness_runtime=harness_runtime,
         concurrency=_positive_int(document.get("concurrency"), "concurrency", 5),
         retry_rounds=_non_negative_int(
             document.get("retry_rounds"), "retry_rounds", 2

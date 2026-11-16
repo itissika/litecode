@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -131,9 +132,9 @@ class LayersTest(unittest.TestCase):
         self.assertEqual(codex.model_api_format.value, "openai_responses")
         self.assertTrue(codex.base_url.endswith("/r/r1-codex/"))
 
-    def test_the_five_harness_panel_keeps_litecode_off_the_proxy(self) -> None:
+    def test_the_four_harness_panel_keeps_litecode_off_the_proxy(self) -> None:
         job = resolve.resolve(
-            job="compare5",
+            job="compare4",
             dataset="datasets/bench5",
             run_id="bench5-task-r1",
             egress_base_url=EGRESS,
@@ -141,21 +142,31 @@ class LayersTest(unittest.TestCase):
         )
         self.assertEqual(
             [agent_key(agent) for agent in job["agents"]],
-            ["litecode", "codex", "pi", "opencode", "grok-build"],
+            ["litecode", "codex", "pi", "opencode"],
         )
         agents = keyed(job)
         self.assertNotIn("base_url", agents["litecode"])
         self.assertEqual(
             agents["litecode"]["model_api_key_name"], "LITECODE_API_KEY"
         )
-        for harness in ("codex", "pi", "opencode", "grok-build"):
+        for harness in ("codex", "pi", "opencode"):
             self.assertIn(
                 f"/r/bench5-task-r1-{harness}", agents[harness]["base_url"]
             )
         self.assertEqual(
             job["datasets"][0]["task_names"], ["password-recovery"]
         )
-        self.assertEqual(job["n_concurrent_trials"], 5)
+        self.assertEqual(job["n_concurrent_trials"], 4)
+
+    def test_shared_runtime_is_a_read_only_bind_mount(self) -> None:
+        with tempfile.TemporaryDirectory() as runtime:
+            job = rendered(harness_runtime=runtime)
+        mount = job["environment"]["mounts"][-1]
+        self.assertEqual(mount["type"], "bind")
+        self.assertEqual(mount["source"], str(Path(runtime).resolve()))
+        self.assertEqual(mount["target"], "/opt/harness")
+        self.assertTrue(mount["read_only"])
+
     def test_the_layer_files_carry_no_endpoint_or_key(self) -> None:
         for path in sorted(HERE.rglob("*.yaml")):
             text = path.read_text(encoding="utf-8")

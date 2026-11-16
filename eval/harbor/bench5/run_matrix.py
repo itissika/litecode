@@ -35,6 +35,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,23 @@ def read_key(path: Path) -> str:
     return value
 
 
+LITECODE_AGENT = "eval.harbor.litecode_agent:LiteCode"
+
+
+def override_litecode_model(document: dict[str, Any], model: str) -> None:
+    """Point only the LiteCode agent at another built-in provider/model.
+
+    The campaign's model stays the baseline for every other harness; this is
+    deliberately a post-resolution edit so one harness can change without
+    rewriting the shared model layer or the other agents.
+    """
+    for agent in document.get("agents", []):
+        if agent.get("name") == LITECODE_AGENT:
+            agent["model_name"] = model
+            return
+    raise RuntimeError(f"rendered job has no {LITECODE_AGENT} agent")
+
+
 def task_name(value: str | None) -> str:
     if not value:
         return ""
@@ -105,7 +123,31 @@ class Runner:
             if args.egress_log
             else self.campaign.egress_log
         )
+        runtime = args.harness_runtime or self.campaign.harness_runtime
+        self.harness_runtime = (
+            Path(runtime).expanduser().resolve() if runtime else None
+        )
         self.litecode_bin_dir = Path(args.litecode_bin_dir).expanduser().resolve()
+        self.litecode_model = args.litecode_model or self.campaign.model
+        if "/" not in self.litecode_model:
+            raise RuntimeError(
+                "--litecode-model must be a provider/model reference, "
+                f"got {self.litecode_model!r}"
+            )
+        provider, model = self.litecode_model.split("/", 1)
+        if not provider or not model:
+            raise RuntimeError(
+                "--litecode-model must be a provider/model reference, "
+                f"got {self.litecode_model!r}"
+            )
+        self.litecode_key = Path(
+            args.litecode_key or args.deepseek_key
+        ).expanduser().resolve()
+        if provider != "deepseek" and not args.litecode_key:
+            raise RuntimeError(
+                f"--litecode-model {self.litecode_model!r} needs --litecode-key "
+                "(a file path, never the key itself)"
+            )
         self.registry = self.jobs_root / "registry"
         self.config_dir = self.jobs_root / "configs"
         self.log_dir = self.jobs_root / "logs"
@@ -182,9 +224,14 @@ class Runner:
         )
         env["PYTHONUNBUFFERED"] = "1"
         env["EVAL_EGRESS_BASE_URL"] = self.proxy_url
+        if self.harness_runtime is not None:
+            env["HARNESS_RUNTIME"] = str(self.harness_runtime)
         env["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
         env["DEEPSEEK_API_KEY"] = read_key(Path(self.args.deepseek_key))
-        env["LITECODE_API_KEY"] = env["DEEPSEEK_API_KEY"]
+        # LiteCode may run on a different provider/model than the baseline
+        # harnesses. The adapter turns LITECODE_API_KEY into the credential row
+        # for whichever provider the model ref names.
+        env["LITECODE_API_KEY"] = read_key(self.litecode_key)
         # The adapter reads the same official key; it is never written to a
         # config file or printed by this runner.
         env["LITECODE_EVAL_BINARY"] = str(self.litecode_bin_dir / "litecode")
@@ -197,9 +244,11 @@ class Runner:
         env["LITECODE_EVAL_PROFILE"] = str(self.repo / "eval/profile.toml")
         return env
 
-    def _docker(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+    def _docker(
+        self, *arguments: str, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["docker", *arguments], capture_output=True, text=True
+            ["docker", *arguments], capture_output=True, text=True, timeout=timeout
         )
 
     def _image_has_toolchain(self, image: str) -> tuple[bool, str]:
@@ -214,6 +263,56 @@ class Runner:
         )
         detail = (probe.stdout or "") + (probe.stderr or "")
         return probe.returncode == 0, detail.strip()[-1000:]
+
+    def _image_available(self, image: str) -> tuple[bool, str]:
+        """Local image or a pullable registry manifest, without pulling it."""
+        local = self._docker("image", "inspect", image)
+        if local.returncode == 0:
+            return True, "local"
+        try:
+            remote = self._docker("manifest", "inspect", image, timeout=30)
+        except subprocess.TimeoutExpired:
+            return False, "registry manifest check timed out after 30s"
+        detail = ((remote.stdout or "") + (remote.stderr or "")).strip()
+        if remote.returncode == 0:
+            return True, "registry"
+        return False, detail[-1000:] or f"not local and not pullable: {image}"
+
+    def _runtime_probe(self) -> None:
+        """Prove the shared runtime runs on every supported task libc."""
+        if self.harness_runtime is None:
+            return
+        probes = [
+            harness.probe
+            for harness in self.campaign.harnesses
+            if harness.probe
+        ]
+        command = (
+            'set -e; test "$(id -u)" = 0; '
+            'export PATH="/opt/harness/bin:$PATH"; '
+            + " ; ".join(probes)
+        )
+        for image in ("debian:12-slim", "ubuntu:24.04"):
+            probe = self._docker(
+                "run",
+                "--rm",
+                "-e",
+                "HOME=/tmp",
+                "-v",
+                f"{self.harness_runtime}:/opt/harness:ro",
+                "--entrypoint",
+                "bash",
+                image,
+                "-lc",
+                command,
+            )
+            detail = ((probe.stdout or "") + (probe.stderr or "")).strip()
+            if probe.returncode != 0:
+                raise RuntimeError(
+                    f"runtime probe failed on {image} with "
+                    f"{self.harness_runtime}:\n{detail[-2000:]}"
+                )
+            print(f"preflight runtime ok: {image}", flush=True)
 
     def _proxy_health(self) -> None:
         try:
@@ -298,9 +397,25 @@ class Runner:
             ("source dataset", self.source_dataset.is_dir(), str(self.source_dataset))
         )
         checks.append(("egress log dir", self.egress_log.parent.is_dir(), str(self.egress_log.parent)))
-        for task in self.campaign.tasks:
-            probe = self._docker("image", "inspect", task.image)
-            checks.append((f"image {task.name}", probe.returncode == 0, task.image))
+        selected_tasks = [self.campaign.task_map[name] for name in self.tasks]
+        for task in selected_tasks:
+            ok, detail = self._image_available(task.image)
+            checks.append((f"image {task.name}", ok, f"{task.image} ({detail})"))
+        if self.harness_runtime is not None:
+            checks.append(
+                (
+                    "harness runtime",
+                    self.harness_runtime.is_dir(),
+                    str(self.harness_runtime),
+                )
+            )
+            checks.append(
+                (
+                    "harness runtime version",
+                    (self.harness_runtime / "VERSION").is_file(),
+                    str(self.harness_runtime / "VERSION"),
+                )
+            )
         for name, path in (
             ("litecode binary", self.litecode_bin_dir / "litecode"),
             ("litecode seed", self.litecode_bin_dir / "litecode-seed.db"),
@@ -339,9 +454,24 @@ class Runner:
                 f"litecode build-info says dirty: {self.litecode_bin_dir / 'build-info.json'}; "
                 "rebuild from a clean checkout or pass --allow-dirty"
             )
+        head = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if head and info.get("commit") != head:
+            print(
+                "preflight warning:"
+                f" litecode binary commit {info.get('commit', '?')[:12]}"
+                f" != repo HEAD {head[:12]}; the eval profile may not match",
+                flush=True,
+            )
 
-        if not self.args.skip_image_probe:
-            for task in self.campaign.tasks:
+        if self.harness_runtime is not None:
+            if not self.args.skip_image_probe:
+                self._runtime_probe()
+        elif not self.args.skip_image_probe:
+            for task in selected_tasks:
                 ok, detail = self._image_has_toolchain(task.image)
                 if not ok:
                     raise RuntimeError(
@@ -360,6 +490,8 @@ class Runner:
             f" expected_cells={len(self.campaign.expected_cells)}"
             f" harbor={harbor_version}"
             f" litecode={info.get('commit', '?')[:12]} dirty={info.get('dirty')}"
+            f" litecode_model={self.litecode_model}"
+            f" runtime={self.harness_runtime or '-'}"
             f" free={free_gb:.1f}GB proxy={self.proxy_url}",
             flush=True,
         )
@@ -376,7 +508,7 @@ class Runner:
         return digest.hexdigest()
 
     def prepare_dataset(self) -> None:
-        """Copy each campaign task and point task.toml at its eval image.
+        """Copy each campaign task and point task.toml at its campaign image.
 
         Only the environment image changes. Instruction, tests, solution and
         timeouts are copied from the source task; a checksum of the source tree
@@ -450,7 +582,12 @@ class Runner:
                     "source": str(src),
                     "dataset": str(dst),
                     "source_image": original_image,
-                    "eval_image": task.image,
+                    "image": task.image,
+                    "runtime": (
+                        str(self.harness_runtime)
+                        if self.harness_runtime is not None
+                        else None
+                    ),
                     "source_sha256": source_sha,
                     "instruction_sha256": hashlib.sha256(
                         (src / "instruction.md").read_bytes()
@@ -485,7 +622,7 @@ class Runner:
             sys.executable,
             str(self.repo / "eval/harbor/configs/resolve.py"),
             "--job",
-            "compare5",
+            "compare4",
             "--dataset",
             str(self.dataset),
             "--run-id",
@@ -499,6 +636,8 @@ class Runner:
             "--concurrency",
             str(min(self.concurrency, len(harnesses))),
         ]
+        if self.harness_runtime is not None:
+            command.extend(["--harness-runtime", str(self.harness_runtime)])
         for harness in harnesses:
             command.extend(["--harness", harness])
         rendered = subprocess.run(
@@ -513,11 +652,38 @@ class Runner:
                 f"resolver failed for {run_id}: {rendered.stderr.strip()}"
             )
         document = yaml.safe_load(rendered.stdout)
+        # The campaign's model is the stable baseline for every harness. A
+        # LiteCode-only override changes one agent after resolution so the
+        # other harnesses keep the baseline they were measured on.
+        override_litecode_model(document, self.litecode_model)
         path = self.config_dir / f"{run_id}.yaml"
         path.write_text(
             yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
         )
         return path
+
+    def _ensure_image(self, image: str) -> None:
+        if self._docker("image", "inspect", image).returncode == 0:
+            return
+        print(f"pull: {image}", flush=True)
+        pull = self._docker("pull", image)
+        detail = ((pull.stdout or "") + (pull.stderr or "")).strip()
+        if pull.returncode != 0:
+            raise RuntimeError(f"docker pull failed for {image}:\n{detail[-2000:]}")
+
+    def _prune_image(self, image: str) -> None:
+        for attempt in range(3):
+            result = self._docker("image", "rm", image)
+            if result.returncode == 0:
+                print(f"pruned task image: {image}", flush=True)
+                return
+            if attempt < 2:
+                time.sleep(1)
+        detail = ((result.stdout or "") + (result.stderr or "")).strip()
+        print(
+            f"warning: could not prune task image {image}: {detail[-500:]}",
+            flush=True,
+        )
 
     def run_job(self, task: str, run_id: str, harnesses: list[str]) -> dict[str, Any]:
         config = self.render(task, run_id, harnesses)
@@ -631,6 +797,9 @@ class Runner:
             cell = {
                 "harness": harness,
                 "task": task,
+                "model": self.litecode_model
+                if harness == "litecode"
+                else self.campaign.model,
                 "trial": trial.get("trial_name"),
                 "valid": valid,
                 "clean": clean,
@@ -733,6 +902,7 @@ class Runner:
             "campaign": self.campaign.name,
             "campaign_path": str(self.campaign.path),
             "model": self.campaign.model,
+            "litecode_model": self.litecode_model,
             "expected_cells": sorted(self.campaign.expected_cells),
             "price_usd_per_million": self.campaign.price,
             "strict": self.campaign.strict,
@@ -818,7 +988,11 @@ class Runner:
         failures: list[tuple[str, str, str]] = []
         exception_cells: list[str] = []
         unrankable_cells: list[str] = []
-        for task in tasks:
+        task_specs = [self.campaign.task_map[name] for name in tasks]
+        image_users = Counter(spec.image for spec in task_specs)
+        for spec in task_specs:
+            task = spec.name
+            self._ensure_image(spec.image)
             pending = list(requested)
             best: dict[str, dict[str, Any]] = {}
             for round_number in range(0, self.retry_rounds + 1):
@@ -876,6 +1050,13 @@ class Runner:
                 failures.append(
                     (task, harness, "no verifier result after retries")
                 )
+            image_users[spec.image] -= 1
+            if (
+                self.harness_runtime is not None
+                and not self.args.keep_task_images
+                and image_users[spec.image] == 0
+            ):
+                self._prune_image(spec.image)
         self.write_attempt({"finished_at": utc_now(), "selected": selected})
         (self.registry / "selected.json").write_text(
             json.dumps(selected, indent=2, ensure_ascii=False) + "\n",
@@ -920,6 +1101,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=str(home / "build/litecode-src/eval/harbor/bin"),
     )
     parser.add_argument("--deepseek-key", default=str(home / "eval/deepseek_key"))
+    parser.add_argument(
+        "--litecode-model",
+        default=None,
+        help=(
+            "LiteCode-only provider/model ref (for example "
+            "cline/cline-pass/deepseek-v4.1-flash); other harnesses keep the "
+            "campaign baseline"
+        ),
+    )
+    parser.add_argument(
+        "--litecode-key",
+        default=None,
+        help=(
+            "file holding the LiteCode provider key; required when "
+            "--litecode-model names a provider other than deepseek"
+        ),
+    )
+    parser.add_argument(
+        "--harness-runtime",
+        default=None,
+        help="shared runtime directory; overrides campaign.harness_runtime",
+    )
+    parser.add_argument(
+        "--keep-task-images",
+        action="store_true",
+        help="do not prune a task image after its job finishes",
+    )
     parser.add_argument(
         "--proxy-url",
         default=os.environ.get("EVAL_EGRESS_BASE_URL"),

@@ -27,6 +27,7 @@ def base_document() -> dict:
         "source_dataset": "/tmp/unit-source",
         "egress_log": "/tmp/unit-egress.jsonl",
         "egress_root": "http://127.0.0.1:8399",
+        "harness_runtime": str(Path(tempfile.gettempdir()) / "unit-runtime"),
         "price_usd_per_million": {
             "uncached_input": 0.15,
             "cached_input": 0.003,
@@ -70,6 +71,7 @@ class CampaignTest(unittest.TestCase):
         )
         self.assertEqual(campaign.price["output"], 0.60)
         self.assertTrue(campaign.strict["require_token_complete"])
+        self.assertEqual(campaign.harness_runtime.name, "unit-runtime")
 
     def test_duplicate_task_is_rejected(self) -> None:
         document = base_document()

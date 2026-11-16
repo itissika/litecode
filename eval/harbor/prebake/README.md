@@ -1,4 +1,9 @@
-# Prebaked harness images
+# Prebaked harness images (legacy)
+
+> **2026-11-14:** the active bench no longer builds per-task harness images.
+> It uses one shared runtime mounted at `/opt/harness`; see
+> [`../runtime/README.md`](../runtime/README.md). This directory remains as a
+> fallback for the old five-harness image model.
 
 Three task images, one per benchmark problem, each carrying the same toolchain:
 

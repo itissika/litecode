@@ -15,5 +15,8 @@ mkdir -p /logs/agent/litecode
 cp -r "$PWD/.litecode/logs" /logs/agent/litecode/ 2>/dev/null || true
 cp "$PWD"/.litecode/sessions.db* /logs/agent/litecode/ 2>/dev/null || true
 cp -r "$PWD/.litecode/diagnostics" /logs/agent/litecode/ 2>/dev/null || true
+# Large reasoning bodies live in content-addressed blobs next to the session
+# database. Without them the trace can see a token count but not the text.
+cp -r "$PWD/.litecode/blobs" /logs/agent/litecode/ 2>/dev/null || true
 
 exit "$status"

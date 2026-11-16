@@ -641,6 +641,21 @@ class LiteCode(BaseInstalledAgent):
         scratch = Path(tempfile.mkdtemp(prefix="litecode-transcript-"))
         target = scratch / _SESSION_DB
         remote = f"/logs/agent/{_ARTIFACT_DIR}/{_SESSION_DB}"
+
+        async def present(path: str) -> bool:
+            # Docker's failed `compose cp` is noisy. Ask first when the
+            # environment can answer; older test doubles cannot.
+            checker = getattr(environment, "is_file", None)
+            if checker is None:
+                return True
+            try:
+                return bool(await checker(path))
+            except Exception:
+                return True
+
+        if not await present(remote):
+            shutil.rmtree(scratch, ignore_errors=True)
+            return None
         try:
             await environment.download_file(remote, target)
         except Exception:
@@ -650,6 +665,8 @@ class LiteCode(BaseInstalledAgent):
             shutil.rmtree(scratch, ignore_errors=True)
             return None
         for suffix in ("-wal", "-shm"):
+            if not await present(remote + suffix):
+                continue
             try:
                 await environment.download_file(
                     remote + suffix, target.with_name(target.name + suffix)

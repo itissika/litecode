@@ -24,6 +24,17 @@ class CostTest(unittest.TestCase):
     def test_missing_token_stays_missing(self) -> None:
         self.assertIsNone(collect.cost_of(None, 0, 0))
 
+    def test_cache_split_is_trusted_only_for_official_deepseek(self) -> None:
+        self.assertTrue(collect.cache_trusted_model("deepseek/deepseek-flash"))
+        self.assertFalse(
+            collect.cache_trusted_model(
+                "commandcode/deepseek/deepseek-v4.1-flash"
+            )
+        )
+        self.assertFalse(
+            collect.cache_trusted_model("cline/cline-pass/deepseek-v4.1-flash")
+        )
+
 
 class PerTrialParsingTest(unittest.TestCase):
     def test_reads_trial_result_not_the_job_rollup(self) -> None:
@@ -115,6 +126,79 @@ class PerTrialParsingTest(unittest.TestCase):
                 + (800 * collect.PRICE_CACHED_INPUT)
                 + (200 * collect.PRICE_OUTPUT),
             )
+
+    def test_non_official_cache_is_priced_as_uncached_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job"
+            trial = job / "prove-plus-comm__cache"
+            (trial / "agent").mkdir(parents=True)
+            (job / "config.json").write_text(
+                json.dumps(
+                    {
+                        "job_name": "job",
+                        "agents": [
+                            {
+                                "name": "eval.harbor.litecode_agent:LiteCode",
+                                "model_name": (
+                                    "commandcode/deepseek/deepseek-v4.1-flash"
+                                ),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (job / "result.json").write_text(
+                json.dumps({"stats": {}}), encoding="utf-8"
+            )
+            (trial / "result.json").write_text(
+                json.dumps(
+                    {
+                        "task_name": "terminal-bench/prove-plus-comm",
+                        "trial_name": "prove-plus-comm__cache",
+                        "agent_info": {"name": "litecode"},
+                        "config": {
+                            "agent": {
+                                "model_name": (
+                                    "commandcode/deepseek/deepseek-v4.1-flash"
+                                )
+                            }
+                        },
+                        "agent_result": {
+                            "n_input_tokens": 1000,
+                            "n_cache_tokens": 800,
+                            "n_output_tokens": 200,
+                        },
+                        "verifier_result": {"rewards": {"reward": 1.0}},
+                        "exception_info": None,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (trial / "agent/litecode.txt").write_text(
+                "[litecode] completed in 1.0s - tokens prompt=1000 "
+                "completion=200 cache_hit=800 cache_miss=200\n",
+                encoding="utf-8",
+            )
+            (trial / "agent/trajectory.json").write_text(
+                json.dumps({"steps": [{"source": "agent", "llm_call_count": 1}]}),
+                encoding="utf-8",
+            )
+
+            cell = collect.load_attempts(Path(tmp), {})[0][3]
+            self.assertFalse(cell.cache_trusted)
+            self.assertAlmostEqual(
+                cell.cost,
+                (1000 * collect.PRICE_UNCACHED_INPUT)
+                + (200 * collect.PRICE_OUTPUT),
+            )
+            self.assertAlmostEqual(
+                cell.reported_cost,
+                (200 * collect.PRICE_UNCACHED_INPUT)
+                + (800 * collect.PRICE_CACHED_INPUT)
+                + (200 * collect.PRICE_OUTPUT),
+            )
+            self.assertIn("cache 命中不可信", cell.token_note)
 
     def test_verifier_pass_with_nonzero_exit_is_valid_but_not_clean(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

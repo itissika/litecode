@@ -94,6 +94,7 @@ def resolve(
     egress_base_url: str,
     task_names: list[str] | None = None,
     harness_names: list[str] | None = None,
+    harness_runtime: str | None = None,
 ) -> dict[str, Any]:
     """The Harbor job document for one run of one job file."""
     if not egress_base_url:
@@ -111,7 +112,7 @@ def resolve(
     model = _load(_HERE / "models" / f"{composition['model']}.yaml", "model")
     selected_tasks = list(task_names or composition.get("tasks") or [])
     if harness_names:
-        # The campaign manifest, not jobs/compare5.yaml, owns the matrix. A
+        # The campaign manifest, not jobs/compare4.yaml, owns the matrix. A
         # harness passed here only needs a layer file; it does not have to be
         # pre-listed in the job composition.
         for name in harness_names:
@@ -190,9 +191,24 @@ def resolve(
     dataset_entry: dict[str, Any] = {"path": dataset}
     if selected_tasks:
         dataset_entry["task_names"] = selected_tasks
+    environment = copy.deepcopy(bench["environment"])
+    if harness_runtime:
+        runtime = Path(harness_runtime).expanduser().resolve()
+        if not runtime.is_dir():
+            raise ResolveError(f"harness runtime is not a directory: {runtime}")
+        mounts = list(environment.get("mounts") or [])
+        mounts.append(
+            {
+                "type": "bind",
+                "source": str(runtime),
+                "target": "/opt/harness",
+                "read_only": True,
+            }
+        )
+        environment["mounts"] = mounts
     rendered.update(
         {
-            "environment": bench["environment"],
+            "environment": environment,
             "datasets": [dataset_entry],
             "agents": agents,
         }
@@ -235,6 +251,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="override n_concurrent_trials for this attempt.",
     )
+    parser.add_argument(
+        "--harness-runtime",
+        default=os.environ.get("HARNESS_RUNTIME", ""),
+        help="host directory to bind-mount read-only at /opt/harness",
+    )
     args = parser.parse_args(argv)
     try:
         rendered = resolve(
@@ -244,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
             args.base_url,
             task_names=args.task,
             harness_names=args.harness,
+            harness_runtime=args.harness_runtime or None,
         )
         if args.jobs_dir is not None:
             rendered["jobs_dir"] = args.jobs_dir

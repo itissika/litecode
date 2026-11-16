@@ -1,11 +1,12 @@
-"""Installed-agent adapters for images that already contain the CLI.
+"""Installed-agent adapters for a shared, prebuilt harness runtime.
 
 Harbor's stock installed agents install their CLI on every trial. That is the
 right default for a clean environment, but it makes a harness comparison pay
 apt/nvm/npm costs inside every cell and turns a flaky registry into a failed
-trial.  The eval images built by ``eval/harbor/prebake`` already carry the
-exact binaries; these subclasses only verify the binary is present and then
-reuse the stock adapter's run path, config writing and trajectory conversion.
+trial.  The eval runtime built by ``eval/harbor/runtime`` already carries the
+exact binaries and is mounted read-only at /opt/harness; these subclasses
+write a PATH shim, verify the binary, and then reuse the stock adapter's run
+path, config writing and trajectory conversion.
 
 The check is deliberately a check, not a silent no-op: an image without the
 expected binary fails before the model is called, with the command and output
@@ -28,6 +29,31 @@ from harbor.agents.installed.opencode import OpenCode
 from harbor.agents.installed.pi import Pi
 from harbor.environments.base import BaseEnvironment
 
+_HARNESS_ROOT = "/opt/harness"
+
+
+async def _install_runtime_path(
+    agent: BaseInstalledAgent, environment: BaseEnvironment
+) -> None:
+    """Give the stock adapters a PATH shim instead of a real nvm install.
+
+    The trial container is ephemeral, so writing ``~/.nvm/nvm.sh`` is safe.
+    Codex guards its source with ``[ -s ... ]`` and Pi/OpenCode source it
+    unconditionally; both then find the read-only runtime at /opt/harness.
+    """
+    command = (
+        'mkdir -p "$HOME/.nvm" && '
+        "printf '%s\\n' 'export PATH=\"/opt/harness/bin:$PATH\"' "
+        '>> "$HOME/.nvm/nvm.sh"'
+    )
+    result = await agent.exec_as_agent(environment, command=command)
+    if result.return_code != 0:
+        detail = ((result.stdout or "") + (result.stderr or "")).strip()
+        raise RuntimeError(
+            "could not write the shared-runtime PATH shim; "
+            f"`{command}` exited {result.return_code}: {detail or '<no output>'}"
+        )
+
 
 async def _require_binary(
     agent: BaseInstalledAgent,
@@ -40,16 +66,17 @@ async def _require_binary(
     if result.return_code != 0:
         detail = ((result.stdout or "") + (result.stderr or "")).strip()
         raise RuntimeError(
-            f"prebaked {label} is not available in this image; "
+            f"prebaked {label} is not available in the shared runtime; "
             f"`{command}` exited {result.return_code}: {detail or '<no output>'}"
         )
 
 
 class PrebakedPi(Pi):
-    """pi from the task image; skip the per-trial nvm + npm install."""
+    """pi from the shared runtime; skip the per-trial nvm + npm install."""
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
+        await _install_runtime_path(self, environment)
         await _require_binary(
             self,
             environment,
@@ -75,7 +102,7 @@ class PrebakedGrokBuild(GrokBuild):
 
 
 class PrebakedOpenCode(OpenCode):
-    """opencode from the task image; skip apt + nvm + npm.
+    """opencode from the shared runtime; skip apt + nvm + npm.
 
     It also replaces the stock ``| tee`` transport with a file redirect. In
     this Harbor/Docker combination the tee pipeline can close while opencode's
@@ -87,6 +114,7 @@ class PrebakedOpenCode(OpenCode):
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
+        await _install_runtime_path(self, environment)
         await _require_binary(
             self,
             environment,
@@ -167,10 +195,11 @@ class PrebakedOpenCode(OpenCode):
 
 
 class PrebakedCodex(Codex):
-    """codex from the task image; skip the per-trial nvm + npm install."""
+    """codex from the shared runtime; skip the per-trial nvm + npm install."""
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
+        await _install_runtime_path(self, environment)
         await _require_binary(
             self,
             environment,

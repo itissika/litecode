@@ -1,9 +1,9 @@
-> **2026-11-13 update:** the five-harness panel now lives in
-> [`bench5/`](bench5/README.md). It adds codex, pi, opencode and grok-build to
-> the LiteCode adapter below, prebakes the CLIs, uses one job per task for
-> per-cell token accounting, and reads per-trial result files (Harbor 0.25.0's
-> job result is only a stats rollup). See `eval/bench5-report.md` and
-> `eval/bench5-summary.md` for the result.
+> **2026-11-14 update:** the four-harness panel now lives in
+> [`bench5/`](bench5/README.md). It adds codex, pi and opencode to the LiteCode
+> adapter below, serves their binaries from one shared runtime mounted at
+> `/opt/harness`, uses one job per task for per-cell token accounting, and reads
+> per-trial result files (Harbor 0.25.0's job result is only a stats rollup).
+> See `eval/bench5-report.md` and `eval/bench5-summary.md` for the result.
 # LiteCode in Terminal-Bench (Harbor)
 
 Three pieces, nothing else: a Linux build of the binary, a Harbor adapter that
@@ -266,7 +266,9 @@ the same split and merge order workbuddy-bench documents in its
 YAML; the endpoint root comes from `EVAL_EGRESS_BASE_URL`, never from a file,
 and a model-limit override is a hard error. See [configs/README.md](configs/README.md).
 
-Harnesses configured so far: `pi`, `grok-build`, `opencode`, `codex` — each at
-thinking high, on `deepseek/deepseek-flash`, through the egress proxy. Codex
-speaks Responses through a native `config.toml`; the other three speak chat
-completions.
+Harnesses configured so far: `pi`, `opencode`, `codex` — each at thinking high,
+on `deepseek/deepseek-flash`, through the egress proxy. Codex speaks Responses
+through a native `config.toml`; the other two speak chat completions. The
+bench5 panel adds LiteCode and serves these three binaries from one shared
+runtime (`eval/harbor/runtime/README.md`). `grok-build` remains as a legacy
+layer but is no longer in the active panel.

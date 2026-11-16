@@ -1,9 +1,10 @@
-> **2026-11-13 update:** the active job is `jobs/compare5.yaml` with
-> `harnesses: [litecode, codex, pi, opencode, grok-build]`. The four non-LiteCode
-> layers now point at `eval.harbor.prebaked_agents:*` so the per-trial
-> apt/nvm/npm install is skipped; LiteCode keeps the only changed default
-> config (`eval/profile.toml`) and stays off the proxy. The resolver supports
-> `--task` and repeatable `--harness` for per-task jobs and repair runs.
+> **2026-11-14 update:** the active job is `jobs/compare4.yaml` with
+> `harnesses: [litecode, codex, pi, opencode]`. The three non-LiteCode layers
+> point at `eval.harbor.prebaked_agents:*`; their binaries come from one shared
+> runtime mounted read-only at `/opt/harness`, not from per-task images.
+> LiteCode keeps the only changed default config (`eval/profile.toml`) and
+> stays off the proxy. The resolver supports `--task`, repeatable `--harness`,
+> and `--harness-runtime` for per-task jobs and repair runs.
 > Runbook: `eval/harbor/bench5/README.md`.
 # Eval job configs
 
@@ -70,38 +71,34 @@ row in the proxy's JSONL names both the run and the harness without a join.
 DeepSeek's own default is already high, so a harness that ignores the knob
 still runs at high; the note below only concerns whether the knob is honoured.
 
-## Known cost: every trial installs its CLI
+## Shared harness runtime
 
-Harbor's installed agents install the CLI inside each trial's container: apt
-gets curl and node, nvm installs node 22, then `npm i -g <cli>`. opencode took
-over four minutes once, and a real run is four harnesses times many tasks, so
-this is paid again and again. The fix is a pre-baked harness image per harness
-(workbuddy-bench does this with `configs/harnesses/<harness>/docker/Dockerfile`
-and a split mount), which is **not** configured here yet.
+Harbor's installed agents normally install the CLI inside every trial. The
+bench instead builds one runtime directory (`eval/harbor/runtime/build.sh`)
+with Node 22 + codex + pi + opencode + rg, mounts it read-only at
+`/opt/harness`, and writes a small `~/.nvm/nvm.sh` PATH shim in `install()`.
+The stock run commands are unchanged; the runtime is prebuilt, so no trial
+touches a registry.
 
-Until then, `agent_setup_timeout_multiplier: 4.0` in `bench/_default.yaml` is
-what keeps the setup from timing out. A registry mirror
-(`npm_config_registry=https://registry.npmmirror.com` in the harness env) is
-being tried first; if it holds up, it belongs in the harness layer, not in this
-note.
+The task image stays the public task image. Adding a task no longer requires a
+per-task image build; the runner pulls the image on demand and can prune it
+after the job. `agent_setup_timeout_multiplier: 4.0` remains a safety margin
+for the adapter's install check.
 
 ## Not verified here
 
 * opencode's `reasoningEffort` overlay key: read from opencode's provider
-  config docs, not yet seen in a run. If opencode drops it, the run is still
-  high by DeepSeek's default.
-* Nothing here has been run against the proxy yet; the architect smokes each
-  harness in WSL first.
-* Codex: its effective `config.toml` was built locally through Harbor 0.25.0's
-  own adapter (`Codex._build_effective_config`), giving `model deepseek-flash`,
-  provider `deepseek` with `wire_api = "responses"` and the per-run proxy
-  `base_url`; no container has run it yet. `model_catalog_json` is omitted
-  first, as agreed; add it only if codex refuses `deepseek-flash`.
+  config docs, not yet independently observed. If opencode drops it, the run
+  is still high by DeepSeek's default.
+* The 2026-11-14 one-task smoke ran codex and opencode to a verifier reward of
+  1.0 and pi to 0.0 through the proxy. LiteCode failed before the model because
+  the WSL binary was older than the repo profile; rebuild the binary from the
+  same checkout before treating that cell as an infrastructure result.
 
 ## Tests
 
     cd eval/harbor/configs && python -m unittest test_resolve
 
-Nine tests; the Harbor-shape test validates the rendered YAML through
+Eleven tests; the Harbor-shape test validates the rendered YAML through
 `harbor.models.job.config.JobConfig` when Harbor is importable and skips
 otherwise.
