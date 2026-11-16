@@ -224,7 +224,6 @@ struct Protos {
     range: Persistent<Object<'static>>,
     syntax: Persistent<Object<'static>>,
     type_error: Persistent<Object<'static>>,
-    tool: Persistent<Object<'static>>,
 }
 
 struct Flags {
@@ -798,7 +797,6 @@ fn install(
     faults: &Arc<Faults>,
     output: &Rc<RefCell<OutputLedger>>,
 ) -> Result<(), Failure> {
-    install_tool_error(ctx)?;
     install_libs(ctx)?;
     install_console(ctx, output, flags, faults)?;
     let shared = Shared {
@@ -813,35 +811,6 @@ fn install(
         install_namespace(ctx, namespace, &shared)?;
     }
     hide_blocking_intrinsics(ctx)
-}
-
-fn install_tool_error(ctx: &Ctx<'_>) -> Result<(), Failure> {
-    const SOURCE: &str = r#"
-        (function () {
-            class ToolError extends Error {
-                constructor(message) {
-                    super(message);
-                    Object.defineProperty(this, "name", {
-                        value: "ToolError",
-                        writable: false,
-                        enumerable: false,
-                        configurable: false
-                    });
-                }
-            }
-            Object.defineProperty(globalThis, "ToolError", {
-                value: ToolError,
-                writable: false,
-                enumerable: false,
-                configurable: false
-            });
-        })()
-    "#;
-    match ctx.eval::<(), _>(SOURCE) {
-        Ok(()) => Ok(()),
-        Err(Error::Exception) => Err(Failure::internal(boundary::take_exception(ctx).message)),
-        Err(error) => Err(Failure::internal(error.to_string())),
-    }
 }
 
 fn install_libs(ctx: &Ctx<'_>) -> Result<(), Failure> {
@@ -1018,7 +987,7 @@ fn wrap_result_proxy<'js>(
     warn: &Function<'js>,
 ) -> Result<Function<'js>, Failure> {
     const FACTORY: &str = r#"
-        (fn, fields, failureFields, name, warn) => {
+        (fn, fields, name, warn) => {
             const blocked = new Set([
                 "then", "toJSON", "toString", "valueOf", "inspect", "constructor"
             ]);
@@ -1027,26 +996,13 @@ fn wrap_result_proxy<'js>(
                     if (value === null || typeof value !== "object" || Array.isArray(value)) {
                         return value;
                     }
-                    const failed = value.ok === false;
-                    const allowed = failed ? failureFields : fields;
                     return new Proxy(value, {
                         get(target, property, receiver) {
                             if (typeof property === "symbol" || blocked.has(property)) {
                                 return Reflect.get(target, property, receiver);
                             }
-                            if (allowed.indexOf(property) >= 0) {
+                            if (fields.indexOf(property) >= 0) {
                                 return Reflect.get(target, property, receiver);
-                            }
-                            if (failed) {
-                                warn(
-                                    "not_found",
-                                    name,
-                                    "'" + name + "' returned " + String(target.reason) +
-                                        ": " + String(target.message) +
-                                        ". A failed result has only ok, reason and message; there is no '" +
-                                        property + "'."
-                                );
-                                return undefined;
                             }
                             warn(
                                 "not_found",
@@ -1065,9 +1021,8 @@ fn wrap_result_proxy<'js>(
         .eval::<Function<'js>, _>(FACTORY)
         .map_err(|error| Failure::internal(error.to_string()))?;
     let fields = js_field_list(ctx, contract.fields.as_ref())?;
-    let failure = js_field_list(ctx, contract.failure_fields.as_ref())?;
     factory
-        .call::<_, Function<'js>>((function, fields, failure, name, warn.clone()))
+        .call::<_, Function<'js>>((function, fields, name, warn.clone()))
         .map_err(|error| Failure::internal(error.to_string()))
 }
 
@@ -1464,7 +1419,7 @@ fn throw_tool_error(
 ) -> Error {
     const FACTORY: &str = r#"
         (function (message, code, details, retryable, tool, seq) {
-            const error = new ToolError(message);
+            const error = new Error(message);
             const define = (key, value) => Object.defineProperty(error, key, {
                 value: value,
                 writable: false,
@@ -1474,6 +1429,7 @@ fn throw_tool_error(
             define("code", code);
             define("tool", tool);
             define("seq", seq);
+            define("__litecode_host_call__", true);
             if (details !== undefined && details !== null) define("details", details);
             if (retryable === true) define("retryable", true);
             return error;
@@ -1708,12 +1664,9 @@ fn classify_value<'js>(
     {
         return ProgramEnd::Failure(Failure::syntax(thrown.message, thrown.stack, source_lines));
     }
-    if saved
-        .as_ref()
-        .is_some_and(|protos| proto_is(ctx, value, &protos.tool))
-    {
+    if let Some(info) = tool_error_info(ctx, value) {
         let mut failure = Failure::exception(thrown.message, thrown.stack);
-        failure.tool_error = tool_error_info(ctx, value, saved.as_ref().unwrap());
+        failure.tool_error = Some(info);
         return ProgramEnd::Failure(failure.locate_runtime(source_lines));
     }
     if saved
@@ -1732,12 +1685,15 @@ fn classify_value<'js>(
 fn tool_error_info<'js>(
     ctx: &Ctx<'js>,
     value: &Value<'js>,
-    protos: &Protos,
 ) -> Option<super::ToolErrorInfo> {
-    if !proto_is(ctx, value, &protos.tool) {
+    let object = value.as_object()?;
+    if object
+        .get::<_, bool>("__litecode_host_call__")
+        .ok()
+        != Some(true)
+    {
         return None;
     }
-    let object = value.as_object()?;
     let code = object
         .get::<_, String>("code")
         .unwrap_or_else(|_| "internal".into());
@@ -1979,7 +1935,6 @@ fn save_prototypes(ctx: &Ctx<'_>) -> Result<Protos, Failure> {
         range: Persistent::save(ctx, eval_object(ctx, "RangeError.prototype")?),
         syntax: Persistent::save(ctx, eval_object(ctx, "SyntaxError.prototype")?),
         type_error: Persistent::save(ctx, eval_object(ctx, "TypeError.prototype")?),
-        tool: Persistent::save(ctx, eval_object(ctx, "ToolError.prototype")?),
     })
 }
 

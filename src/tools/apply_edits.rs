@@ -1,10 +1,11 @@
 //! Code-surface serial batch replacements (`apply_edits`).
 //!
 //! Contract (WP-198):
-//! `tools.file.apply_edits(edits: Array<{path,old_string,new_string}>) -> ToolResult<ApplyEditsData>`
+//! `tools.file.apply_edits(edits: Array<{path,old_string,new_string}>) -> Promise<ApplyEditsData>`
 //! Serial; item failure skips and continues; `results` matches input length.
-//! Companion of `edit` (injected when `edit` is bound). Shares the edit dial
-//! for permission / path_mode.
+//! Per-item failures stay in `results`; a call-level failure rejects with an
+//! ordinary `Error`. Companion of `edit` (injected when `edit` is bound).
+//! Shares the edit dial for permission / path_mode.
 
 use std::sync::Arc;
 

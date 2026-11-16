@@ -54,7 +54,7 @@ pub(super) struct LedgerSnap {
     pub brief: Option<String>,
 }
 
-/// An uncaught `ToolError`, used for the header failure tag.
+/// An uncaught nested-call error, used for the header failure tag.
 pub(super) struct UncaughtToolError {
     pub seq: u64,
     pub tool: String,
@@ -292,26 +292,6 @@ pub(super) fn reminders_for_call_with_metadata(
         _ => {}
     }
     out
-}
-
-/// One line for a call that failed while the program kept running.
-///
-/// A failure envelope carries no result fields, so [`reminders_for_call`] says
-/// nothing about it: the sentence is built here from the reason code, which is
-/// the only part of the envelope that is a field rather than prose. A run that
-/// stopped on this call says it in the manifest instead, so the caller drops
-/// this line there.
-pub(super) fn swallowed_failure(value: &Value) -> Option<String> {
-    let object = value.as_object()?;
-    if object.get("ok").and_then(Value::as_bool) != Some(false) {
-        return None;
-    }
-    let reason = object
-        .get("reason")
-        .and_then(Value::as_str)
-        .filter(|reason| !reason.is_empty())
-        .unwrap_or("error");
-    Some(format!("failed({reason}); the program kept going"))
 }
 
 /// LSP results carry an index state; `partial` and `unknown` are different
@@ -1596,7 +1576,7 @@ fn header_line(report: &RunReport) -> String {
             .filter(|line| !line.is_empty())
             .map(|line| prefix_utf8(line, HEAD_MESSAGE_CAP));
         let mut line = format!(
-            "run_code failed: uncaught ToolError {} from call #{} {} {} · {duration}",
+            "run_code failed: tool call {} from call #{} {} {} · {duration}",
             error.code,
             error.seq,
             tool_path(&error.tool),
@@ -2454,32 +2434,17 @@ mod tests {
     }
 
 
-    /// A failure the program swallowed is one line, anchored to the call. A
-    /// success says nothing here, and a run that died on the failure lets the
-    /// manifest say it instead: the same fact never gets two lines.
+    /// A caught rejection is one line, anchored to the call.
     #[test]
-    fn a_swallowed_failure_is_one_line_above_the_stream() {
-        let envelope = json!({
-            "ok": false,
-            "reason": "not_found",
-            "message": "missing.txt does not exist",
-        });
-        assert_eq!(
-            swallowed_failure(&envelope).as_deref(),
-            Some("failed(not_found); the program kept going")
-        );
-        assert!(swallowed_failure(&json!({ "ok": true, "path": "a.txt" })).is_none());
-        assert!(swallowed_failure(&json!({})).is_none());
-        assert!(swallowed_failure(&json!("text")).is_none());
-
+    fn a_caught_rejection_is_one_line_above_the_stream() {
         let mut report = base_report();
-        set_value(&mut report, envelope);
+        set_value(&mut report, json!({ "continued": true }));
         report.reminders = vec![CallReminder {
             seq: 1,
             tool: "file.read".into(),
             kind: ReminderKind::Failure,
             dedupe: None,
-            text: "failed(not_found); the program kept going".into(),
+            text: "failed(not_found); the program may have caught the error".into(),
         }];
         let out = render_model_view(&report);
         let lines: Vec<&str> = out.lines().collect();
@@ -2489,7 +2454,7 @@ mod tests {
             .expect("one failure line");
         assert_eq!(out.matches("failed(not_found)").count(), 1, "{out}");
         assert!(anchor + 1 < lines.len(), "the stream follows the line: {out}");
-        assert!(lines.last().unwrap().contains("\"not_found\""), "{out}");
+        assert!(lines.last().unwrap().contains("continued"), "{out}");
     }
 
     /// A failed run already lists the call; the block must not say it again.
@@ -3127,7 +3092,7 @@ mod tests {
     }
 
     #[test]
-    fn uncaught_tool_error_header_keeps_the_code_and_the_call() {
+    fn uncaught_call_header_keeps_the_code_and_the_call() {
         let mut report = base_report();
         report.tool_error = Some(UncaughtToolError {
             seq: 2,
@@ -3138,7 +3103,10 @@ mod tests {
         });
         report.call_total = Some(2);
         let line = header_line(&report);
-        assert!(line.contains("uncaught ToolError invalid_args"), "{line}");
+        assert!(
+            line.contains("run_code failed: tool call invalid_args from call #2 tools.write path=a.txt"),
+            "{line}"
+        );
         assert!(line.contains("from call #2 tools.write"), "{line}");
         assert!(!line.contains("tool calls:"), "{line}");
     }

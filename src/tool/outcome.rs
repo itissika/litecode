@@ -51,8 +51,8 @@ impl Diagnostic {
     }
 }
 
-/// Program-facing error. Distinct from [`crate::types::ToolError`], which keeps
-/// `kind` for the shared pipeline and Phase 0 fixtures.
+/// Internal error data carried by a failed [`ToolOutcome`]. The code surface
+/// exposes it as a rejected ordinary JavaScript `Error`, not as a value.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ToolError {
     pub code: String,
@@ -146,9 +146,8 @@ impl<T: Serialize> ToolOutcome<T> {
 
 pub fn kind_for_code(code: &str) -> ToolErrorKind {
     match code {
-        // `invalid_args` is the JS-facing name of the same fault (`soft_failure_reason`
-        // emits it for `invalid_input`), so a contract row labelled with it must not
-        // fall through to Internal.
+        // `invalid_args` is the bridge's rejection code for an invalid input, so a
+        // contract row labelled with it must not fall through to Internal.
         "invalid_input" | "invalid_args" | "invalid_regex" | "no_match" | "empty"
         | "ambiguous" => ToolErrorKind::InvalidInput,
         "not_found" => ToolErrorKind::NotFound,
@@ -178,77 +177,20 @@ pub fn error_kind_code(kind: ToolErrorKind) -> String {
         .unwrap_or_else(|| "internal".into())
 }
 
-/// Fields of the resolved failure envelope below. The read proxy allows
-/// exactly these on a failed result; a test pins them to what this function
-/// actually builds, so the list cannot drift from the envelope.
-pub const FAILURE_FIELDS: [&str; 3] = ["ok", "reason", "message"];
-
-/// Data the program receives, or the `ToolError` it should see.
+/// Data the program receives, or the `HostError` it sees as a rejected call.
 ///
 /// `retryable` is true only when the code is `conflict` or `timeout` and the
 /// pipeline marked the error retryable.
 pub fn program_result(result: &ToolCallResult) -> Result<Value, HostError> {
     let failed = result.error.is_some() || result.level == ToolSignalLevel::Error;
     if !failed {
-        return Ok(with_ok_flag(result.data.clone().unwrap_or(Value::Null)));
+        return Ok(result.data.clone().unwrap_or(Value::Null));
     }
     let code = program_error_code(result);
-    if let Some(reason) = soft_failure_reason(&code) {
-        // WP-210 G: the tool did not get the job done, but the program did
-        // nothing wrong. Resolve `{ok:false, reason, message}` instead of
-        // rejecting so one bad item does not end a batch.
-        let message = result
-            .error
-            .as_ref()
-            .map(|error| error.message.clone())
-            .filter(|message| !message.is_empty())
-            .unwrap_or_else(|| result.content.clone());
-        let mut map = serde_json::Map::new();
-        map.insert("ok".into(), Value::Bool(false));
-        map.insert("reason".into(), Value::String(reason.into()));
-        map.insert("message".into(), Value::String(message));
-        return Ok(Value::Object(map));
-    }
     program_error(result, code)
 }
 
-/// Domain codes that resolve `{ok:false}`. Everything else (stale_cursor,
-/// timeout, cancelled, internal, …) still rejects `ToolError`.
-pub fn soft_failure_reason(code: &str) -> Option<&'static str> {
-    match code {
-        "not_found" => Some("not_found"),
-        "invalid_input" | "invalid_regex" => Some("invalid_args"),
-        "ambiguous" => Some("ambiguous"),
-        "permission_denied" => Some("permission"),
-        "io" => Some("io"),
-        "no_match" => Some("no_match"),
-        "empty" => Some("empty"),
-        "conflict" => Some("conflict"),
-        "stale" => Some("stale"),
-        "unavailable" => Some("unavailable"),
-        "still_alive" => Some("still_alive"),
-        _ => None,
-    }
-}
-
-/// Every resolved object carries a leading `ok`. Payloads own the other
-/// fields; the host owns this envelope.
-fn with_ok_flag(data: Value) -> Value {
-    match data {
-        Value::Object(map) => {
-            let mut out = serde_json::Map::with_capacity(map.len() + 1);
-            out.insert("ok".into(), Value::Bool(true));
-            for (key, value) in map {
-                if key != "ok" {
-                    out.insert(key, value);
-                }
-            }
-            Value::Object(out)
-        }
-        other => other,
-    }
-}
-
+/// The code carried by the rejected call.
 fn program_error_code(result: &ToolCallResult) -> String {
     result.error_code.clone().unwrap_or_else(|| {
         result
@@ -294,56 +236,53 @@ mod tests {
     }
 
     #[test]
-    fn domain_failures_resolve_ok_false_and_system_failures_reject() {
-        // read missing file / grep bad regex / argument validation / permission / io.
-        for (kind, code, reason) in [
-            (ToolErrorKind::NotFound, "not_found", "not_found"),
-            (ToolErrorKind::InvalidInput, "invalid_regex", "invalid_args"),
-            (ToolErrorKind::InvalidInput, "invalid_input", "invalid_args"),
-            (
-                ToolErrorKind::PermissionDenied,
-                "permission_denied",
-                "permission",
-            ),
-            (ToolErrorKind::Io, "io", "io"),
-        ] {
-            let value = program_result(&coded(kind, code)).expect("resolves, not rejects");
-            assert_eq!(value["ok"], false, "{code}");
-            assert_eq!(value["reason"], reason, "{code}");
-            assert_eq!(value["message"], format!("{code} happened"));
-        }
-        // write conflict/stale and unavailable engine states resolve ok:false.
-        for (kind, code, reason) in [
-            (ToolErrorKind::Conflict, "conflict", "conflict"),
-            (ToolErrorKind::Conflict, "stale", "stale"),
-            (ToolErrorKind::Unavailable, "unavailable", "unavailable"),
-            (ToolErrorKind::Conflict, "still_alive", "still_alive"),
-        ] {
-            let value = program_result(&coded(kind, code)).expect("resolves, not rejects");
-            assert_eq!(value["ok"], false, "{code}");
-            assert_eq!(value["reason"], reason, "{code}");
-        }
-        // System failures still reject ToolError.
+    fn every_failure_is_a_rejected_host_error() {
+        use crate::ptc::HostErrorKind;
+
+        // Domain failures, engine states, and system failures all reject. The
+        // distinction is in `HostError.code`, not in the JavaScript shape.
         for (kind, code) in [
+            (ToolErrorKind::NotFound, "not_found"),
+            (ToolErrorKind::InvalidInput, "invalid_regex"),
+            (ToolErrorKind::InvalidInput, "invalid_input"),
+            (ToolErrorKind::PermissionDenied, "permission_denied"),
+            (ToolErrorKind::Io, "io"),
+            (ToolErrorKind::Conflict, "conflict"),
+            (ToolErrorKind::Conflict, "stale"),
+            (ToolErrorKind::Unavailable, "unavailable"),
+            (ToolErrorKind::Conflict, "still_alive"),
             (ToolErrorKind::Conflict, "stale_cursor"),
             (ToolErrorKind::Timeout, "timeout"),
             (ToolErrorKind::Internal, "internal"),
         ] {
-            assert!(program_result(&coded(kind, code)).is_err(), "{code}");
+            let error = program_result(&coded(kind, code)).expect_err("must reject");
+            match error.kind {
+                HostErrorKind::Tool {
+                    code: actual, ..
+                } => assert_eq!(actual, code, "{code}"),
+                other => panic!("{code}: {other:?}"),
+            }
+            assert_eq!(error.message, format!("{code} happened"), "{code}");
         }
-        // Success gains a leading ok:true; the host owns the envelope.
+    }
+
+    #[test]
+    fn success_is_the_raw_payload_with_no_platform_ok() {
         let value = program_result(&ok_data(
             serde_json::json!({"paths": [], "message": "no match"}),
         ))
         .unwrap();
         assert_eq!(
-            serde_json::to_string(&value).unwrap(),
-            r#"{"ok":true,"paths":[],"message":"no match"}"#
+            value,
+            serde_json::json!({"paths": [], "message": "no match"})
         );
+
+        // `ok` is an ordinary business field on a successful payload; the host
+        // neither adds it nor rewrites it.
         let value = program_result(&ok_data(
             serde_json::json!({"ok": false, "path": "a", "message": "payload ok"}),
         ))
         .unwrap();
-        assert_eq!(value["ok"], true);
+        assert_eq!(value["ok"], false);
     }
 }

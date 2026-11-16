@@ -48,11 +48,6 @@ fn tools_with_contract(
             .map(|field| (*field).to_string())
             .collect::<Vec<_>>()
             .into(),
-        failure_fields: ["ok", "reason", "message"]
-            .iter()
-            .map(|field| (*field).to_string())
-            .collect::<Vec<_>>()
-            .into(),
     });
     vec![Namespace {
         name: "tools".into(),
@@ -830,7 +825,7 @@ async fn unawaited_calls_are_waited_and_recorded() {
 }
 
 #[tokio::test]
-async fn tool_error_is_catchable_and_instanceof() {
+async fn tool_error_is_a_plain_catchable_error() {
     let host = HostFn::new(|_, _, _, _| async move {
         Err(HostError::tool("not_found", "missing", None, false))
     });
@@ -840,7 +835,15 @@ async fn tool_error_is_catchable_and_instanceof() {
           await tools.read(null);
           return "resolved";
         } catch (e) {
-          return [e instanceof ToolError, e.name, e.code, e.tool, typeof e.seq, e.message];
+          return [
+            e instanceof Error,
+            e.name,
+            e.code,
+            e.tool,
+            typeof e.seq,
+            e.message,
+            e.__litecode_host_call__ === true,
+          ];
         }
         "#,
         tools(vec![("read", host)]),
@@ -848,7 +851,15 @@ async fn tool_error_is_catchable_and_instanceof() {
     .await;
     assert_eq!(
         value_of(&outcome),
-        &json!([true, "ToolError", "not_found", "read", "number", "missing"])
+        &json!([
+            true,
+            "Error",
+            "not_found",
+            "read",
+            "number",
+            "missing",
+            true
+        ])
     );
 }
 

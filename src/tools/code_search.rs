@@ -949,17 +949,16 @@ mod tests {
     }
 
     #[test]
-    fn zero_hits_are_success_payload_not_a_soft_failure() {
+    fn zero_hits_are_success_payload() {
         let surface = code_search_surface();
         let data = CodeSearchData::success(Vec::new(), Vec::new());
-        let mut value = serde_json::to_value(&data).expect("serialize empty success");
+        let value = serde_json::to_value(&data).expect("serialize empty success");
         assert!(value.get("ok").is_none(), "{value}");
         assert!(value.get("status").is_none(), "{value}");
         // No chunk matched: the empty list is the whole answer, there is no
         // prose field left to explain it.
         assert_eq!(value["hits"], serde_json::json!([]));
         assert!(value.get("message").is_none(), "{value}");
-        value["ok"] = serde_json::json!(true);
         assert!(
             crate::tool::schema_validate(&surface.tools["code_search"].output_schema, &value)
                 .is_ok(),
@@ -968,10 +967,10 @@ mod tests {
     }
 
     #[test]
-    fn generated_output_schema_requires_envelope_and_hit_shapes() {
+    fn generated_output_schema_requires_hit_shapes() {
         let surface = code_search_surface();
         let schema = &surface.tools["code_search"].output_schema;
-        assert_eq!(schema["required"], serde_json::json!(["ok", "hits"]));
+        assert_eq!(schema["required"], serde_json::json!(["hits"]));
         let hit = schema["properties"]["hits"]["items"].as_object().unwrap();
         assert_eq!(
             hit["required"],
@@ -1000,8 +999,7 @@ mod tests {
             )],
             Vec::new(),
         );
-        let mut value = serde_json::to_value(&success).expect("serialize success");
-        value["ok"] = serde_json::json!(true);
+        let value = serde_json::to_value(&success).expect("serialize success");
         assert!(
             crate::tool::schema_validate(schema, &value).is_ok(),
             "success data must match the generated code contract"

@@ -290,9 +290,9 @@ pub fn validate_custom_tool_run(
         }
         CallSurface::Code => {
             let shape = if typed {
-                "- program result: `{ ok: true, <output_schema fields> }` from the stdout JSON object\n"
+                "- program result: `<output_schema fields>` from the stdout JSON object\n"
             } else {
-                "- program result: `{ ok: true, text: <stdout/content> }`; parse text yourself if it is JSON\n"
+                "- program result: the stdout text as a string; parse it yourself if it is JSON\n"
             };
             format!(
                 "- surface: `code`\n- code admission: PASS\n{shape}- background: unavailable on the code surface\n"
@@ -321,19 +321,14 @@ pub fn validate_custom_tool_run(
             let preview = if surface == CallSurface::Code {
                 let value = if typed {
                     match serde_json::from_str::<Value>(&result.content) {
-                        Ok(Value::Object(mut map)) => {
-                            if !map.contains_key("ok") {
-                                map.insert("ok".into(), Value::Bool(true));
-                            }
-                            Value::Object(map)
-                        }
-                        _ => serde_json::json!({ "ok": false, "reason": "invalid_output" }),
+                        Ok(Value::Object(map)) => Value::Object(map),
+                        _ => serde_json::json!({ "preview_error": "stdout is not a JSON object" }),
                     }
                 } else {
-                    serde_json::json!({ "ok": true, "text": result.content })
+                    Value::String(result.content.clone())
                 };
                 let mut preview = serde_json::to_string(&value)
-                    .unwrap_or_else(|_| "{\"ok\":true,\"text\":\"<unrenderable>\"}".into());
+                    .unwrap_or_else(|_| "\"<unrenderable>\"".into());
                 if preview.chars().count() > 1200 {
                     preview = preview.chars().take(1200).collect::<String>() + "…";
                 }
@@ -1160,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn code_failure_envelope_sets_code_details_and_soft_reason() {
+    fn code_failure_envelope_sets_code_details_for_rejection() {
         let mut def = sh_def("structured", "true", 5);
         def.surface = Some(CallSurface::Code);
         let envelope = r#"{"error":{"code":"not_found","message":"missing","details":{"id":42},"retryable":true}}"#;
@@ -1171,9 +1166,18 @@ mod tests {
         assert!(error.retryable);
         assert_eq!(result.error_details.as_ref().unwrap()["id"], 42);
 
-        let program = crate::tool::outcome::program_result(&result).expect("soft failure");
-        assert_eq!(program["ok"], false);
-        assert_eq!(program["reason"], "not_found");
+        let rejected = crate::tool::outcome::program_result(&result)
+            .expect_err("the program must see a rejection");
+        match rejected.kind {
+            crate::ptc::HostErrorKind::Tool {
+                code, details, ..
+            } => {
+                assert_eq!(code, "not_found");
+                assert_eq!(details.as_ref().unwrap()["id"], 42);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(rejected.message, "missing");
 
         def.surface = Some(CallSurface::Direct);
         assert!(structured_failure(&def, envelope, "stderr").is_none());
@@ -1258,7 +1262,7 @@ mod tests {
             result.content
         );
         assert!(
-            result.content.contains("{\"ok\":true}"),
+            result.content.contains("- code preview:\n\n{}"),
             "{}",
             result.content
         );

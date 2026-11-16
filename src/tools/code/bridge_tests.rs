@@ -153,10 +153,10 @@ impl Tool for BadRead {
     }
 }
 
-/// S2: an unknown parameter fails the call, not the run. The program gets a
-/// failure envelope, keeps going, and the manifest row is a failure.
+/// S2: an unknown parameter rejects the call, not the run. The program catches
+/// the ordinary `Error`, keeps going, and the manifest row is a failure.
 #[tokio::test]
-async fn s2_unknown_parameter_fails_the_call_and_the_run_continues() {
+async fn s2_unknown_parameter_rejects_and_the_run_continues() {
     let dir = tempfile::tempdir().unwrap();
     let runs = Arc::new(AtomicUsize::new(0));
     let result = run_program(
@@ -165,8 +165,12 @@ async fn s2_unknown_parameter_fails_the_call_and_the_run_continues() {
             runs: Arc::clone(&runs),
         })],
         r#"
-        const r = await tools.file.read({ path: "a.txt", nope: 1 });
-        return r.ok + " " + r.reason + " " + r.message;
+        try {
+          await tools.file.read({ path: "a.txt", nope: 1 });
+          return "resolved";
+        } catch (e) {
+          return e.code + " " + e.message;
+        }
         "#,
     )
     .await;
@@ -175,7 +179,7 @@ async fn s2_unknown_parameter_fails_the_call_and_the_run_continues() {
         "the run must survive a bad argument: {}",
         result.content
     );
-    assert!(result.content.contains("false invalid_args"), "{}", result.content);
+    assert!(result.content.contains("invalid_args"), "{}", result.content);
     assert!(result.content.contains("unknown parameter"), "{}", result.content);
     assert_eq!(
         runs.load(Ordering::SeqCst),
@@ -197,8 +201,12 @@ async fn s2_missing_required_parameter_fails_the_call() {
             runs: Arc::clone(&runs),
         })],
         r#"
-        const r = await tools.file.read({});
-        return r.ok + " " + r.reason + " " + r.message;
+        try {
+          await tools.file.read({});
+          return "resolved";
+        } catch (e) {
+          return e.code + " " + e.message;
+        }
         "#,
     )
     .await;
@@ -207,7 +215,7 @@ async fn s2_missing_required_parameter_fails_the_call() {
         "the run must survive a missing argument: {}",
         result.content
     );
-    assert!(result.content.contains("false invalid_args"), "{}", result.content);
+    assert!(result.content.contains("invalid_args"), "{}", result.content);
     assert!(result.content.contains("path"), "{}", result.content);
     assert_eq!(runs.load(Ordering::SeqCst), 0, "{}", result.content);
 }
@@ -223,14 +231,19 @@ async fn s2_a_rejected_call_does_not_stop_the_next() {
             runs: Arc::clone(&runs),
         })],
         r#"
-        const first = await tools.file.read({ path: "a.txt", nope: 1 });
+        let first;
+        try {
+          await tools.file.read({ path: "a.txt", nope: 1 });
+        } catch (e) {
+          first = e.code;
+        }
         const second = await tools.file.read({ path: "a.txt" });
-        return first.ok + " " + second.ok;
+        return first + " " + second.lines.length;
         "#,
     )
     .await;
     assert!(result.error.is_none(), "{}", result.content);
-    assert!(result.content.contains("false true"), "{}", result.content);
+    assert!(result.content.contains("invalid_args 1"), "{}", result.content);
     assert_eq!(
         runs.load(Ordering::SeqCst),
         1,
@@ -369,24 +382,31 @@ async fn s4_unknown_result_field_is_a_warning() {
     assert!(result.content.contains("undefined"), "{}", result.content);
 }
 
-/// S4 (was P9): reading a success-only field on a failed result is reported
-/// with the real reason and message, and the run continues.
+/// S4 (was P9): a failed call reaches the program as an ordinary rejection,
+/// with the real code and message; the run continues after the catch.
 #[tokio::test]
-async fn s4_failed_result_read_is_a_warning() {
+async fn s4_failed_call_is_caught_with_code_and_message() {
     let dir = tempfile::tempdir().unwrap();
     let result = run_program(
         dir.path(),
         vec![Arc::new(FailingRead)],
         r#"
-        const r = await tools.file.read({ path: "p" });
-        const lines = r.lines;
-        return r.reason;
+        try {
+          await tools.file.read({ path: "p" });
+          return "resolved";
+        } catch (e) {
+          console.log("saw", e.code, e.message);
+        }
+        return "done";
         "#,
     )
     .await;
     assert!(result.error.is_none(), "{}", result.content);
-    assert!(result.content.contains("not_found"), "{}", result.content);
-    assert!(result.content.contains("p does not exist"), "{}", result.content);
+    assert!(
+        result.content.contains("[log] saw not_found p does not exist"),
+        "{}",
+        result.content
+    );
 }
 
 /// The field list belongs to the tool's own contract: reading `lines` on a
@@ -662,14 +682,18 @@ impl Tool for UnavailableSymbols {
 /// call gets exactly one line of its own — the failure, anchored to the call —
 /// and no guessed result.
 #[tokio::test]
-async fn a_swallowed_failure_reads_as_one_line() {
+async fn a_caught_failure_reads_as_one_line() {
     let dir = tempfile::tempdir().unwrap();
     let result = run_program(
         dir.path(),
         vec![Arc::new(UnavailableSymbols)],
         r#"
-        const r = await tools.lsp.workspace_symbol({ query: "x" });
-        console.log("saw", r.ok, r.reason);
+        try {
+          await tools.lsp.workspace_symbol({ query: "x" });
+          console.log("resolved");
+        } catch (e) {
+          console.log("saw", e.code, e.message);
+        }
         return 1;
         "#,
     )
@@ -677,8 +701,8 @@ async fn a_swallowed_failure_reads_as_one_line() {
     let content = result.content;
     assert!(result.error.is_none(), "{content}");
     assert!(
-        content.contains("[log] saw false unavailable"),
-        "the failure must reach the program as a value: {content}"
+        content.contains("[log] saw unavailable language server I/O failed"),
+        "the failure must reach the program as an ordinary Error: {content}"
     );
     assert!(
         !content.contains("no symbols reported"),
@@ -692,7 +716,7 @@ async fn a_swallowed_failure_reads_as_one_line() {
         .collect();
     assert_eq!(
         reported,
-        ["↳ #1 tools.lsp.workspace_symbol: failed(unavailable); the program kept going"],
+        ["↳ #1 tools.lsp.workspace_symbol: failed(unavailable); the program may have caught the error"],
         "{content}"
     );
     // Above the stream, and the stream still ends the view.
@@ -707,6 +731,32 @@ async fn a_swallowed_failure_reads_as_one_line() {
     assert!(anchor < stream, "{content}");
     assert_eq!(lines.last().copied(), Some("1"), "{content}");
 }
+/// `Promise.allSettled` is the batch idiom: one rejected call is visible as a
+/// rejected entry, the next call still resolves, and the program keeps running.
+#[tokio::test]
+async fn promise_allsettled_consumes_a_rejection_and_a_success() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(crate::tools::read::ReadTool::default())],
+        r#"
+        const results = await Promise.allSettled([
+          tools.file.read({ path: "missing.txt" }),
+          tools.file.read({ path: "a.txt" }),
+        ]);
+        return results.map((item) =>
+          item.status === "fulfilled" ? item.value.lines.length : item.reason.code
+        );
+        "#,
+    )
+    .await;
+    let content = result.content;
+    assert!(result.error.is_none(), "{content}");
+    assert!(content.contains("\"not_found\""), "{content}");
+    assert!(content.contains("1"), "{content}");
+}
+
 /// A run that stopped on the failure says it in the manifest, so the block
 /// stays out of it: one fact, one line.
 #[tokio::test]
@@ -744,7 +794,7 @@ async fn a_successful_call_reports_no_failure_line() {
         vec![Arc::new(CountingRead {
             runs: Arc::clone(&runs),
         })],
-        r#"const r = await tools.file.read({ path: "a.txt" }); return r.ok;"#,
+        r#"const r = await tools.file.read({ path: "a.txt" }); return r.lines.length;"#,
     )
     .await;
     let content = result.content;
@@ -767,8 +817,12 @@ async fn a_computed_unknown_parameter_is_one_line_above_the_stream() {
         r#"
         const key = "pth";
         const args = { path: "a.txt", [key]: "a.txt" };
-        const r = await tools.file.read(args);
-        console.log("saw", r.ok, r.reason);
+        try {
+          const r = await tools.file.read(args);
+          console.log("saw", r.lines.length);
+        } catch (e) {
+          console.log("saw", e.code);
+        }
         return "done";
         "#,
     )
@@ -814,8 +868,12 @@ async fn a_literal_unknown_parameter_is_stated_once() {
         dir.path(),
         vec![Arc::new(crate::tools::read::ReadTool::default())],
         r#"
-        const r = await tools.file.read({ path: "a.txt", pth: "x" });
-        return r.reason;
+        try {
+          await tools.file.read({ path: "a.txt", pth: "x" });
+          return "resolved";
+        } catch (e) {
+          return e.code;
+        }
         "#,
     )
     .await;
@@ -843,8 +901,12 @@ async fn an_illegal_value_names_the_legal_ones() {
         )))],
         r#"
         const format = "pdf";
-        const r = await tools.web.fetch({ url: "https://example.com", format });
-        console.log("saw", r.reason);
+        try {
+          await tools.web.fetch({ url: "https://example.com", format });
+          console.log("resolved");
+        } catch (e) {
+          console.log("saw", e.code);
+        }
         return "done";
         "#,
     )
@@ -982,29 +1044,16 @@ async fn a_numeric_return_does_not_hide_the_facts() {
     assert!(content.contains("file.read: showing lines 1-2 of 5"), "{content}");
 }
 
-/// The failure field list is the same one the program is handed.
+/// A failed nested call rejects instead of producing a platform envelope.
 #[test]
-fn failure_fields_match_the_program_envelope() {
+fn failures_reject_instead_of_producing_an_envelope() {
     let mut result = ToolCallResult::error_with_kind(
         crate::types::ToolErrorKind::NotFound,
         "nope",
         false,
     );
     result.error_code = Some("not_found".into());
-    let value = crate::tool::outcome::program_result(&result).expect("a soft failure resolves");
-    let mut keys: Vec<String> = value
-        .as_object()
-        .expect("object envelope")
-        .keys()
-        .cloned()
-        .collect();
-    keys.sort();
-    let mut expected: Vec<String> = crate::tool::outcome::FAILURE_FIELDS
-        .iter()
-        .map(|field| (*field).to_string())
-        .collect();
-    expected.sort();
-    assert_eq!(keys, expected);
+    assert!(crate::tool::outcome::program_result(&result).is_err());
 }
 
 /// S1: a name that does not exist ends the run with `not_found`, and there is
@@ -1055,8 +1104,12 @@ async fn s2_two_arguments_fail_the_call() {
             runs: Arc::clone(&runs),
         })],
         r#"
-        const r = await tools.file.read({ path: "a.txt" }, { path: "b.txt" });
-        return r.reason + " / " + r.message;
+        try {
+          await tools.file.read({ path: "a.txt" }, { path: "b.txt" });
+          return "resolved";
+        } catch (e) {
+          return e.code + " / " + e.message;
+        }
         "#,
     )
     .await;
@@ -1080,13 +1133,18 @@ async fn s2_over_deep_arguments_fail_the_call() {
         const root = {};
         let node = root;
         for (let i = 0; i < 200; i++) { node.next = {}; node = node.next; }
-        const r = await tools.file.read(root);
-        return r.ok + " " + r.reason;
+        try {
+          await tools.file.read(root);
+          return "resolved";
+        } catch (e) {
+          return e.code + " " + e.message;
+        }
         "#,
     )
     .await;
     assert!(result.error.is_none(), "{}", result.content);
-    assert!(result.content.contains("false invalid_args"), "{}", result.content);
+    assert!(result.content.contains("invalid_args"), "{}", result.content);
+    assert!(result.content.contains("nested too deeply"), "{}", result.content);
     assert_eq!(runs.load(Ordering::SeqCst), 0, "{}", result.content);
 }
 

@@ -136,47 +136,6 @@ fn root_is_object(schema: &Value) -> bool {
     }
 }
 
-fn strip_ok_field(mut schema: Value) -> Value {
-    if let Value::Object(object) = &mut schema {
-        if let Some(Value::Object(properties)) = object.get_mut("properties") {
-            properties.remove("ok");
-        }
-        if let Some(Value::Array(required)) = object.get_mut("required") {
-            required.retain(|item| item.as_str() != Some("ok"));
-        }
-    }
-    schema
-}
-
-fn ensure_ok_field(schema: Value) -> Value {
-    let Value::Object(mut object) = schema else {
-        return schema;
-    };
-    let Value::Object(properties) = object
-        .entry("properties")
-        .or_insert_with(|| Value::Object(Map::new()))
-    else {
-        return Value::Object(object);
-    };
-    properties.insert(
-        "ok".into(),
-        serde_json::json!({
-            "type": "boolean",
-            "const": true,
-            "description": "The host adds ok:true to a successful result."
-        }),
-    );
-    let required = object
-        .entry("required")
-        .or_insert_with(|| Value::Array(Vec::new()));
-    if let Value::Array(required) = required
-        && !required.iter().any(|item| item.as_str() == Some("ok"))
-    {
-        required.insert(0, Value::String("ok".into()));
-    }
-    Value::Object(object)
-}
-
 /// Settings/admission-time validation for a custom code tool.
 pub fn validate_custom_code_contract(
     def: &CustomToolDefinition,
@@ -398,8 +357,7 @@ pub fn build_dynamic_tool(
         ));
     }
     let (input_type, data_type) = select_type_names(name, reserved_types);
-    let payload_output_schema = strip_ok_field(spec.output_schema);
-    let output_schema = ensure_ok_field(payload_output_schema.clone());
+    let output_schema = spec.output_schema;
     let mut types = BTreeMap::new();
     types.insert(
         input_type.clone(),
@@ -410,10 +368,7 @@ pub fn build_dynamic_tool(
     );
     types.insert(
         data_type.clone(),
-        format!(
-            "type {data_type} = {};",
-            schema_to_ts(&payload_output_schema, 0)
-        ),
+        format!("type {data_type} = {};", schema_to_ts(&output_schema, 0)),
     );
     let path: Vec<String> = name.split('.').map(str::to_string).collect();
     let method = path
@@ -429,7 +384,7 @@ pub fn build_dynamic_tool(
         path,
         suite,
         doc: spec.description,
-        signature: format!("{method}(args: {input_type}): Promise<ToolResult<{data_type}>>;"),
+        signature: format!("{method}(args: {input_type}): Promise<{data_type}>;"),
         type_deps: vec![input_type, data_type],
     };
     Ok(DynamicTool {
@@ -438,4 +393,58 @@ pub fn build_dynamic_tool(
         input_schema: spec.input_schema,
         output_schema,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(output_schema: Value) -> DynamicCodeSpec {
+        DynamicCodeSpec {
+            description: "echo".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+                "additionalProperties": false
+            }),
+            output_schema,
+        }
+    }
+
+    #[test]
+    fn custom_code_signature_is_plain_promise_and_keeps_its_schema() {
+        let output = serde_json::json!({
+            "type": "object",
+            "properties": {"files": {"type": "integer"}},
+            "required": ["files"],
+            "additionalProperties": false
+        });
+        let tool = build_dynamic_tool("echo", spec(output.clone()), &BTreeSet::new())
+            .expect("dynamic tool");
+        assert_eq!(
+            tool.fragment.signature,
+            "echo(args: CustomEchoInput): Promise<CustomEchoData>;"
+        );
+        assert!(!tool.fragment.signature.contains("ToolResult"));
+        assert_eq!(tool.output_schema, output);
+        assert!(tool.types["CustomEchoData"].contains("files"));
+    }
+
+    #[test]
+    fn a_custom_ok_field_is_business_data_not_an_envelope() {
+        let output = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "files": {"type": "integer"}
+            },
+            "required": ["ok", "files"],
+            "additionalProperties": false
+        });
+        let tool = build_dynamic_tool("echo", spec(output.clone()), &BTreeSet::new())
+            .expect("dynamic tool");
+        assert_eq!(tool.output_schema, output);
+        assert!(tool.types["CustomEchoData"].contains("ok"));
+    }
 }

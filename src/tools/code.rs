@@ -577,11 +577,6 @@ impl CodeTool {
                     fields.sort();
                     std::sync::Arc::new(crate::ptc::BindingContract {
                         fields: fields.into(),
-                        failure_fields: crate::tool::outcome::FAILURE_FIELDS
-                            .iter()
-                            .map(|field| (*field).to_string())
-                            .collect::<Vec<_>>()
-                            .into(),
                     })
                 });
                 let bundle = Arc::clone(&self.bundle);
@@ -711,7 +706,7 @@ async fn invoke_binding(
         Err(DecodeFail::ExtraArgument { summary, count }) => {
             ledger.begin(seq, &sdk_name, &summary);
             let message = format!("'{sdk_name}' accepts exactly one argument, got {count}");
-            return Ok(reject_as_failure(&ledger, seq, message));
+            return Err(reject_as_error(&ledger, seq, message));
         }
         Err(DecodeFail::Illegal(illegal)) => {
             ledger.begin(seq, &sdk_name, &illegal.summary);
@@ -725,7 +720,7 @@ async fn invoke_binding(
                 None,
                 render::rejected_arguments(&illegal.message, &[]),
             );
-            return Ok(reject_as_failure(&ledger, seq, illegal.message));
+            return Err(reject_as_error(&ledger, seq, illegal.message));
         }
     };
     ledger.begin(seq, &sdk_name, &summary);
@@ -763,7 +758,7 @@ async fn invoke_binding(
             Some(error.clone()),
             render::rejected_arguments(&error, &legal_parameters(&surface, &tool_name)),
         );
-        return Ok(reject_as_failure(&ledger, index, message));
+        return Err(reject_as_error(&ledger, index, message));
     }
 
     let call = FunctionToolCall {
@@ -801,7 +796,21 @@ async fn invoke_binding(
         ));
     }
     ledger.record(index, &result);
-    let value = outcome::program_result(&result)?;
+    let value = match outcome::program_result(&result) {
+        Ok(value) => value,
+        Err(error) => {
+            let code = call_error_code(&result).unwrap_or_else(|| "error".to_string());
+            remind(
+                &reminders,
+                seq,
+                &sdk_name,
+                render::ReminderKind::Failure,
+                None,
+                format!("failed({code}); the program may have caught the error"),
+            );
+            return Err(error);
+        }
+    };
     // Facts are anchored to the call, not to a line of output: the program may
     // return only a slice of this value, or none of it. A failure envelope is
     // one of those facts — the program may read it and carry on, and the view
@@ -811,9 +820,6 @@ async fn invoke_binding(
             .into_iter()
             .map(|text| (render::ReminderKind::Boundary, text))
             .collect();
-    if let Some(text) = render::swallowed_failure(&value) {
-        texts.insert(0, (render::ReminderKind::Failure, text));
-    }
     for (kind, text) in texts {
         remind(&reminders, seq, &sdk_name, kind, None, text);
     }
@@ -857,13 +863,9 @@ fn legal_parameters(surface: &crate::tool::code_contract::CodeSurface, tool: &st
 ///
 /// The ledger row is a failure for the same reason, so the manifest never says
 /// "ok" for a call the contract refused.
-fn reject_as_failure(ledger: &CallLedger, index: u64, message: String) -> Value {
+fn reject_as_error(ledger: &CallLedger, index: u64, message: String) -> crate::ptc::HostError {
     ledger.record(index, &contract_record("invalid_args", &message));
-    serde_json::json!({
-        "ok": false,
-        "reason": "invalid_args",
-        "message": message,
-    })
+    crate::ptc::HostError::tool("invalid_args", message, None, false)
 }
 
 /// Record one contract failure and build the error that ends the run.

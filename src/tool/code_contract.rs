@@ -308,7 +308,16 @@ mod tests {
             let tool = &surface.tools[surface.bindings[path].as_str()];
             assert_eq!(tool.input_schema["type"], "object", "{path}");
             assert_eq!(tool.input_schema["additionalProperties"], false, "{path}");
-            assert_eq!(tool.output_schema["required"][0], "ok", "{path}");
+            assert!(
+                tool.output_schema["properties"].get("ok").is_none(),
+                "{path}: the host must not inject ok"
+            );
+            assert!(
+                tool.output_schema["required"]
+                    .as_array()
+                    .is_some_and(|required| !required.iter().any(|item| item == "ok")),
+                "{path}: required must not contain ok"
+            );
         }
     }
 

@@ -237,15 +237,11 @@ pub struct HostBinding {
     pub contract: Option<std::sync::Arc<BindingContract>>,
 }
 
-/// The part of a tool's contract the runtime enforces on results.
-///
-/// `fields` comes from the tool's output schema (top-level properties only) and
-/// `failure_fields` from the failure envelope `program_result` builds, so both
-/// lists are owned by the contract, never by a name written here.
+/// The part of a tool's contract the runtime enforces on successful results.
+/// `fields` comes from the tool's output schema (top-level properties only).
 #[derive(Debug, Clone)]
 pub struct BindingContract {
     pub fields: std::sync::Arc<[String]>,
-    pub failure_fields: std::sync::Arc<[String]>,
 }
 
 /// A global object whose properties are async host functions.

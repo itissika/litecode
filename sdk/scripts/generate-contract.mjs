@@ -94,9 +94,9 @@ function collectMethod(iface, pathParts, out) {
     if (!param) throw new Error("method " + tool + " has no args parameter");
     const returnNode = method.getReturnTypeNodeOrThrow();
     const promiseArgs = returnNode.getTypeArguments();
-    const resultArgs = promiseArgs.length === 1 ? promiseArgs[0].getTypeArguments() : [];
+    const resultArgs = promiseArgs;
     if (resultArgs.length !== 1) {
-      throw new Error("method " + tool + " must return Promise<ToolResult<T>>");
+      throw new Error("method " + tool + " must return Promise<T>");
     }
     out.push({
       tool,
@@ -360,12 +360,7 @@ function outputSchemaFor(spec) {
   if (!schema || typeof schema !== "object" || (!schema.properties && !schema.type)) {
     throw new Error("output type " + (spec.alias || spec.name) + " must project to a JSON object");
   }
-  const properties = {
-    ...(schema.properties ?? {}),
-    ok: { type: "boolean", const: true },
-  };
-  const required = ["ok", ...(schema.required ?? []).filter((name) => name !== "ok")];
-  return { ...schema, properties, required };
+  return schema;
 }
 
 const tools = {};

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "sdk_hash": "3dfd3fc788bec7435c80491e2b0a9207a21971ade0afc1eaa9f320af8bb5bc9c",
-  "prose": "`run_code` is the high-density orchestration surface: think before calling, batch or parallelize tool work, compute in JavaScript. It exists to reduce round trips and token cost.\n\nThe program is an async JavaScript function body. Top-level `await` and `return` are supported. The returned value is the result; `console.log` is for progress notes.\n\nCall tools as `tools.<suite>.<member>(args)`. Omit `args` for no-argument tools; otherwise pass exactly one object. Use tools for side effects and external IO. `fs` is a read-only probe: `ls` (one level, sorted), `stat` (type, size, mtime), `exists` (boolean), all synchronous and workspace-relative. `libs` are deterministic pure-JS helpers: `stats` (`sum`, `mean`, `median`, `variance`, `stddev`, `quantile`, `histogram`, `min`, `max`), `csv` (`parse`, `format`), `text` (`lines`, `words`, `count`, `normalizeNewlines`, `truncate`, `diffLines`), `data` (`groupBy`, `countBy`, `unique`, `sortBy`). There is no direct network or process access.\n\nTool failures resolve as `ToolFailure`; protocol and hard execution failures throw `ToolError`. Cancellation, the fixed run cap, and hard limits end the program and cannot be caught. Non-finite numbers in a result become `null` with a warning.",
-  "declarations": "/**\n * Raised when a call does not hold under the contract and the run has to stop.\n * It is uncatchable by design: a try/catch cannot turn it into a value.\n *\n * Fatal: a tool name that does not exist (a namespace typo), and a tool result\n * that violates its own declared output. Both mean the program's model of the\n * contract is wrong, not just one call.\n *\n * Not fatal, so the run continues: a result field the contract does not declare\n * is reported once, before the output, and reads as `undefined`; an argument\n * the input contract rejects resolves as `ToolFailure` with\n * `reason: \"invalid_args\"`, and the program can correct it on the next call.\n */\ndeclare class ToolError extends Error {\n  readonly name: \"ToolError\";\n  readonly code: string;\n  readonly details?: unknown;\n  readonly retryable?: true;\n  readonly tool: string;\n  readonly seq: number;\n}\n\ntype ToolFailure = { // A resolved domain failure. ToolError is thrown for protocol and hard execution failures; this shape is the normal failure branch of ToolResult.\n  ok: false;\n  reason:\n    | \"not_found\"\n    | \"no_match\"\n    | \"ambiguous\"\n    | \"invalid_args\"\n    | \"empty\"\n    | \"permission\"\n    | \"io\"\n    | \"conflict\"\n    | \"stale\"\n    | \"unavailable\"\n    | \"still_alive\";\n  message: string;\n};\n\n/** A successful tool result. The host adds this envelope; payloads omit ok. */\ntype ToolSuccess<T> = T & { ok: true };\n\ntype ToolResult<T> = ToolSuccess<T> | ToolFailure;",
+  "sdk_hash": "a60a926147e27e9dd49a135729e8cbfee5fd017fc6207ecaae4800fe8283806c",
+  "prose": "`run_code` executes one async JavaScript function body. Top-level `await` and `return` are supported. The returned value is the result; `console.log` writes progress notes, not the result.\n\nCall tools as `tools.<suite>.<member>(args)`. A no-argument tool takes no argument; every other tool takes exactly one object matching its declared input schema. Each call returns a promise that resolves to the tool's declared data or rejects with an ordinary JavaScript `Error`; `try`/`catch` and `Promise.allSettled` see that rejection as usual. The declarations below are the source of truth for tool paths, argument shapes, and result fields.\n\n`fs` is a read-only, synchronous, workspace-relative probe. `libs` are pure-JS helpers. Both are declared below. There is no direct network, process, or module access, and no `setTimeout`/`setInterval`. Side effects and external IO go through the bound tools.\n\nUnknown tool bindings, output-contract violations, cancellation, the fixed 600000 ms run cap, and hard limits stop the cell and cannot be caught. Non-finite numbers in a result become `null` with a warning.",
+  "declarations": "",
   "libs": "type CsvOptions = {\n  /** Field separator; one character. Default \",\". */\n  delimiter?: string;\n  /** Quote character; one character. Default is a double quote. */\n  quote?: string;\n  /** Trim fields while parsing. Default false. */\n  trim?: boolean;\n};\n\ntype HistogramBin = {\n  start: number;\n  end: number;\n  count: number;\n};\n\ntype DiffLine = {\n  kind: \"equal\" | \"insert\" | \"delete\";\n  text: string;\n};\n\ndeclare const libs: {\n  stats: {\n    sum(values: number[]): number;\n    mean(values: number[]): number;\n    median(values: number[]): number;\n    variance(values: number[], sample?: boolean): number;\n    stddev(values: number[], sample?: boolean): number;\n    quantile(values: number[], q: number): number;\n    histogram(values: number[], bins?: number): HistogramBin[];\n    min(values: number[]): number;\n    max(values: number[]): number;\n  };\n  csv: {\n    parse(text: string, options?: CsvOptions): string[][];\n    format(rows: Array<Array<unknown>>, options?: CsvOptions): string;\n  };\n  text: {\n    lines(text: string): string[];\n    words(text: string): string[];\n    count(text: string, needle: string): number;\n    normalizeNewlines(text: string): string;\n    truncate(text: string, maxChars: number, suffix?: string): string;\n    diffLines(left: string, right: string): DiffLine[];\n  };\n  data: {\n    groupBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, T[]>;\n    countBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, number>;\n    unique<T>(values: T[]): T[];\n    sortBy<T>(rows: T[], key: string | ((row: T) => unknown), direction?: \"asc\" | \"desc\"): T[];\n  };\n};\n\ntype FsFailure = { ok: false; reason: \"not_found\" | \"permission\" | \"io\"; message: string };\n\n/** Read-only workspace probes. Synchronous; paths are workspace-relative. */\ndeclare const fs: {\n  /** One level, sorted by name; more than 500 entries set `truncated`. */\n  ls(path: string): { ok: true; entries: Array<{ name: string; type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number }>; truncated: boolean } | FsFailure;\n  /** mtime is ms since the Unix epoch. */\n  stat(path: string): { ok: true; type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number; mtime: number } | FsFailure;\n  exists(path: string): boolean;\n};",
   "types": {
     "BrowserPage": "type BrowserPage = {\n  active: boolean;\n  agentOwned: boolean;\n  id: string;\n  title: string;\n  url: string;\n  visible: boolean;\n};",
@@ -37,7 +37,7 @@
       ],
       "suite": "file",
       "doc": "Apply replacements serially; a single edit is an array of one.",
-      "signature": "apply_edits(args: {\n  edits: EditInput[]; // Replacements applied serially; later items on the same path see earlier successful writes.\n}): Promise<ToolResult<{\n  results: Array<{\n    ok: boolean;\n    path: string;\n    reason: (\"not_found\" | \"no_match\" | \"ambiguous\" | \"invalid_args\" | \"empty\" | \"permission\" | \"io\") | null;\n    detail: string; // Why the item failed; empty when ok is true.\n  }>;\n}>>;",
+      "signature": "apply_edits(args: {\n  edits: EditInput[]; // Replacements applied serially; later items on the same path see earlier successful writes.\n}): Promise<{\n  results: Array<{\n    ok: boolean;\n    path: string;\n    reason: (\"not_found\" | \"no_match\" | \"ambiguous\" | \"invalid_args\" | \"empty\" | \"permission\" | \"io\") | null;\n    detail: string; // Why the item failed; empty when ok is true.\n  }>;\n}>;",
       "type_deps": [
         "Path"
       ]
@@ -49,7 +49,7 @@
       ],
       "suite": "file",
       "doc": "Find files by path glob.",
-      "signature": "glob(args: {\n  pattern: string; // Glob relative to path, or to the workspace root when path is omitted.\n  limit?: Integer; // Maximum paths to return. 1-5000. @default 1000\n  path?: Path; // Optional directory to search under.\n}): Promise<ToolResult<{\n  paths: string[]; // Matching paths, sorted by depth, then parent directory, then name.\n}>>;",
+      "signature": "glob(args: {\n  pattern: string; // Glob relative to path, or to the workspace root when path is omitted.\n  limit?: Integer; // Maximum paths to return. 1-5000. @default 1000\n  path?: Path; // Optional directory to search under.\n}): Promise<{\n  paths: string[]; // Matching paths, sorted by depth, then parent directory, then name.\n}>;",
       "type_deps": [
         "Integer",
         "Path"
@@ -62,7 +62,7 @@
       ],
       "suite": "file",
       "doc": "Search file contents.",
-      "signature": "grep(args: {\n  pattern: string; // Regular expression over file contents, unless literal is true.\n  before?: Integer; // Lines of context before each hit. 0-10. @default 0\n  after?: Integer; // Lines of context after each hit. 0-10. @default 0\n  glob?: string; // One glob or comma-separated globs. A leading ! excludes. Relative to path.\n  ignore_case?: boolean; // Ignore case when matching. @default false\n  limit?: Integer; // Maximum hits to return. 1-100. @default 40\n  literal?: boolean; // Search for pattern as plain text. @default false\n  path?: Path; // File or directory to search. Defaults to the workspace.\n}): Promise<ToolResult<{\n  hits: Array<{\n    path: string; // Source file path.\n    line: Integer; // 1-based match line.\n    text: string; // Matching line text, capped at 500 characters.\n  }>;\n}>>;",
+      "signature": "grep(args: {\n  pattern: string; // Regular expression over file contents, unless literal is true.\n  before?: Integer; // Lines of context before each hit. 0-10. @default 0\n  after?: Integer; // Lines of context after each hit. 0-10. @default 0\n  glob?: string; // One glob or comma-separated globs. A leading ! excludes. Relative to path.\n  ignore_case?: boolean; // Ignore case when matching. @default false\n  limit?: Integer; // Maximum hits to return. 1-100. @default 40\n  literal?: boolean; // Search for pattern as plain text. @default false\n  path?: Path; // File or directory to search. Defaults to the workspace.\n}): Promise<{\n  hits: Array<{\n    path: string; // Source file path.\n    line: Integer; // 1-based match line.\n    text: string; // Matching line text, capped at 500 characters.\n  }>;\n}>;",
       "type_deps": [
         "Integer",
         "Path"
@@ -75,7 +75,7 @@
       ],
       "suite": "file",
       "doc": "Read lines from one file or archived session transcript.",
-      "signature": "read(args: {\n  path: Path; // Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md.\n  start_line?: Integer; // First line to read, 1-based, inclusive. @default 1\n  limit?: Integer; // Lines to return. 1-5000. @default 2000\n}): Promise<ToolResult<{\n  lines: string[]; // Line contents for this page, in file order.\n}>>;",
+      "signature": "read(args: {\n  path: Path; // Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md.\n  start_line?: Integer; // First line to read, 1-based, inclusive. @default 1\n  limit?: Integer; // Lines to return. 1-5000. @default 2000\n}): Promise<{\n  lines: string[]; // Line contents for this page, in file order.\n}>;",
       "type_deps": [
         "Integer",
         "Path"
@@ -88,7 +88,7 @@
       ],
       "suite": "file",
       "doc": "Replace a file's contents.",
-      "signature": "write(args: {\n  content: string; // Content to write to the file.\n  path: Path; // Prefer a workspace-relative path.\n}): Promise<ToolResult<{\n  path: string; // Workspace-relative path inside the workspace; requested path outside it.\n}>>;",
+      "signature": "write(args: {\n  content: string; // Content to write to the file.\n  path: Path; // Prefer a workspace-relative path.\n}): Promise<{\n  path: string; // Workspace-relative path inside the workspace; requested path outside it.\n}>;",
       "type_deps": [
         "Path"
       ]
@@ -100,7 +100,7 @@
       ],
       "suite": "search",
       "doc": "Semantic search over the workspace code index.",
-      "signature": "code_search(args: {\n  query: string; // One natural-language or code-token query.\n  include_pattern?: string; // Optional glob filter for workspace paths.\n  min_score?: number; // Minimum raw dense cosine similarity for dense-only hits. 0–1. Lexical hits are not subject to this floor; 0 disables it. @default 0.8\n  top_k?: Integer; // Maximum hits. 1–20. @default 8\n}): Promise<ToolResult<{\n  // Empty if the search completed but found no matching chunks.\n  hits: {\n    path: string; // Source file path.\n    anchor_line: Integer; // Query-relevant anchor line.\n    start_line: Integer; // First line in the returned snippet.\n    end_line: Integer; // Last line in the returned snippet.\n    symbol?: string; // Optional AST symbol enclosing the anchor.\n    via: \"lex\" | \"dense\" | \"both\"; // Which retrieval leg(s) admitted this chunk.\n    dense_similarity: number; // Raw dense cosine similarity; 0.0 means the hit is lexical-only.\n    text: string; // The anchor line itself, cheap enough for a table cell.\n    snippet: string; // Source excerpt, at most 24 lines; overlong lines are capped.\n  }[];\n}>>;",
+      "signature": "code_search(args: {\n  query: string; // One natural-language or code-token query.\n  include_pattern?: string; // Optional glob filter for workspace paths.\n  min_score?: number; // Minimum raw dense cosine similarity for dense-only hits. 0–1. Lexical hits are not subject to this floor; 0 disables it. @default 0.8\n  top_k?: Integer; // Maximum hits. 1–20. @default 8\n}): Promise<{\n  // Empty if the search completed but found no matching chunks.\n  hits: {\n    path: string; // Source file path.\n    anchor_line: Integer; // Query-relevant anchor line.\n    start_line: Integer; // First line in the returned snippet.\n    end_line: Integer; // Last line in the returned snippet.\n    symbol?: string; // Optional AST symbol enclosing the anchor.\n    via: \"lex\" | \"dense\" | \"both\"; // Which retrieval leg(s) admitted this chunk.\n    dense_similarity: number; // Raw dense cosine similarity; 0.0 means the hit is lexical-only.\n    text: string; // The anchor line itself, cheap enough for a table cell.\n    snippet: string; // Source excerpt, at most 24 lines; overlong lines are capped.\n  }[];\n}>;",
       "type_deps": [
         "Integer"
       ]
@@ -112,7 +112,7 @@
       ],
       "suite": "search",
       "doc": "Search past session transcripts.",
-      "signature": "session_search(args: {\n  query: string; // What to find in past session transcripts. Literal words or a phrase.\n  session_id?: string; // Optional session scope: full id, unique prefix, or the handle from a result.\n  own_session?: boolean; // Search only this session's transcript: the turns already folded out of the live context window. Cannot be combined with session_id.\n  limit?: Integer; // Maximum rows. 1–50. @default 20\n}): Promise<ToolResult<{\n  // Flat rank order; not grouped by session.\n  hits: {\n    session: string; // Shortest unique session handle, also accepted by `session_id`.\n    bot_name?: string; // Derived bot name for this session, if any. Never a stored session field.\n    age: string; // Relative age of the session's last update.\n    line: Integer; // 1-based rendered transcript line of the hit.\n    role: \"conversation\" | \"reasoning\" | \"action\" | \"outcome\" | \"unknown\"; // Content role of the row.\n    via: string; // Evidence that found this row, in rank order: `exact`, `prox`, `lex`, `sem`, `fuzzy`, joined by `+`.\n    summary: string; // Collapsed one-line hit text.\n  }[];\n  total: Integer; // Total matching rows before `limit` is applied.\n  truncated: boolean; // True when `total` exceeds the returned rows.\n  semantic: boolean; // False when the semantic leg was unavailable: the hits are lexical only.\n}>>;",
+      "signature": "session_search(args: {\n  query: string; // What to find in past session transcripts. Literal words or a phrase.\n  session_id?: string; // Optional session scope: full id, unique prefix, or the handle from a result.\n  own_session?: boolean; // Search only this session's transcript: the turns already folded out of the live context window. Cannot be combined with session_id.\n  limit?: Integer; // Maximum rows. 1–50. @default 20\n}): Promise<{\n  // Flat rank order; not grouped by session.\n  hits: {\n    session: string; // Shortest unique session handle, also accepted by `session_id`.\n    bot_name?: string; // Derived bot name for this session, if any. Never a stored session field.\n    age: string; // Relative age of the session's last update.\n    line: Integer; // 1-based rendered transcript line of the hit.\n    role: \"conversation\" | \"reasoning\" | \"action\" | \"outcome\" | \"unknown\"; // Content role of the row.\n    via: string; // Evidence that found this row, in rank order: `exact`, `prox`, `lex`, `sem`, `fuzzy`, joined by `+`.\n    summary: string; // Collapsed one-line hit text.\n  }[];\n  total: Integer; // Total matching rows before `limit` is applied.\n  truncated: boolean; // True when `total` exceeds the returned rows.\n  semantic: boolean; // False when the semantic leg was unavailable: the hits are lexical only.\n}>;",
       "type_deps": [
         "Integer"
       ]
@@ -124,7 +124,7 @@
       ],
       "suite": "process",
       "doc": "Start a command. Waits up to yield_time_ms; a live session_id leaves it running in the background. Poll with write_stdin for output, or leave it and wait for the background-exit reminder (exit code + output_file).",
-      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-30000 ms; default 10000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ToolResult<ExecCommandData>>;",
+      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-30000 ms; default 10000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ExecCommandData>;",
       "type_deps": [
         "ExecCommandData",
         "Integer"
@@ -137,7 +137,7 @@
       ],
       "suite": "process",
       "doc": "Poll, feed, or interrupt an existing exec session. Empty chars waits for new output or exit, whichever comes first; on exit, exit_code is set and session_id is absent.",
-      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-300000 ms; empty polls default 5000, non-empty writes default 250. Long polls must fit the fixed run_code cap (600000 ms).\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ToolResult<ExecCommandData>>;",
+      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-300000 ms; empty polls default 5000, non-empty writes default 250. Long polls must fit the fixed run_code cap (600000 ms).\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ExecCommandData>;",
       "type_deps": [
         "ExecCommandData",
         "Integer"
@@ -150,7 +150,7 @@
       ],
       "suite": "web",
       "doc": "Fetch one http(s) URL.",
-      "signature": "fetch(args: {\n  url: string; // URL to fetch. Only http(s) URLs are accepted.\n  format?: \"text\" | \"markdown\" | \"html\"; // Desired output format. @default \"markdown\"\n}): Promise<ToolResult<{\n  body?: string; // Empty for a non-2xx answer: the status carries the fact.\n  format?: \"text\" | \"markdown\" | \"html\";\n  status?: Integer; // HTTP status of the final response, 2xx or not.\n  url?: string;\n}>>;",
+      "signature": "fetch(args: {\n  url: string; // URL to fetch. Only http(s) URLs are accepted.\n  format?: \"text\" | \"markdown\" | \"html\"; // Desired output format. @default \"markdown\"\n}): Promise<{\n  body?: string; // Empty for a non-2xx answer: the status carries the fact.\n  format?: \"text\" | \"markdown\" | \"html\";\n  status?: Integer; // HTTP status of the final response, 2xx or not.\n  url?: string;\n}>;",
       "type_deps": [
         "Integer"
       ]
@@ -162,7 +162,7 @@
       ],
       "suite": "web",
       "doc": "Search the web.",
-      "signature": "search(args: {\n  query: string; // Search query.\n  top_k?: Integer; // Number of results, best first. 1–100. @default 10\n}): Promise<ToolResult<{\n  // At most top_k hits, best first; empty when the search found nothing.\n  results: {\n    snippet: string; // Query-relevant excerpt from the page, as returned by the provider.\n    title: string;\n    url: string;\n  }[];\n}>>;",
+      "signature": "search(args: {\n  query: string; // Search query.\n  top_k?: Integer; // Number of results, best first. 1–100. @default 10\n}): Promise<{\n  // At most top_k hits, best first; empty when the search found nothing.\n  results: {\n    snippet: string; // Query-relevant excerpt from the page, as returned by the provider.\n    title: string;\n    url: string;\n  }[];\n}>;",
       "type_deps": [
         "Integer"
       ]
@@ -174,7 +174,7 @@
       ],
       "suite": "browser",
       "doc": "Click one interactive element on the visible page.",
-      "signature": "click(args: {\n  ref: string; // Element reference from the latest browser_read.\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<ToolResult<{\n  page_id: string;\n  ref: string;\n  tag: string;\n  text: string;\n  title: string;\n  url: string;\n}>>;",
+      "signature": "click(args: {\n  ref: string; // Element reference from the latest browser_read.\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<{\n  page_id: string;\n  ref: string;\n  tag: string;\n  text: string;\n  title: string;\n  url: string;\n}>;",
       "type_deps": []
     },
     "browser_close": {
@@ -184,7 +184,7 @@
       ],
       "suite": "browser",
       "doc": "Close an agent-owned browser tab.",
-      "signature": "close(args: {\n  page_id: string; // Browser page id from browser_open or browser_list.\n}): Promise<ToolResult<{\n  closed: boolean;\n  id: string;\n  fallback?: boolean;\n}>>;",
+      "signature": "close(args: {\n  page_id: string; // Browser page id from browser_open or browser_list.\n}): Promise<{\n  closed: boolean;\n  id: string;\n  fallback?: boolean;\n}>;",
       "type_deps": []
     },
     "browser_list": {
@@ -194,7 +194,7 @@
       ],
       "suite": "browser",
       "doc": "List open browser tabs.",
-      "signature": "list(args?: NoArgs): Promise<ToolResult<{\n  active_id: string;\n  pages: BrowserPage[];\n}>>;",
+      "signature": "list(args?: NoArgs): Promise<{\n  active_id: string;\n  pages: BrowserPage[];\n}>;",
       "type_deps": [
         "BrowserPage",
         "NoArgs"
@@ -207,7 +207,7 @@
       ],
       "suite": "browser",
       "doc": "Open a visible browser tab.",
-      "signature": "open(args: {\n  url: string; // http(s) URL to open in a visible browser tab.\n}): Promise<ToolResult<BrowserPage>>;",
+      "signature": "open(args: {\n  url: string; // http(s) URL to open in a visible browser tab.\n}): Promise<BrowserPage>;",
       "type_deps": [
         "BrowserPage"
       ]
@@ -219,7 +219,7 @@
       ],
       "suite": "browser",
       "doc": "Read the current visible browser page.",
-      "signature": "read(args: {\n  max_chars?: Integer; // Maximum body text characters. 1000–30000. @default 12000\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<ToolResult<{\n  elements: {\n    ref: string; // Element reference from the latest browser_read.\n    tag: string;\n    text: string;\n    href?: string;\n    type?: string;\n  }[];\n  page_id: string;\n  text: string;\n  title: string;\n  truncated: boolean;\n  url: string;\n}>>;",
+      "signature": "read(args: {\n  max_chars?: Integer; // Maximum body text characters. 1000–30000. @default 12000\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<{\n  elements: {\n    ref: string; // Element reference from the latest browser_read.\n    tag: string;\n    text: string;\n    href?: string;\n    type?: string;\n  }[];\n  page_id: string;\n  text: string;\n  title: string;\n  truncated: boolean;\n  url: string;\n}>;",
       "type_deps": [
         "Integer"
       ]
@@ -231,7 +231,7 @@
       ],
       "suite": "browser",
       "doc": "Type text into one input on the visible page.",
-      "signature": "type(args: {\n  ref: string; // Input reference from the latest browser_read.\n  text: string; // Text to set on the focused input.\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<ToolResult<{\n  page_id: string;\n  ref: string;\n  tag: string;\n  title: string;\n  url: string;\n}>>;",
+      "signature": "type(args: {\n  ref: string; // Input reference from the latest browser_read.\n  text: string; // Text to set on the focused input.\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<{\n  page_id: string;\n  ref: string;\n  tag: string;\n  title: string;\n  url: string;\n}>;",
       "type_deps": []
     },
     "diagnostics": {
@@ -241,7 +241,7 @@
       ],
       "suite": "lsp",
       "doc": "List diagnostics for one source file.",
-      "signature": "diagnostics(args: PathInput): Promise<ToolResult<{\n  items: {\n    severity: string; // Severity name mapped from the LSP number: Error, Warning, Information, Hint; Unknown for anything else.\n    path: string; // Source file path.\n    line: Integer; // 1-based line number.\n    character: Integer; // 1-based UTF-16 column on that line.\n    message: string; // Human-readable diagnostic.\n  }[];\n}>>;",
+      "signature": "diagnostics(args: PathInput): Promise<{\n  items: {\n    severity: string; // Severity name mapped from the LSP number: Error, Warning, Information, Hint; Unknown for anything else.\n    path: string; // Source file path.\n    line: Integer; // 1-based line number.\n    character: Integer; // 1-based UTF-16 column on that line.\n    message: string; // Human-readable diagnostic.\n  }[];\n}>;",
       "type_deps": [
         "Integer",
         "Path",
@@ -255,7 +255,7 @@
       ],
       "suite": "lsp",
       "doc": "List symbols in one source file.",
-      "signature": "document_symbol(args: PathInput): Promise<ToolResult<SymbolsData>>;",
+      "signature": "document_symbol(args: PathInput): Promise<SymbolsData>;",
       "type_deps": [
         "Integer",
         "Path",
@@ -271,7 +271,7 @@
       ],
       "suite": "lsp",
       "doc": "List references at a file position.",
-      "signature": "find_references(args: RangeInput): Promise<ToolResult<LocationsData>>;",
+      "signature": "find_references(args: RangeInput): Promise<LocationsData>;",
       "type_deps": [
         "Integer",
         "Location",
@@ -287,7 +287,7 @@
       ],
       "suite": "lsp",
       "doc": "Jump to definition at a file position.",
-      "signature": "go_to_definition(args: RangeInput): Promise<ToolResult<LocationsData>>;",
+      "signature": "go_to_definition(args: RangeInput): Promise<LocationsData>;",
       "type_deps": [
         "Integer",
         "Location",
@@ -303,7 +303,7 @@
       ],
       "suite": "lsp",
       "doc": "Jump to implementations at a file position.",
-      "signature": "go_to_implementation(args: RangeInput): Promise<ToolResult<LocationsData>>;",
+      "signature": "go_to_implementation(args: RangeInput): Promise<LocationsData>;",
       "type_deps": [
         "Integer",
         "Location",
@@ -319,7 +319,7 @@
       ],
       "suite": "lsp",
       "doc": "Fetch hover docs or type information at a file position.",
-      "signature": "hover(args: RangeInput): Promise<ToolResult<\n  // One hover answer. A hover is a single value, so there is no truncation.\n  {\n    markdown: string; // Flattened hover text, not raw LSP JSON.\n  }\n>>;",
+      "signature": "hover(args: RangeInput): Promise<\n  // One hover answer. A hover is a single value, so there is no truncation.\n  {\n    markdown: string; // Flattened hover text, not raw LSP JSON.\n  }\n>;",
       "type_deps": [
         "Integer",
         "Path",
@@ -333,7 +333,7 @@
       ],
       "suite": "lsp",
       "doc": "Search symbols across the workspace.",
-      "signature": "workspace_symbol(args: {\n  query: string; // Symbol name or fragment to search across the workspace.\n  path?: string; // Optional source file that selects/starts the project's language server. Required only when more than one server is running.\n}): Promise<ToolResult<SymbolsData>>;",
+      "signature": "workspace_symbol(args: {\n  query: string; // Symbol name or fragment to search across the workspace.\n  path?: string; // Optional source file that selects/starts the project's language server. Required only when more than one server is running.\n}): Promise<SymbolsData>;",
       "type_deps": [
         "Integer",
         "SymbolInfo",
@@ -347,7 +347,7 @@
       ],
       "suite": "memory",
       "doc": "Delete entries by id from the current session's working memory.",
-      "signature": "delete(args: {\n  ids: string[]; // Entry ids to delete.\n}): Promise<ToolResult<{\n  count: Integer; // Entries after the batch.\n  deleted: string[]; // Deleted ids.\n  rejected: RejectedItem[];\n}>>;",
+      "signature": "delete(args: {\n  ids: string[]; // Entry ids to delete.\n}): Promise<{\n  count: Integer; // Entries after the batch.\n  deleted: string[]; // Deleted ids.\n  rejected: RejectedItem[];\n}>;",
       "type_deps": [
         "Integer",
         "RejectedItem"
@@ -360,7 +360,7 @@
       ],
       "suite": "memory",
       "doc": "Return the authoritative current session memory snapshot; memory survives compaction and is re-injected.",
-      "signature": "list(args?: NoArgs): Promise<ToolResult<{\n  count: Integer; // Number of entries in this snapshot.\n  // Authoritative current entries, in insertion order.\n  entries: {\n    id: string;\n    text: string;\n    updated_at: Integer; // Milliseconds since Unix epoch.\n  }[];\n  limit: Integer; // Maximum entries the session can hold.\n  total: Integer; // Entries in the whole session memory.\n  total_chars: Integer; // Characters across all entry texts.\n}>>;",
+      "signature": "list(args?: NoArgs): Promise<{\n  count: Integer; // Number of entries in this snapshot.\n  // Authoritative current entries, in insertion order.\n  entries: {\n    id: string;\n    text: string;\n    updated_at: Integer; // Milliseconds since Unix epoch.\n  }[];\n  limit: Integer; // Maximum entries the session can hold.\n  total: Integer; // Entries in the whole session memory.\n  total_chars: Integer; // Characters across all entry texts.\n}>;",
       "type_deps": [
         "Integer",
         "NoArgs"
@@ -373,7 +373,7 @@
       ],
       "suite": "memory",
       "doc": "Add or update small, durable session memory entries.",
-      "signature": "upsert(args: {\n  // Memory entries to add or update.\n  entries: {\n    text: string; // Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry.\n    id?: string; // Optional existing id. Omit to add or update by text.\n  }[];\n}): Promise<ToolResult<{\n  added: string[]; // New ids.\n  count: Integer; // Entries after the batch.\n  rejected: RejectedItem[];\n  total_chars: Integer; // Characters after the batch.\n  updated: string[]; // Updated ids.\n}>>;",
+      "signature": "upsert(args: {\n  // Memory entries to add or update.\n  entries: {\n    text: string; // Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry.\n    id?: string; // Optional existing id. Omit to add or update by text.\n  }[];\n}): Promise<{\n  added: string[]; // New ids.\n  count: Integer; // Entries after the batch.\n  rejected: RejectedItem[];\n  total_chars: Integer; // Characters after the batch.\n  updated: string[]; // Updated ids.\n}>;",
       "type_deps": [
         "Integer",
         "RejectedItem"
