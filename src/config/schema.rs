@@ -43,6 +43,10 @@ pub struct AgentToolBinding {
     pub allowed_tools: Option<Vec<String>>,
 }
 
+fn default_code_surface() -> CallSurface {
+    CallSurface::Code
+}
+
 /// Agent profile (global layer; uses `role` + `model_ref`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -58,6 +62,9 @@ pub struct AgentProfile {
     /// Primary only: subagent ids this agent may launch (`subagent_launch`). Empty = none allowed.
     #[serde(default)]
     pub allowed_subagents: Vec<String>,
+    /// Model-facing tool call surface for builtin code tools (`code` bundles into `run_code`; `direct` exposes standalone tools).
+    #[serde(default = "default_code_surface")]
+    pub tool_surface: CallSurface,
 }
 
 impl Default for AgentProfile {
@@ -69,6 +76,7 @@ impl Default for AgentProfile {
             description: String::new(),
             tools: HashMap::new(),
             allowed_subagents: Vec::new(),
+            tool_surface: CallSurface::Code,
         }
     }
 }

@@ -151,7 +151,7 @@ pub fn kind_for_code(code: &str) -> ToolErrorKind {
         "invalid_input" | "invalid_args" | "invalid_regex" | "no_match" | "empty"
         | "ambiguous" => ToolErrorKind::InvalidInput,
         "not_found" => ToolErrorKind::NotFound,
-        "permission_denied" => ToolErrorKind::PermissionDenied,
+        "permission" | "permission_denied" => ToolErrorKind::PermissionDenied,
         "conflict" | "stale" | "stale_cursor" | "still_alive" => ToolErrorKind::Conflict,
         "unavailable" | "unsupported" => ToolErrorKind::Unavailable,
         "timeout" => ToolErrorKind::Timeout,

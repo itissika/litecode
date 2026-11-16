@@ -52,14 +52,12 @@ declare const libs: {
   };
 };
 
-type FsFailure = { ok: false; reason: "not_found" | "permission" | "io"; message: string };
-
-/** Read-only workspace probes. Synchronous; paths are workspace-relative. */
+/** Read-only workspace probes. Synchronous; paths are workspace-relative; throw Error on missing or out-of-workspace paths. */
 declare const fs: {
   /** One level, sorted by name; more than 500 entries set `truncated`. */
-  ls(path: string): { ok: true; entries: Array<{ name: string; type: "file" | "dir" | "symlink" | "other"; size: number }>; truncated: boolean } | FsFailure;
+  ls(path: string): { entries: Array<{ name: string; type: "file" | "dir" | "symlink" | "other"; size: number }>; truncated: boolean };
   /** mtime is ms since the Unix epoch. */
-  stat(path: string): { ok: true; type: "file" | "dir" | "symlink" | "other"; size: number; mtime: number } | FsFailure;
+  stat(path: string): { type: "file" | "dir" | "symlink" | "other"; size: number; mtime: number };
   exists(path: string): boolean;
 };
 
@@ -71,15 +69,19 @@ type NoArgs = {};
 type Path = string;
 
 interface FileTools {
-  /** Apply replacements serially; a single edit is an array of one. */
+  /** Apply replacements serially; matching edits stay saved on disk even if another item fails and rejects. A single edit is an array of one. */
   apply_edits(args: {
-    edits: EditInput[]; // Replacements applied serially; later items on the same path see earlier successful writes.
+    edits: Array<{
+      /** Prefer a workspace-relative path. */
+      path: Path;
+      /** Exact file text to find. Must match exactly one place. */
+      old_string: string;
+      /** Replacement text. Use an empty string to delete old_string. */
+      new_string: string;
+    }>; // Replacements applied serially; later items on the same path see earlier successful writes.
   }): Promise<{
     results: Array<{
-      ok: boolean;
       path: string;
-      reason: ("not_found" | "no_match" | "ambiguous" | "invalid_args" | "empty" | "permission" | "io") | null;
-      detail: string; // Why the item failed; empty when ok is true.
     }>;
   }>;
   /** Find files by path glob. */
@@ -169,10 +171,10 @@ interface SearchTools {
 }
 
 type ExecCommandData = {
-  /** Live session id; present only while the process is still running. */
-  session_id?: string;
-  /** Process exit code once the session has exited; absent while it is live. */
-  exit_code?: Integer | null;
+  /** Live session id; null once the session has exited. */
+  session_id: string | null;
+  /** Process exit code once the session has exited; null while it is live. */
+  exit_code: Integer | null;
   /** Output since the previous call on this session; the first call returns output since spawn. */
   output: string;
 };
@@ -183,10 +185,10 @@ interface ProcessTools {
     cmd: string; // Shell command to execute.
     workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.
     tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.
-    yield_time_ms?: Integer; // Initial wait only; 250-30000 ms; default 10000. It does not limit the process lifetime.
+    yield_time_ms?: Integer; // Initial wait only; 250-120000 ms; default 120000. It does not limit the process lifetime.
     max_output_tokens?: Integer; // Output token budget for this call; default 10000.
   }): Promise<ExecCommandData>;
-  /** Poll, feed, or interrupt an existing exec session. Empty chars waits for new output or exit, whichever comes first; on exit, exit_code is set and session_id is absent. */
+  /** Poll, feed, or interrupt an existing exec session. Empty chars waits until the session exits or yield_time_ms expires, returning accumulated output; on exit, exit_code is set and session_id is null. */
   write_stdin(args: {
     session_id: string; // Session id from exec_command.
     chars?: string; // Bytes to write; empty polls. "\u0003" sends SIGINT to the process group.

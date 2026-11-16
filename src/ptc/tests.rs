@@ -139,6 +139,30 @@ async fn fs_ls_exposes_truncation_as_a_field() {
     assert_eq!(value["entries"].as_array().unwrap().len(), crate::ptc::fs::LS_CAP);
     assert!(value.get("message").is_none(), "the prose field is gone: {value}");
 }
+
+#[tokio::test]
+async fn fs_ls_and_stat_throw_error_on_missing_or_outside() {
+    let dir = tempfile::tempdir().unwrap();
+    let outcome = execute(ExecuteRequest {
+        source: r#"
+            const out = {};
+            try { fs.ls("nope"); } catch (e) { out.ls = [e instanceof Error, e.code]; }
+            try { fs.stat("../"); } catch (e) { out.stat = [e instanceof Error, e.code]; }
+            return out;
+        "#
+        .into(),
+        namespaces: Vec::new(),
+        limits: limits(),
+        budget: Duration::from_secs(5),
+        grace: Duration::from_millis(200),
+        cancel: CancellationToken::new(),
+        fs_root: Some(dir.path().to_path_buf()),
+    })
+    .await;
+    let value = value_of(&outcome);
+    assert_eq!(value["ls"], json!([true, "not_found"]), "{value}");
+    assert_eq!(value["stat"], json!([true, "permission"]), "{value}");
+}
 /// Console lines of the run, in order.
 fn texts(outcome: &Outcome) -> Vec<String> {
     outcome

@@ -28,7 +28,6 @@ on = [
   "apply_edits",    # exact-string edits; single edit is an array of one
   "exec_command",   # Codex-style unified exec session
   "write_stdin",    # poll / feed / Ctrl-C an exec session
-  "todo",           # progress outside the context window; survives compaction
   "run_code",       # the code transport: code tools are called through it
 ]
 off = [
@@ -63,6 +62,7 @@ off = [
   "ask_user",
   "plan",
   # Product surface: says nothing about how well the task was solved.
+  "todo",
   "knowledge",
   "litecode_workspace",
   # Subagents: the same model in another context. The eval scores one

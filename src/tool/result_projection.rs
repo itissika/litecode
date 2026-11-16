@@ -208,11 +208,7 @@ mod tests {
             "apply_edits",
             json!({
                 "results": [{
-                    "ok": false,
                     "path": "a.txt",
-                    "reason": "no_match",
-                    "detail": "closest match is at line 2",
-                    "nearest_line": 2,
                     "path_risk": {"outside_workspace": true, "sensitive": false},
                     "diagnostics": []
                 }]
@@ -222,10 +218,7 @@ mod tests {
             result.data,
             Some(json!({
                 "results": [{
-                    "ok": false,
-                    "path": "a.txt",
-                    "reason": "no_match",
-                    "detail": "closest match is at line 2"
+                    "path": "a.txt"
                 }]
             }))
         );

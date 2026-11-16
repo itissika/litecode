@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "a60a926147e27e9dd49a135729e8cbfee5fd017fc6207ecaae4800fe8283806c",
+  "sdk_hash": "46141189bc223bcafc1b633e3d05707c9d3e084001cf705d4f82329a4a7315b2",
   "tools": {
     "apply_edits": {
       "path": [
@@ -9,8 +9,8 @@
       ],
       "suite": "file",
       "tool": "apply_edits",
-      "doc": "Apply replacements serially; a single edit is an array of one.",
-      "signature": "apply_edits(args: {\n  edits: EditInput[]; // Replacements applied serially; later items on the same path see earlier successful writes.\n}): Promise<{\n  results: Array<{\n    ok: boolean;\n    path: string;\n    reason: (\"not_found\" | \"no_match\" | \"ambiguous\" | \"invalid_args\" | \"empty\" | \"permission\" | \"io\") | null;\n    detail: string; // Why the item failed; empty when ok is true.\n  }>;\n}>;",
+      "doc": "Apply replacements serially; matching edits stay saved on disk even if another item fails and rejects. A single edit is an array of one.",
+      "signature": "apply_edits(args: {\n  edits: Array<{\n    /** Prefer a workspace-relative path. */\n    path: Path;\n    /** Exact file text to find. Must match exactly one place. */\n    old_string: string;\n    /** Replacement text. Use an empty string to delete old_string. */\n    new_string: string;\n  }>; // Replacements applied serially; later items on the same path see earlier successful writes.\n}): Promise<{\n  results: Array<{\n    path: string;\n  }>;\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
       "type_deps": [
@@ -24,23 +24,23 @@
             "items": {
               "type": "object",
               "properties": {
-                "new_string": {
+                "path": {
                   "type": "string",
-                  "description": "Replacement text. Use an empty string to delete old_string."
+                  "description": "Prefer a workspace-relative path."
                 },
                 "old_string": {
                   "type": "string",
                   "description": "Exact file text to find. Must match exactly one place."
                 },
-                "path": {
+                "new_string": {
                   "type": "string",
-                  "description": "Prefer a workspace-relative path."
+                  "description": "Replacement text. Use an empty string to delete old_string."
                 }
               },
               "required": [
-                "new_string",
+                "path",
                 "old_string",
-                "path"
+                "new_string"
               ],
               "additionalProperties": false
             },
@@ -60,41 +60,12 @@
             "items": {
               "type": "object",
               "properties": {
-                "ok": {
-                  "type": "boolean"
-                },
                 "path": {
                   "type": "string"
-                },
-                "reason": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "enum": [
-                        "not_found",
-                        "no_match",
-                        "ambiguous",
-                        "invalid_args",
-                        "empty",
-                        "permission",
-                        "io"
-                      ]
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "detail": {
-                  "type": "string",
-                  "description": "Why the item failed; empty when ok is true."
                 }
               },
               "required": [
-                "ok",
-                "path",
-                "reason",
-                "detail"
+                "path"
               ],
               "additionalProperties": false
             }
@@ -596,7 +567,7 @@
       "suite": "process",
       "tool": "exec_command",
       "doc": "Start a command. Waits up to yield_time_ms; a live session_id leaves it running in the background. Poll with write_stdin for output, or leave it and wait for the background-exit reminder (exit code + output_file).",
-      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-30000 ms; default 10000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ExecCommandData>;",
+      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-120000 ms; default 120000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ExecCommandData>;",
       "input_type": "(inline)",
       "output_type": "ExecCommandData",
       "type_deps": [
@@ -620,7 +591,7 @@
           },
           "yield_time_ms": {
             "type": "integer",
-            "description": "Initial wait only; 250-30000 ms; default 10000. It does not limit the process lifetime."
+            "description": "Initial wait only; 250-120000 ms; default 120000. It does not limit the process lifetime."
           },
           "max_output_tokens": {
             "type": "integer",
@@ -636,8 +607,11 @@
         "type": "object",
         "properties": {
           "session_id": {
-            "type": "string",
-            "description": "Live session id; present only while the process is still running."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Live session id; null once the session has exited."
           },
           "exit_code": {
             "anyOf": [
@@ -649,7 +623,7 @@
                 "type": "null"
               }
             ],
-            "description": "Process exit code once the session has exited; absent while it is live."
+            "description": "Process exit code once the session has exited; null while it is live."
           },
           "output": {
             "type": "string",
@@ -657,6 +631,8 @@
           }
         },
         "required": [
+          "session_id",
+          "exit_code",
           "output"
         ],
         "additionalProperties": false
@@ -669,7 +645,7 @@
       ],
       "suite": "process",
       "tool": "write_stdin",
-      "doc": "Poll, feed, or interrupt an existing exec session. Empty chars waits for new output or exit, whichever comes first; on exit, exit_code is set and session_id is absent.",
+      "doc": "Poll, feed, or interrupt an existing exec session. Empty chars waits until the session exits or yield_time_ms expires, returning accumulated output; on exit, exit_code is set and session_id is null.",
       "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-300000 ms; empty polls default 5000, non-empty writes default 250. Long polls must fit the fixed run_code cap (600000 ms).\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ExecCommandData>;",
       "input_type": "(inline)",
       "output_type": "ExecCommandData",
@@ -706,8 +682,11 @@
         "type": "object",
         "properties": {
           "session_id": {
-            "type": "string",
-            "description": "Live session id; present only while the process is still running."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Live session id; null once the session has exited."
           },
           "exit_code": {
             "anyOf": [
@@ -719,7 +698,7 @@
                 "type": "null"
               }
             ],
-            "description": "Process exit code once the session has exited; absent while it is live."
+            "description": "Process exit code once the session has exited; null while it is live."
           },
           "output": {
             "type": "string",
@@ -727,6 +706,8 @@
           }
         },
         "required": [
+          "session_id",
+          "exit_code",
           "output"
         ],
         "additionalProperties": false

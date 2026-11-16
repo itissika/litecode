@@ -1915,7 +1915,7 @@ mod edit_write {
           const path = result.value && result.value.path;
           if (!path) return 0;
           const stat = fs.stat(path);
-          return stat.ok ? stat.size : 0;
+          return stat.size;
         })
       };
     }

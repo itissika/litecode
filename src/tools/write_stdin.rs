@@ -130,15 +130,24 @@ impl WriteStdinTool {
                     return coded_error("io", error);
                 }
             }
-            let _ = self
-                .jobs
-                .wait_output_or_exit(
-                    &args.session_id,
-                    cursor,
-                    Duration::from_millis(args.yield_ms),
-                    &execution.cancel,
-                )
-                .await;
+            let _ = if args.chars.is_empty() {
+                self.jobs
+                    .wait_exit_or_timeout(
+                        &args.session_id,
+                        Duration::from_millis(args.yield_ms),
+                        &execution.cancel,
+                    )
+                    .await
+            } else {
+                self.jobs
+                    .wait_output_or_exit(
+                        &args.session_id,
+                        cursor,
+                        Duration::from_millis(args.yield_ms),
+                        &execution.cancel,
+                    )
+                    .await
+            };
             if execution.cancel.is_cancelled() {
                 return coded_error("cancelled", "write_stdin cancelled");
             }

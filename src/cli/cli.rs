@@ -1003,10 +1003,14 @@ pub fn run() -> anyhow::Result<()> {
                             std::process::exit(1);
                         }
                         println!(
-                            "profile '{}' applied to agent '{}': {} tools, web {}",
+                            "profile '{}' applied to agent '{}': {} tools, surface {}, web {}",
                             applied.name,
                             crate::config::eval_profile::AGENT_ID,
                             applied.tools.len(),
+                            match applied.surface {
+                                crate::config::schema::CallSurface::Code => "code",
+                                crate::config::schema::CallSurface::Direct => "direct",
+                            },
                             applied.web.as_str(),
                         );
                         // Say which database took the bindings: on a dev machine

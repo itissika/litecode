@@ -61,11 +61,30 @@ fn migrate_to_current(conn: &Connection, version: i32) -> Result<()> {
 fn ensure_current_columns(conn: &Connection) -> Result<()> {
     ensure_agent_tools_preset(conn)?;
     ensure_agent_tools_allowed_tools_column(conn)?;
+    ensure_agents_tool_surface_column(conn)?;
     ensure_mcp_timeout_column(conn)?;
     ensure_custom_tools_columns(conn)?;
     ensure_provider_credentials_table(conn)?;
     ensure_disabled_models_table(conn)?;
     ensure_agents_drop_limits(conn)?;
+    Ok(())
+}
+
+fn ensure_agents_tool_surface_column(conn: &Connection) -> Result<()> {
+    let table_exists: bool = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agents'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? == 1;
+    if !table_exists {
+        return Ok(());
+    }
+    if !column_exists(conn, "agents", "tool_surface")? {
+        conn.execute(
+            "ALTER TABLE agents ADD COLUMN tool_surface TEXT NOT NULL DEFAULT 'code'",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -352,5 +371,28 @@ mod tests {
             .to_string();
         assert!(message.contains("incompatible"), "{message}");
         assert!(message.contains("user_version"), "{message}");
+    }
+
+    #[test]
+    fn existing_v9_db_gets_agents_tool_surface_default_code() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE agents DROP COLUMN tool_surface;
+             INSERT INTO agents (id, role, model_ref) VALUES ('default', 'primary', '');
+             PRAGMA user_version = 9;",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let surface: String = conn
+            .query_row(
+                "SELECT tool_surface FROM agents WHERE id = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(surface, "code");
     }
 }

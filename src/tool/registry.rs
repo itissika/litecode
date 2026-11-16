@@ -112,6 +112,107 @@ fn instantiate_builtin_member(
     Some(tool)
 }
 
+macro_rules! delegate_tool_inner {
+    () => {
+        fn dynamic_code_spec(&self) -> Option<crate::tool::DynamicCodeSpec> {
+            self.inner.dynamic_code_spec()
+        }
+
+        fn prepare_input(&self, input: &mut serde_json::Value) {
+            self.inner.prepare_input(input);
+        }
+
+        fn schema_arguments<'a>(
+            &self,
+            input: &'a serde_json::Value,
+        ) -> std::borrow::Cow<'a, serde_json::Value> {
+            self.inner.schema_arguments(input)
+        }
+
+        fn call(&self, input: serde_json::Value) -> crate::types::ToolCallResult {
+            self.inner.call(input)
+        }
+
+        fn call_inner(&self, input: serde_json::Value) -> crate::types::ToolCallResult {
+            self.inner.call_inner(input)
+        }
+
+        fn call_async(
+            &self,
+            input: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::types::ToolCallResult> + Send + '_>,
+        > {
+            self.inner.call_async(input)
+        }
+
+        fn execute(
+            &self,
+            input: serde_json::Value,
+            execution: crate::tool::trait_::ToolExecutionContext,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::types::ToolCallResult> + Send + '_>,
+        > {
+            self.inner.execute(input, execution)
+        }
+
+        fn timeout(&self) -> Option<std::time::Duration> {
+            self.inner.timeout()
+        }
+
+        fn effects(
+            &self,
+            input: &serde_json::Value,
+            path_mode: crate::workspace::ToolPathMode,
+            workspace_root: &std::path::Path,
+        ) -> crate::tool::resource_gate::ToolEffects {
+            self.inner.effects(input, path_mode, workspace_root)
+        }
+
+        fn is_concurrency_safe(&self, input: &serde_json::Value) -> bool {
+            self.inner.is_concurrency_safe(input)
+        }
+
+        fn resource_keys(
+            &self,
+            input: &serde_json::Value,
+            path_mode: crate::workspace::ToolPathMode,
+            workspace_root: &std::path::Path,
+        ) -> Vec<crate::tool::write_lock::ResourceKey> {
+            self.inner.resource_keys(input, path_mode, workspace_root)
+        }
+
+        fn is_cancellable(&self) -> bool {
+            self.inner.is_cancellable()
+        }
+
+        fn releases_lock_after_spawn(&self) -> bool {
+            self.inner.releases_lock_after_spawn()
+        }
+
+        fn validate_input(&self, input: &serde_json::Value) -> std::result::Result<(), String> {
+            self.inner.validate_input(input)
+        }
+
+        fn is_destructive(
+            &self,
+            input: &serde_json::Value,
+            path_mode: crate::workspace::ToolPathMode,
+            workspace_root: &std::path::Path,
+        ) -> bool {
+            self.inner.is_destructive(input, path_mode, workspace_root)
+        }
+
+        fn set_active_session(&self, session_id: String) {
+            self.inner.set_active_session(session_id);
+        }
+
+        fn set_permission_sink(&self, sink: Arc<dyn crate::permission::PermissionSink>) {
+            self.inner.set_permission_sink(sink);
+        }
+    };
+}
+
 /// Code-suite members keep their Tool identity for bindings/permissions, but
 /// the code surface exposes them as `suite.member`. The wrapper changes only
 /// the model-facing name; execution and all cross-cutting facts delegate.
@@ -150,105 +251,62 @@ impl Tool for ExposedCodeTool {
         self.inner.direct_spec(ctx)
     }
 
-    fn dynamic_code_spec(&self) -> Option<crate::tool::DynamicCodeSpec> {
-        self.inner.dynamic_code_spec()
-    }
-
-    fn prepare_input(&self, input: &mut serde_json::Value) {
-        self.inner.prepare_input(input);
-    }
-
-    fn schema_arguments<'a>(
-        &self,
-        input: &'a serde_json::Value,
-    ) -> std::borrow::Cow<'a, serde_json::Value> {
-        self.inner.schema_arguments(input)
-    }
-
-    fn call(&self, input: serde_json::Value) -> crate::types::ToolCallResult {
-        self.inner.call(input)
-    }
-
-    fn call_inner(&self, input: serde_json::Value) -> crate::types::ToolCallResult {
-        self.inner.call_inner(input)
-    }
-
-    fn call_async(
-        &self,
-        input: serde_json::Value,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = crate::types::ToolCallResult> + Send + '_>,
-    > {
-        self.inner.call_async(input)
-    }
-
-    fn execute(
-        &self,
-        input: serde_json::Value,
-        execution: crate::tool::trait_::ToolExecutionContext,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = crate::types::ToolCallResult> + Send + '_>,
-    > {
-        self.inner.execute(input, execution)
-    }
-
-    fn timeout(&self) -> Option<std::time::Duration> {
-        self.inner.timeout()
-    }
-
-    fn effects(
-        &self,
-        input: &serde_json::Value,
-        path_mode: crate::workspace::ToolPathMode,
-        workspace_root: &std::path::Path,
-    ) -> crate::tool::resource_gate::ToolEffects {
-        self.inner.effects(input, path_mode, workspace_root)
-    }
-
-    fn is_concurrency_safe(&self, input: &serde_json::Value) -> bool {
-        self.inner.is_concurrency_safe(input)
-    }
-
-    fn resource_keys(
-        &self,
-        input: &serde_json::Value,
-        path_mode: crate::workspace::ToolPathMode,
-        workspace_root: &std::path::Path,
-    ) -> Vec<crate::tool::write_lock::ResourceKey> {
-        self.inner.resource_keys(input, path_mode, workspace_root)
-    }
-
-    fn is_cancellable(&self) -> bool {
-        self.inner.is_cancellable()
-    }
-
-    fn releases_lock_after_spawn(&self) -> bool {
-        self.inner.releases_lock_after_spawn()
-    }
-
     fn max_result_size(&self) -> usize {
         self.inner.max_result_size()
     }
 
-    fn validate_input(&self, input: &serde_json::Value) -> std::result::Result<(), String> {
-        self.inner.validate_input(input)
+    delegate_tool_inner!();
+}
+
+/// Expose a built-in `ToolSurface::Code` tool on the `Direct` surface using the
+/// single-source schema/description in `sdk/generated/tool-contract.json`.
+struct DirectProjectedTool {
+    inner: Arc<dyn Tool>,
+}
+
+impl DirectProjectedTool {
+    fn new(inner: Arc<dyn Tool>) -> Self {
+        Self { inner }
+    }
+}
+
+impl Tool for DirectProjectedTool {
+    fn name(&self) -> &str {
+        self.inner.name()
     }
 
-    fn is_destructive(
+    fn surface(&self) -> crate::tool::trait_::ToolSurface {
+        crate::tool::trait_::ToolSurface::Direct
+    }
+
+    fn direct_spec(
         &self,
-        input: &serde_json::Value,
-        path_mode: crate::workspace::ToolPathMode,
-        workspace_root: &std::path::Path,
-    ) -> bool {
-        self.inner.is_destructive(input, path_mode, workspace_root)
+        ctx: &crate::context_pipeline::Context,
+    ) -> Option<crate::tool::DirectToolSpec> {
+        self.inner
+            .direct_spec(ctx)
+            .or_else(|| crate::tool::code_contract::builtin_direct_spec(self.inner.name()))
     }
 
-    fn set_active_session(&self, session_id: String) {
-        self.inner.set_active_session(session_id);
+    fn max_result_size(&self) -> usize {
+        self.inner
+            .max_result_size()
+            .max(crate::tools::code::RUN_CODE_VIEW_MAX_BYTES)
     }
 
-    fn set_permission_sink(&self, sink: Arc<dyn crate::permission::PermissionSink>) {
-        self.inner.set_permission_sink(sink);
+    delegate_tool_inner!();
+}
+
+fn project_surface_tool(
+    tool: Arc<dyn Tool>,
+    target: crate::config::schema::CallSurface,
+) -> Arc<dyn Tool> {
+    if target == crate::config::schema::CallSurface::Direct
+        && tool.surface() == crate::tool::trait_::ToolSurface::Code
+    {
+        Arc::new(DirectProjectedTool::new(tool))
+    } else {
+        tool
     }
 }
 
@@ -473,10 +531,12 @@ pub async fn build_tool_list_with_resolution(
     for capability in selected {
         match &capability.source {
             CapabilitySource::Lsp => {
-                tools.extend(lsp::all_code_tools(
+                for tool in lsp::all_code_tools(
                     workspace_engines.as_ref().clone(),
                     resolved.workspace_root().to_path_buf(),
-                ));
+                ) {
+                    tools.push(project_surface_tool(tool, profile.tool_surface));
+                }
             }
             CapabilitySource::Subagent => {
                 tools.extend(subagent_tools(
@@ -529,7 +589,7 @@ pub async fn build_tool_list_with_resolution(
                         Arc::clone(&runtime.ide),
                         &sessions,
                     ) {
-                        tools.push(tool);
+                        tools.push(project_surface_tool(tool, profile.tool_surface));
                     }
                 }
             }
@@ -1729,5 +1789,42 @@ mod tests {
         let bindings = assembled[0].code_bindings().expect("run_code bindings");
         assert!(bindings.iter().any(|n| n == "webfetch"));
         assert!(bindings.iter().any(|n| n == "websearch"));
+    }
+
+    #[test]
+    fn direct_tool_surface_projects_builtin_code_tools_with_single_source_specs() {
+        let mut global = GlobalSettings::default();
+        global.agents.insert(
+            "default".into(),
+            AgentProfile {
+                tools: default_bindings(),
+                tool_surface: crate::config::schema::CallSurface::Direct,
+                ..Default::default()
+            },
+        );
+        let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
+        let tools = list_tools_with(&resolved, 0, Some(test_host(&resolved, 0)));
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(!names.contains(&"run_code"), "no run_code in direct mode: {names:?}");
+        for expected in ["exec_command", "write_stdin", "read", "glob", "grep"] {
+            let tool = tools
+                .iter()
+                .find(|t| t.name() == expected)
+                .unwrap_or_else(|| panic!("missing direct projected tool {expected} in {names:?}"));
+            assert_eq!(tool.surface(), crate::tool::ToolSurface::Direct);
+            let spec = tool
+                .direct_spec(&dummy_ctx())
+                .unwrap_or_else(|| panic!("missing direct_spec for {expected}"));
+            assert!(!spec.description.is_empty(), "{expected} empty doc");
+            assert!(
+                spec.input_schema.get("properties").is_some(),
+                "{expected} schema missing properties"
+            );
+            assert!(
+                tool.max_result_size() >= crate::tools::code::RUN_CODE_VIEW_MAX_BYTES,
+                "{expected} direct result cap too small: {}",
+                tool.max_result_size()
+            );
+        }
     }
 }

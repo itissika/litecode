@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 mod render;
-pub use render::RUN_CODE_VIEW_MAX_BYTES;
+pub use render::{RUN_CODE_VIEW_MAX_BYTES, render_direct_code_contract_result};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

@@ -15,7 +15,7 @@ pub const LS_CAP: usize = 500;
 /// Resolve `raw` under `root`. `..` may not climb out; absolute paths must
 /// already be inside `root`. Symlinks are followed only when the target is
 /// still inside `root`.
-fn confine(root: &Path, raw: &str) -> Result<PathBuf, Value> {
+fn confine(root: &Path, raw: &str) -> Result<PathBuf, (&'static str, String)> {
     let candidate = Path::new(raw);
     let joined = if candidate.is_absolute() {
         candidate.to_path_buf()
@@ -27,10 +27,7 @@ fn confine(root: &Path, raw: &str) -> Result<PathBuf, Value> {
         match component {
             Component::ParentDir => {
                 if !normal.pop() {
-                    return Err(failure(
-                        "permission",
-                        format!("{raw} is outside the workspace"),
-                    ));
+                    return Err(("permission", format!("{raw} is outside the workspace")));
                 }
             }
             Component::CurDir => {}
@@ -40,24 +37,17 @@ fn confine(root: &Path, raw: &str) -> Result<PathBuf, Value> {
     let root_real = crate::config::path::canon_abs(root).unwrap_or_else(|_| root.to_path_buf());
     let inside = |path: &Path| path.starts_with(root) || path.starts_with(&root_real);
     if !inside(&normal) {
-        return Err(failure(
-            "permission",
-            format!("{raw} is outside the workspace"),
-        ));
+        return Err(("permission", format!("{raw} is outside the workspace")));
     }
     if let Ok(real) = crate::config::path::canon_abs(&normal)
         && !inside(&real)
     {
-        return Err(failure(
+        return Err((
             "permission",
             format!("{raw} resolves outside the workspace"),
         ));
     }
     Ok(normal)
-}
-
-fn failure(reason: &str, message: String) -> Value {
-    json!({ "ok": false, "reason": reason, "message": message })
 }
 
 fn kind(meta: &std::fs::Metadata) -> &'static str {
@@ -72,24 +62,18 @@ fn kind(meta: &std::fs::Metadata) -> &'static str {
     }
 }
 
-fn io_failure(raw: &str, error: std::io::Error) -> Value {
+fn io_failure(raw: &str, error: std::io::Error) -> (&'static str, String) {
     if error.kind() == std::io::ErrorKind::NotFound {
-        failure("not_found", format!("{raw} does not exist"))
+        ("not_found", format!("{raw} does not exist"))
     } else {
-        failure("io", format!("{raw}: {error}"))
+        ("io", format!("{raw}: {error}"))
     }
 }
 
-/// `{ok, entries:[{name,type,size}], truncated}` — one level, sorted by name, capped at `LS_CAP`.
-pub fn ls(root: &Path, raw: &str) -> Value {
-    let path = match confine(root, raw) {
-        Ok(path) => path,
-        Err(value) => return value,
-    };
-    let reader = match std::fs::read_dir(&path) {
-        Ok(reader) => reader,
-        Err(error) => return io_failure(raw, error),
-    };
+/// `{entries:[{name,type,size}], truncated}` — one level, sorted by name, capped at `LS_CAP`.
+pub fn ls(root: &Path, raw: &str) -> Result<Value, (&'static str, String)> {
+    let path = confine(root, raw)?;
+    let reader = std::fs::read_dir(&path).map_err(|error| io_failure(raw, error))?;
     let mut entries: Vec<(String, &'static str, u64)> = Vec::new();
     for entry in reader.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -103,7 +87,6 @@ pub fn ls(root: &Path, raw: &str) -> Value {
     let total = entries.len();
     entries.truncate(LS_CAP);
     let mut out = Map::new();
-    out.insert("ok".into(), Value::Bool(true));
     out.insert(
         "entries".into(),
         Value::Array(
@@ -114,15 +97,12 @@ pub fn ls(root: &Path, raw: &str) -> Value {
         ),
     );
     out.insert("truncated".into(), Value::Bool(total > LS_CAP));
-    Value::Object(out)
+    Ok(Value::Object(out))
 }
 
-/// `{ok, type, size, mtime}` with `mtime` in ms since the Unix epoch.
-pub fn stat(root: &Path, raw: &str) -> Value {
-    let path = match confine(root, raw) {
-        Ok(path) => path,
-        Err(value) => return value,
-    };
+/// `{type, size, mtime}` with `mtime` in ms since the Unix epoch.
+pub fn stat(root: &Path, raw: &str) -> Result<Value, (&'static str, String)> {
+    let path = confine(root, raw)?;
     match std::fs::metadata(&path) {
         Ok(meta) => {
             let mtime = meta
@@ -131,9 +111,9 @@ pub fn stat(root: &Path, raw: &str) -> Value {
                 .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|age| age.as_millis() as u64)
                 .unwrap_or(0);
-            json!({ "ok": true, "type": kind(&meta), "size": meta.len(), "mtime": mtime })
+            Ok(json!({ "type": kind(&meta), "size": meta.len(), "mtime": mtime }))
         }
-        Err(error) => io_failure(raw, error),
+        Err(error) => Err(io_failure(raw, error)),
     }
 }
 
@@ -154,8 +134,7 @@ mod tests {
         std::fs::write(root.join("src/a.rs"), "fn a() {}").unwrap();
         std::fs::write(root.join("b.txt"), "hi").unwrap();
 
-        let listed = ls(root, ".");
-        assert_eq!(listed["ok"], true);
+        let listed = ls(root, ".").expect("ls root");
         let names: Vec<&str> = listed["entries"]
             .as_array()
             .unwrap()
@@ -166,21 +145,17 @@ mod tests {
         assert_eq!(listed["entries"][0]["type"], "file");
         assert_eq!(listed["entries"][0]["size"], 2);
 
-        let info = stat(root, "src/a.rs");
+        let info = stat(root, "src/a.rs").expect("stat file");
         assert_eq!(
-            (
-                info["ok"].clone(),
-                info["type"].clone(),
-                info["size"].clone()
-            ),
-            (json!(true), json!("file"), json!(9))
+            (info["type"].clone(), info["size"].clone()),
+            (json!("file"), json!(9))
         );
         assert!(info["mtime"].as_u64().unwrap() > 0);
         assert!(exists(root, "src"));
         assert!(!exists(root, "nope"));
 
-        assert_eq!(stat(root, "nope")["reason"], "not_found");
-        assert_eq!(ls(root, "../")["reason"], "permission");
+        assert_eq!(stat(root, "nope").unwrap_err().0, "not_found");
+        assert_eq!(ls(root, "../").unwrap_err().0, "permission");
         assert!(!exists(root, "../"));
 
         // Nothing was created or removed by the probes.
@@ -255,18 +230,15 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("b.txt"), "hi").unwrap();
 
-        let listed = ls(root, ".");
+        let listed = ls(root, ".").expect("ls");
         assert_eq!(declared_keys("  ls(path: string): ", libs), runtime_keys(&listed));
         assert_eq!(
             declared_keys("entries: Array<", libs),
             runtime_keys(&listed["entries"][0]),
         );
 
-        let statted = stat(root, "b.txt");
+        let statted = stat(root, "b.txt").expect("stat");
         assert_eq!(declared_keys("  stat(path: string): ", libs), runtime_keys(&statted));
-
-        let missing = ls(root, "missing.txt");
-        assert_eq!(declared_keys("type FsFailure = ", libs), runtime_keys(&missing));
 
         assert!(libs.contains("  exists(path: string): boolean;"));
     }

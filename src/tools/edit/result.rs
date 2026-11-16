@@ -115,23 +115,76 @@ pub fn present_edit(result: EditResult) -> ToolCallResult {
 /// Sole success shape for apply_edits: one entry per requested edit.
 #[derive(Serialize)]
 struct ApplyEditsData {
-    results: Vec<serde_json::Value>,
+    results: Vec<EditSuccessData>,
 }
 
 pub fn present_apply_edits(results: Vec<EditResult>) -> ToolCallResult {
-    // One projection, at the wire: an item reason is always one of the seven
-    // public values, so no internal name reaches a program and the run cannot
-    // be terminated by an unknown one.
-    let results: Vec<serde_json::Value> = results
-        .into_iter()
-        .map(|item| {
-            let mut item = item;
-            item.reason = item.reason.map(public_reason);
-            serde_json::to_value(item).unwrap_or(serde_json::Value::Null)
+    let failed: Vec<(usize, &EditResult)> = results
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| !item.ok)
+        .collect();
+    if failed.is_empty() {
+        let items: Vec<EditSuccessData> = results
+            .into_iter()
+            .map(|item| EditSuccessData {
+                path: item.path,
+                path_risk: item.path_risk,
+                diagnostics: item.diagnostics,
+            })
+            .collect();
+        return ToolOutcome::ok(ApplyEditsData { results: items }).into_call_result("");
+    }
+
+    // Serial execution already wrote matching items to disk; reject so callers
+    // stop dependent steps while preserving applied edits and reporting all
+    // failures clearly using the seven public reason codes.
+    let total = results.len();
+    let applied = total - failed.len();
+    let first_code = public_reason(failed[0].1.reason.unwrap_or("io"));
+    let failures_summary: String = failed
+        .iter()
+        .map(|(index, item)| {
+            let code = public_reason(item.reason.unwrap_or("io"));
+            format!("#{} ({}) [{}]: {}", index + 1, item.path, code, item.message)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let message = if applied > 0 {
+        format!(
+            "applied {applied}/{total} edits (valid edits saved on disk); failed: {failures_summary}"
+        )
+    } else {
+        format!("applied 0/{total} edits; failed: {failures_summary}")
+    };
+    let detail_items: Vec<serde_json::Value> = results
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            serde_json::json!({
+                "index": index + 1,
+                "ok": item.ok,
+                "path": item.path,
+                "reason": item.reason.map(public_reason),
+                "detail": item.message,
+            })
         })
         .collect();
-    // Same as write success: empty content; batch facts live in data.results[].
-    ToolOutcome::ok(ApplyEditsData { results }).into_call_result("")
+    let diagnostics: Vec<Diagnostic> = results
+        .iter()
+        .filter(|item| item.ok)
+        .flat_map(|item| item.diagnostics.iter().flatten().cloned())
+        .collect();
+    let mut outcome: ToolOutcome<()> = ToolOutcome::failure(first_code, message.clone(), false)
+        .with_error_details(serde_json::json!({
+            "applied": applied,
+            "total": total,
+            "results": detail_items,
+        }));
+    for diagnostic in diagnostics {
+        outcome = outcome.with_diagnostic(diagnostic);
+    }
+    outcome.into_call_result(message)
 }
 
 #[cfg(test)]
@@ -173,21 +226,19 @@ mod tests {
         for code in internal {
             let public = public_reason(code);
             assert!(PUBLIC.contains(&public), "{code} -> {public}");
-            // The tool keeps the internal key; the wire gets the public one.
+            // The tool keeps the internal key; failure output gets the public one.
             let item = EditResult::failure("a.txt", "x").because(code);
             assert_eq!(item.reason, Some(code), "the tool keeps the key");
-            let wire = present_apply_edits(vec![item])
-                .data
-                .expect("data");
-            assert_eq!(wire["results"][0]["reason"], public, "{code}");
+            let wire = present_apply_edits(vec![item]);
+            assert_eq!(wire.error_code.as_deref(), Some(public), "{code}");
+            let details = wire.error_details.expect("error_details");
+            assert_eq!(details["results"][0]["reason"], public, "{code}");
         }
     }
 }
 
-/// Drift samples for the two edit tools. apply_edits states use one item each:
-/// a failure carries the optional reason, a success does not. `diagnostics` is
-/// always present (empty when there is nothing to report), so one item shape
-/// can describe both a failure and a success.
+/// Drift samples for apply_edits success items (`path_risk` and `diagnostics`
+/// move to metadata in `result_projection`).
 #[cfg(test)]
 pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
     use crate::tool::code_contract::DriftCase;

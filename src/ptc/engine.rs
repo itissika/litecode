@@ -848,8 +848,11 @@ fn install_fs<'js>(ctx: &Ctx<'js>, root: &std::path::Path) -> Result<(), Failure
                 } else {
                     super::fs::stat(&root, &raw)
                 };
-                boundary::to_js(&ctx, super::json::Json::new(result))
-                    .map_err(|message| boundary::throw_message(&ctx, &message))
+                match result {
+                    Ok(value) => boundary::to_js(&ctx, super::json::Json::new(value))
+                        .map_err(|message| boundary::throw_message(&ctx, &message)),
+                    Err((code, message)) => Err(throw_coded_error(&ctx, code, &message)),
+                }
             },
         )
         .and_then(|function| function.with_name(name))
@@ -1404,6 +1407,32 @@ fn contract_failure(faults: &Faults) -> Failure {
             failure
         }
         None => Failure::internal("contract failure"),
+    }
+}
+
+fn throw_coded_error(ctx: &Ctx<'_>, code: &str, message: &str) -> Error {
+    const FACTORY: &str = r#"
+        (function (code, message) {
+            const error = new Error(message);
+            Object.defineProperty(error, "code", {
+                value: code,
+                writable: false,
+                enumerable: true,
+                configurable: false
+            });
+            return error;
+        })
+    "#;
+    let factory = match ctx.eval::<Function<'_>, _>(FACTORY) {
+        Ok(factory) => factory,
+        Err(error) => return error,
+    };
+    match factory.call::<_, Object<'_>>((code, message)) {
+        Ok(error) => match Exception::from_object(error) {
+            Some(exception) => exception.throw(),
+            None => boundary::throw_message(ctx, message),
+        },
+        Err(error) => error,
     }
 }
 

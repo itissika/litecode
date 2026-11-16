@@ -5,7 +5,7 @@ use std::sync::Arc;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::config::schema::{
-    AgentProfile, AgentRole, AgentToolBinding, AuthSettings, CustomSuiteDefinition,
+    AgentProfile, AgentRole, AgentToolBinding, AuthSettings, CallSurface, CustomSuiteDefinition,
     CustomToolDefinition, GlobalSettings, LogSettings, McpServerDefinition, McpTransport,
     ToolPreset, WebSearchSettings,
 };
@@ -281,7 +281,7 @@ pub fn repair_agent_models_on_boot(
         let Some(profile) = settings.agents.get(&id) else {
             continue;
         };
-        store::upsert_agent(
+        store::upsert_agent_with_surface(
             conn,
             &id,
             profile.role,
@@ -289,6 +289,7 @@ pub fn repair_agent_models_on_boot(
             &profile.system_prompt,
             &profile.description,
             &profile.allowed_subagents,
+            profile.tool_surface,
         )?;
     }
     Ok(())
@@ -331,7 +332,7 @@ pub mod store {
             )?;
         }
         for (id, profile) in &settings.agents {
-            upsert_agent(
+            upsert_agent_with_surface(
                 &tx,
                 id,
                 profile.role,
@@ -339,6 +340,7 @@ pub mod store {
                 &profile.system_prompt,
                 &profile.description,
                 &profile.allowed_subagents,
+                profile.tool_surface,
             )?;
             for (tool_id, binding) in &profile.tools {
                 upsert_agent_tool(&tx, id, tool_id, binding)?;
@@ -415,10 +417,25 @@ pub mod store {
         Ok(())
     }
 
+    fn parse_surface(s: String) -> Result<CallSurface> {
+        match s.as_str() {
+            "code" => Ok(CallSurface::Code),
+            "direct" => Ok(CallSurface::Direct),
+            _ => Err(LitecodeError::Config(format!("unknown agent tool_surface: {s}"))),
+        }
+    }
+
+    fn surface_to_str(surface: CallSurface) -> &'static str {
+        match surface {
+            CallSurface::Code => "code",
+            CallSurface::Direct => "direct",
+        }
+    }
+
     fn load_agents(conn: &Connection) -> Result<HashMap<String, AgentProfile>> {
         let mut stmt = conn.prepare(
             "SELECT id, role, model_ref, system_prompt, description,
-                    allowed_subagents_json
+                    allowed_subagents_json, tool_surface
              FROM agents",
         )?;
         let mut rows = stmt.query([])?;
@@ -432,6 +449,7 @@ pub mod store {
                         "invalid allowed_subagents_json for agent '{id}': {e}"
                     ))
                 })?;
+            let tool_surface = parse_surface(row.get(6)?)?;
             let mut profile = AgentProfile {
                 role: parse_role(row.get(1)?)?,
                 model_ref: row.get(2)?,
@@ -439,6 +457,7 @@ pub mod store {
                 description: row.get(4)?,
                 tools: HashMap::new(),
                 allowed_subagents,
+                tool_surface,
             };
             profile.tools = load_agent_tools(conn, &id)?;
             map.insert(id, profile);
@@ -502,6 +521,40 @@ pub mod store {
                 system_prompt,
                 description,
                 allowed_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_agent_with_surface(
+        conn: &Connection,
+        id: &str,
+        role: AgentRole,
+        model_ref: &str,
+        system_prompt: &str,
+        description: &str,
+        allowed_subagents: &[String],
+        tool_surface: CallSurface,
+    ) -> Result<()> {
+        let allowed_json = serde_json::to_string(allowed_subagents)?;
+        conn.execute(
+            "INSERT INTO agents (id, role, model_ref, system_prompt, description, allowed_subagents_json, tool_surface)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+               role = excluded.role,
+               model_ref = excluded.model_ref,
+               system_prompt = excluded.system_prompt,
+               description = excluded.description,
+               allowed_subagents_json = excluded.allowed_subagents_json,
+               tool_surface = excluded.tool_surface",
+            params![
+                id,
+                role_to_str(role),
+                model_ref,
+                system_prompt,
+                description,
+                allowed_json,
+                surface_to_str(tool_surface),
             ],
         )?;
         Ok(())

@@ -840,6 +840,7 @@ pub async fn execute_tool_call(
         }
         output
     } else {
+        let output = crate::tools::code::render_direct_code_contract_result(&tu_name, output);
         let mut output = wire_result(output);
         output.content = output::cap_direct_content(tool.as_ref(), &output.content);
         match output::finalize_tool_call_result(output, data_root, spill_threshold) {

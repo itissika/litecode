@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS agents (
     model_ref               TEXT NOT NULL,
     system_prompt           TEXT NOT NULL DEFAULT '',
     description             TEXT NOT NULL DEFAULT '',
-    allowed_subagents_json  TEXT NOT NULL DEFAULT '[]'
+    allowed_subagents_json  TEXT NOT NULL DEFAULT '[]',
+    tool_surface            TEXT NOT NULL DEFAULT 'code'
 );
 
 CREATE TABLE IF NOT EXISTS agent_tools (

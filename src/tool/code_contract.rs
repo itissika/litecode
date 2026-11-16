@@ -200,6 +200,19 @@ pub fn builtin_input_schema(name: &str) -> Option<Value> {
         .map(|tool| tool.input_schema.clone())
 }
 
+/// Direct-surface contract for one built-in code tool, reusing the same JSDoc
+/// summary and JSON input schema from `sdk/generated/tool-contract.json`.
+pub fn builtin_direct_spec(name: &str) -> Option<crate::tool::DirectToolSpec> {
+    builtins()
+        .contract
+        .tools
+        .get(name)
+        .map(|tool| crate::tool::DirectToolSpec {
+            description: tool.doc.clone(),
+            input_schema: tool.input_schema.clone(),
+        })
+}
+
 /// Build the concrete contract for the tools bound into one `run_code` call.
 pub fn build_surface(tools: &[Arc<dyn Tool>]) -> Result<CodeSurface, String> {
     let builtins = builtins();

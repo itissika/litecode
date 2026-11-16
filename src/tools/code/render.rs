@@ -262,6 +262,15 @@ pub(super) fn reminders_for_call_with_metadata(
     value: &Value,
     metadata: Option<&Value>,
 ) -> Vec<String> {
+    reminders_for_call_surface(tool, value, metadata, false)
+}
+
+fn reminders_for_call_surface(
+    tool: &str,
+    value: &Value,
+    metadata: Option<&Value>,
+    direct: bool,
+) -> Vec<String> {
     let mut fields = metadata
         .and_then(Value::as_object)
         .cloned()
@@ -285,11 +294,120 @@ pub(super) fn reminders_for_call_with_metadata(
         "file.grep" => grep_reminders(object, &mut out),
         tool if tool.starts_with("lsp.") => lsp_reminders(tool, object, &mut out),
         "process.exec_command" | "process.write_stdin" => {
-            unified_exec_reminders(tool, object, &mut out)
+            unified_exec_reminders(tool, object, direct, &mut out)
         }
         "file.write" => write_reminders(object, &mut out),
         "file.apply_edits" => edit_reminders(tool, object, &mut out),
         _ => {}
+    }
+    out
+}
+
+/// Render a code-contract tool's `ToolCallResult` for a `Direct` caller using
+/// the same projection, reminder rules, and verbatim formatters as `run_code`.
+pub fn render_direct_code_contract_result(
+    tool_name: &str,
+    mut result: crate::types::ToolCallResult,
+) -> crate::types::ToolCallResult {
+    let Some(sdk_path) = crate::tool::code_contract::builtin_sdk_path(tool_name) else {
+        return result;
+    };
+    if result.error.is_some() {
+        if result.content.is_empty()
+            && let Some(err) = result.error.as_ref()
+        {
+            result.content = err.message.clone();
+        }
+        if !result.diagnostics.is_empty()
+            && !result.content.contains("language server reported errors")
+        {
+            if !result.content.is_empty() {
+                result.content.push('\n');
+            }
+            result
+                .content
+                .push_str("↳ the language server reported errors in applied file(s)");
+        }
+        return result;
+    }
+    if result.data.is_none() {
+        return result;
+    }
+
+    let mut projected = crate::tool::result_projection::project_code_result(tool_name, result);
+    let data = projected.data.clone().unwrap_or(Value::Null);
+    let reminders = reminders_for_call_surface(&sdk_path, &data, projected.metadata.as_ref(), true);
+    let body = render_direct_body(tool_name, &data, projected.metadata.as_ref());
+
+    let mut sections: Vec<String> = Vec::new();
+    if !reminders.is_empty() {
+        sections.push(
+            reminders
+                .into_iter()
+                .map(|line| format!("↳ {line}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    if !body.is_empty() {
+        sections.push(body);
+    }
+    projected.content = sections.join("\n");
+    projected
+}
+
+fn render_direct_body(tool_name: &str, data: &Value, metadata: Option<&Value>) -> String {
+    match tool_name {
+        "exec_command" | "write_stdin" => {
+            let header = if let Some(code) = data.get("exit_code").and_then(Value::as_i64) {
+                format!("exit_code: {code}")
+            } else if let Some(sid) = data.get("session_id").and_then(Value::as_str) {
+                format!("session_id: {sid}")
+            } else {
+                "exit_code: null".to_string()
+            };
+            let output = data.get("output").and_then(Value::as_str).unwrap_or("");
+            if output.is_empty() {
+                header
+            } else {
+                format!("{header}\n{output}")
+            }
+        }
+        "read" => render_direct_read_body(data, metadata),
+        _ => render_result_body(data),
+    }
+}
+
+fn render_direct_read_body(data: &Value, metadata: Option<&Value>) -> String {
+    let Some(lines) = data.get("lines").and_then(Value::as_array) else {
+        return render_result_body(data);
+    };
+    let Some(strs): Option<Vec<&str>> = lines.iter().map(Value::as_str).collect() else {
+        return render_result_body(data);
+    };
+    if strs.is_empty() {
+        return "lines: (empty)".to_string();
+    }
+    let meta = metadata.and_then(Value::as_object);
+    let skipped = meta
+        .and_then(|m| m.get("skipped_in_context"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let start_line = meta.and_then(|m| m.get("start_line")).and_then(Value::as_u64);
+    if skipped == 0
+        && let Some(start) = start_line
+    {
+        return strs
+            .into_iter()
+            .enumerate()
+            .map(|(offset, line)| format!("{}: {}", start + offset as u64, line))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    let mut out = String::from("lines:");
+    for line in strs {
+        out.push('\n');
+        out.push_str(line);
     }
     out
 }
@@ -374,13 +492,19 @@ fn edit_reminders(
 fn unified_exec_reminders(
     tool: &str,
     object: &serde_json::Map<String, Value>,
+    direct: bool,
     out: &mut Vec<String>,
 ) {
     if tool == "process.exec_command"
         && let Some(session_id) = object.get("session_id").and_then(Value::as_str)
     {
+        let poll_target = if direct {
+            "write_stdin"
+        } else {
+            "tools.process.write_stdin"
+        };
         out.push(format!(
-            "session {session_id} is live; poll with tools.process.write_stdin or wait for its exit reminder"
+            "session {session_id} is live; poll with {poll_target} or wait for its exit reminder"
         ));
     }
     if object.get("truncated").and_then(Value::as_bool) == Some(true) {
@@ -1200,6 +1324,24 @@ fn token_suffix(text: &str, budget: usize) -> &str {
     &text[bounds[lo]..]
 }
 
+fn render_read_lines_object(map: &serde_json::Map<String, Value>) -> Option<String> {
+    if map.len() != 1 {
+        return None;
+    }
+    let lines = map.get("lines")?.as_array()?;
+    let strs: Option<Vec<&str>> = lines.iter().map(Value::as_str).collect();
+    let strs = strs?;
+    if strs.is_empty() {
+        return Some("lines: (empty)".to_string());
+    }
+    let mut out = String::from("lines:");
+    for line in strs {
+        out.push('\n');
+        out.push_str(line);
+    }
+    Some(out)
+}
+
 fn render_result_body(value: &Value) -> String {
     match value {
         Value::String(text) => compact_json_text(text).unwrap_or_else(|| text.clone()),
@@ -1208,6 +1350,9 @@ fn render_result_body(value: &Value) -> String {
             None => compact_json(value),
         },
         Value::Object(map) => {
+            if let Some(rendered) = render_read_lines_object(map) {
+                return rendered;
+            }
             let mut rest = serde_json::Map::new();
             let mut tables = Vec::new();
             for (key, v) in map {
@@ -2309,24 +2454,17 @@ mod tests {
                 json!({
                     "results": [
                         {
-                            "ok": true,
                             "path": "a.txt",
-                            "reason": null,
-                            "detail": "",
                             "diagnostics": [
                                 {"code": "lsp_error", "severity": "warning", "message": "m"}
                             ],
                         },
                         {
-                            "ok": false,
                             "path": "/tmp/z.txt",
-                            "reason": "no_match",
-                            "detail": "old_string was not found; closest match is at line 12",
                             "path_risk": risk("/tmp/z.txt"),
                         },
                     ]
                 }),
-                // `detail` is a sentence in the result; the block adds none for it.
                 vec![
                     "edit #1: the language server reported errors in this file",
                     "edit #2 lands outside the workspace: /tmp/z.txt",
@@ -3139,6 +3277,22 @@ mod tests {
     }
 
     #[test]
+    fn read_lines_object_renders_verbatim_without_json_escaping() {
+        let value = serde_json::json!({
+            "lines": [
+                r#"pattern = r"^[a-z]+\d\s*\"quoted\"$""#,
+                "line\twith\ttabs",
+            ]
+        });
+        assert_eq!(
+            render_result_body(&value),
+            "lines:\npattern = r\"^[a-z]+\\d\\s*\\\"quoted\\\"$\"\nline\twith\ttabs"
+        );
+        let empty = serde_json::json!({ "lines": [] });
+        assert_eq!(render_result_body(&empty), "lines: (empty)");
+    }
+
+    #[test]
     fn human_data_stays_structured_for_the_pretty_frontend() {
         let mut report = base_report();
         report.calls = vec![settled(1, "write", "path=a.txt", "ok", "a.txt")];
@@ -3562,5 +3716,49 @@ mod metadata_reminder_tests {
                 "yield_time_ms 300000 used instead of 600000",
             ]
         );
+    }
+
+    #[test]
+    fn direct_rendering_formats_code_contract_tools_losslessly() {
+        let live_exec = crate::types::ToolCallResult {
+            data: Some(json!({
+                "session_id": "bg_7",
+                "exit_code": null,
+                "output": "started\n",
+                "truncated": true
+            })),
+            ..crate::types::ToolCallResult::ok("session_id: bg_7\n")
+        };
+        let rendered_exec = render_direct_code_contract_result("exec_command", live_exec);
+        assert!(rendered_exec.content.starts_with("↳ session bg_7 is live; poll with write_stdin"));
+        assert!(!rendered_exec.content.contains("tools.process."));
+        assert!(rendered_exec.content.contains("session_id: bg_7\nstarted\n"));
+
+        let read_res = crate::types::ToolCallResult {
+            data: Some(json!({
+                "start_line": 10,
+                "lines": [r#"re.compile(r"\d+\"x\"")"#],
+                "total_lines": 25,
+                "has_more": true
+            })),
+            ..crate::types::ToolCallResult::ok("")
+        };
+        let rendered_read = render_direct_code_contract_result("read", read_res);
+        assert!(rendered_read.content.contains("↳ showing lines 10-10 of 25; continue with start_line 11"));
+        assert!(rendered_read.content.contains(r#"10: re.compile(r"\d+\"x\"")"#));
+
+        let partial_fail = crate::types::ToolCallResult {
+            diagnostics: vec![crate::tool::outcome::Diagnostic::warning("lsp_error", "err")],
+            ..crate::types::ToolCallResult::error_with_kind(
+                crate::types::ToolErrorKind::InvalidInput,
+                "applied 1/2 edits (valid edits saved on disk); failed: #2 (b.txt) [no_match]: nope",
+                false,
+            )
+        };
+        let mut partial_fail_with_content = partial_fail;
+        partial_fail_with_content.content = "applied 1/2 edits".into();
+        let rendered_edit = render_direct_code_contract_result("apply_edits", partial_fail_with_content);
+        assert!(rendered_edit.content.contains("applied 1/2 edits"));
+        assert!(rendered_edit.content.contains("language server reported errors"));
     }
 }

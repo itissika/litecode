@@ -50,13 +50,11 @@ declare const libs: {
   };
 };
 
-type FsFailure = { ok: false; reason: "not_found" | "permission" | "io"; message: string };
-
-/** Read-only workspace probes. Synchronous; paths are workspace-relative. */
+/** Read-only workspace probes. Synchronous; paths are workspace-relative; throw Error on missing or out-of-workspace paths. */
 declare const fs: {
   /** One level, sorted by name; more than 500 entries set `truncated`. */
-  ls(path: string): { ok: true; entries: Array<{ name: string; type: "file" | "dir" | "symlink" | "other"; size: number }>; truncated: boolean } | FsFailure;
+  ls(path: string): { entries: Array<{ name: string; type: "file" | "dir" | "symlink" | "other"; size: number }>; truncated: boolean };
   /** mtime is ms since the Unix epoch. */
-  stat(path: string): { ok: true; type: "file" | "dir" | "symlink" | "other"; size: number; mtime: number } | FsFailure;
+  stat(path: string): { type: "file" | "dir" | "symlink" | "other"; size: number; mtime: number };
   exists(path: string): boolean;
 };

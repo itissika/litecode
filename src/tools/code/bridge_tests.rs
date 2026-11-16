@@ -252,53 +252,74 @@ async fn s2_a_rejected_call_does_not_stop_the_next() {
     );
 }
 
-/// The edit-input cut: a replacement the tool refuses for its input is a
-/// *value*, so the program keeps running and can branch on it.
+/// A failing edit item rejects `apply_edits` with an Error carrying the public
+/// reason code and details, while earlier valid edits in the batch stay saved.
 #[tokio::test]
-async fn edit_input_failure_resolves_as_a_value() {
+async fn edit_input_failure_rejects_and_keeps_valid_edits() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "world\n").unwrap();
     let result = run_program(
         dir.path(),
         vec![Arc::new(ApplyEditsTool::new())],
         r#"
-        const r = await tools.file.apply_edits({ edits: [{ path: "a.txt", old_string: "hello", new_string: "hello" }] });
-        return { ok: r.results[0].ok, reason: r.results[0].reason };
+        try {
+          await tools.file.apply_edits({
+            edits: [
+              { path: "b.txt", old_string: "world", new_string: "WORLD" },
+              { path: "a.txt", old_string: "hello", new_string: "hello" },
+            ],
+          });
+          return "unexpected_ok";
+        } catch (e) {
+          return {
+            code: e.code,
+            applied: e.details && e.details.applied,
+            total: e.details && e.details.total,
+            r0: e.details && e.details.results[0].ok,
+            r1: e.details && e.details.results[1].reason,
+          };
+        }
         "#,
     )
     .await;
     assert!(result.error.is_none(), "{}", result.content);
+    assert_eq!(std::fs::read_to_string(dir.path().join("b.txt")).unwrap(), "WORLD\n");
     assert!(
-        result.content.contains("\"ok\":false") && result.content.contains("invalid_args"),
-        "the batch item must carry ok:false / reason invalid_args: {}",
+        result.content.contains("\"code\":\"invalid_args\"")
+            && result.content.contains("\"applied\":1")
+            && result.content.contains("\"total\":2")
+            && result.content.contains("\"r0\":true")
+            && result.content.contains("\"r1\":\"invalid_args\""),
+        "caught error must report saved count and item reason: {}",
         result.content
     );
 }
 
-/// An edit that is refused for permission is a value too: the run continues and
-/// the program can branch, while the ledger row carries the real code.
+/// An edit that is refused for permission rejects with `code: "permission"`
+/// and stops subsequent statements unless caught.
 #[tokio::test]
-async fn edit_on_a_session_record_resolves_as_a_permission_value() {
+async fn edit_on_a_session_record_rejects_with_permission_code() {
     let dir = tempfile::tempdir().unwrap();
     let result = run_program(
         dir.path(),
-        vec![Arc::new(ApplyEditsTool::new())],
+        vec![
+            Arc::new(ApplyEditsTool::new()),
+            Arc::new(crate::tools::write::WriteTool::new()),
+        ],
         r#"
-        const r = await tools.file.apply_edits({ edits: [{
+        await tools.file.apply_edits({ edits: [{
             path: ".litecode/sessions/01M6MH2CWCE5DJDAZBE0E3THT5.md",
             old_string: "a",
             new_string: "b",
         }] });
-        return { ok: r.results[0].ok, reason: r.results[0].reason };
+        await tools.file.write({ path: "after.txt", content: "should_not_run" });
+        return "unreachable";
         "#,
     )
     .await;
-    assert!(result.error.is_none(), "{}", result.content);
-    assert!(
-        result.content.contains("\"ok\":false") && result.content.contains("permission"),
-        "the program must see ok:false / reason permission: {}",
-        result.content
-    );
+    assert_eq!(result.error_code.as_deref(), Some("permission"), "{}", result.content);
+    assert!(!dir.path().join("after.txt").exists(), "downstream call must not run");
 }
 
 /// Claims to be `grep` and returns grep-shaped data, so a read can be checked
@@ -952,10 +973,10 @@ async fn two_arguments_keep_their_single_line() {
     );
     assert!(!lines[0].contains("#1 "), "the arity line keeps no anchor: {content}");
 }
-/// Item failures stay item-level: an unknown or internal reason must not end
-/// the program, and every reason a program sees is one of the six values.
+/// Item failures reject with an Error carrying details, and every reason a
+/// program sees is one of the seven public values (no internal keys leak).
 #[tokio::test]
-async fn a_bad_edit_item_never_terminates_the_run() {
+async fn a_bad_edit_item_projects_public_reasons_without_leaking_internals() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "alpha\n").unwrap();
     let result = run_program(
@@ -968,8 +989,12 @@ async fn a_bad_edit_item_never_terminates_the_run() {
             { path: "a.txt", old_string: "alpha", new_string: "alpha" },
             { path: "a.txt", old_string: "a", new_string: "a" },
         ];
-        const r = await tools.file.apply_edits({ edits: bad });
-        return r.results.map((item) => item.reason).join(",");
+        try {
+          await tools.file.apply_edits({ edits: bad });
+          return "unexpected_ok";
+        } catch (e) {
+          return e.details.results.map((item) => item.reason).join(",");
+        }
         "#,
     )
     .await;

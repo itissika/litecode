@@ -693,6 +693,35 @@ impl AgentJobRegistry {
         }
     }
 
+    /// Wait until the job exits or `timeout` expires (used for empty-chars
+    /// `write_stdin` polling so caller yield budgets are honored rather than
+    /// returning early on the first byte of partial output).
+    pub async fn wait_exit_or_timeout(
+        &self,
+        id: &str,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let alive = {
+                let g = self.inner.lock().expect("jobs lock");
+                let Some(rec) = g.jobs.get(id) else {
+                    return true;
+                };
+                rec.alive
+            };
+            if !alive {
+                return true;
+            }
+            tokio::select! {
+                _ = cancel.cancelled() => return true,
+                _ = tokio::time::sleep_until(deadline) => return false,
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn job_pid(&self, id: &str) -> Option<u32> {
         let g = self.inner.lock().expect("jobs lock");

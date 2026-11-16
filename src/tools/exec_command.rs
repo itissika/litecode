@@ -29,17 +29,15 @@ use crate::tools::command_job;
 use crate::tools::file_path::coded_error;
 use crate::types::ToolCallResult;
 
-pub const DEFAULT_YIELD_MS: u64 = 10_000;
 pub const MIN_YIELD_MS: u64 = 250;
-pub const MAX_YIELD_MS: u64 = 30_000;
+pub const MAX_YIELD_MS: u64 = 120_000;
+pub const DEFAULT_YIELD_MS: u64 = MAX_YIELD_MS;
 pub const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 pub const MAX_OUTPUT_TOKENS: usize = 200_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecCommandData {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     pub output: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -508,6 +506,50 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn write_stdin_empty_chars_waits_for_exit_or_yield_budget_past_early_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = Arc::new(AgentJobRegistry::new());
+        let exec = ExecCommandTool::new(Arc::clone(&jobs));
+        let stdin = WriteStdinTool::new(Arc::clone(&jobs));
+        let execution = test_execution(dir.path(), "s4b");
+
+        let started = exec
+            .execute(
+                serde_json::json!({
+                    "cmd": "sleep 0.35; printf first; sleep 0.35; printf second",
+                    "yield_time_ms": 250
+                }),
+                execution.clone(),
+            )
+            .await;
+        let started = data(&started);
+        assert!(started.session_id.is_some());
+        assert!(started.exit_code.is_none());
+        let session_id = started.session_id.expect("session id");
+
+        // `first` arrives ~100ms in, `second` and exit follow ~450ms later; a
+        // 1500ms budget must wait until exit and return both chunks together.
+        let polled = stdin
+            .execute(
+                serde_json::json!({
+                    "session_id": session_id,
+                    "yield_time_ms": 1500
+                }),
+                execution,
+            )
+            .await;
+        assert!(polled.error.is_none(), "{polled:?}");
+        let polled = data(&polled);
+        assert!(polled.session_id.is_none(), "{polled:?}");
+        assert_eq!(polled.exit_code, Some(0), "{polled:?}");
+        assert!(
+            polled.output.contains("first") && polled.output.contains("second"),
+            "poll returned before command finished: {polled:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn exec_command_honours_workdir() {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("sub");
@@ -595,6 +637,13 @@ mod tests {
             )
             .await;
     }
+
+    #[test]
+    fn exec_command_defaults_yield_ms_to_max() {
+        let parsed = ExecCommandTool::parse_args(&serde_json::json!({ "cmd": "true" }))
+            .expect("parse default yield");
+        assert_eq!(parsed.yield_ms, MAX_YIELD_MS);
+    }
 }
 
 #[cfg(test)]
@@ -606,8 +655,8 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
         truncated: Some(true),
         clamped: vec![crate::tool::clamp::Clamp {
             parameter: "yield_time_ms".into(),
-            requested: serde_json::json!(60000),
-            applied: serde_json::json!(30000),
+            requested: serde_json::json!(200000),
+            applied: serde_json::json!(120000),
         }],
     };
     let bare = ExecCommandData {
