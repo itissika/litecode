@@ -30,7 +30,7 @@ use crate::tools::file_path::coded_error;
 use crate::types::ToolCallResult;
 
 pub const MIN_YIELD_MS: u64 = 250;
-pub const MAX_YIELD_MS: u64 = 120_000;
+pub const MAX_YIELD_MS: u64 = 600_000;
 pub const DEFAULT_YIELD_MS: u64 = MAX_YIELD_MS;
 pub const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 pub const MAX_OUTPUT_TOKENS: usize = 200_000;
@@ -655,8 +655,8 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
         truncated: Some(true),
         clamped: vec![crate::tool::clamp::Clamp {
             parameter: "yield_time_ms".into(),
-            requested: serde_json::json!(200000),
-            applied: serde_json::json!(120000),
+            requested: serde_json::json!(900000),
+            applied: serde_json::json!(600000),
         }],
     };
     let bare = ExecCommandData {

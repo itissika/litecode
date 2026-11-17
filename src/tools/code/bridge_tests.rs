@@ -664,7 +664,7 @@ async fn an_outside_write_reaches_the_model_as_a_field_and_a_line() {
     let content = result.content;
     assert!(content.contains("\"hasRisk\":false"), "{content}");
     let expected = format!(
-        "↳ #1 tools.write: this write lands outside the workspace: {}",
+        "↳ #1 tools.write: wrote (outside workspace): {}",
         target.to_string_lossy()
     );
     assert!(content.contains(&expected), "{content}\n{expected}");
@@ -1208,4 +1208,140 @@ async fn s3_result_that_violates_the_contract_ends_the_run() {
         "manifest row must be a failure, not ok: {}",
         result.content
     );
+}
+
+struct SlowRead {
+    delay: std::time::Duration,
+}
+
+impl Tool for SlowRead {
+    fn name(&self) -> &str {
+        "read"
+    }
+
+    fn surface(&self) -> ToolSurface {
+        ToolSurface::Code
+    }
+
+    fn execute(
+        &self,
+        _input: Value,
+        execution: ToolExecutionContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        let delay = self.delay;
+        Box::pin(async move {
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {
+                    let mut result = ToolCallResult::ok(String::new());
+                    result.data = Some(json!({
+                        "path": "a.txt",
+                        "start_line": 1,
+                        "lines": ["slow-ok"],
+                        "total_lines": 1,
+                        "has_more": false,
+                        "skipped_in_context": 0
+                    }));
+                    result
+                }
+                _ = execution.cancel.cancelled() => ToolCallResult::error_with_kind(
+                    crate::types::ToolErrorKind::Cancelled,
+                    "cancelled",
+                    false,
+                ),
+            }
+        })
+    }
+}
+
+fn code_tool_for(root: &Path, bundle: Vec<Arc<dyn Tool>>) -> CodeTool {
+    let host = Arc::new(CodeToolHost::new(
+        allow_engine(root),
+        context(root),
+        "default",
+        deny_permission_sink(),
+        root.join(".litecode"),
+        Arc::new(WorkspaceWriteLock::new()),
+        None,
+    ));
+    CodeTool::new(bundle, host)
+}
+
+#[tokio::test]
+async fn nested_tool_wait_freezes_active_run_code_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let tool = code_tool_for(
+        dir.path(),
+        vec![Arc::new(SlowRead {
+            delay: std::time::Duration::from_millis(180),
+        })],
+    )
+    .with_run_timeout(std::time::Duration::from_millis(80))
+    .with_wall_timeout(std::time::Duration::from_secs(5));
+    let result = tool
+        .execute(
+            json!({ "code": r#"const r = await tools.read({ path: "a.txt" }); return r.lines;"# }),
+            execution(dir.path()),
+        )
+        .await;
+    assert!(result.error.is_none(), "{}", result.content);
+    assert!(result.content.contains("slow-ok"), "{}", result.content);
+}
+
+#[tokio::test]
+async fn wall_timeout_stops_slow_nested_tool_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let tool = code_tool_for(
+        dir.path(),
+        vec![Arc::new(SlowRead {
+            delay: std::time::Duration::from_millis(400),
+        })],
+    )
+    .with_run_timeout(std::time::Duration::from_secs(5))
+    .with_wall_timeout(std::time::Duration::from_millis(120));
+    let result = tool
+        .execute(
+            json!({ "code": r#"await tools.read({ path: "a.txt" });"# }),
+            execution(dir.path()),
+        )
+        .await;
+    assert!(result.error.is_some(), "{}", result.content);
+    assert!(
+        result.content.contains("run_code failed: timeout after 120ms"),
+        "{}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn over_budget_spill_file_is_readable_by_tools_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let read_tool: Arc<dyn Tool> = Arc::new(crate::tools::read::ReadTool::default());
+    let head = "HEAD_SPILL_TEST\n";
+    let middle = (0..6000)
+        .map(|i| format!("MID_SPILL_LINE_{i} alpha beta gamma\n"))
+        .collect::<String>();
+    let tail = "TAIL_SPILL_TEST\n";
+    let code = format!(
+        "const s = {}; console.log(s);",
+        serde_json::to_string(&format!("{head}{}{middle}{}{tail}", "H ".repeat(4000), "T ".repeat(2500))).unwrap()
+    );
+    let first = run_program(dir.path(), vec![read_tool.clone()], &code).await;
+    let marker = ".litecode/bash/run_code_";
+    let start = first.content.find(marker).expect("spill path in output");
+    let end = first.content[start..].find(".txt").unwrap() + start + 4;
+    let rel = &first.content[start..end];
+    let second = run_program(
+        dir.path(),
+        vec![read_tool],
+        &format!(
+            "const r = await tools.read({{ path: {} }}); return r.lines.slice(0, 5);",
+            serde_json::to_string(rel).unwrap()
+        ),
+    )
+    .await;
+    assert!(second.error.is_none(), "{}", second.content);
+    let spilled = std::fs::read_to_string(dir.path().join(rel)).unwrap();
+    assert!(spilled.contains("MID_SPILL_LINE_3000"));
+    assert!(!spilled.contains("HEAD_SPILL_TEST"));
+    assert!(!spilled.contains("TAIL_SPILL_TEST"));
 }

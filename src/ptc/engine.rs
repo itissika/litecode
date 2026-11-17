@@ -233,6 +233,7 @@ struct Flags {
 enum Stop {
     Cancel,
     Timeout,
+    WallTimeout,
     Output,
 }
 
@@ -284,7 +285,10 @@ pub(crate) fn drive_blocking(request: ExecuteRequest, handle: Handle) -> Outcome
 }
 
 async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
-    let clock = Arc::new(BudgetClock::new(request.budget));
+    let clock = Arc::new(BudgetClock::with_wall_limit(
+        request.budget,
+        request.wall_budget,
+    ));
     let calls = Arc::new(Ledger::new(
         request.limits.max_in_flight,
         request.cancel.clone(),
@@ -683,9 +687,17 @@ fn engine_stop(
     }
     if clock.exhausted() {
         faults.record(Faults::TIMEOUT);
-        return Some(Failure::timeout());
+        return Some(timeout_failure(clock));
     }
     None
+}
+
+fn timeout_failure(clock: &BudgetClock) -> Failure {
+    if clock.wall_exhausted() {
+        Failure::wall_timeout()
+    } else {
+        Failure::timeout()
+    }
 }
 
 fn stops_the_run(kind: FailureKind) -> bool {
@@ -715,7 +727,11 @@ fn spawn_watcher(
             } else if flags.output.load(Ordering::Relaxed) {
                 Some(Stop::Output)
             } else if clock.exhausted() {
-                Some(Stop::Timeout)
+                Some(if clock.wall_exhausted() {
+                    Stop::WallTimeout
+                } else {
+                    Stop::Timeout
+                })
             } else {
                 None
             };
@@ -753,6 +769,7 @@ fn settle<Left, Right>(
         Either::Left((end, _)) => end,
         Either::Right((Ok(Stop::Cancel), _)) => ProgramEnd::Failure(Failure::cancelled()),
         Either::Right((Ok(Stop::Timeout), _)) => ProgramEnd::Failure(Failure::timeout()),
+        Either::Right((Ok(Stop::WallTimeout), _)) => ProgramEnd::Failure(Failure::wall_timeout()),
         Either::Right((Ok(Stop::Output), _)) => ProgramEnd::Failure(Failure::output(output_limit)),
         Either::Right((Err(_), _)) => {
             ProgramEnd::Failure(Failure::internal("budget watcher stopped"))
@@ -1528,6 +1545,12 @@ async fn run_program(
             );
         }
     };
+    // Mark only the outer async wrapper promise as observed so a failure of the
+    // main program (already reported via `into_future` below) never also logs
+    // a duplicate "[warn] unhandled promise rejection" for the wrapper itself.
+    if let Ok(mark) = ctx.eval::<Function<'_>, _>("(p) => { p.catch(() => {}); }") {
+        let _ = mark.call::<_, ()>((promise.clone(),));
+    }
     let end = match promise.into_future::<Value<'_>>().await {
         Ok(value) => {
             // The stack watch may be disarmed, so the allocator cannot poke
@@ -1645,12 +1668,12 @@ fn classify_value<'js>(
         let failure = match faults.interrupt() {
             Faults::CANCEL => Failure::cancelled(),
             Faults::OUTPUT => Failure::output(output_limit),
-            Faults::TIMEOUT => Failure::timeout(),
+            Faults::TIMEOUT => timeout_failure(clock),
             Faults::STACK => Failure::resource(ResourceKind::Stack, "stack overflow", None),
             Faults::MEMORY => Failure::resource(ResourceKind::Memory, "out of memory", None),
             _ if user.is_cancelled() => Failure::cancelled(),
             _ if flags.output.load(Ordering::Relaxed) => Failure::output(output_limit),
-            _ if clock.exhausted() => Failure::timeout(),
+            _ if clock.exhausted() => timeout_failure(clock),
             _ => Failure::internal("uncatchable stop"),
         };
         return ProgramEnd::Failure(failure);

@@ -33,11 +33,12 @@ use crate::types::{FunctionToolCall, ToolCallResult, ToolErrorKind, ToolSignalLe
 
 /// Model-facing name of the aggregated code transport.
 pub const CODE_TOOL_NAME: &str = "run_code";
-/// Hard maximum run cap. Every `run_code` program is bounded by this.
+/// Hard maximum active-JS run cap. Paused while nested host tool calls wait.
 pub const MAX_RUN_TIMEOUT_MS: u64 = 600_000;
-/// Default run cap. It is the maximum itself: one cap, not a second shorter
-/// budget that competes with nested tool deadlines.
+/// Default active-JS run cap.
 pub const DEFAULT_RUN_TIMEOUT_MS: u64 = MAX_RUN_TIMEOUT_MS;
+/// Hard wall-clock cap per `run_code` call (30 minutes), including nested tool waits.
+pub const MAX_RUN_WALL_TIMEOUT_MS: u64 = 1_800_000;
 /// Runtime output cap. This is the only hard cap; the outer result is not truncated again.
 pub const MAX_CODE_OUTPUT_BYTES: usize = 1_048_576;
 /// Full ledger lines kept in submission order. Later calls are counted, and a
@@ -512,6 +513,7 @@ pub struct CodeTool {
     surface: Arc<CodeSurface>,
     host: Arc<CodeToolHost>,
     run_timeout_ms: u64,
+    wall_timeout_ms: u64,
 }
 
 impl CodeTool {
@@ -526,14 +528,24 @@ impl CodeTool {
             surface,
             host,
             run_timeout_ms: DEFAULT_RUN_TIMEOUT_MS,
+            wall_timeout_ms: MAX_RUN_WALL_TIMEOUT_MS,
         }
     }
 
-    /// Test-only override for the fixed run cap. This is not model-facing:
+    /// Test-only override for the active-JS run cap. This is not model-facing:
     /// `run_code` has no timeout parameter.
     #[doc(hidden)]
     pub fn with_run_timeout(mut self, timeout: Duration) -> Self {
         self.run_timeout_ms = timeout.as_millis().clamp(1, MAX_RUN_TIMEOUT_MS as u128) as u64;
+        self
+    }
+
+    /// Test-only override for the hard wall-clock cap per `run_code` call.
+    #[doc(hidden)]
+    pub fn with_wall_timeout(mut self, timeout: Duration) -> Self {
+        self.wall_timeout_ms = timeout
+            .as_millis()
+            .clamp(1, MAX_RUN_WALL_TIMEOUT_MS as u128) as u64;
         self
     }
 
@@ -599,14 +611,12 @@ impl CodeTool {
                         let session_id = session_id.clone();
                         let parent_call_id = parent_call_id.clone();
                         let seq = info.seq;
-                        let deadline = tokio::time::Instant::now() + info.remaining;
                         async move {
                             invoke_binding(
                                 runtime_name,
                                 sdk_path,
                                 reminders,
                                 seq,
-                                deadline,
                                 args,
                                 cancel,
                                 pause,
@@ -640,6 +650,7 @@ impl CodeTool {
             }
         };
         let run_timeout_ms = self.run_timeout_ms;
+        let wall_timeout_ms = self.wall_timeout_ms;
         // Report-only: typo-class errors are cheap to see now and expensive at
         // runtime, where they cost the whole run. Findings join the run's
         // warnings; the program still runs either way.
@@ -659,6 +670,7 @@ impl CodeTool {
                 ..Limits::default()
             },
             budget: Duration::from_millis(run_timeout_ms),
+            wall_budget: Some(Duration::from_millis(wall_timeout_ms)),
             grace: NESTED_CANCEL_GRACE,
             fs_root: Some(execution.workspace_root.clone()),
             cancel: execution.cancel,
@@ -677,7 +689,15 @@ impl CodeTool {
         }
         let mut collected = reminders.lock().expect("reminder buffer").split_off(0);
         collected.sort_by_key(|reminder| reminder.seq);
-        render_run_output(&ledger, &outcome, run_timeout_ms, &code, collected)
+        render_run_output_in(
+            &ledger,
+            &outcome,
+            run_timeout_ms,
+            wall_timeout_ms,
+            &code,
+            collected,
+            Some(&execution.workspace_root),
+        )
     }
 }
 
@@ -687,7 +707,6 @@ async fn invoke_binding(
     sdk_name: String,
     reminders: Arc<std::sync::Mutex<Vec<render::CallReminder>>>,
     seq: u64,
-    deadline: tokio::time::Instant,
     args: Json,
     cancel: CancellationToken,
     pause: BudgetPause,
@@ -771,8 +790,12 @@ async fn invoke_binding(
     };
     let sink = PausingSink {
         inner: host.sink(),
-        pause,
+        pause: pause.clone(),
     };
+    // Two-layer timeout: freeze the outer JS active budget while the nested
+    // tool runs on its own timeout / yield budget (still bounded by the outer
+    // wall-clock cap via `cancel`).
+    let _nested_pause = pause.pause();
     let result = host
         .run_nested(
             bundle.as_slice(),
@@ -781,9 +804,10 @@ async fn invoke_binding(
             cancel.child_token(),
             &parent_call_id,
             &sink,
-            Some(deadline),
+            None,
         )
         .await;
+    drop(_nested_pause);
     if let Some(error) = surface.output_violation(&tool_name, &result) {
         // The ledger row is a failure too: the call did not produce a usable
         // result, and the manifest must not say "ok" for it.
@@ -1041,6 +1065,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     out
 }
 
+#[cfg(test)]
 fn render_run_output(
     ledger: &CallLedger,
     outcome: &crate::ptc::Outcome,
@@ -1048,8 +1073,35 @@ fn render_run_output(
     source: &str,
     reminders: Vec<render::CallReminder>,
 ) -> ToolCallResult {
+    render_run_output_in(
+        ledger,
+        outcome,
+        run_timeout_ms,
+        MAX_RUN_WALL_TIMEOUT_MS,
+        source,
+        reminders,
+        None,
+    )
+}
+
+fn render_run_output_in(
+    ledger: &CallLedger,
+    outcome: &crate::ptc::Outcome,
+    run_timeout_ms: u64,
+    wall_timeout_ms: u64,
+    source: &str,
+    reminders: Vec<render::CallReminder>,
+    workspace_root: Option<&std::path::Path>,
+) -> ToolCallResult {
+    let effective_timeout_ms = outcome
+        .failure
+        .as_ref()
+        .filter(|failure| {
+            failure.kind == FailureKind::Timeout && failure.message == "wall budget exceeded"
+        })
+        .map_or(run_timeout_ms, |_| wall_timeout_ms);
     let failure_text = outcome.failure.as_ref().map(|failure| match failure.kind {
-        FailureKind::Timeout => format!("run_code timed out after {run_timeout_ms}ms"),
+        FailureKind::Timeout => format!("run_code timed out after {effective_timeout_ms}ms"),
         FailureKind::Cancelled if outcome.value().is_some() => {
             "cancelled after the program returned".to_string()
         }
@@ -1084,11 +1136,15 @@ fn render_run_output(
         failure_text,
         failure_kind,
         resource,
-        run_timeout_ms,
+        effective_timeout_ms,
         source,
     );
     if illegal_output.is_some() {
-        return finish_run_result(&report, Some((ToolErrorKind::InvalidOutput, false, None)));
+        return finish_run_result(
+            &report,
+            Some((ToolErrorKind::InvalidOutput, false, None)),
+            workspace_root,
+        );
     }
 
     let error = outcome.failure.as_ref().map(|failure| {
@@ -1115,15 +1171,16 @@ fn render_run_output(
             }
         }
     });
-    finish_run_result(&report, error)
+    finish_run_result(&report, error, workspace_root)
 }
 
 /// Compose model `content` + human/FE `data` aggregate (WP-201).
 fn finish_run_result(
     report: &render::RunReport,
     error: Option<(ToolErrorKind, bool, Option<String>)>,
+    workspace_root: Option<&std::path::Path>,
 ) -> ToolCallResult {
-    let content = render::render_model_view(report);
+    let content = render::render_model_view_in(report, workspace_root);
     let data = render::human_data(report);
     let mut result = if let Some((kind, retryable, code)) = error {
         let mut result = ToolCallResult::error_with_kind(kind, content, retryable);
@@ -1319,7 +1376,7 @@ impl Tool for CodeTool {
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "Async JavaScript function body for the SDK below. The run has a fixed 600000 ms cap."
+                        "description": "Async JavaScript function body for the SDK below. Active JS execution has a 600000 ms cap (paused during tool calls), with a 1800000 ms hard wall-clock cap."
                     }
                 },
                 "required": ["code"],

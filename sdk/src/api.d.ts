@@ -191,14 +191,14 @@ interface Tools {
     cmd: string; // Shell command to execute.
     workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.
     tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.
-    yield_time_ms?: Integer; // Initial wait only; 250-120000 ms; default 120000. It does not limit the process lifetime.
+    yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 600000. It does not limit the process lifetime.
     max_output_tokens?: Integer; // Output token budget for this call; default 10000.
   }): Promise<ExecCommandData>;
   /** Poll, feed, or interrupt an existing exec session. Empty chars waits until the session exits or yield_time_ms expires, returning accumulated output; on exit, exit_code is set and session_id is null. @tool write_stdin @suite process */
   write_stdin(args: {
     session_id: string; // Session id from exec_command.
     chars?: string; // Bytes to write; empty polls. "\u0003" sends SIGINT to the process group.
-    yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-300000 ms; empty polls default 5000, non-empty writes default 250. Long polls must fit the fixed run_code cap (600000 ms).
+    yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap.
     max_output_tokens?: Integer; // Output token budget for this call; default 10000.
   }): Promise<ExecCommandData>;
 

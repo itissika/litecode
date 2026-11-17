@@ -147,7 +147,94 @@ pub(super) struct RunReport {
     pub coerced_non_finite: Option<String>,
 }
 
+pub(super) struct SpillTarget {
+    workspace_root: Option<std::path::PathBuf>,
+    rel_path: String,
+    chunks: Vec<String>,
+}
+
+impl SpillTarget {
+    fn new(workspace_root: Option<&std::path::Path>) -> Self {
+        let rel_path = if workspace_root.is_some() {
+            format!(".litecode/bash/run_code_{}.txt", crate::terminal::bash_nonce())
+        } else {
+            String::new()
+        };
+        Self {
+            workspace_root: workspace_root.map(std::path::Path::to_path_buf),
+            rel_path,
+            chunks: Vec::new(),
+        }
+    }
+
+    fn path_hint(&self) -> Option<&str> {
+        self.workspace_root.as_ref().map(|_| self.rel_path.as_str())
+    }
+
+    fn checkpoint(&self) -> usize {
+        self.chunks.len()
+    }
+
+    fn rollback(&mut self, checkpoint: usize) {
+        self.chunks.truncate(checkpoint);
+    }
+
+    fn push(&mut self, text: impl Into<String>) {
+        if self.workspace_root.is_none() {
+            return;
+        }
+        let text = text.into();
+        if !text.is_empty() {
+            self.chunks.push(text);
+        }
+    }
+
+    fn commit(self) {
+        let Some(root) = self.workspace_root else {
+            return;
+        };
+        if self.chunks.is_empty() {
+            return;
+        }
+        let body = if self.chunks.len() == 1 {
+            self.chunks.into_iter().next().unwrap_or_default()
+        } else {
+            self.chunks
+                .into_iter()
+                .enumerate()
+                .map(|(index, chunk)| {
+                    if index == 0 {
+                        chunk
+                    } else {
+                        format!("--- [omitted chunk {}] ---\n{chunk}", index + 1)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        };
+        let target = root.join(&self.rel_path);
+        if let Some(parent) = target.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!(error = %error, "failed to create run_code spill directory");
+            return;
+        }
+        if let Err(error) = std::fs::write(&target, body) {
+            tracing::warn!(error = %error, path = %target.display(), "failed to write run_code spill file");
+        }
+    }
+}
+
+#[cfg(test)]
 pub(super) fn render_model_view(report: &RunReport) -> String {
+    render_model_view_in(report, None)
+}
+
+pub(super) fn render_model_view_in(
+    report: &RunReport,
+    workspace_root: Option<&std::path::Path>,
+) -> String {
+    let mut spill = SpillTarget::new(workspace_root);
     let header = render_header_block(report);
     // One budget covers everything the model sees: header, manifest, block, stream.
     let mut budget = RUN_CODE_VIEW_TOKENS.saturating_sub(count_tokens(&header));
@@ -163,6 +250,7 @@ pub(super) fn render_model_view(report: &RunReport) -> String {
         &report.entries,
         budget.saturating_sub(count_tokens(&upfloat)),
         output_limited,
+        &mut spill,
     );
     let mut sections = vec![header];
     sections.extend(manifest);
@@ -173,11 +261,14 @@ pub(super) fn render_model_view(report: &RunReport) -> String {
         sections.push(stream);
     }
     let text = sections.join("\n\n");
-    if text.len() <= RUN_CODE_VIEW_MAX_BYTES {
-        return text;
-    }
-    // Byte-heavy content can still trip the cap after the token budget passed.
-    byte_cut(&text, RUN_CODE_VIEW_MAX_BYTES)
+    let rendered = if text.len() <= RUN_CODE_VIEW_MAX_BYTES {
+        text
+    } else {
+        // Byte-heavy content can still trip the cap after the token budget passed.
+        byte_cut(&text, RUN_CODE_VIEW_MAX_BYTES, &mut spill)
+    };
+    spill.commit();
+    rendered
 }
 
 
@@ -237,14 +328,20 @@ fn render_completed_calls(report: &RunReport) -> Option<String> {
 }
 
 /// Final byte-cap cut: both ends survive and the middle says why.
-fn byte_cut(text: &str, cap: usize) -> String {
+fn byte_cut(text: &str, cap: usize, spill: &mut SpillTarget) -> String {
     if text.len() <= cap {
         return text.to_string();
     }
     let head = crate::types::utf8::prefix_utf8(text, cap * 2 / 3).to_string();
     let tail = crate::types::utf8::suffix_utf8(text, cap / 4).to_string();
-    let omitted = text.len().saturating_sub(head.len() + tail.len());
-    format!("{head}\n… [truncated by byte cap: {omitted} bytes omitted] …\n{tail}")
+    let omitted_slice = &text[head.len()..text.len() - tail.len()];
+    let omitted = omitted_slice.len();
+    spill.push(omitted_slice);
+    let saved = match spill.path_hint() {
+        Some(path) => format!("; omitted part saved to {path}"),
+        None => String::new(),
+    };
+    format!("{head}\n… [truncated by byte cap: {omitted} bytes omitted{saved}] …\n{tail}")
 }
 
 /// Summaries for one settled call, keyed by the tool that produced it.
@@ -422,22 +519,23 @@ fn array_len(object: &serde_json::Map<String, Value>, key: &str) -> usize {
 /// Path risk and post-write diagnostics, shared by `write`, `edit`, and the
 /// per-item results of `apply_edits`.
 fn path_risk_reminders(
-    label: &str,
+    outside_prefix: &str,
+    sensitive_label: &str,
     risk: &Value,
     out: &mut Vec<String>,
 ) {
     if risk.get("outside_workspace").and_then(Value::as_bool) == Some(true) {
         let resolved = risk.get("resolved").and_then(Value::as_str).unwrap_or("?");
-        out.push(format!("{label} lands outside the workspace: {resolved}"));
+        out.push(format!("{outside_prefix} (outside workspace): {resolved}"));
     }
     if risk.get("sensitive").and_then(Value::as_bool) == Some(true) {
-        out.push(format!("{label} targets a sensitive system location"));
+        out.push(format!("{sensitive_label} targets a sensitive system location"));
     }
 }
 
 fn write_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
     if let Some(risk) = object.get("path_risk") {
-        path_risk_reminders("this write", risk, out);
+        path_risk_reminders("wrote", "this write", risk, out);
     }
     lsp_diagnostics_reminder(None, object, out);
 }
@@ -473,7 +571,12 @@ fn edit_reminders(
     };
     for (index, item) in results.iter().enumerate() {
         if let Some(risk) = item.get("path_risk") {
-            path_risk_reminders(&format!("edit #{}", index + 1), risk, out);
+            path_risk_reminders(
+                &format!("edit #{} applied", index + 1),
+                &format!("edit #{}", index + 1),
+                risk,
+                out,
+            );
         }
         if let Some(item) = item.as_object() {
             lsp_diagnostics_reminder(Some(&format!("edit #{}", index + 1)), item, out);
@@ -726,7 +829,21 @@ fn entry_line(entry: &EntryView) -> String {
 /// same budget (water-filling, so one long line cannot starve the rest). Too many
 /// entries for a meaningful share: keep the head and say how many are gone. The
 /// return value is not special-cased; it is the last entry and is cut like one.
-fn render_stream(entries: &[EntryView], budget: usize, output_limited: bool) -> String {
+fn omitted_entries_marker(omitted: usize, spill_path: Option<&str>) -> String {
+    match spill_path {
+        Some(path) => format!(
+            "… {omitted} entries omitted (token budget; omitted entries saved to {path})"
+        ),
+        None => format!("… {omitted} entries omitted (token budget)"),
+    }
+}
+
+fn render_stream(
+    entries: &[EntryView],
+    budget: usize,
+    output_limited: bool,
+    spill: &mut SpillTarget,
+) -> String {
     if entries.is_empty() || budget == 0 {
         return String::new();
     }
@@ -741,18 +858,20 @@ fn render_stream(entries: &[EntryView], budget: usize, output_limited: bool) -> 
 ");
     }
     if let Some(allowances) = water_fill_allowances(&costs, budget) {
+        let checkpoint = spill.checkpoint();
         let mut out = Vec::with_capacity(entries.len());
         for (index, entry) in entries.iter().enumerate() {
-            out.push(entry_within(entry, &lines[index], allowances[index]));
+            out.push(entry_within(entry, &lines[index], allowances[index], spill));
         }
         let text = out.join("
 ");
         if count_tokens(&text) <= budget {
             return text;
         }
+        spill.rollback(checkpoint);
     }
     // Not even a minimum share per entry: keep the head of the stream.
-    let reserve = count_tokens("… 000 entries omitted (token budget)") + 1;
+    let reserve = count_tokens(&omitted_entries_marker(999, spill.path_hint())) + 1;
     let mut kept = 0usize;
     let mut used = 0usize;
     for cost in &costs {
@@ -767,11 +886,14 @@ fn render_stream(entries: &[EntryView], budget: usize, output_limited: bool) -> 
         let mut out: Vec<String> = lines[..kept].to_vec();
         let omitted = lines.len() - kept;
         if omitted > 0 {
-            out.push(format!("… {omitted} entries omitted (token budget)"));
+            out.push(omitted_entries_marker(omitted, spill.path_hint()));
         }
         let text = out.join("
 ");
         if count_tokens(&text) <= budget || kept == 0 {
+            if omitted > 0 {
+                spill.push(lines[kept..].join("\n"));
+            }
             return text;
         }
         kept -= 1;
@@ -915,20 +1037,29 @@ fn reminder_line(text: &str) -> String {
 }
 
 /// Render one entry inside its share of the budget.
-fn entry_within(entry: &EntryView, line: &str, allowance: usize) -> String {
+fn entry_within(
+    entry: &EntryView,
+    line: &str,
+    allowance: usize,
+    spill: &mut SpillTarget,
+) -> String {
     let cost = count_tokens(line);
     match entry {
         EntryView::Text { .. } => {
             if cost <= allowance {
                 line.to_string()
             } else {
-                truncate_string_result(line, allowance, "", cost)
+                truncate_string_result(line, allowance, "", cost, spill)
             }
         }
         EntryView::Value(value) => {
-            let body = budget_value(value, allowance);
+            let body = budget_value(value, allowance, spill);
             if body.is_empty() {
-                "… [value omitted (token budget)]".to_string()
+                spill.push(render_result_body(value));
+                match spill.path_hint() {
+                    Some(path) => format!("… [value omitted (token budget; saved to {path})]"),
+                    None => "… [value omitted (token budget)]".to_string(),
+                }
             } else {
                 body
             }
@@ -1005,12 +1136,19 @@ fn format_ktok(tokens: usize) -> String {
     }
 }
 
-fn over_budget_notice(total: usize, budget: usize) -> String {
-    format!(
-        "result {} tok exceeds {}; truncated by token budget — return summary/counts/paths",
-        format_ktok(total),
-        format_ktok(budget),
-    )
+fn over_budget_notice(total: usize, budget: usize, spill_path: Option<&str>) -> String {
+    match spill_path {
+        Some(path) => format!(
+            "result {} tok exceeds {}; truncated by token budget; omitted content saved to {path} — return summary/counts/paths",
+            format_ktok(total),
+            format_ktok(budget),
+        ),
+        None => format!(
+            "result {} tok exceeds {}; truncated by token budget — return summary/counts/paths",
+            format_ktok(total),
+            format_ktok(budget),
+        ),
+    }
 }
 
 fn fits(text: &str, budget: usize) -> bool {
@@ -1032,7 +1170,7 @@ fn fits(text: &str, budget: usize) -> bool {
 /// useful prefix, while collapsing a container would throw all of it away to
 /// save the same bytes. Each knob is the largest value that fits (binary
 /// search).
-fn budget_value(value: &Value, budget: usize) -> String {
+fn budget_value(value: &Value, budget: usize, spill: &mut SpillTarget) -> String {
     let body = render_result_body(value);
     if fits(&body, budget) {
         return body;
@@ -1041,9 +1179,9 @@ fn budget_value(value: &Value, budget: usize) -> String {
         return String::new();
     }
     let total = count_tokens(&body);
-    let notice = over_budget_notice(total, budget);
+    let notice = over_budget_notice(total, budget, spill.path_hint());
     if let Value::String(_) = value {
-        return truncate_string_result(&body, budget, &notice, total);
+        return truncate_string_result(&body, budget, &notice, total, spill);
     }
     let render = |shape: &Shape| render_result_body(&degrade(value, shape, 0));
     let fits_with_notice = |candidate: &str| fits(&format!("{notice}\n{candidate}"), budget);
@@ -1066,6 +1204,9 @@ fn budget_value(value: &Value, budget: usize) -> String {
     }
     shape.keep = lo.max(1);
     if fits_with_notice(&render(&shape)) {
+        if let Some(omitted) = extract_degrade_omitted(value, &shape, 0) {
+            spill.push(compact_json(&omitted));
+        }
         return format!("{notice}\n{}", render(&shape));
     }
     // 2. string length. Try content-preserving cuts before any container
@@ -1083,6 +1224,9 @@ fn budget_value(value: &Value, budget: usize) -> String {
     }
     shape.chars = lo;
     if fits_with_notice(&render(&shape)) {
+        if let Some(omitted) = extract_degrade_omitted(value, &shape, 0) {
+            spill.push(compact_json(&omitted));
+        }
         return format!("{notice}\n{}", render(&shape));
     }
     // 3. depth. Even empty strings are too much; collapse deep containers.
@@ -1099,18 +1243,25 @@ fn budget_value(value: &Value, budget: usize) -> String {
     }
     shape.depth = lo;
     if fits_with_notice(&render(&shape)) {
+        if let Some(omitted) = extract_degrade_omitted(value, &shape, 0) {
+            spill.push(compact_json(&omitted));
+        }
         return format!("{notice}\n{}", render(&shape));
     }
     // Still over (e.g. a huge flat object): whole leading lines only, with an
     // explicit token-budget marker so this cut is distinguishable from the
     // 64KB byte fallback.
-    let marker = "… [truncated by token budget]";
-    let reserve = count_tokens(&notice) + count_tokens(marker) + 1;
+    let marker = match spill.path_hint() {
+        Some(path) => format!("… [truncated by token budget; omitted part saved to {path}]"),
+        None => "… [truncated by token budget]".to_string(),
+    };
+    let reserve = count_tokens(&notice) + count_tokens(&marker) + 1;
     let mut cap = budget.saturating_sub(reserve);
     loop {
         let kept = token_prefix(&body, cap);
         let rendered = format!("{notice}\n{kept}\n{marker}");
         if fits(&rendered, budget) {
+            spill.push(&body[kept.len()..]);
             return rendered;
         }
         if cap == 0 {
@@ -1121,15 +1272,39 @@ fn budget_value(value: &Value, budget: usize) -> String {
     }
     let compact = format!("{notice}\n{marker}");
     if fits(&compact, budget) {
+        spill.push(body);
         return compact;
     }
     if fits(&notice, budget) {
+        spill.push(body);
         return notice;
     }
     String::new()
 }
 
-fn truncate_string_result(body: &str, budget: usize, notice: &str, total: usize) -> String {
+fn middle_cut_marker(
+    kept_tokens: usize,
+    total: usize,
+    omitted_tokens: usize,
+    spill_path: Option<&str>,
+) -> String {
+    match spill_path {
+        Some(path) => format!(
+            "\n… [truncated by token budget: {kept_tokens} of {total} tok kept; {omitted_tokens} tok omitted from the middle; omitted part saved to {path}] …\n"
+        ),
+        None => format!(
+            "\n… [truncated by token budget: {kept_tokens} of {total} tok kept; {omitted_tokens} tok omitted from the middle] …\n"
+        ),
+    }
+}
+
+fn truncate_string_result(
+    body: &str,
+    budget: usize,
+    notice: &str,
+    total: usize,
+    spill: &mut SpillTarget,
+) -> String {
     let prefix = if notice.is_empty() {
         String::new()
     } else {
@@ -1137,7 +1312,7 @@ fn truncate_string_result(body: &str, budget: usize, notice: &str, total: usize)
     };
     let mut content_budget = budget
         .saturating_sub(count_tokens(notice))
-        .saturating_sub(32);
+        .saturating_sub(if spill.path_hint().is_some() { 56 } else { 32 });
     loop {
         let head_budget = content_budget * 2 / 3;
         let head = token_prefix(body, head_budget);
@@ -1150,15 +1325,17 @@ fn truncate_string_result(body: &str, budget: usize, notice: &str, total: usize)
         };
         let kept_tokens = head_tokens + count_tokens(tail);
         let omitted_tokens = total.saturating_sub(kept_tokens);
-        let marker = format!(
-            "\n… [truncated by token budget: {kept_tokens} of {total} tok kept; {omitted_tokens} tok omitted from the middle] …\n"
-        );
+        let marker = middle_cut_marker(kept_tokens, total, omitted_tokens, spill.path_hint());
         let rendered = if tail.is_empty() {
             format!("{prefix}{head}{marker}")
         } else {
             format!("{prefix}{head}{marker}{tail}")
         };
         if count_tokens(&rendered) <= budget {
+            let tail_start = body.len().saturating_sub(tail.len());
+            if head.len() < tail_start {
+                spill.push(&body[head.len()..tail_start]);
+            }
             return rendered;
         }
         if content_budget == 0 {
@@ -1167,11 +1344,69 @@ fn truncate_string_result(body: &str, budget: usize, notice: &str, total: usize)
         let over = count_tokens(&rendered).saturating_sub(budget).max(16);
         content_budget = content_budget.saturating_sub(over);
     }
-    let compact = format!("{prefix}… [truncated by token budget: 0 of {total} tok kept]");
+    let compact = match spill.path_hint() {
+        Some(path) => format!(
+            "{prefix}… [truncated by token budget: 0 of {total} tok kept; omitted part saved to {path}]"
+        ),
+        None => format!("{prefix}… [truncated by token budget: 0 of {total} tok kept]"),
+    };
     if fits(&compact, budget) {
+        spill.push(body);
         compact
     } else {
         String::new()
+    }
+}
+
+/// Extract only the slices omitted by [`degrade`] so a spilled file never
+/// repeats array prefixes, kept keys, or kept string prefixes already shown.
+fn extract_degrade_omitted(value: &Value, shape: &Shape, depth: usize) -> Option<Value> {
+    match value {
+        Value::Array(items) => {
+            if depth >= shape.depth && !items.is_empty() {
+                return Some(value.clone());
+            }
+            let keep = items.len().min(shape.keep);
+            let mut out = serde_json::Map::new();
+            let sub: Vec<Value> = items[..keep]
+                .iter()
+                .enumerate()
+                .filter_map(|(i, item)| {
+                    extract_degrade_omitted(item, shape, depth + 1)
+                        .map(|rest| serde_json::json!({"index": i, "omitted": rest}))
+                })
+                .collect();
+            if !sub.is_empty() {
+                out.insert("truncated_items".into(), Value::Array(sub));
+            }
+            if keep < items.len() {
+                out.insert("omitted_from_index".into(), Value::from(keep));
+                out.insert("omitted_items".into(), Value::Array(items[keep..].to_vec()));
+            }
+            (!out.is_empty()).then_some(Value::Object(out))
+        }
+        Value::Object(map) => {
+            if depth >= shape.depth && !map.is_empty() {
+                return Some(value.clone());
+            }
+            let mut out = serde_json::Map::new();
+            for (key, child) in map {
+                if let Some(rest) = extract_degrade_omitted(child, shape, depth + 1) {
+                    out.insert(key.clone(), rest);
+                }
+            }
+            (!out.is_empty()).then_some(Value::Object(out))
+        }
+        Value::String(text) => {
+            let count = text.chars().count();
+            if count > shape.chars {
+                let tail: String = text.chars().skip(shape.chars).collect();
+                Some(Value::String(tail))
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
@@ -2436,7 +2671,7 @@ mod tests {
             (
                 "write",
                 write(json!({ "path_risk": risk("/tmp/x.txt") })),
-                vec!["this write lands outside the workspace: /tmp/x.txt"],
+                vec!["wrote (outside workspace): /tmp/x.txt"],
             ),
             (
                 "write",
@@ -2469,7 +2704,7 @@ mod tests {
                 }),
                 vec![
                     "edit #1: the language server reported errors in this file",
-                    "edit #2 lands outside the workspace: /tmp/z.txt",
+                    "edit #2 applied (outside workspace): /tmp/z.txt",
                 ],
             ),
         ];
@@ -3131,12 +3366,12 @@ mod tests {
             text("log", "beta beta beta beta"),
         ];
         assert_eq!(
-            render_stream(&entries, 12, false),
+            render_stream(&entries, 12, false, &mut SpillTarget::new(None)),
             "… 2 entries omitted (token budget)"
         );
         // Enough room: the same stream, whole, in order.
         assert_eq!(
-            render_stream(&entries, 40, false),
+            render_stream(&entries, 40, false, &mut SpillTarget::new(None)),
             "[log] alpha alpha alpha alpha\n[log] beta beta beta beta"
         );
     }
@@ -3157,7 +3392,7 @@ mod tests {
         let mut body = String::from("HEAD_SENTINEL");
         body.push_str(&"a".repeat(RUN_CODE_VIEW_MAX_BYTES));
         body.push_str("TAIL_SENTINEL");
-        let cut = byte_cut(&body, RUN_CODE_VIEW_MAX_BYTES);
+        let cut = byte_cut(&body, RUN_CODE_VIEW_MAX_BYTES, &mut SpillTarget::new(None));
         assert!(cut.len() <= RUN_CODE_VIEW_MAX_BYTES + 120, "{}", cut.len());
         assert!(cut.contains("HEAD_SENTINEL"), "head kept");
         assert!(cut.contains("TAIL_SENTINEL"), "tail kept");
@@ -3212,9 +3447,64 @@ mod tests {
     #[test]
     fn cjk_value_is_cut_by_tokens_not_bytes() {
         let body = "中".repeat(40_000);
-        let out = budget_value(&serde_json::json!(body), 400);
+        let out = budget_value(&serde_json::json!(body), 400, &mut SpillTarget::new(None));
         assert!(out.contains("truncated by token budget"), "{out}");
         assert!(out.chars().count() < 40_000, "{out}");
+    }
+
+    #[test]
+    fn over_budget_spills_only_omitted_middle_without_repeating_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut report = base_report();
+        let middle = (0..12_000)
+            .map(|i| format!("MID_LINE_{i} alpha beta gamma delta\n"))
+            .collect::<String>();
+        let body = format!(
+            "HEAD_START_SENTINEL\n{}\n{middle}\n{}\nTAIL_END_SENTINEL",
+            "H ".repeat(6000),
+            "T ".repeat(3000)
+        );
+        report.entries = vec![text("log", &body)];
+        let out = render_model_view_in(&report, Some(dir.path()));
+        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tok", tokens(&out));
+        assert!(out.contains("HEAD_START_SENTINEL"), "{out}");
+        assert!(out.contains("TAIL_END_SENTINEL"), "{out}");
+        let rel_marker = ".litecode/bash/run_code_";
+        let start = out.find(rel_marker).expect("spill path in marker");
+        let end = out[start..].find(".txt").unwrap() + start + 4;
+        let rel = &out[start..end];
+        let spilled = std::fs::read_to_string(dir.path().join(rel)).unwrap();
+        assert!(spilled.contains("MID_LINE_6000"));
+        assert!(!spilled.contains("HEAD_START_SENTINEL"));
+        assert!(!spilled.contains("TAIL_END_SENTINEL"));
+    }
+
+    #[test]
+    fn fits_within_budget_does_not_create_spill_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut report = base_report();
+        report.entries = vec![text("log", "short clean output")];
+        let out = render_model_view_in(&report, Some(dir.path()));
+        assert!(out.contains("short clean output"));
+        assert!(!dir.path().join(".litecode/bash").exists());
+    }
+
+    #[test]
+    fn over_budget_object_spills_only_omitted_array_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut report = base_report();
+        let items: Vec<Value> = (0..4_000)
+            .map(|i| serde_json::json!({"id": i, "tag": format!("ITEM_{i}_MARKER"), "note": "word ".repeat(8)}))
+            .collect();
+        set_value(&mut report, serde_json::json!({"items": items}));
+        let out = render_model_view_in(&report, Some(dir.path()));
+        let rel_marker = ".litecode/bash/run_code_";
+        let start = out.find(rel_marker).expect("spill path in notice");
+        let end = out[start..].find(".txt").unwrap() + start + 4;
+        let rel = &out[start..end];
+        let spilled = std::fs::read_to_string(dir.path().join(rel)).unwrap();
+        assert!(!spilled.contains("ITEM_0_MARKER"));
+        assert!(spilled.contains("ITEM_3999_MARKER"));
     }
     #[test]
     fn header_counts_calls_and_names_the_failure() {

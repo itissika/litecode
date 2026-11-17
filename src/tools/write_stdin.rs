@@ -1,7 +1,7 @@
 //! Codex-compatible `write_stdin`: poll, feed bytes, or Ctrl-C a session.
 //!
 //! Empty `chars` waits for new output or exit, whichever comes first, and can
-//! wait up to 300000 ms. Ordinary bytes go to stdin.
+//! wait up to 600000 ms. Ordinary bytes go to stdin.
 //!
 //! `chars == "\u0003"` is deliberately translated to a process-group SIGINT,
 //! not written into a pipe. That is the difference between a real keyboard
@@ -26,7 +26,7 @@ const INTERRUPT: &str = "\u{3}";
 const DEFAULT_WRITE_YIELD_MS: u64 = 250;
 const DEFAULT_POLL_YIELD_MS: u64 = 5_000;
 const MIN_YIELD_MS: u64 = 250;
-const MAX_YIELD_MS: u64 = 300_000;
+const MAX_YIELD_MS: u64 = 600_000;
 
 #[derive(Debug, Clone)]
 struct ParsedArgs {

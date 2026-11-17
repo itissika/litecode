@@ -262,6 +262,8 @@ pub struct ExecuteRequest {
     pub namespaces: Vec<Namespace>,
     pub limits: Limits,
     pub budget: Duration,
+    /// Hard wall-clock cap for the entire execution (including paused tool/approval waits).
+    pub wall_budget: Option<Duration>,
     /// How long to wait for in-flight host calls after a terminating path
     /// cancels them. This is wall time and is not charged to `budget`.
     pub grace: Duration,
@@ -403,6 +405,10 @@ impl Failure {
 
     pub(crate) fn timeout() -> Self {
         Self::new(FailureKind::Timeout, "budget exceeded", None, None)
+    }
+
+    pub(crate) fn wall_timeout() -> Self {
+        Self::new(FailureKind::Timeout, "wall budget exceeded", None, None)
     }
 
     pub(crate) fn cancelled() -> Self {

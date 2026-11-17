@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "0450b48aacca9bd9c47077e3c3ea135e863706a390c87159f685cc42c1fd85f0",
+  "sdk_hash": "4ff0e0f01972eaef8b806bdcad490ec7b1f3b036f00e347081db21784fe415dc",
   "tools": {
     "apply_edits": {
       "path": [
@@ -559,7 +559,7 @@
       "suite": "process",
       "tool": "exec_command",
       "doc": "Start a command. Waits up to yield_time_ms; a live session_id leaves it running in the background. Poll with write_stdin for output, or leave it and wait for the background-exit reminder (exit code + output_file).",
-      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-120000 ms; default 120000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ExecCommandData>;",
+      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 600000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ExecCommandData>;",
       "input_type": "(inline)",
       "output_type": "ExecCommandData",
       "type_deps": [
@@ -583,7 +583,7 @@
           },
           "yield_time_ms": {
             "type": "integer",
-            "description": "Initial wait only; 250-120000 ms; default 120000. It does not limit the process lifetime."
+            "description": "Initial wait only; 250-600000 ms; default 600000. It does not limit the process lifetime."
           },
           "max_output_tokens": {
             "type": "integer",
@@ -637,7 +637,7 @@
       "suite": "process",
       "tool": "write_stdin",
       "doc": "Poll, feed, or interrupt an existing exec session. Empty chars waits until the session exits or yield_time_ms expires, returning accumulated output; on exit, exit_code is set and session_id is null.",
-      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-300000 ms; empty polls default 5000, non-empty writes default 250. Long polls must fit the fixed run_code cap (600000 ms).\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ExecCommandData>;",
+      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap.\n  max_output_tokens?: Integer; // Output token budget for this call; default 10000.\n}): Promise<ExecCommandData>;",
       "input_type": "(inline)",
       "output_type": "ExecCommandData",
       "type_deps": [
@@ -657,7 +657,7 @@
           },
           "yield_time_ms": {
             "type": "integer",
-            "description": "Wait before yielding. Both modes accept 250-300000 ms; empty polls default 5000, non-empty writes default 250. Long polls must fit the fixed run_code cap (600000 ms)."
+            "description": "Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap."
           },
           "max_output_tokens": {
             "type": "integer",

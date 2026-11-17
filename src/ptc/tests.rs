@@ -75,6 +75,7 @@ async fn run_with(
         namespaces,
         limits,
         budget,
+        wall_budget: None,
         grace,
         cancel,
         fs_root: None,
@@ -129,6 +130,7 @@ async fn fs_ls_exposes_truncation_as_a_field() {
         namespaces: Vec::new(),
         limits: limits(),
         budget: Duration::from_secs(5),
+        wall_budget: None,
         grace: Duration::from_millis(200),
         cancel: CancellationToken::new(),
         fs_root: Some(dir.path().to_path_buf()),
@@ -154,6 +156,7 @@ async fn fs_ls_and_stat_throw_error_on_missing_or_outside() {
         namespaces: Vec::new(),
         limits: limits(),
         budget: Duration::from_secs(5),
+        wall_budget: None,
         grace: Duration::from_millis(200),
         cancel: CancellationToken::new(),
         fs_root: Some(dir.path().to_path_buf()),
@@ -814,6 +817,50 @@ async fn handled_promise_rejection_does_not_warn() {
         "{:?}",
         texts(&outcome)
     );
+}
+
+#[tokio::test]
+async fn synchronous_type_error_in_wrapper_does_not_warn_unhandled_rejection() {
+    let outcome = run(
+        "const src = String.raw`Public entry point: ``run_tasks``.\n`;\nreturn src;",
+        tools(vec![]),
+    )
+    .await;
+    let failure = outcome.failure.as_ref().expect("TypeError failure");
+    assert_eq!(failure.kind, FailureKind::Exception);
+    assert!(failure.uncaught_type_error, "{failure:?}");
+    assert!(
+        texts(&outcome)
+            .iter()
+            .all(|text| !text.contains("unhandled promise rejection")),
+        "{:?}",
+        texts(&outcome)
+    );
+}
+
+#[tokio::test]
+async fn wall_budget_stops_paused_host_wait_while_active_budget_stays_frozen() {
+    let sleepy = HostFn::new(move |_args, cancel, pause, _info| async move {
+        let _guard = pause.pause();
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(500)) => Ok(json!("finished")),
+            _ = cancel.cancelled() => Err(crate::ptc::HostError::new("cancelled")),
+        }
+    });
+    let outcome = execute(ExecuteRequest {
+        source: "return await tools.sleepy({});".into(),
+        namespaces: tools(vec![("sleepy", sleepy)]),
+        limits: limits(),
+        budget: Duration::from_millis(60),
+        wall_budget: Some(Duration::from_millis(120)),
+        grace: Duration::from_millis(50),
+        cancel: CancellationToken::new(),
+        fs_root: None,
+    })
+    .await;
+    let failure = outcome.failure.as_ref().expect("wall timeout");
+    assert_eq!(failure.kind, FailureKind::Timeout);
+    assert_eq!(failure.message, "wall budget exceeded");
 }
 
 #[tokio::test]
