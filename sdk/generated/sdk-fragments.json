@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "sdk_hash": "46141189bc223bcafc1b633e3d05707c9d3e084001cf705d4f82329a4a7315b2",
-  "prose": "`run_code` executes one async JavaScript function body with top-level `await` and `return`. Always `return` the data you need to inspect or report; do not discard needed tool results.\n\nCall tools as `tools.<suite>.<member>(args)`. A no-argument tool takes no argument; every other tool takes one object matching its declared input schema. Each call returns a promise that resolves to its declared data or rejects with an ordinary JavaScript `Error`; `try`/`catch` and `Promise.allSettled` handle rejections, and `Promise.all` runs independent reads/searches in parallel. For strings containing backslashes or quotes (such as regex edits), use `String.raw` or template literals. The declarations below are the source of truth for tool paths, argument shapes, and result fields.\n\n`fs` is a synchronous, read-only, workspace-relative probe (`ls`/`stat` throw `Error` on missing or out-of-workspace paths). `libs` are pure-JS helpers. Both are declared below. No direct network, process, module access, or timers (`setTimeout`/`setInterval`) exist; side effects and external IO go through the bound tools.\n\nUnknown tool bindings, output-contract violations, cancellation, the fixed 600000 ms run cap, and hard limits stop the cell and cannot be caught. Non-finite numbers in a result become `null` with a warning.",
+  "sdk_hash": "0450b48aacca9bd9c47077e3c3ea135e863706a390c87159f685cc42c1fd85f0",
+  "prose": "`run_code` executes one async JavaScript function body with top-level `await` and `return`. Always `return` the data you need to inspect or report; do not discard needed tool results.\n\nCall tools as `tools.<name>(args)` (or `tools.<suite>.<member>(args)` for custom suites). A no-argument tool takes no argument; every other tool takes one object matching its declared input schema. Each call returns a promise that resolves to its declared data or rejects with an ordinary JavaScript `Error`; `try`/`catch` and `Promise.allSettled` handle rejections, and `Promise.all` runs independent reads/searches in parallel. For strings containing backslashes or quotes (such as regex edits), use `String.raw` or template literals. The declarations below are the source of truth for tool paths, argument shapes, and result fields.\n\n`fs` is a synchronous, read-only, workspace-relative probe (`ls`/`stat` throw `Error` on missing or out-of-workspace paths). `libs` are pure-JS helpers. Both are declared below. No direct network, process, module access, or timers (`setTimeout`/`setInterval`) exist; side effects and external IO go through the bound tools.\n\nUnknown tool bindings, output-contract violations, cancellation, the fixed 600000 ms run cap, and hard limits stop the cell and cannot be caught. Non-finite numbers in a result become `null` with a warning.",
   "declarations": "",
   "libs": "type CsvOptions = {\n  /** Field separator; one character. Default \",\". */\n  delimiter?: string;\n  /** Quote character; one character. Default is a double quote. */\n  quote?: string;\n  /** Trim fields while parsing. Default false. */\n  trim?: boolean;\n};\n\ntype HistogramBin = {\n  start: number;\n  end: number;\n  count: number;\n};\n\ntype DiffLine = {\n  kind: \"equal\" | \"insert\" | \"delete\";\n  text: string;\n};\n\ndeclare const libs: {\n  stats: {\n    sum(values: number[]): number;\n    mean(values: number[]): number;\n    median(values: number[]): number;\n    variance(values: number[], sample?: boolean): number;\n    stddev(values: number[], sample?: boolean): number;\n    quantile(values: number[], q: number): number;\n    histogram(values: number[], bins?: number): HistogramBin[];\n    min(values: number[]): number;\n    max(values: number[]): number;\n  };\n  csv: {\n    parse(text: string, options?: CsvOptions): string[][];\n    format(rows: Array<Array<unknown>>, options?: CsvOptions): string;\n  };\n  text: {\n    lines(text: string): string[];\n    words(text: string): string[];\n    count(text: string, needle: string): number;\n    normalizeNewlines(text: string): string;\n    truncate(text: string, maxChars: number, suffix?: string): string;\n    diffLines(left: string, right: string): DiffLine[];\n  };\n  data: {\n    groupBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, T[]>;\n    countBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, number>;\n    unique<T>(values: T[]): T[];\n    sortBy<T>(rows: T[], key: string | ((row: T) => unknown), direction?: \"asc\" | \"desc\"): T[];\n  };\n};\n\n/** Read-only workspace probes. Synchronous; paths are workspace-relative; throw Error on missing or out-of-workspace paths. */\ndeclare const fs: {\n  /** One level, sorted by name; more than 500 entries set `truncated`. */\n  ls(path: string): { entries: Array<{ name: string; type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number }>; truncated: boolean };\n  /** mtime is ms since the Unix epoch. */\n  stat(path: string): { type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number; mtime: number };\n  exists(path: string): boolean;\n};",
   "types": {
@@ -32,7 +32,6 @@
   "tools": {
     "apply_edits": {
       "path": [
-        "file",
         "apply_edits"
       ],
       "suite": "file",
@@ -44,7 +43,6 @@
     },
     "glob": {
       "path": [
-        "file",
         "glob"
       ],
       "suite": "file",
@@ -57,7 +55,6 @@
     },
     "grep": {
       "path": [
-        "file",
         "grep"
       ],
       "suite": "file",
@@ -70,7 +67,6 @@
     },
     "read": {
       "path": [
-        "file",
         "read"
       ],
       "suite": "file",
@@ -83,7 +79,6 @@
     },
     "write": {
       "path": [
-        "file",
         "write"
       ],
       "suite": "file",
@@ -95,7 +90,6 @@
     },
     "code_search": {
       "path": [
-        "search",
         "code_search"
       ],
       "suite": "search",
@@ -107,7 +101,6 @@
     },
     "session_search": {
       "path": [
-        "search",
         "session_search"
       ],
       "suite": "search",
@@ -119,7 +112,6 @@
     },
     "exec_command": {
       "path": [
-        "process",
         "exec_command"
       ],
       "suite": "process",
@@ -132,7 +124,6 @@
     },
     "write_stdin": {
       "path": [
-        "process",
         "write_stdin"
       ],
       "suite": "process",
@@ -145,56 +136,51 @@
     },
     "webfetch": {
       "path": [
-        "web",
-        "fetch"
+        "webfetch"
       ],
       "suite": "web",
       "doc": "Fetch one http(s) URL.",
-      "signature": "fetch(args: {\n  url: string; // URL to fetch. Only http(s) URLs are accepted.\n  format?: \"text\" | \"markdown\" | \"html\"; // Desired output format. @default \"markdown\"\n}): Promise<{\n  body?: string; // Empty for a non-2xx answer: the status carries the fact.\n  format?: \"text\" | \"markdown\" | \"html\";\n  status?: Integer; // HTTP status of the final response, 2xx or not.\n  url?: string;\n}>;",
+      "signature": "webfetch(args: {\n  url: string; // URL to fetch. Only http(s) URLs are accepted.\n  format?: \"text\" | \"markdown\" | \"html\"; // Desired output format. @default \"markdown\"\n}): Promise<{\n  body?: string; // Empty for a non-2xx answer: the status carries the fact.\n  format?: \"text\" | \"markdown\" | \"html\";\n  status?: Integer; // HTTP status of the final response, 2xx or not.\n  url?: string;\n}>;",
       "type_deps": [
         "Integer"
       ]
     },
     "websearch": {
       "path": [
-        "web",
-        "search"
+        "websearch"
       ],
       "suite": "web",
       "doc": "Search the web.",
-      "signature": "search(args: {\n  query: string; // Search query.\n  top_k?: Integer; // Number of results, best first. 1–100. @default 10\n}): Promise<{\n  // At most top_k hits, best first; empty when the search found nothing.\n  results: {\n    snippet: string; // Query-relevant excerpt from the page, as returned by the provider.\n    title: string;\n    url: string;\n  }[];\n}>;",
+      "signature": "websearch(args: {\n  query: string; // Search query.\n  top_k?: Integer; // Number of results, best first. 1–100. @default 10\n}): Promise<{\n  // At most top_k hits, best first; empty when the search found nothing.\n  results: {\n    snippet: string; // Query-relevant excerpt from the page, as returned by the provider.\n    title: string;\n    url: string;\n  }[];\n}>;",
       "type_deps": [
         "Integer"
       ]
     },
     "browser_click": {
       "path": [
-        "browser",
-        "click"
+        "browser_click"
       ],
       "suite": "browser",
       "doc": "Click one interactive element on the visible page.",
-      "signature": "click(args: {\n  ref: string; // Element reference from the latest browser_read.\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<{\n  page_id: string;\n  ref: string;\n  tag: string;\n  text: string;\n  title: string;\n  url: string;\n}>;",
+      "signature": "browser_click(args: {\n  ref: string; // Element reference from the latest browser_read.\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<{\n  page_id: string;\n  ref: string;\n  tag: string;\n  text: string;\n  title: string;\n  url: string;\n}>;",
       "type_deps": []
     },
     "browser_close": {
       "path": [
-        "browser",
-        "close"
+        "browser_close"
       ],
       "suite": "browser",
       "doc": "Close an agent-owned browser tab.",
-      "signature": "close(args: {\n  page_id: string; // Browser page id from browser_open or browser_list.\n}): Promise<{\n  closed: boolean;\n  id: string;\n  fallback?: boolean;\n}>;",
+      "signature": "browser_close(args: {\n  page_id: string; // Browser page id from browser_open or browser_list.\n}): Promise<{\n  closed: boolean;\n  id: string;\n  fallback?: boolean;\n}>;",
       "type_deps": []
     },
     "browser_list": {
       "path": [
-        "browser",
-        "list"
+        "browser_list"
       ],
       "suite": "browser",
       "doc": "List open browser tabs.",
-      "signature": "list(args?: NoArgs): Promise<{\n  active_id: string;\n  pages: BrowserPage[];\n}>;",
+      "signature": "browser_list(args?: NoArgs): Promise<{\n  active_id: string;\n  pages: BrowserPage[];\n}>;",
       "type_deps": [
         "BrowserPage",
         "NoArgs"
@@ -202,41 +188,37 @@
     },
     "browser_open": {
       "path": [
-        "browser",
-        "open"
+        "browser_open"
       ],
       "suite": "browser",
       "doc": "Open a visible browser tab.",
-      "signature": "open(args: {\n  url: string; // http(s) URL to open in a visible browser tab.\n}): Promise<BrowserPage>;",
+      "signature": "browser_open(args: {\n  url: string; // http(s) URL to open in a visible browser tab.\n}): Promise<BrowserPage>;",
       "type_deps": [
         "BrowserPage"
       ]
     },
     "browser_read": {
       "path": [
-        "browser",
-        "read"
+        "browser_read"
       ],
       "suite": "browser",
       "doc": "Read the current visible browser page.",
-      "signature": "read(args: {\n  max_chars?: Integer; // Maximum body text characters. 1000–30000. @default 12000\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<{\n  elements: {\n    ref: string; // Element reference from the latest browser_read.\n    tag: string;\n    text: string;\n    href?: string;\n    type?: string;\n  }[];\n  page_id: string;\n  text: string;\n  title: string;\n  truncated: boolean;\n  url: string;\n}>;",
+      "signature": "browser_read(args: {\n  max_chars?: Integer; // Maximum body text characters. 1000–30000. @default 12000\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<{\n  elements: {\n    ref: string; // Element reference from the latest browser_read.\n    tag: string;\n    text: string;\n    href?: string;\n    type?: string;\n  }[];\n  page_id: string;\n  text: string;\n  title: string;\n  truncated: boolean;\n  url: string;\n}>;",
       "type_deps": [
         "Integer"
       ]
     },
     "browser_type": {
       "path": [
-        "browser",
-        "type"
+        "browser_type"
       ],
       "suite": "browser",
       "doc": "Type text into one input on the visible page.",
-      "signature": "type(args: {\n  ref: string; // Input reference from the latest browser_read.\n  text: string; // Text to set on the focused input.\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<{\n  page_id: string;\n  ref: string;\n  tag: string;\n  title: string;\n  url: string;\n}>;",
+      "signature": "browser_type(args: {\n  ref: string; // Input reference from the latest browser_read.\n  text: string; // Text to set on the focused input.\n  page_id?: string; // Optional page id. Omit for the active visible tab.\n}): Promise<{\n  page_id: string;\n  ref: string;\n  tag: string;\n  text: string;\n  title: string;\n  url: string;\n}>;",
       "type_deps": []
     },
     "diagnostics": {
       "path": [
-        "lsp",
         "diagnostics"
       ],
       "suite": "lsp",
@@ -250,7 +232,6 @@
     },
     "document_symbol": {
       "path": [
-        "lsp",
         "document_symbol"
       ],
       "suite": "lsp",
@@ -266,7 +247,6 @@
     },
     "find_references": {
       "path": [
-        "lsp",
         "find_references"
       ],
       "suite": "lsp",
@@ -282,7 +262,6 @@
     },
     "go_to_definition": {
       "path": [
-        "lsp",
         "go_to_definition"
       ],
       "suite": "lsp",
@@ -298,7 +277,6 @@
     },
     "go_to_implementation": {
       "path": [
-        "lsp",
         "go_to_implementation"
       ],
       "suite": "lsp",
@@ -314,7 +292,6 @@
     },
     "hover": {
       "path": [
-        "lsp",
         "hover"
       ],
       "suite": "lsp",
@@ -328,7 +305,6 @@
     },
     "workspace_symbol": {
       "path": [
-        "lsp",
         "workspace_symbol"
       ],
       "suite": "lsp",
@@ -342,12 +318,11 @@
     },
     "memory.delete": {
       "path": [
-        "memory",
-        "delete"
+        "memory_delete"
       ],
       "suite": "memory",
       "doc": "Delete entries by id from the current session's working memory.",
-      "signature": "delete(args: {\n  ids: string[]; // Entry ids to delete.\n}): Promise<{\n  count: Integer; // Entries after the batch.\n  deleted: string[]; // Deleted ids.\n  rejected: RejectedItem[];\n}>;",
+      "signature": "memory_delete(args: {\n  ids: string[]; // Entry ids to delete.\n}): Promise<{\n  count: Integer; // Entries after the batch.\n  deleted: string[]; // Deleted ids.\n  rejected: RejectedItem[];\n}>;",
       "type_deps": [
         "Integer",
         "RejectedItem"
@@ -355,12 +330,11 @@
     },
     "memory.list": {
       "path": [
-        "memory",
-        "list"
+        "memory_list"
       ],
       "suite": "memory",
       "doc": "Return the authoritative current session memory snapshot; memory survives compaction and is re-injected.",
-      "signature": "list(args?: NoArgs): Promise<{\n  count: Integer; // Number of entries in this snapshot.\n  // Authoritative current entries, in insertion order.\n  entries: {\n    id: string;\n    text: string;\n    updated_at: Integer; // Milliseconds since Unix epoch.\n  }[];\n  limit: Integer; // Maximum entries the session can hold.\n  total: Integer; // Entries in the whole session memory.\n  total_chars: Integer; // Characters across all entry texts.\n}>;",
+      "signature": "memory_list(args?: NoArgs): Promise<{\n  count: Integer; // Number of entries in this snapshot.\n  // Authoritative current entries, in insertion order.\n  entries: {\n    id: string;\n    text: string;\n    updated_at: Integer; // Milliseconds since Unix epoch.\n  }[];\n  limit: Integer; // Maximum entries the session can hold.\n  total: Integer; // Entries in the whole session memory.\n  total_chars: Integer; // Characters across all entry texts.\n}>;",
       "type_deps": [
         "Integer",
         "NoArgs"
@@ -368,12 +342,11 @@
     },
     "memory.upsert": {
       "path": [
-        "memory",
-        "upsert"
+        "memory_upsert"
       ],
       "suite": "memory",
       "doc": "Add or update small, durable session memory entries.",
-      "signature": "upsert(args: {\n  // Memory entries to add or update.\n  entries: {\n    text: string; // Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry.\n    id?: string; // Optional existing id. Omit to add or update by text.\n  }[];\n}): Promise<{\n  added: string[]; // New ids.\n  count: Integer; // Entries after the batch.\n  rejected: RejectedItem[];\n  total_chars: Integer; // Characters after the batch.\n  updated: string[]; // Updated ids.\n}>;",
+      "signature": "memory_upsert(args: {\n  // Memory entries to add or update.\n  entries: {\n    text: string; // Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry.\n    id?: string; // Optional existing id. Omit to add or update by text.\n  }[];\n}): Promise<{\n  added: string[]; // New ids.\n  count: Integer; // Entries after the batch.\n  rejected: RejectedItem[];\n  total_chars: Integer; // Characters after the batch.\n  updated: string[]; // Updated ids.\n}>;",
       "type_deps": [
         "Integer",
         "RejectedItem"

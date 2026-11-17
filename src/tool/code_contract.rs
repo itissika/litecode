@@ -180,15 +180,25 @@ fn validate_builtins(contract: &ToolContract, fragments: &SdkFragments) -> Resul
     Ok(())
 }
 
-/// The JS SDK path of one built-in code tool (`read` -> `file.read`). This is
-/// the same table `bindings` is built from, so a message that names the path a
-/// caller should have used cannot drift from the SDK the caller actually sees.
+/// The JS SDK path of one built-in code tool (`read` -> `read`, `memory.list`
+/// -> `memory_list`). This is the same table `bindings` is built from, so a
+/// message that names the path a caller should have used cannot drift from the
+/// SDK the caller actually sees.
 pub fn builtin_sdk_path(name: &str) -> Option<String> {
     builtins()
         .fragments
         .tools
         .get(name)
         .map(|fragment| fragment.path.join("."))
+}
+
+/// True when `name` matches any flat top-level built-in binding in `Tools`.
+pub fn is_builtin_code_binding(name: &str) -> bool {
+    builtins()
+        .fragments
+        .tools
+        .values()
+        .any(|fragment| fragment.path.len() == 1 && fragment.path[0] == name)
 }
 
 /// Input schema for one built-in code tool, derived from the JS/TS contract.
@@ -310,14 +320,14 @@ mod tests {
         let tools = crate::tool::registry::builtin_code_surface_tools();
         let surface = build_surface(&tools).expect("assemble full builtin SDK");
         assert_eq!(
-            surface.bindings.get("file.read").map(String::as_str),
+            surface.bindings.get("read").map(String::as_str),
             Some("read")
         );
         assert_eq!(
-            surface.bindings.get("memory.list").map(String::as_str),
+            surface.bindings.get("memory_list").map(String::as_str),
             Some("memory.list")
         );
-        for path in ["browser.list", "memory.list"] {
+        for path in ["browser_list", "memory_list"] {
             let tool = &surface.tools[surface.bindings[path].as_str()];
             assert_eq!(tool.input_schema["type"], "object", "{path}");
             assert_eq!(tool.input_schema["additionalProperties"], false, "{path}");
@@ -439,15 +449,15 @@ mod tests {
             .sdk
             .find("type ExecCommandData =")
             .expect("ExecCommandData");
-        let process = surface
+        let tools_iface = surface
             .sdk
-            .find("interface ProcessTools {")
-            .expect("ProcessTools");
-        assert!(exec < process);
-        let between = &surface.sdk[exec..process];
+            .find("interface Tools {")
+            .expect("Tools");
+        assert!(exec < tools_iface);
+        let between = &surface.sdk[exec..tools_iface];
         assert!(
             !between.contains("interface FileTools"),
-            "suite-local type must not be hoisted above another suite: {between}"
+            "flat built-ins must not emit nested suite interfaces: {between}"
         );
     }
 

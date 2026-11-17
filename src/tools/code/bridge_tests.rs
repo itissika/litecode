@@ -166,7 +166,7 @@ async fn s2_unknown_parameter_rejects_and_the_run_continues() {
         })],
         r#"
         try {
-          await tools.file.read({ path: "a.txt", nope: 1 });
+          await tools.read({ path: "a.txt", nope: 1 });
           return "resolved";
         } catch (e) {
           return e.code + " " + e.message;
@@ -202,7 +202,7 @@ async fn s2_missing_required_parameter_fails_the_call() {
         })],
         r#"
         try {
-          await tools.file.read({});
+          await tools.read({});
           return "resolved";
         } catch (e) {
           return e.code + " " + e.message;
@@ -233,11 +233,11 @@ async fn s2_a_rejected_call_does_not_stop_the_next() {
         r#"
         let first;
         try {
-          await tools.file.read({ path: "a.txt", nope: 1 });
+          await tools.read({ path: "a.txt", nope: 1 });
         } catch (e) {
           first = e.code;
         }
-        const second = await tools.file.read({ path: "a.txt" });
+        const second = await tools.read({ path: "a.txt" });
         return first + " " + second.lines.length;
         "#,
     )
@@ -264,7 +264,7 @@ async fn edit_input_failure_rejects_and_keeps_valid_edits() {
         vec![Arc::new(ApplyEditsTool::new())],
         r#"
         try {
-          await tools.file.apply_edits({
+          await tools.apply_edits({
             edits: [
               { path: "b.txt", old_string: "world", new_string: "WORLD" },
               { path: "a.txt", old_string: "hello", new_string: "hello" },
@@ -308,12 +308,12 @@ async fn edit_on_a_session_record_rejects_with_permission_code() {
             Arc::new(crate::tools::write::WriteTool::new()),
         ],
         r#"
-        await tools.file.apply_edits({ edits: [{
+        await tools.apply_edits({ edits: [{
             path: ".litecode/sessions/01M6MH2CWCE5DJDAZBE0E3THT5.md",
             old_string: "a",
             new_string: "b",
         }] });
-        await tools.file.write({ path: "after.txt", content: "should_not_run" });
+        await tools.write({ path: "after.txt", content: "should_not_run" });
         return "unreachable";
         "#,
     )
@@ -391,7 +391,7 @@ async fn s4_unknown_result_field_is_a_warning() {
             runs: Arc::new(AtomicUsize::new(0)),
         })],
         r#"
-        const r = await tools.file.read({ path: "a.txt" });
+        const r = await tools.read({ path: "a.txt" });
         const data = r.path;
         return typeof data;
         "#,
@@ -413,7 +413,7 @@ async fn s4_failed_call_is_caught_with_code_and_message() {
         vec![Arc::new(FailingRead)],
         r#"
         try {
-          await tools.file.read({ path: "p" });
+          await tools.read({ path: "p" });
           return "resolved";
         } catch (e) {
           console.log("saw", e.code, e.message);
@@ -441,7 +441,7 @@ async fn s4_field_list_comes_from_each_tools_contract() {
             runs: Arc::new(AtomicUsize::new(0)),
         })],
         r#"
-        const g = await tools.file.grep({ pattern: "a" });
+        const g = await tools.grep({ pattern: "a" });
         const lines = g.lines;
         return g.hits.length;
         "#,
@@ -468,7 +468,7 @@ async fn a_static_typo_is_reported_once_and_the_run_still_happens() {
             runs: Arc::clone(&runs),
         })],
         r#"
-        const r = await tools.file.read({ path: "a.txt" });
+        const r = await tools.read({ path: "a.txt" });
         const data = r.data;
         return "ran";
         "#,
@@ -502,7 +502,7 @@ async fn a_tool_result_reaches_the_model_with_fields_and_a_reminder_line() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(crate::tools::glob::GlobTool)],
-        r#"const r = await tools.file.glob({ pattern: "*.txt", limit: 2 }); return JSON.parse(JSON.stringify(r));"#,
+        r#"const r = await tools.glob({ pattern: "*.txt", limit: 2 }); return JSON.parse(JSON.stringify(r));"#,
     )
     .await;
     let content = result.content;
@@ -510,7 +510,7 @@ async fn a_tool_result_reaches_the_model_with_fields_and_a_reminder_line() {
     assert!(!content.contains("\"total\""), "{content}");
     assert!(!content.contains("\"truncated\""), "{content}");
     assert!(
-        content.contains("file.glob: showing first 2 of 3 paths"),
+        content.contains("tools.glob: showing first 2 of 3 paths"),
         "{content}"
     );
     assert!(
@@ -531,12 +531,12 @@ async fn a_slice_of_a_result_still_reaches_the_model() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(crate::tools::read::ReadTool::default())],
-        r#"const r = await tools.file.read({ path: "a.txt", limit: 2 }); return r.lines;"#,
+        r#"const r = await tools.read({ path: "a.txt", limit: 2 }); return r.lines;"#,
     )
     .await;
     let content = result.content;
     assert!(
-        content.contains("file.read: showing lines 1-2 of 5; continue with start_line 3"),
+        content.contains("tools.read: showing lines 1-2 of 5; continue with start_line 3"),
         "{content}"
     );
 }
@@ -552,7 +552,7 @@ async fn a_returned_tool_result_is_presented() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(crate::tools::glob::GlobTool)],
-        r#"return await tools.file.glob({ pattern: "*.txt" });"#,
+        r#"return await tools.glob({ pattern: "*.txt" });"#,
     )
     .await;
     let content = result.content;
@@ -592,20 +592,20 @@ async fn lsp_state_reaches_the_model_as_a_reminder_line() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(DiagnosticsStub)],
-        r#"const a = await tools.lsp.diagnostics({ path: "a.rs" });
-const b = await tools.lsp.diagnostics({ path: "b.rs" }); return a.state + b.state;"#,
+        r#"const a = await tools.diagnostics({ path: "a.rs" });
+const b = await tools.diagnostics({ path: "b.rs" }); return a.state + b.state;"#,
     )
     .await;
     let content = result.content;
     assert!(
         content.contains(
-            "↳ #1 tools.lsp.diagnostics: no diagnostics reported; the index is still building, "
+            "↳ #1 tools.diagnostics: no diagnostics reported; the index is still building, "
         ),
         "{content}"
     );
     assert!(
         content.contains(
-            "↳ #2 tools.lsp.diagnostics: no diagnostics reported; the index state is unknown, "
+            "↳ #2 tools.diagnostics: no diagnostics reported; the index state is unknown, "
         ),
         "{content}"
     );
@@ -632,14 +632,14 @@ async fn a_capped_grep_says_more_exist() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(crate::tools::grep::GrepTool)],
-        r#"const r = await tools.file.grep({ pattern: "fn ", path: "a.rs", limit: 5 });
+        r#"const r = await tools.grep({ pattern: "fn ", path: "a.rs", limit: 5 });
 return r.hits.length;"#,
     )
     .await;
     let content = result.content;
     assert!(
         content.contains(
-            "↳ #1 tools.file.grep: showing the first 5 matches; more exist — narrow the pattern/path or raise limit"
+            "↳ #1 tools.grep: showing the first 5 matches; more exist — narrow the pattern/path or raise limit"
         ),
         "{content}"
     );
@@ -653,7 +653,7 @@ async fn an_outside_write_reaches_the_model_as_a_field_and_a_line() {
     let target = outside.path().join("note.txt");
     let literal = serde_json::to_string(&target.to_string_lossy().to_string()).unwrap();
     let code = format!(
-        "const r = await tools.file.write({{ path: {literal}, content: \"hi\" }});\nreturn {{ path: r.path, hasRisk: Object.hasOwn(r, 'path_risk') }};"
+        "const r = await tools.write({{ path: {literal}, content: \"hi\" }});\nreturn {{ path: r.path, hasRisk: Object.hasOwn(r, 'path_risk') }};"
     );
     let result = run_program(
         dir.path(),
@@ -664,7 +664,7 @@ async fn an_outside_write_reaches_the_model_as_a_field_and_a_line() {
     let content = result.content;
     assert!(content.contains("\"hasRisk\":false"), "{content}");
     let expected = format!(
-        "↳ #1 tools.file.write: this write lands outside the workspace: {}",
+        "↳ #1 tools.write: this write lands outside the workspace: {}",
         target.to_string_lossy()
     );
     assert!(content.contains(&expected), "{content}\n{expected}");
@@ -710,7 +710,7 @@ async fn a_caught_failure_reads_as_one_line() {
         vec![Arc::new(UnavailableSymbols)],
         r#"
         try {
-          await tools.lsp.workspace_symbol({ query: "x" });
+          await tools.workspace_symbol({ query: "x" });
           console.log("resolved");
         } catch (e) {
           console.log("saw", e.code, e.message);
@@ -737,7 +737,7 @@ async fn a_caught_failure_reads_as_one_line() {
         .collect();
     assert_eq!(
         reported,
-        ["↳ #1 tools.lsp.workspace_symbol: failed(unavailable); the program may have caught the error"],
+        ["↳ #1 tools.workspace_symbol: failed(unavailable); the program may have caught the error"],
         "{content}"
     );
     // Above the stream, and the stream still ends the view.
@@ -763,8 +763,8 @@ async fn promise_allsettled_consumes_a_rejection_and_a_success() {
         vec![Arc::new(crate::tools::read::ReadTool::default())],
         r#"
         const results = await Promise.allSettled([
-          tools.file.read({ path: "missing.txt" }),
-          tools.file.read({ path: "a.txt" }),
+          tools.read({ path: "missing.txt" }),
+          tools.read({ path: "a.txt" }),
         ]);
         return results.map((item) =>
           item.status === "fulfilled" ? item.value.lines.length : item.reason.code
@@ -787,7 +787,7 @@ async fn a_failed_run_states_a_swallowed_failure_once() {
         dir.path(),
         vec![Arc::new(UnavailableSymbols)],
         r#"
-        const r = await tools.lsp.workspace_symbol({ query: "x" });
+        const r = await tools.workspace_symbol({ query: "x" });
         throw new Error("boom");
         "#,
     )
@@ -799,7 +799,7 @@ async fn a_failed_run_states_a_swallowed_failure_once() {
     assert!(
         content
             .lines()
-            .any(|line| line.starts_with("#1 tools.lsp.workspace_symbol")),
+            .any(|line| line.starts_with("#1 tools.workspace_symbol")),
         "the manifest keeps the row: {content}"
     );
 }
@@ -815,7 +815,7 @@ async fn a_successful_call_reports_no_failure_line() {
         vec![Arc::new(CountingRead {
             runs: Arc::clone(&runs),
         })],
-        r#"const r = await tools.file.read({ path: "a.txt" }); return r.lines.length;"#,
+        r#"const r = await tools.read({ path: "a.txt" }); return r.lines.length;"#,
     )
     .await;
     let content = result.content;
@@ -839,7 +839,7 @@ async fn a_computed_unknown_parameter_is_one_line_above_the_stream() {
         const key = "pth";
         const args = { path: "a.txt", [key]: "a.txt" };
         try {
-          const r = await tools.file.read(args);
+          const r = await tools.read(args);
           console.log("saw", r.lines.length);
         } catch (e) {
           console.log("saw", e.code);
@@ -859,7 +859,7 @@ async fn a_computed_unknown_parameter_is_one_line_above_the_stream() {
     assert_eq!(reported.len(), 1, "{content}");
     let line = reported[0];
     assert!(
-        line.starts_with("↳ #1 tools.file.read: invalid_args"),
+        line.starts_with("↳ #1 tools.read: invalid_args"),
         "{content}"
     );
     assert!(line.contains("unknown parameter 'pth'"), "{content}");
@@ -890,7 +890,7 @@ async fn a_literal_unknown_parameter_is_stated_once() {
         vec![Arc::new(crate::tools::read::ReadTool::default())],
         r#"
         try {
-          await tools.file.read({ path: "a.txt", pth: "x" });
+          await tools.read({ path: "a.txt", pth: "x" });
           return "resolved";
         } catch (e) {
           return e.code;
@@ -901,7 +901,7 @@ async fn a_literal_unknown_parameter_is_stated_once() {
     let content = result.content;
     assert_eq!(content.matches("unknown parameter 'pth'").count(), 1, "{content}");
     assert!(
-        content.contains("↳ #1 tools.file.read: invalid_args — unknown parameter 'pth'"),
+        content.contains("↳ #1 tools.read: invalid_args — unknown parameter 'pth'"),
         "{content}"
     );
     assert!(content.contains("parameters: limit, path, start_line"), "{content}");
@@ -923,7 +923,7 @@ async fn an_illegal_value_names_the_legal_ones() {
         r#"
         const format = "pdf";
         try {
-          await tools.web.fetch({ url: "https://example.com", format });
+          await tools.webfetch({ url: "https://example.com", format });
           console.log("resolved");
         } catch (e) {
           console.log("saw", e.code);
@@ -940,7 +940,7 @@ async fn an_illegal_value_names_the_legal_ones() {
     assert_eq!(reported.len(), 1, "{content}");
     let line = reported[0];
     assert!(
-        line.starts_with("↳ #1 tools.web.fetch: invalid_args"),
+        line.starts_with("↳ #1 tools.webfetch: invalid_args"),
         "{content}"
     );
     assert!(
@@ -959,7 +959,7 @@ async fn two_arguments_keep_their_single_line() {
         dir.path(),
         vec![Arc::new(crate::tools::read::ReadTool::default())],
         r#"
-        const r = await tools.file.read({ path: "a.txt" }, { path: "b.txt" });
+        const r = await tools.read({ path: "a.txt" }, { path: "b.txt" });
         return r.reason;
         "#,
     )
@@ -990,7 +990,7 @@ async fn a_bad_edit_item_projects_public_reasons_without_leaking_internals() {
             { path: "a.txt", old_string: "a", new_string: "a" },
         ];
         try {
-          await tools.file.apply_edits({ edits: bad });
+          await tools.apply_edits({ edits: bad });
           return "unexpected_ok";
         } catch (e) {
           return e.details.results.map((item) => item.reason).join(",");
@@ -1045,7 +1045,7 @@ async fn a_hits_shape_from_another_tool_produces_no_grep_line() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(HitsLike)],
-        r#"const r = await tools.search.code_search({ query: "x" }); return r.hits.length;"#,
+        r#"const r = await tools.code_search({ query: "x" }); return r.hits.length;"#,
     )
     .await;
     let content = result.content;
@@ -1062,11 +1062,11 @@ async fn a_numeric_return_does_not_hide_the_facts() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(crate::tools::read::ReadTool::default())],
-        r#"const r = await tools.file.read({ path: "a.txt", limit: 2 }); return r.lines.length;"#,
+        r#"const r = await tools.read({ path: "a.txt", limit: 2 }); return r.lines.length;"#,
     )
     .await;
     let content = result.content;
-    assert!(content.contains("file.read: showing lines 1-2 of 5"), "{content}");
+    assert!(content.contains("tools.read: showing lines 1-2 of 5"), "{content}");
 }
 
 /// A failed nested call rejects instead of producing a platform envelope.
@@ -1093,7 +1093,7 @@ async fn s1_unknown_member_ends_the_run_without_a_ledger_row() {
             runs: Arc::clone(&runs),
         })],
         r#"
-        try { await tools.file.readx({ path: "a.txt" }); } catch (e) { return "swallowed"; }
+        try { await tools.readx({ path: "a.txt" }); } catch (e) { return "swallowed"; }
         return "continued";
         "#,
     )
@@ -1105,7 +1105,7 @@ async fn s1_unknown_member_ends_the_run_without_a_ledger_row() {
         result.content
     );
     assert!(
-        result.content.contains("file.readx"),
+        result.content.contains("tools.readx"),
         "the message names the missing member: {}",
         result.content
     );
@@ -1130,7 +1130,7 @@ async fn s2_two_arguments_fail_the_call() {
         })],
         r#"
         try {
-          await tools.file.read({ path: "a.txt" }, { path: "b.txt" });
+          await tools.read({ path: "a.txt" }, { path: "b.txt" });
           return "resolved";
         } catch (e) {
           return e.code + " / " + e.message;
@@ -1159,7 +1159,7 @@ async fn s2_over_deep_arguments_fail_the_call() {
         let node = root;
         for (let i = 0; i < 200; i++) { node.next = {}; node = node.next; }
         try {
-          await tools.file.read(root);
+          await tools.read(root);
           return "resolved";
         } catch (e) {
           return e.code + " " + e.message;
@@ -1182,7 +1182,7 @@ async fn s3_result_that_violates_the_contract_ends_the_run() {
         dir.path(),
         vec![Arc::new(BadRead)],
         r#"
-        try { await tools.file.read({ path: "a.txt" }); } catch (e) { return "swallowed"; }
+        try { await tools.read({ path: "a.txt" }); } catch (e) { return "swallowed"; }
         return "continued";
         "#,
     )

@@ -863,7 +863,7 @@ def summarize_steps(
             for inner in call.get("nested") or []:
                 inner_name = inner.get("name") or "?"
                 nested[inner_name] += 1
-                if inner_name == "process.write_stdin":
+                if inner_name in ("write_stdin", "process.write_stdin"):
                     polls += 1
             if name == "write_stdin":
                 polls += 1

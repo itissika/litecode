@@ -1395,6 +1395,7 @@ pub(crate) fn validate_custom_suite(id: &str, def: &mut CustomSuiteDefinition) -
     if tools::is_core_tool(id)
         || tools::is_optional_builtin(id)
         || crate::tools::lsp::LSP_CODE_TOOL_NAMES.contains(&id)
+        || crate::tool::code_contract::is_builtin_code_binding(id)
     {
         return Err(LitecodeError::Config(format!(
             "custom suite id '{id}' conflicts with a builtin tool"
@@ -1485,6 +1486,7 @@ pub(crate) fn custom_definition_diagnostic(
     if tools::is_core_tool(id)
         || tools::is_optional_builtin(id)
         || crate::tools::lsp::LSP_CODE_TOOL_NAMES.contains(&id)
+        || crate::tool::code_contract::is_builtin_code_binding(id)
     {
         return Some(diag(
             "name",

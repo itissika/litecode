@@ -71,7 +71,7 @@ pub(super) struct UncaughtToolError {
 pub(super) struct CallReminder {
     /// Call sequence number, matching the numbering used elsewhere in the view.
     pub seq: u64,
-    /// Dotted tool name as the program sees it (`file.read`).
+    /// Tool name as the program sees it (`read`, or `deck.only` for a custom suite).
     pub tool: String,
     /// Which fact this line states; see [`ReminderKind`].
     pub kind: ReminderKind,
@@ -289,15 +289,13 @@ fn reminders_for_call_surface(
         return out;
     }
     match tool {
-        "file.read" => read_reminders(object, &mut out),
-        "file.glob" => glob_reminders(object, &mut out),
-        "file.grep" => grep_reminders(object, &mut out),
-        tool if tool.starts_with("lsp.") => lsp_reminders(tool, object, &mut out),
-        "process.exec_command" | "process.write_stdin" => {
-            unified_exec_reminders(tool, object, direct, &mut out)
-        }
-        "file.write" => write_reminders(object, &mut out),
-        "file.apply_edits" => edit_reminders(tool, object, &mut out),
+        "read" => read_reminders(object, &mut out),
+        "glob" => glob_reminders(object, &mut out),
+        "grep" => grep_reminders(object, &mut out),
+        tool if is_lsp_tool(tool) => lsp_reminders(tool, object, &mut out),
+        "exec_command" | "write_stdin" => unified_exec_reminders(tool, object, direct, &mut out),
+        "write" => write_reminders(object, &mut out),
+        "apply_edits" => edit_reminders(tool, object, &mut out),
         _ => {}
     }
     out
@@ -485,6 +483,10 @@ fn edit_reminders(
         // model has in front of it, and the batch table already anchors it.
     }
 }
+fn is_lsp_tool(tool: &str) -> bool {
+    crate::tools::lsp::LSP_CODE_TOOL_NAMES.contains(&tool)
+}
+
 /// Codex-style exec sessions use a session id and incremental output, so the
 /// old command reminder would be actively wrong. Only the start call gets the
 /// live-session line: repeating it after `write_stdin` would tell the model to
@@ -495,13 +497,13 @@ fn unified_exec_reminders(
     direct: bool,
     out: &mut Vec<String>,
 ) {
-    if tool == "process.exec_command"
+    if tool == "exec_command"
         && let Some(session_id) = object.get("session_id").and_then(Value::as_str)
     {
         let poll_target = if direct {
             "write_stdin"
         } else {
-            "tools.process.write_stdin"
+            "tools.write_stdin"
         };
         out.push(format!(
             "session {session_id} is live; poll with {poll_target} or wait for its exit reminder"
@@ -519,22 +521,22 @@ fn lsp_reminders(
     out: &mut Vec<String>,
 ) {
     let subject = match tool {
-        "lsp.hover" => "hover information",
-        "lsp.diagnostics" => "diagnostics",
-        "lsp.document_symbol" | "lsp.workspace_symbol" => "symbols",
+        "hover" => "hover information",
+        "diagnostics" => "diagnostics",
+        "document_symbol" | "workspace_symbol" => "symbols",
         _ => "locations",
     };
     let state = object.get("state").and_then(Value::as_str).unwrap_or("");
     let empty = match tool {
-        "lsp.hover" => object
+        "hover" => object
             .get("markdown")
             .and_then(Value::as_str)
             .is_none_or(|markdown| markdown.trim().is_empty()),
-        "lsp.diagnostics" => object
+        "diagnostics" => object
             .get("items")
             .and_then(Value::as_array)
             .is_none_or(Vec::is_empty),
-        "lsp.document_symbol" | "lsp.workspace_symbol" => object
+        "document_symbol" | "workspace_symbol" => object
             .get("symbols")
             .and_then(Value::as_array)
             .is_none_or(Vec::is_empty),
@@ -545,9 +547,9 @@ fn lsp_reminders(
     };
     if object.get("truncated").and_then(Value::as_bool) == Some(true) {
         let shown = match tool {
-            "lsp.hover" => 0,
-            "lsp.diagnostics" => array_len(object, "items"),
-            "lsp.document_symbol" | "lsp.workspace_symbol" => array_len(object, "symbols"),
+            "hover" => 0,
+            "diagnostics" => array_len(object, "items"),
+            "document_symbol" | "workspace_symbol" => array_len(object, "symbols"),
             _ => array_len(object, "locations"),
         };
         out.push(format!("results were cut at {shown}; more exist"));
@@ -840,7 +842,7 @@ fn render_upfloat(report: &RunReport, budget: usize, manifest: Option<&str>) -> 
     kept.join("\n")
 }
 
-/// `#7 tools.file.read: …` — the anchor every call line carries.
+/// `#7 tools.read: …` — the anchor every call line carries.
 fn anchor_line(reminder: &CallReminder) -> String {
     format!(
         "#{} {}: {}",
@@ -1945,10 +1947,10 @@ mod tests {
     fn a_warning_the_failure_already_states_is_not_repeated() {
         let mut report = base_report();
         report.failure_kind = Some(FailureKind::IllegalOutput);
-        report.failure_text = Some("tool 'tools.file.readx' not found. available: read".into());
+        report.failure_text = Some("tool 'tools.readx' not found. available: read".into());
         report.warnings = vec![
-            "tool 'tools.file.readx' not found. available: read".into(),
-            "invalid input for 'file.read': unknown parameter 'limt'".into(),
+            "tool 'tools.readx' not found. available: read".into(),
+            "invalid input for 'read': unknown parameter 'limt'".into(),
         ];
         let text = render_model_view(&report);
         assert_eq!(text.matches("readx").count(), 1, "{text}");
@@ -2105,7 +2107,7 @@ mod tests {
             ),
         ];
         for (value, expected) in cases {
-            let lines = reminders_for_call("file.grep", &value);
+            let lines = reminders_for_call("grep", &value);
             assert_eq!(lines, expected, "{value}");
             for line in &lines {
                 assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
@@ -2137,14 +2139,14 @@ mod tests {
         report.reminders = vec![
             CallReminder {
                 seq: 1,
-                tool: "file.grep".into(),
+                tool: "grep".into(),
                 kind: ReminderKind::Boundary,
                 dedupe: None,
                 text: long.clone(),
             },
             CallReminder {
                 seq: 2,
-                tool: "file.read".into(),
+                tool: "read".into(),
                 kind: ReminderKind::Failure,
                 dedupe: None,
                 text: format!("failed(not_found); the program kept going {long}"),
@@ -2212,7 +2214,7 @@ mod tests {
             ),
         ];
         for (value, expected) in cases {
-            let lines = reminders_for_call("file.read", &value);
+            let lines = reminders_for_call("read", &value);
             assert_eq!(lines, expected, "{value}");
             for line in &lines {
                 assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
@@ -2272,7 +2274,7 @@ mod tests {
             ),
         ];
         for (value, expected) in cases {
-            let lines = reminders_for_call("file.glob", &value);
+            let lines = reminders_for_call("glob", &value);
             assert_eq!(lines, expected, "{value}");
             for line in &lines {
                 assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
@@ -2303,78 +2305,78 @@ mod tests {
         let hover = miss("hover information");
         let cases: Vec<(&str, Value, Vec<String>)> = vec![
             (
-                "lsp.diagnostics",
+                "diagnostics",
                 json!({"items": [], "state": "ok", "truncated": false}),
                 vec![diagnostics[0].clone()],
             ),
             (
-                "lsp.diagnostics",
+                "diagnostics",
                 json!({"items": [], "state": "partial", "truncated": false}),
                 vec![diagnostics[1].clone()],
             ),
             (
-                "lsp.diagnostics",
+                "diagnostics",
                 json!({"items": [], "state": "unknown", "truncated": false}),
                 vec![diagnostics[2].clone()],
             ),
             (
-                "lsp.diagnostics",
+                "diagnostics",
                 json!({"items": [{"severity": "Error", "path": "a.rs", "line": 1,
                           "character": 1, "message": "x"}], "state": "partial", "truncated": false}),
                 vec!["results may be incomplete; the index is still building".to_string()],
             ),
             (
-                "lsp.diagnostics",
+                "diagnostics",
                 json!({"items": [{"severity": "Error", "path": "a.rs", "line": 1,
                           "character": 1, "message": "x"}], "state": "unknown", "truncated": false}),
                 vec!["results may be incomplete; the index state is unknown".to_string()],
             ),
             (
-                "lsp.diagnostics",
+                "diagnostics",
                 json!({"items": [{"severity": "Error", "path": "a.rs", "line": 1,
                           "character": 1, "message": "x"}], "state": "ok", "truncated": false}),
                 Vec::new(),
             ),
             (
-                "lsp.hover",
+                "hover",
                 json!({"markdown": "", "state": "ok", "truncated": false}),
                 vec![hover[0].clone()],
             ),
             (
-                "lsp.document_symbol",
+                "document_symbol",
                 json!({"symbols": [], "state": "unknown", "truncated": false}),
                 vec![symbols[2].clone()],
             ),
             (
-                "lsp.workspace_symbol",
+                "workspace_symbol",
                 json!({"symbols": [], "state": "partial", "truncated": false}),
                 vec![symbols[1].clone()],
             ),
             (
-                "lsp.find_references",
+                "find_references",
                 json!({"locations": [], "state": "partial", "truncated": false}),
                 vec![locations[1].clone()],
             ),
             (
-                "lsp.go_to_implementation",
+                "go_to_implementation",
                 json!({"locations": [], "state": "unknown", "truncated": false}),
                 vec![locations[2].clone()],
             ),
             (
-                "lsp.diagnostics",
+                "diagnostics",
                 json!({"items": vec![json!({"severity": "Error", "path": "a.rs", "line": 1,
                           "character": 1, "message": "x"}); 100], "state": "ok",
                        "truncated": true}),
                 vec!["results were cut at 100; more exist".to_string()],
             ),
             (
-                "lsp.find_references",
+                "find_references",
                 json!({"locations": vec![json!({"path": "a.rs", "line": 1, "character": 1}); 100],
                        "state": "ok", "truncated": true}),
                 vec!["results were cut at 100; more exist".to_string()],
             ),
             (
-                "lsp.workspace_symbol",
+                "workspace_symbol",
                 json!({"symbols": vec![json!({"name": "a", "kind": "Function", "line": 1,
                           "character": 1}); 200], "state": "partial", "truncated": true}),
                 vec![
@@ -2383,7 +2385,7 @@ mod tests {
                 ],
             ),
             (
-                "lsp.go_to_definition",
+                "go_to_definition",
                 json!({"locations": [{"path": "a.rs", "line": 1, "character": 1}], "state": "ok", "truncated": false}),
                 Vec::new(),
             ),
@@ -2432,25 +2434,25 @@ mod tests {
         };
         let cases: Vec<(&str, Value, Vec<&str>)> = vec![
             (
-                "file.write",
+                "write",
                 write(json!({ "path_risk": risk("/tmp/x.txt") })),
                 vec!["this write lands outside the workspace: /tmp/x.txt"],
             ),
             (
-                "file.write",
+                "write",
                 write(json!({ "path_risk": {"outside_workspace": false, "sensitive": true} })),
                 vec!["this write targets a sensitive system location"],
             ),
             (
-                "file.write",
+                "write",
                 write(json!({
                     "diagnostics": [{"code": "lsp_error", "severity": "warning", "message": "m"}]
                 })),
                 vec!["the language server reported errors in this file"],
             ),
-            ("file.write", write(json!({})), Vec::new()),
+            ("write", write(json!({})), Vec::new()),
             (
-                "file.apply_edits",
+                "apply_edits",
                 json!({
                     "results": [
                         {
@@ -2499,16 +2501,16 @@ mod tests {
     #[test]
     fn a_failed_call_produces_no_reminder_lines() {
         let tools = [
-            "file.read",
-            "file.glob",
-            "file.grep",
-            "lsp.workspace_symbol",
-            "lsp.diagnostics",
-            "lsp.hover",
-            "process.exec_command",
-            "process.write_stdin",
-            "file.write",
-            "file.apply_edits",
+            "read",
+            "glob",
+            "grep",
+            "workspace_symbol",
+            "diagnostics",
+            "hover",
+            "exec_command",
+            "write_stdin",
+            "write",
+            "apply_edits",
         ];
         let envelopes = [
             json!({
@@ -2543,14 +2545,14 @@ mod tests {
         report.reminders = vec![
             CallReminder {
                 seq: 3,
-                tool: "file.read".into(),
+                tool: "read".into(),
                 kind: ReminderKind::Boundary,
                 dedupe: None,
                 text: "showing lines 1-2000 of 5000; continue with start_line 2001".into(),
             },
             CallReminder {
                 seq: 4,
-                tool: "file.grep".into(),
+                tool: "grep".into(),
                 kind: ReminderKind::Boundary,
                 dedupe: None,
                 text: "the pattern was not found".into(),
@@ -2562,8 +2564,8 @@ mod tests {
             vec![
                 "run_code ok · 0 calls · 12ms",
                 "",
-                "↳ #3 tools.file.read: showing lines 1-2000 of 5000; continue with start_line 2001",
-                "↳ #4 tools.file.grep: the pattern was not found",
+                "↳ #3 tools.read: showing lines 1-2000 of 5000; continue with start_line 2001",
+                "↳ #4 tools.grep: the pattern was not found",
                 "",
                 "[log] one",
             ],
@@ -2579,7 +2581,7 @@ mod tests {
         set_value(&mut report, json!({ "continued": true }));
         report.reminders = vec![CallReminder {
             seq: 1,
-            tool: "file.read".into(),
+            tool: "read".into(),
             kind: ReminderKind::Failure,
             dedupe: None,
             text: "failed(not_found); the program may have caught the error".into(),
@@ -2588,7 +2590,7 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         let anchor = lines
             .iter()
-            .position(|line| line.starts_with("↳ #1 tools.file.read: failed(not_found)"))
+            .position(|line| line.starts_with("↳ #1 tools.read: failed(not_found)"))
             .expect("one failure line");
         assert_eq!(out.matches("failed(not_found)").count(), 1, "{out}");
         assert!(anchor + 1 < lines.len(), "the stream follows the line: {out}");
@@ -2605,7 +2607,7 @@ mod tests {
         report.source = "boom();".into();
         report.calls = vec![LedgerSnap {
             seq: 1,
-            tool: "file.read".into(),
+            tool: "read".into(),
             summary: "path=missing.txt".into(),
             state: "error:not_found".into(),
             error_code: Some("not_found".into()),
@@ -2615,7 +2617,7 @@ mod tests {
         report.call_total = Some(1);
         report.reminders = vec![CallReminder {
             seq: 1,
-            tool: "file.read".into(),
+            tool: "read".into(),
             kind: ReminderKind::Failure,
             dedupe: None,
             text: "failed(not_found); the program kept going".into(),
@@ -2637,14 +2639,14 @@ mod tests {
         report.reminders = vec![
             CallReminder {
                 seq: 1,
-                tool: "file.read".into(),
+                tool: "read".into(),
                 kind: ReminderKind::Boundary,
                 dedupe: None,
                 text: "showing lines 1-2 of 9".into(),
             },
             CallReminder {
                 seq: 2,
-                tool: "file.grep".into(),
+                tool: "grep".into(),
                 kind: ReminderKind::Failure,
                 dedupe: None,
                 text: "failed(not_found); the program kept going".into(),
@@ -2663,8 +2665,8 @@ mod tests {
         );
         for needle in [
             "↳ a contract warning",
-            "↳ #1 tools.file.read: showing lines 1-2 of 9",
-            "↳ #2 tools.file.grep: failed(not_found)",
+            "↳ #1 tools.read: showing lines 1-2 of 9",
+            "↳ #2 tools.grep: failed(not_found)",
         ] {
             assert!(out.contains(needle), "{needle} missing: {out}");
         }
@@ -2680,21 +2682,21 @@ mod tests {
         report.failure_text = Some("boom".into());
         report.failure_location = Some(SourceLocation { line: 1, column: 1 });
         report.source = "boom();".into();
-        report.calls = vec![settled(1, "file.read", "path=a.txt", "ok", "a.txt")];
+        report.calls = vec![settled(1, "read", "path=a.txt", "ok", "a.txt")];
         report.call_total = Some(1);
         report.unsettled_total = Some(0);
         report.warnings = vec!["a contract warning".into()];
         report.reminders = vec![
             CallReminder {
                 seq: 1,
-                tool: "file.read".into(),
+                tool: "read".into(),
                 kind: ReminderKind::Boundary,
                 dedupe: None,
                 text: "showing lines 1-2 of 9".into(),
             },
             CallReminder {
                 seq: 2,
-                tool: "file.grep".into(),
+                tool: "grep".into(),
                 kind: ReminderKind::Failure,
                 dedupe: None,
                 text: "failed(not_found); the program kept going".into(),
@@ -2711,12 +2713,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle} missing: {out}"))
         };
         assert!(
-            at("run_code failed") < at("#1 tools.file.read")
-                && at("#1 tools.file.read") < at("↳")
+            at("run_code failed") < at("#1 tools.read")
+                && at("#1 tools.read") < at("↳")
                 && at("↳") < at("[log] before"),
             "{out}"
         );
-        assert!(out.contains("↳ #2 tools.file.grep: failed(not_found)"), "{out}");
+        assert!(out.contains("↳ #2 tools.grep: failed(not_found)"), "{out}");
         assert!(!lines[at("[log] before")..].iter().any(|line| line.starts_with("↳")), "{out}");
     }
 
@@ -2736,12 +2738,12 @@ mod tests {
             "invalid_args — unknown parameter 'pth'; parameters: limit, path, start_line"
         );
         let warning = format!(
-            "invalid input for 'tools.file.read': {detail}. parameters: {}",
+            "invalid input for 'tools.read': {detail}. parameters: {}",
             parameters.join(", ")
         );
         let reminder = CallReminder {
             seq: 1,
-            tool: "file.read".into(),
+            tool: "read".into(),
             kind: ReminderKind::Failure,
             dedupe: Some(detail.into()),
             text: rejected_arguments(detail, &parameters),
@@ -2758,7 +2760,7 @@ mod tests {
         assert_eq!(out.matches("unknown parameter 'pth'").count(), 1, "{out}");
         assert!(
             out.contains(
-                "↳ #1 tools.file.read: invalid_args — unknown parameter 'pth'; parameters: limit, path, start_line"
+                "↳ #1 tools.read: invalid_args — unknown parameter 'pth'; parameters: limit, path, start_line"
             ),
             "{out}"
         );
@@ -2771,7 +2773,7 @@ mod tests {
         died.source = "boom();".into();
         died.calls = vec![LedgerSnap {
             seq: 1,
-            tool: "file.read".into(),
+            tool: "read".into(),
             summary: "path=a.txt".into(),
             state: "error:invalid_args".into(),
             error_code: Some("invalid_args".into()),
@@ -2782,15 +2784,15 @@ mod tests {
         died.warnings = vec![warning];
         died.reminders = vec![CallReminder {
             seq: 1,
-            tool: "file.read".into(),
+            tool: "read".into(),
             kind: ReminderKind::Failure,
             dedupe: Some(detail.into()),
             text: rejected_arguments(detail, &parameters),
         }];
         let out = render_model_view(&died);
-        assert!(!out.contains("↳ #1 tools.file.read: invalid_args"), "{out}");
+        assert!(!out.contains("↳ #1 tools.read: invalid_args"), "{out}");
         assert!(
-            out.contains("invalid input for 'tools.file.read': unknown parameter 'pth'"),
+            out.contains("invalid input for 'tools.read': unknown parameter 'pth'"),
             "the legal names must still reach the model: {out}"
         );
     }
@@ -2800,27 +2802,27 @@ mod tests {
     #[test]
     fn call_lines_name_the_tool_the_way_the_program_writes_it() {
         let mut report = base_report();
-        report.calls = vec![settled(3, "file.write", "path=a.txt", "ok", "a.txt")];
+        report.calls = vec![settled(3, "write", "path=a.txt", "ok", "a.txt")];
         report.call_total = Some(3);
         report.reminders = vec![
             CallReminder {
                 seq: 1,
-                tool: "file.grep".into(),
+                tool: "grep".into(),
                 kind: ReminderKind::Boundary,
                 dedupe: None,
                 text: "the pattern was not found".into(),
             },
             CallReminder {
                 seq: 2,
-                tool: "tools.file.read".into(),
+                tool: "tools.read".into(),
                 kind: ReminderKind::Failure,
                 dedupe: None,
                 text: "failed(not_found); the program kept going".into(),
             },
         ];
         let out = render_model_view(&report);
-        assert!(out.contains("↳ #1 tools.file.grep: the pattern was not found"), "{out}");
-        assert!(out.contains("↳ #2 tools.file.read: failed(not_found)"), "{out}");
+        assert!(out.contains("↳ #1 tools.grep: the pattern was not found"), "{out}");
+        assert!(out.contains("↳ #2 tools.read: failed(not_found)"), "{out}");
         assert!(!out.contains("tools.tools."), "{out}");
         // A manifest row uses the same spelling.
         let mut failed = report;
@@ -2829,7 +2831,7 @@ mod tests {
         failed.failure_location = Some(SourceLocation { line: 1, column: 1 });
         failed.source = "boom();".into();
         let out = render_model_view(&failed);
-        assert!(out.contains("#3 tools.file.write path=a.txt → ok: a.txt"), "{out}");
+        assert!(out.contains("#3 tools.write path=a.txt → ok: a.txt"), "{out}");
     }
     /// A cut is a field, so its sentence is written here — and it is written
     /// before the output it would otherwise be read too late for.
@@ -2844,11 +2846,11 @@ mod tests {
         });
         let mut report = base_report();
         set_value(&mut report, value.clone());
-        report.reminders = reminders_for_call("file.glob", &value)
+        report.reminders = reminders_for_call("glob", &value)
             .into_iter()
             .map(|text| CallReminder {
                 seq: 1,
-                tool: "file.glob".into(),
+                tool: "glob".into(),
                 kind: ReminderKind::Boundary,
                 dedupe: None,
                 text,
@@ -2858,7 +2860,7 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         let cut = lines
             .iter()
-            .position(|line| line.starts_with("↳ #1 tools.file.glob: showing first 1 of 9 paths"))
+            .position(|line| line.starts_with("↳ #1 tools.glob: showing first 1 of 9 paths"))
             .expect("the cut line");
         let stream = lines
             .iter()
@@ -2880,7 +2882,7 @@ mod tests {
                 "detail": detail,
             }]
         });
-        let lines = reminders_for_call("file.apply_edits", &value);
+        let lines = reminders_for_call("apply_edits", &value);
         assert!(!lines.iter().any(|line| line.contains(detail)), "{lines:?}");
         assert!(lines.is_empty(), "{lines:?}");
         let mut report = base_report();
@@ -2889,7 +2891,7 @@ mod tests {
             .into_iter()
             .map(|text| CallReminder {
                 seq: 1,
-                tool: "file.apply_edits".into(),
+                tool: "apply_edits".into(),
                 kind: ReminderKind::Boundary,
                 dedupe: None,
                 text,
@@ -2913,7 +2915,7 @@ mod tests {
         report.reminders = (0..50)
             .map(|i| CallReminder {
                 seq: i as u64,
-                tool: "file.grep".into(),
+                tool: "grep".into(),
                 kind: ReminderKind::Boundary,
                 dedupe: None,
                 text: format!("reminder {i} {}", "z".repeat(100)),
@@ -2941,7 +2943,7 @@ mod tests {
         let long = format!("{}\nsecond line", "y".repeat(400));
         report.reminders = vec![CallReminder {
             seq: 1,
-            tool: "file.read".into(),
+            tool: "read".into(),
             kind: ReminderKind::Boundary,
             dedupe: None,
             text: long,
@@ -2949,7 +2951,7 @@ mod tests {
         let out = render_model_view(&report);
         let reminder = out
             .lines()
-            .find(|line| line.starts_with("↳ #1 tools.file.read: yyy"))
+            .find(|line| line.starts_with("↳ #1 tools.read: yyy"))
             .expect("reminder line");
         assert!(!reminder.contains("second line"), "{out}");
         assert_eq!(reminder.chars().count(), REMINDER_MAX_CHARS);
@@ -2963,7 +2965,7 @@ mod tests {
         report.reminders = (0..200)
             .map(|i| CallReminder {
                 seq: i as u64,
-                tool: "file.grep".into(),
+                tool: "grep".into(),
                 kind: ReminderKind::Boundary,
                 dedupe: None,
                 text: format!("reminder {i} {}", "z".repeat(100)),
@@ -2983,7 +2985,7 @@ mod tests {
         ];
         report.reminders = vec![CallReminder {
             seq: 2,
-            tool: "file.read".into(),
+            tool: "read".into(),
             kind: ReminderKind::Boundary,
             dedupe: None,
             text: "showing lines 1-500 of 5000".into(),
@@ -2995,7 +2997,7 @@ mod tests {
             "the bare value keeps no mark: {out}"
         );
         assert!(
-            lines.iter().any(|line| line.starts_with("↳ #2 tools.file.read: ")),
+            lines.iter().any(|line| line.starts_with("↳ #2 tools.read: ")),
             "the reminder carries the mark: {out}"
         );
     }
@@ -3680,14 +3682,14 @@ mod metadata_reminder_tests {
             "clamped": [{"parameter": "yield_time_ms", "requested": 60000, "applied": 30000}]
         });
         let lines = reminders_for_call_with_metadata(
-            "process.exec_command",
+            "exec_command",
             &data,
             Some(&metadata),
         );
         assert_eq!(
             lines,
             vec![
-                "session bg_1 is live; poll with tools.process.write_stdin or wait for its exit reminder",
+                "session bg_1 is live; poll with tools.write_stdin or wait for its exit reminder",
                 "output was clipped by max_output_tokens",
                 "yield_time_ms 30000 used instead of 60000",
             ]
@@ -3705,7 +3707,7 @@ mod metadata_reminder_tests {
             "clamped": [{"parameter": "yield_time_ms", "requested": 600000, "applied": 300000}]
         });
         let lines = reminders_for_call_with_metadata(
-            "process.write_stdin",
+            "write_stdin",
             &data,
             Some(&metadata),
         );

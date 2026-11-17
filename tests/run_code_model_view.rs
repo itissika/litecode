@@ -110,7 +110,7 @@ async fn caught_tool_error_is_counted_and_stated_once() {
     let text = captured_run_code(
         r#"
         // WP-210 G: not_found is a domain failure and resolves { ok: false }.
-        const r = await tools.file.read({ path: "missing.txt" });
+        const r = await tools.read({ path: "missing.txt" });
         return [r.ok, r.reason, "read", typeof r.message];
         "#,
     )
@@ -125,7 +125,7 @@ async fn caught_tool_error_is_counted_and_stated_once() {
     let lines: Vec<&str> = text.lines().collect();
     let anchor = lines
         .iter()
-        .position(|line| line.starts_with("↳ #1 tools.file.read: failed(not_found)"))
+        .position(|line| line.starts_with("↳ #1 tools.read: failed(not_found)"))
         .unwrap_or_else(|| panic!("{text}"));
     assert!(
         anchor < lines.len() - 1,
@@ -140,7 +140,7 @@ async fn write_conflict_resolves_ok_false() {
     // WP-211: create_only conflict is a domain soft-fail, not an uncaught ToolError.
     let text = captured_run(
         json!({ "code": r#"
-            const r = await tools.file.write({ path: "taken.txt", content: "x", create_only: true });
+            const r = await tools.write({ path: "taken.txt", content: "x", create_only: true });
             return [r.ok, r.reason, typeof r.message];
         "# }),
         |root| std::fs::write(root.join("taken.txt"), "old").unwrap(),
@@ -157,7 +157,7 @@ async fn uncaught_tool_error_names_the_call() {
     // WP-211: conflict/stale soft-fail now; keep throw-naming coverage on a
     // system code that still rejects (read of an image → unsupported).
     let text = captured_run(
-        json!({ "code": r#"await tools.file.read({ path: "pic.png" });"# }),
+        json!({ "code": r#"await tools.read({ path: "pic.png" });"# }),
         |root| {
             // Minimal PNG signature so read sniffs image/png and rejects.
             let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
@@ -167,7 +167,7 @@ async fn uncaught_tool_error_names_the_call() {
     )
     .await;
     assert!(
-        text.contains("uncaught ToolError unsupported from call #1 tools.file.read path=pic.png"),
+        text.contains("uncaught ToolError unsupported from call #1 tools.read path=pic.png"),
         "{text}"
     );
     assert!(text.contains("unsupported file:"), "{text}");
@@ -182,7 +182,7 @@ async fn a_second_argument_is_a_catchable_type_error() {
         json!({
             "code": r#"
                 try {
-                  await tools.file.read({ path: "a.txt" }, {});
+                  await tools.read({ path: "a.txt" }, {});
                   return "resolved";
                 } catch (e) {
                   return e.name;

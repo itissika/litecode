@@ -953,9 +953,8 @@ fn surface_or_missing(
     )
 }
 
-/// The caller should have used the SDK path, not the runtime name: `read` is
-/// `tools.file.read`, and `memory.list` is `tools.memory.list` (its runtime
-/// name already is its path).
+/// The caller should have used the SDK path, not the runtime name: `webfetch`
+/// / `read` keeps its name as `tools.<name>`, and `memory.list` is `tools.memory_list`.
 fn code_route_message(name: &str) -> String {
     let path =
         crate::tool::code_contract::builtin_sdk_path(name).unwrap_or_else(|| name.to_string());
@@ -1671,7 +1670,7 @@ mod code_caller_contract_tests {
         std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
         let result = run_program(
             dir.path(),
-            "return await tools.file.read({ path: \"a.txt\", nope: true });",
+            "return await tools.read({ path: \"a.txt\", nope: true });",
         )
         .await;
         assert!(

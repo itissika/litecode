@@ -68,7 +68,6 @@ type BrowserPage = {
   visible: boolean;
 };
 
-
 type RejectedItem = {
   /** 0-based input item index. */
   index: Integer;
@@ -79,9 +78,16 @@ type RejectedItem = {
   detail?: string;
 };
 
+type ExecCommandData = {
+  /** Live session id; null once the session has exited. */
+  session_id: string | null;
+  /** Process exit code once the session has exited; null while it is live. */
+  exit_code: Integer | null;
+  /** Output since the previous call on this session; the first call returns output since spawn. */
+  output: string;
+};
 
-
-interface FileTools {
+interface Tools {
   /** Read lines from one file or archived session transcript. @tool read @suite file */
   read(args: {
     path: Path; // Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md.
@@ -137,9 +143,7 @@ interface FileTools {
       text: string; // Matching line text, capped at 500 characters.
     }>;
   }>;
-}
 
-interface SearchTools {
   /** Semantic search over the workspace code index. @tool code_search @suite search */
   code_search(args: {
     query: string; // One natural-language or code-token query.
@@ -181,18 +185,7 @@ interface SearchTools {
     truncated: boolean; // True when `total` exceeds the returned rows.
     semantic: boolean; // False when the semantic leg was unavailable: the hits are lexical only.
   }>;
-}
 
-type ExecCommandData = {
-  /** Live session id; null once the session has exited. */
-  session_id: string | null;
-  /** Process exit code once the session has exited; null while it is live. */
-  exit_code: Integer | null;
-  /** Output since the previous call on this session; the first call returns output since spawn. */
-  output: string;
-};
-
-interface ProcessTools {
   /** Start a command. Waits up to yield_time_ms; a live session_id leaves it running in the background. Poll with write_stdin for output, or leave it and wait for the background-exit reminder (exit code + output_file). @tool exec_command @suite process */
   exec_command(args: {
     cmd: string; // Shell command to execute.
@@ -208,11 +201,9 @@ interface ProcessTools {
     yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-300000 ms; empty polls default 5000, non-empty writes default 250. Long polls must fit the fixed run_code cap (600000 ms).
     max_output_tokens?: Integer; // Output token budget for this call; default 10000.
   }): Promise<ExecCommandData>;
-}
 
-interface WebTools {
   /** Fetch one http(s) URL. @tool webfetch @suite web */
-  fetch(args: {
+  webfetch(args: {
     url: string; // URL to fetch. Only http(s) URLs are accepted.
     format?: "text" | "markdown" | "html"; // Desired output format. @default "markdown"
   }): Promise<{
@@ -222,7 +213,7 @@ interface WebTools {
     url?: string;
   }>;
   /** Search the web. @tool websearch @suite web */
-  search(args: {
+  websearch(args: {
     query: string; // Search query.
     top_k?: Integer; // Number of results, best first. 1–100. @default 10
   }): Promise<{
@@ -233,15 +224,13 @@ interface WebTools {
       url: string;
     }[];
   }>;
-}
 
-interface BrowserTools {
   /** Open a visible browser tab. @tool browser_open @suite browser */
-  open(args: {
+  browser_open(args: {
     url: string; // http(s) URL to open in a visible browser tab.
   }): Promise<BrowserPage>;
   /** Close an agent-owned browser tab. @tool browser_close @suite browser */
-  close(args: {
+  browser_close(args: {
     page_id: string; // Browser page id from browser_open or browser_list.
   }): Promise<{
     closed: boolean;
@@ -249,12 +238,12 @@ interface BrowserTools {
     fallback?: boolean;
   }>;
   /** List open browser tabs. @tool browser_list @suite browser */
-  list(args?: NoArgs): Promise<{
+  browser_list(args?: NoArgs): Promise<{
     active_id: string;
     pages: BrowserPage[];
   }>;
   /** Read the current visible browser page. @tool browser_read @suite browser */
-  read(args: {
+  browser_read(args: {
     max_chars?: Integer; // Maximum body text characters. 1000–30000. @default 12000
     page_id?: string; // Optional page id. Omit for the active visible tab.
   }): Promise<{
@@ -272,7 +261,7 @@ interface BrowserTools {
     url: string;
   }>;
   /** Click one interactive element on the visible page. @tool browser_click @suite browser */
-  click(args: {
+  browser_click(args: {
     ref: string; // Element reference from the latest browser_read.
     page_id?: string; // Optional page id. Omit for the active visible tab.
   }): Promise<{
@@ -284,7 +273,7 @@ interface BrowserTools {
     url: string;
   }>;
   /** Type text into one input on the visible page. @tool browser_type @suite browser */
-  type(args: {
+  browser_type(args: {
     ref: string; // Input reference from the latest browser_read.
     text: string; // Text to set on the focused input.
     page_id?: string; // Optional page id. Omit for the active visible tab.
@@ -292,12 +281,11 @@ interface BrowserTools {
     page_id: string;
     ref: string;
     tag: string;
+    text: string;
     title: string;
     url: string;
   }>;
-}
 
-interface LspTools {
   /** List diagnostics for one source file. @tool diagnostics @suite lsp */
   diagnostics(args: PathInput): Promise<{
     items: {
@@ -328,11 +316,9 @@ interface LspTools {
   go_to_definition(args: RangeInput): Promise<LocationsData>;
   /** Jump to implementations at a file position. @tool go_to_implementation @suite lsp */
   go_to_implementation(args: RangeInput): Promise<LocationsData>;
-}
 
-interface MemoryTools {
   /** Return the authoritative current session memory snapshot; memory survives compaction and is re-injected. @tool memory.list @suite memory */
-  list(args?: NoArgs): Promise<{
+  memory_list(args?: NoArgs): Promise<{
     count: Integer; // Number of entries in this snapshot.
     // Authoritative current entries, in insertion order.
     entries: {
@@ -345,7 +331,7 @@ interface MemoryTools {
     total_chars: Integer; // Characters across all entry texts.
   }>;
   /** Add or update small, durable session memory entries. @tool memory.upsert @suite memory */
-  upsert(args: {
+  memory_upsert(args: {
     // Memory entries to add or update.
     entries: {
       text: string; // Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry.
@@ -359,23 +345,13 @@ interface MemoryTools {
     updated: string[]; // Updated ids.
   }>;
   /** Delete entries by id from the current session's working memory. @tool memory.delete @suite memory */
-  delete(args: {
+  memory_delete(args: {
     ids: string[]; // Entry ids to delete.
   }): Promise<{
     count: Integer; // Entries after the batch.
     deleted: string[]; // Deleted ids.
     rejected: RejectedItem[];
   }>;
-}
-
-interface Tools {
-  file: FileTools;
-  search: SearchTools;
-  process: ProcessTools;
-  web: WebTools;
-  browser: BrowserTools;
-  lsp: LspTools;
-  memory: MemoryTools;
 }
 
 declare const tools: Tools;

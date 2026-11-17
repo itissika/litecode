@@ -3,7 +3,7 @@
 //! `fs.ls(path)`, `fs.stat(path)` and `fs.exists(path)` are synchronous,
 //! workspace-confined, and never write. There is deliberately no `rm`, `mv`,
 //! or write: several agents share one workspace and `libs`/`fs` stay
-//! read-only by invariant. Writes go through `tools.file.write` / `tools.file.edit`.
+//! read-only by invariant. Writes go through `tools.write` / `tools.apply_edits`.
 
 use std::path::{Component, Path, PathBuf};
 

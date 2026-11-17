@@ -168,6 +168,9 @@ fn render_tools_interface(
         out.push_str(&suite_interface_name(suite));
         out.push_str(";\n");
     }
+    if ordered_suites.is_empty() && out.ends_with("\n\n") {
+        out.pop();
+    }
     out.push_str("}\n");
     Ok(out)
 }

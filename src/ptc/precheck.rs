@@ -70,9 +70,13 @@ fn check_call(
     surface: &CodeSurface,
     out: &mut Vec<String>,
 ) {
-    // A real tool is `tools.suite.member`. Longer paths are function
-    // properties (`read.call`), which the namespace never guards.
+    // A flat tool is `tools.name` and a suite member is `tools.suite.member`.
+    // Longer paths (or `tools.name.call`) are function properties on a bound
+    // tool, which the namespace never guards.
     if !(2..=3).contains(&path.len()) {
+        return;
+    }
+    if path.len() == 3 && surface.bindings.contains_key(&path[1]) {
         return;
     }
     let key = path[1..].join(".");
@@ -83,12 +87,12 @@ fn check_call(
         .and_then(|tool| surface.tools.get(tool))
     else {
         // Name what the caller could have meant: the suite's members when the
-        // suite is real, the suites when it is not.
+        // suite is real, the top-level bindings/suites when it is not.
         let suite = &path[1];
         let members = members_of(surface, suite);
         let message = if members.is_empty() {
-            let suites = suites_of(surface);
-            format!("tool 'tools.{suite}' not found. available: {suites}")
+            let available = top_level_of(surface);
+            format!("tool 'tools.{suite}' not found. available: {available}")
         } else if path.len() == 2 {
             format!("'tools.{suite}' is a suite, not a tool; call one of: {members}")
         } else {
@@ -98,7 +102,7 @@ fn check_call(
         return;
     };
     // Arguments are reported under the path the program writes
-    // ("tools.file.read"), the same spelling the block's call lines use.
+    // ("tools.read" or "tools.deck.only"), the same spelling the block's call lines use.
     check_arguments(call, src, &full, contract, out);
 }
 
@@ -194,8 +198,8 @@ fn visit_results(node: Node<'_>, src: &[u8], surface: &CodeSurface, out: &mut Ve
     }
 }
 
-/// `const x = await tools.s.m(…)` followed by `x.field`: only this shape, and
-/// only when `x` is never reassigned.
+/// `const x = await tools.read(…)` or `const x = await tools.suite.member(…)`
+/// followed by `x.field`: only this shape, and only when `x` is never reassigned.
 fn check_declarator(node: Node<'_>, src: &[u8], surface: &CodeSurface, out: &mut Vec<String>) {
     let Some(name) = node.child_by_field_name("name").filter(|name| name.kind() == "identifier")
     else {
@@ -219,7 +223,7 @@ fn check_declarator(node: Node<'_>, src: &[u8], surface: &CodeSurface, out: &mut
     let Some(path) = dotted_path(function, src) else {
         return;
     };
-    if path.first().is_none_or(|root| root != "tools") || path.len() < 3 {
+    if path.first().is_none_or(|root| root != "tools") || !(2..=3).contains(&path.len()) {
         return;
     }
     let key = path[1..].join(".");
@@ -317,15 +321,15 @@ fn members_of(surface: &CodeSurface, suite: &str) -> String {
     members.join(", ")
 }
 
-fn suites_of(surface: &CodeSurface) -> String {
-    let mut suites: Vec<&str> = surface
+fn top_level_of(surface: &CodeSurface) -> String {
+    let mut names: Vec<&str> = surface
         .bindings
         .keys()
         .filter_map(|key| key.split('.').next())
         .collect();
-    suites.sort();
-    suites.dedup();
-    suites.join(", ")
+    names.sort();
+    names.dedup();
+    names.join(", ")
 }
 
 fn dotted_path(node: Node<'_>, src: &[u8]) -> Option<Vec<String>> {
@@ -393,11 +397,24 @@ mod tests {
                     }),
                     output_schema: json!({"type": "object", "properties": {}}),
                 },
+            ),
+            (
+                "deck.only".to_string(),
+                CodeToolContract {
+                    input_schema: json!({
+                        "type": "object",
+                        "properties": {"item": {"type": "string"}},
+                        "required": ["item"],
+                        "additionalProperties": false
+                    }),
+                    output_schema: json!({"type": "object", "properties": {"value": {"type": "string"}}}),
+                },
             )]
             .into(),
             bindings: [
-                ("file.read".to_string(), "read".to_string()),
-                ("memory.list".to_string(), "memory.list".to_string()),
+                ("read".to_string(), "read".to_string()),
+                ("memory_list".to_string(), "memory.list".to_string()),
+                ("deck.only".to_string(), "deck.only".to_string()),
             ]
             .into(),
         }
@@ -407,7 +424,7 @@ mod tests {
     fn a_clean_program_has_no_findings() {
         let findings = check(
             r#"
-            const r = await tools.file.read({ path: "a.txt", limit: 2 });
+            const r = await tools.read({ path: "a.txt", limit: 2 });
             return r.lines;
             "#,
             &surface(),
@@ -416,24 +433,35 @@ mod tests {
     }
 
     #[test]
-    fn a_misspelled_tool_is_named_with_its_suite() {
-        let findings = check(r#"await tools.file.readx({ path: "a" });"#, &surface());
+    fn a_misspelled_tool_lists_top_level_candidates() {
+        let findings = check(r#"await tools.readx({ path: "a" });"#, &surface());
         assert_eq!(findings.len(), 1, "{findings:?}");
-        assert!(findings[0].contains("tools.file.readx"), "{findings:?}");
-        assert!(findings[0].contains("available: read"), "{findings:?}");
+        assert!(findings[0].contains("tools.readx"), "{findings:?}");
+        assert!(findings[0].contains("available:"), "{findings:?}");
+        assert!(findings[0].contains("read"), "{findings:?}");
+        assert!(findings[0].contains("deck"), "{findings:?}");
     }
 
     #[test]
-    fn a_misspelled_suite_lists_the_suites() {
+    fn a_misspelled_suite_member_is_named_with_its_suite() {
+        let findings = check(r#"await tools.deck.nope({ item: "a" });"#, &surface());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("tools.deck.nope"), "{findings:?}");
+        assert!(findings[0].contains("available: only"), "{findings:?}");
+    }
+
+    #[test]
+    fn a_misspelled_suite_lists_the_available_bindings() {
         let findings = check(r#"await tools.fiel.read({ path: "a" });"#, &surface());
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert!(findings[0].contains("tools.fiel"), "{findings:?}");
-        assert!(findings[0].contains("available: file"), "{findings:?}");
+        assert!(findings[0].contains("read"), "{findings:?}");
+        assert!(findings[0].contains("deck"), "{findings:?}");
     }
 
     #[test]
     fn an_unknown_parameter_names_the_real_ones() {
-        let findings = check(r#"await tools.file.read({ path: "a", limt: 1 });"#, &surface());
+        let findings = check(r#"await tools.read({ path: "a", limt: 1 });"#, &surface());
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert!(
             findings[0].contains("unknown parameter 'limt'"),
@@ -443,14 +471,14 @@ mod tests {
         // The block spells a tool the way the program writes it, so a warning
         // that lands there uses the same path.
         assert!(
-            findings[0].contains("invalid input for 'tools.file.read'"),
+            findings[0].contains("invalid input for 'tools.read'"),
             "{findings:?}"
         );
     }
 
     #[test]
     fn a_missing_required_parameter_is_named() {
-        let findings = check(r#"await tools.file.read({ limit: 1 });"#, &surface());
+        let findings = check(r#"await tools.read({ limit: 1 });"#, &surface());
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert!(
             findings[0].contains("missing required parameter 'path'"),
@@ -462,7 +490,7 @@ mod tests {
     fn a_result_field_the_tool_does_not_have_is_named() {
         let findings = check(
             r#"
-            const r = await tools.file.read({ path: "a" });
+            const r = await tools.read({ path: "a" });
             return r.data;
             "#,
             &surface(),
@@ -477,8 +505,8 @@ mod tests {
         let findings = check(
             r#"
             const args = { path: "a", limt: 1 };
-            await tools.file.read(args);
-            await tools.file.read({ ...args });
+            await tools.read(args);
+            await tools.read({ ...args });
             "#,
             &surface(),
         );
@@ -489,8 +517,8 @@ mod tests {
     fn a_reassigned_result_is_not_checked() {
         let findings = check(
             r#"
-            let r = await tools.file.read({ path: "a" });
-            r = await tools.file.read({ path: "b" });
+            let r = await tools.read({ path: "a" });
+            r = await tools.read({ path: "b" });
             return r.data;
             "#,
             &surface(),
@@ -501,7 +529,10 @@ mod tests {
     #[test]
     fn a_function_property_is_not_a_tool_path() {
         let findings = check(
-            r#"await tools.file.read.call({ path: "a" });"#,
+            r#"
+            await tools.read.call({ path: "a" });
+            await tools.deck.only.call({ item: "a" });
+            "#,
             &surface(),
         );
         assert!(findings.is_empty(), "{findings:?}");
@@ -509,13 +540,13 @@ mod tests {
 
     #[test]
     fn a_tool_with_no_required_input_may_be_called_bare() {
-        let findings = check("await tools.memory.list();", &surface());
+        let findings = check("await tools.memory_list();", &surface());
         assert!(findings.is_empty(), "{findings:?}");
     }
 
     #[test]
     fn a_bare_call_names_every_missing_required_parameter() {
-        let findings = check("await tools.file.read();", &surface());
+        let findings = check("await tools.read();", &surface());
         assert_eq!(findings.len(), 1, "{findings:?}");
         assert!(
             findings[0].contains("missing required parameter 'path'"),
@@ -526,7 +557,7 @@ mod tests {
     #[test]
     fn two_positional_arguments_are_named() {
         let findings = check(
-            r#"await tools.file.read({ path: "a" }, { path: "b" });"#,
+            r#"await tools.read({ path: "a" }, { path: "b" });"#,
             &surface(),
         );
         assert_eq!(findings.len(), 1, "{findings:?}");

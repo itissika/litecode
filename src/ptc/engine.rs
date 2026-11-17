@@ -931,9 +931,10 @@ fn install_namespace(
 ///
 /// A call that does not hold must fail at the point the program names it, not
 /// later with V8's "not a function" (a catchable TypeError that also hides which
-/// name was wrong). Both levels are proxied and cached, so `tools.file` is the
-/// same object each time it is read and `tools.file.readx` fails at the
-/// property access while `tools.file.read` passes through untouched.
+/// name was wrong). Every object level is proxied and cached, so `tools.deck`
+/// is the same object each time a custom suite is read, `tools.readx` /
+/// `tools.deck.bad` fail at property access, and flat built-ins pass through
+/// untouched.
 ///
 /// Candidates come from this namespace's own members, which the binding layer
 /// filled from the generated contract: the list is never hard-coded here.
@@ -1104,8 +1105,8 @@ fn unknown_tool_proxy<'js>(
 }
 
 /// A dotted binding name nests under the namespace: `suite.member` becomes
-/// `tools.suite.member`. Code suites always use that shape, even for a single
-/// member, so a suite never collapses into a bare `tools.member`.
+/// `tools.suite.member`. Custom code suites always use that shape, even for a
+/// single member, so a custom suite never collapses into a bare `tools.member`.
 fn install_binding<'js>(
     ctx: &Ctx<'js>,
     root: &Object<'js>,

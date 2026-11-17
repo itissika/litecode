@@ -68,7 +68,82 @@ type NoArgs = {};
 /** Workspace-relative path, or an absolute path when explicitly allowed. */
 type Path = string;
 
-interface FileTools {
+type BrowserPage = {
+  active: boolean;
+  agentOwned: boolean;
+  id: string;
+  title: string;
+  url: string;
+  visible: boolean;
+};
+
+type Location = {
+  /** Source file path. */
+  path: string;
+  /** 1-based line number. */
+  line: Integer;
+  /** 1-based UTF-16 column on that line. */
+  character: Integer;
+  /** Optional end column. */
+  end_character?: Integer;
+  /** Optional end line. */
+  end_line?: Integer;
+};
+type LocationsData = {
+  locations: Location[];
+};
+type PathInput = {
+  /** Source file under the workspace; workspace-relative is preferred. */
+  path: Path;
+};
+type RangeInput = {
+  /** 1-based line number. */
+  line: Integer;
+  /** 1-based UTF-16 column on that line. */
+  character: Integer;
+  /** Source file under the workspace; workspace-relative is preferred. */
+  path: Path;
+};
+type SymbolInfo = {
+  /** Symbol name. */
+  name: string;
+  /** Symbol kind label supplied by the language server. */
+  kind: string;
+  /** 1-based line number. */
+  line: Integer;
+  /** 1-based UTF-16 column on that line. */
+  character: Integer;
+  /** Optional end column. */
+  end_character?: Integer;
+  /** Optional end line. */
+  end_line?: Integer;
+  /** Optional source file path. */
+  path?: string;
+};
+type SymbolsData = {
+  symbols: SymbolInfo[];
+};
+
+type RejectedItem = {
+  /** 0-based input item index. */
+  index: Integer;
+  /** empty_text | text_too_long | invalid_id | unknown_id | limit_exceeded. */
+  reason: string;
+  id?: string;
+  /** Which limit the reason names, and by how much this item misses it. */
+  detail?: string;
+};
+
+type ExecCommandData = {
+  /** Live session id; null once the session has exited. */
+  session_id: string | null;
+  /** Process exit code once the session has exited; null while it is live. */
+  exit_code: Integer | null;
+  /** Output since the previous call on this session; the first call returns output since spawn. */
+  output: string;
+};
+
+interface Tools {
   /** Apply replacements serially; matching edits stay saved on disk even if another item fails and rejects. A single edit is an array of one. */
   apply_edits(args: {
     edits: Array<{
@@ -124,9 +199,7 @@ interface FileTools {
   }): Promise<{
     path: string; // Workspace-relative path inside the workspace; requested path outside it.
   }>;
-}
 
-interface SearchTools {
   /** Semantic search over the workspace code index. */
   code_search(args: {
     query: string; // One natural-language or code-token query.
@@ -168,18 +241,7 @@ interface SearchTools {
     truncated: boolean; // True when `total` exceeds the returned rows.
     semantic: boolean; // False when the semantic leg was unavailable: the hits are lexical only.
   }>;
-}
 
-type ExecCommandData = {
-  /** Live session id; null once the session has exited. */
-  session_id: string | null;
-  /** Process exit code once the session has exited; null while it is live. */
-  exit_code: Integer | null;
-  /** Output since the previous call on this session; the first call returns output since spawn. */
-  output: string;
-};
-
-interface ProcessTools {
   /** Start a command. Waits up to yield_time_ms; a live session_id leaves it running in the background. Poll with write_stdin for output, or leave it and wait for the background-exit reminder (exit code + output_file). */
   exec_command(args: {
     cmd: string; // Shell command to execute.
@@ -195,11 +257,9 @@ interface ProcessTools {
     yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-300000 ms; empty polls default 5000, non-empty writes default 250. Long polls must fit the fixed run_code cap (600000 ms).
     max_output_tokens?: Integer; // Output token budget for this call; default 10000.
   }): Promise<ExecCommandData>;
-}
 
-interface WebTools {
   /** Fetch one http(s) URL. */
-  fetch(args: {
+  webfetch(args: {
     url: string; // URL to fetch. Only http(s) URLs are accepted.
     format?: "text" | "markdown" | "html"; // Desired output format. @default "markdown"
   }): Promise<{
@@ -209,7 +269,7 @@ interface WebTools {
     url?: string;
   }>;
   /** Search the web. */
-  search(args: {
+  websearch(args: {
     query: string; // Search query.
     top_k?: Integer; // Number of results, best first. 1–100. @default 10
   }): Promise<{
@@ -220,20 +280,9 @@ interface WebTools {
       url: string;
     }[];
   }>;
-}
 
-type BrowserPage = {
-  active: boolean;
-  agentOwned: boolean;
-  id: string;
-  title: string;
-  url: string;
-  visible: boolean;
-};
-
-interface BrowserTools {
   /** Click one interactive element on the visible page. */
-  click(args: {
+  browser_click(args: {
     ref: string; // Element reference from the latest browser_read.
     page_id?: string; // Optional page id. Omit for the active visible tab.
   }): Promise<{
@@ -245,7 +294,7 @@ interface BrowserTools {
     url: string;
   }>;
   /** Close an agent-owned browser tab. */
-  close(args: {
+  browser_close(args: {
     page_id: string; // Browser page id from browser_open or browser_list.
   }): Promise<{
     closed: boolean;
@@ -253,16 +302,16 @@ interface BrowserTools {
     fallback?: boolean;
   }>;
   /** List open browser tabs. */
-  list(args?: NoArgs): Promise<{
+  browser_list(args?: NoArgs): Promise<{
     active_id: string;
     pages: BrowserPage[];
   }>;
   /** Open a visible browser tab. */
-  open(args: {
+  browser_open(args: {
     url: string; // http(s) URL to open in a visible browser tab.
   }): Promise<BrowserPage>;
   /** Read the current visible browser page. */
-  read(args: {
+  browser_read(args: {
     max_chars?: Integer; // Maximum body text characters. 1000–30000. @default 12000
     page_id?: string; // Optional page id. Omit for the active visible tab.
   }): Promise<{
@@ -280,7 +329,7 @@ interface BrowserTools {
     url: string;
   }>;
   /** Type text into one input on the visible page. */
-  type(args: {
+  browser_type(args: {
     ref: string; // Input reference from the latest browser_read.
     text: string; // Text to set on the focused input.
     page_id?: string; // Optional page id. Omit for the active visible tab.
@@ -288,59 +337,11 @@ interface BrowserTools {
     page_id: string;
     ref: string;
     tag: string;
+    text: string;
     title: string;
     url: string;
   }>;
-}
 
-type Location = {
-  /** Source file path. */
-  path: string;
-  /** 1-based line number. */
-  line: Integer;
-  /** 1-based UTF-16 column on that line. */
-  character: Integer;
-  /** Optional end column. */
-  end_character?: Integer;
-  /** Optional end line. */
-  end_line?: Integer;
-};
-type LocationsData = {
-  locations: Location[];
-};
-type PathInput = {
-  /** Source file under the workspace; workspace-relative is preferred. */
-  path: Path;
-};
-type RangeInput = {
-  /** 1-based line number. */
-  line: Integer;
-  /** 1-based UTF-16 column on that line. */
-  character: Integer;
-  /** Source file under the workspace; workspace-relative is preferred. */
-  path: Path;
-};
-type SymbolInfo = {
-  /** Symbol name. */
-  name: string;
-  /** Symbol kind label supplied by the language server. */
-  kind: string;
-  /** 1-based line number. */
-  line: Integer;
-  /** 1-based UTF-16 column on that line. */
-  character: Integer;
-  /** Optional end column. */
-  end_character?: Integer;
-  /** Optional end line. */
-  end_line?: Integer;
-  /** Optional source file path. */
-  path?: string;
-};
-type SymbolsData = {
-  symbols: SymbolInfo[];
-};
-
-interface LspTools {
   /** List diagnostics for one source file. */
   diagnostics(args: PathInput): Promise<{
     items: {
@@ -371,21 +372,9 @@ interface LspTools {
     query: string; // Symbol name or fragment to search across the workspace.
     path?: string; // Optional source file that selects/starts the project's language server. Required only when more than one server is running.
   }): Promise<SymbolsData>;
-}
 
-type RejectedItem = {
-  /** 0-based input item index. */
-  index: Integer;
-  /** empty_text | text_too_long | invalid_id | unknown_id | limit_exceeded. */
-  reason: string;
-  id?: string;
-  /** Which limit the reason names, and by how much this item misses it. */
-  detail?: string;
-};
-
-interface MemoryTools {
   /** Delete entries by id from the current session's working memory. */
-  delete(args: {
+  memory_delete(args: {
     ids: string[]; // Entry ids to delete.
   }): Promise<{
     count: Integer; // Entries after the batch.
@@ -393,7 +382,7 @@ interface MemoryTools {
     rejected: RejectedItem[];
   }>;
   /** Return the authoritative current session memory snapshot; memory survives compaction and is re-injected. */
-  list(args?: NoArgs): Promise<{
+  memory_list(args?: NoArgs): Promise<{
     count: Integer; // Number of entries in this snapshot.
     // Authoritative current entries, in insertion order.
     entries: {
@@ -406,7 +395,7 @@ interface MemoryTools {
     total_chars: Integer; // Characters across all entry texts.
   }>;
   /** Add or update small, durable session memory entries. */
-  upsert(args: {
+  memory_upsert(args: {
     // Memory entries to add or update.
     entries: {
       text: string; // Entry text, trimmed. 1-200 characters; duplicate text updates the existing entry.
@@ -419,16 +408,6 @@ interface MemoryTools {
     total_chars: Integer; // Characters after the batch.
     updated: string[]; // Updated ids.
   }>;
-}
-
-interface Tools {
-  file: FileTools;
-  search: SearchTools;
-  process: ProcessTools;
-  web: WebTools;
-  browser: BrowserTools;
-  lsp: LspTools;
-  memory: MemoryTools;
 }
 
 declare const tools: Tools;

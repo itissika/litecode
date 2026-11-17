@@ -1,7 +1,7 @@
 //! Code-surface single-file replacement (`edit`).
 //!
 //! Contract (WP-198):
-//! `tools.file.edit({ path, old_string, new_string }) -> Promise<EditData>`
+//! `tools.edit({ path, old_string, new_string }) -> Promise<EditData>`
 //! Unique match required. Empty `new_string` deletes `old_string`. No
 //! `replace_all`, `expected_hash`, multi-block `edits[]`, or structured
 //! blocks/applied/failed report. Domain failures reject with an ordinary
