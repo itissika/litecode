@@ -1,10 +1,12 @@
 `run_code` executes one async JavaScript function body with top-level `await` and `return`. Always `return` the data you need to inspect or report; do not discard needed tool results.
 
-Call tools as `tools.<name>(args)` (or `tools.<suite>.<member>(args)` for custom suites). A no-argument tool takes no argument; every other tool takes one object matching its declared input schema. Each call returns a promise that resolves to its declared data or rejects with an ordinary JavaScript `Error`; `try`/`catch` and `Promise.allSettled` handle rejections, and `Promise.all` runs independent reads/searches in parallel. For strings containing backslashes or quotes (such as regex edits), use `String.raw` or template literals — but avoid `String.raw` or bare template literals if the embedded text itself contains backticks (`` ` ``) or `${...}` (e.g. Python docstrings, Markdown, or shell scripts), since `` ` `` cannot be backslash-escaped in `String.raw` and `${...}` is still evaluated; use regular quoted strings or concatenation instead. The declarations below are the source of truth for tool paths, argument shapes, and result fields.
+Call tools as `tools.<name>(args)` (or `tools.<suite>.<member>(args)` for custom suites). A no-argument tool takes no argument; every other tool takes one object matching its declared input schema. Each call returns a promise that resolves to its declared data or rejects with an ordinary JavaScript `Error`; `try`/`catch` and `Promise.allSettled` handle rejections, and a rejected tool error carries `code`, `message`, and optional `details` (for `apply_edits`, `details` is `{ applied, total, results: [{ index, ok, path, reason, detail }] }`). `Promise.all` runs independent reads/searches in parallel. For strings containing backslashes or quotes (such as regex edits), use `String.raw` or template literals — but avoid `String.raw` or bare template literals if the embedded text itself contains backticks (`` ` ``) or `${...}` (e.g. Python docstrings, Markdown, or shell scripts), since `` ` `` cannot be backslash-escaped in `String.raw` and `${...}` is still evaluated; use regular quoted strings or concatenation instead. The declarations below are the source of truth for tool paths, argument shapes, and result fields.
 
 `fs` is a synchronous, read-only, workspace-relative probe (`ls`/`stat` throw `Error` on missing or out-of-workspace paths). `libs` are pure-JS helpers. Both are declared below. No direct network, process, module access, or timers (`setTimeout`/`setInterval`) exist; side effects and external IO go through the bound tools.
 
 Unknown tool bindings, output-contract violations, cancellation, the 600000 ms active JS execution cap (paused while tool calls run, subject to a 1800000 ms hard wall-clock cap per `run_code` call), and hard limits stop the cell and cannot be caught. Non-finite numbers in a result become `null` with a warning.
+
+When any output exceeds the view budget, it is cut to a head+tail preview with `… <N> bytes total; full output: <path>`. Every path under `.litecode/run/` (both `run_code` spills and `exec_command`/`write_stdin` `output_file` logs) holds the complete unclipped output—use `tools.read` (with `start_line`/`limit`) or `tools.grep` on that path instead of re-running commands.
 
 ```ts
 
@@ -150,6 +152,8 @@ type ExecCommandData = {
   exit_code: Integer | null;
   /** Output since the previous call on this session; the first call returns output since spawn. */
   output: string;
+  /** Workspace-relative path to the complete `.litecode/run/<job>.stdout` log (always full output on disk). */
+  output_file: string;
 };
 
 interface Tools {
@@ -199,7 +203,10 @@ interface Tools {
     start_line?: Integer; // First line to read, 1-based, inclusive. @default 1
     limit?: Integer; // Lines to return. 1-5000. @default 2000
   }): Promise<{
-    lines: string[]; // Line contents for this page, in file order.
+    lines: Array<{
+      line: Integer; // 1-based line number.
+      text: string; // Line content.
+    }>; // Lines for this page, in file order.
   }>;
   /** Replace a file's contents. */
   write(args: {
@@ -257,14 +264,14 @@ interface Tools {
     workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.
     tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.
     yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 600000. It does not limit the process lifetime.
-    max_output_tokens?: Integer; // Output token budget for this call; default 10000.
+    max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB in run_code or 10000 tokens otherwise.
   }): Promise<ExecCommandData>;
   /** Poll, feed, or interrupt an existing exec session. Empty chars waits until the session exits or yield_time_ms expires, returning accumulated output; on exit, exit_code is set and session_id is null. */
   write_stdin(args: {
     session_id: string; // Session id from exec_command.
     chars?: string; // Bytes to write; empty polls. "\u0003" sends SIGINT to the process group.
     yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap.
-    max_output_tokens?: Integer; // Output token budget for this call; default 10000.
+    max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB in run_code or 10000 tokens otherwise.
   }): Promise<ExecCommandData>;
 
   /** Fetch one http(s) URL. */

@@ -141,7 +141,7 @@ impl KnowledgeTool {
             Some(folder) => format!("# List · {folder}"),
             None => "# List".into(),
         };
-        ToolCallResult::ok(paginate(workspace, &format!("{title}\n\n{body}")))
+        ToolCallResult::ok(format!("{title}\n\n{body}"))
     }
 
     fn refs(&self, workspace: &Path, args: &[String]) -> ToolCallResult {
@@ -271,10 +271,7 @@ impl KnowledgeTool {
             now,
             &root,
         );
-        ToolCallResult::ok(paginate(
-            workspace,
-            &format!("# Check\n\n{summary}\n\n{body}"),
-        ))
+        ToolCallResult::ok(format!("# Check\n\n{summary}\n\n{body}"))
     }
 
     fn create(&self, workspace: &Path, args: &[String]) -> ToolCallResult {
@@ -760,29 +757,6 @@ fn join_blocks(parts: &[String]) -> String {
         .map(|part| part.trim_end().to_string())
         .collect::<Vec<_>>()
         .join("\n\n")
-}
-
-fn paginate(workspace: &Path, markdown: &str) -> String {
-    let (head, rest) = view::page(markdown, view::PAGE_CHARS);
-    let Some(rest) = rest else {
-        return head;
-    };
-    match spill(workspace, &rest) {
-        Some(location) => format!(
-            "{head}\n\n`{location}` holds only the part that did not fit here. Narrow to a folder, or read / grep that file."
-        ),
-        None => format!(
-            "{head}\n\nThe rest of this reply was not kept. Narrow to a folder and ask again."
-        ),
-    }
-}
-
-fn spill(workspace: &Path, rest: &str) -> Option<String> {
-    let dir = workspace.join(".litecode").join("bash");
-    std::fs::create_dir_all(&dir).ok()?;
-    let name = format!("knowledge_{}.txt", crate::terminal::bash_nonce());
-    std::fs::write(dir.join(&name), rest).ok()?;
-    Some(format!(".litecode/bash/{name}"))
 }
 
 #[cfg(test)]

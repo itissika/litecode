@@ -7,7 +7,6 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::context_pipeline::Context;
-use crate::session::store::Session;
 use crate::tool::write_lock::ResourceKey;
 use crate::types::ToolCallResult;
 
@@ -93,14 +92,9 @@ pub trait Tool: Send + Sync {
     }
 
     /// Unit-test / sync helper. Production Agent calls must enter through
-    /// [`execute`].
+    /// [`execute`]; output capping/spilling happens at the unified executor boundary.
     fn call(&self, input: Value) -> ToolCallResult {
-        let mut result = self.call_inner(input).finalize_signals();
-        let max = self.max_result_size();
-        if max < usize::MAX {
-            result.content = Session::truncated_tool_result(&result.content, max);
-        }
-        result
+        self.call_inner(input).finalize_signals()
     }
 
     fn call_inner(&self, _input: Value) -> ToolCallResult {

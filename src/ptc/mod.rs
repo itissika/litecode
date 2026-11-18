@@ -77,9 +77,9 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            memory_bytes: 16 * 1024 * 1024,
-            stack_bytes: 512 * 1024,
-            output_bytes: 1024 * 1024,
+            memory_bytes: 256 * 1024 * 1024,
+            stack_bytes: 4 * 1024 * 1024,
+            output_bytes: 8 * 1024 * 1024,
             max_in_flight: 64,
         }
     }

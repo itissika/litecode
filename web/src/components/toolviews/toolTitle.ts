@@ -156,15 +156,19 @@ export function toolTitle(
   if (["read", "write", "edit"].includes(toolName)) {
     return { summary: stringField(obj, "file_path") ?? fallbackSummary(input) };
   }
-  if (["bash", "shell", "command"].includes(toolName)) {
+  if (toolName === "exec_command") {
+    const cmd = stringField(obj, "cmd") ?? stringField(obj, "command");
+    return { summary: truncate(cmd ?? "") };
+  }
+  if (toolName === "write_stdin") {
+    const sid = stringField(obj, "session_id");
+    const chars = stringField(obj, "chars");
+    if (sid && chars) return { summary: truncate(`${sid} · ${chars}`) };
+    return { summary: truncate(sid ?? chars ?? "") };
+  }
+  if (["shell", "command"].includes(toolName)) {
     const description = stringField(obj, "description");
     const command = stringField(obj, "command");
-    if (toolName === "bash") {
-      // The bash schema has no `description` field (agents sometimes add it as
-      // an extra arg, but usually omit it) — the command is the reliable,
-      // informative title.
-      return { summary: truncate(command ?? description ?? "") };
-    }
     return { summary: truncate(description ?? command ?? "") };
   }
   return { summary: fallbackSummary(input) };

@@ -337,7 +337,10 @@ fn render_projection_page(
         if capped {
             line_capped.push(i + 1);
         }
-        lines.push(text);
+        lines.push(ReadLine {
+            line: i + 1,
+            text,
+        });
     }
     finish_read(
         data_path,
@@ -375,7 +378,10 @@ fn render_text_page(content: &str, input: &Value, path: &str) -> ToolCallResult 
         if capped {
             line_capped.push(i + 1);
         }
-        out.push(text);
+        out.push(ReadLine {
+            line: i + 1,
+            text,
+        });
     }
     finish_read(
         path,
@@ -409,12 +415,18 @@ fn past_eof_page(
     )
 }
 
+#[derive(serde::Serialize)]
+struct ReadLine {
+    line: usize,
+    text: String,
+}
+
 /// Sole success shape for read: one page of lines plus paging facts.
 #[derive(serde::Serialize)]
 struct ReadData {
     path: String,
     start_line: usize,
-    lines: Vec<String>,
+    lines: Vec<ReadLine>,
     /// Lines in the file; [`Self::has_more`] compares against it.
     total_lines: usize,
     /// True when this page stops before the end of the file.
@@ -438,7 +450,10 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
         all_optional_present: finish_read(
             "note.txt",
             1,
-            vec!["alpha".into()],
+            vec![ReadLine {
+                line: 1,
+                text: "alpha".into(),
+            }],
             1,
             2,
             1,
@@ -452,7 +467,10 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
         all_optional_absent: finish_read(
             "note.txt",
             1,
-            vec!["alpha".into()],
+            vec![ReadLine {
+                line: 1,
+                text: "alpha".into(),
+            }],
             1,
             1,
             0,
@@ -465,7 +483,7 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
 fn finish_read(
     path: &str,
     start_line: usize,
-    lines: Vec<String>,
+    lines: Vec<ReadLine>,
     covered_end: usize,
     total_lines: usize,
     skipped_in_context: usize,
@@ -652,7 +670,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|v| v.as_str().unwrap().to_string())
+            .map(|v| v["text"].as_str().unwrap().to_string())
             .collect()
     }
 
@@ -669,6 +687,11 @@ mod tests {
         }));
         assert_eq!(page_lines(&result), ["line2", "line3"]);
         let data = result.data.as_ref().unwrap();
+        assert_eq!(
+            data["lines"],
+            json!([{"line": 2, "text": "line2"}, {"line": 3, "text": "line3"}]),
+            "{data}"
+        );
         assert_eq!(data["start_line"], 2);
         assert_eq!(data["has_more"], true, "{data}");
         assert_eq!(data["total_lines"], 5, "{data}");
@@ -725,7 +748,11 @@ mod tests {
             "session://session-1",
         );
         let data = result.data.as_ref().unwrap();
-        assert_eq!(data["lines"], json!(["one", "three"]), "{data}");
+        assert_eq!(
+            data["lines"],
+            json!([{"line": 1, "text": "one"}, {"line": 3, "text": "three"}]),
+            "{data}"
+        );
         assert_eq!(data["skipped_in_context"], 1, "{data}");
     }
 
@@ -814,7 +841,8 @@ mod tests {
         assert!(line.chars().count() <= MAX_LINE_CHARS + 3);
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["lines_capped"], json!([1]), "{data}");
-        assert!(data["lines"][0].is_string());
+        assert_eq!(data["lines"][0]["line"], 1);
+        assert!(data["lines"][0]["text"].is_string());
     }
 }
 
@@ -900,7 +928,10 @@ mod chain_contract_tests {
         );
         assert!(read.error.is_none(), "{}", read.content);
         let file = read.data.unwrap();
-        assert_eq!(file["lines"][0], "outside-body");
+        assert_eq!(
+            file["lines"][0],
+            json!({"line": 1, "text": "outside-body"})
+        );
         assert!(file.get("file").is_none());
     }
 

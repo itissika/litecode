@@ -9,7 +9,7 @@ import {
   parseFunctionArguments,
 } from "../api/adapter";
 import type { AgentRunState, HumanRow } from "../api/types";
-import { formatElapsed } from "../lib/bashLive";
+import { formatElapsed } from "../lib/terminalLive";
 import { sessionActivity } from "../lib/sessionDisplay";
 import { openSubagentPanel } from "../lib/sessionPanelNav";
 import { useConnectionStore } from "../stores/connectionStore";

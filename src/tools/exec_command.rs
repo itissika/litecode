@@ -34,14 +34,33 @@ pub const MAX_YIELD_MS: u64 = 600_000;
 pub const DEFAULT_YIELD_MS: u64 = MAX_YIELD_MS;
 pub const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 pub const MAX_OUTPUT_TOKENS: usize = 200_000;
+pub(crate) const CODE_DEFAULT_MAX_OUTPUT_BYTES: usize = 1_048_576;
+
+pub(crate) fn resolve_output_max_bytes(
+    explicit_tokens: Option<usize>,
+    output_limit: usize,
+) -> usize {
+    if let Some(tokens) = explicit_tokens {
+        return tokens.saturating_mul(4).max(1024);
+    }
+    if output_limit == usize::MAX {
+        CODE_DEFAULT_MAX_OUTPUT_BYTES
+    } else {
+        DEFAULT_MAX_OUTPUT_TOKENS.saturating_mul(4)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecCommandData {
     pub session_id: Option<String>,
     pub exit_code: Option<i32>,
     pub output: String,
+    #[serde(default)]
+    pub output_file: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clamped: Vec<crate::tool::clamp::Clamp>,
 }
@@ -52,15 +71,27 @@ impl ExecCommandData {
         exit_code: Option<i32>,
         delta: crate::terminal::OutputDelta,
     ) -> Self {
-        let mut output = delta.text;
-        if delta.truncated {
-            output = format!("... (truncated)\n{output}");
-        }
+        let total_bytes = delta.total_file_bytes.max(delta.original_bytes);
+        let output = if delta.truncated {
+            let notice = crate::tool::output::full_output_notice(
+                total_bytes,
+                (!delta.output_file.is_empty()).then_some(delta.output_file.as_str()),
+            );
+            if delta.text.is_empty() {
+                notice
+            } else {
+                format!("{notice}\n{}", delta.text)
+            }
+        } else {
+            delta.text
+        };
         Self {
             session_id,
             exit_code,
             output,
+            output_file: delta.output_file,
             truncated: delta.truncated.then_some(true),
+            total_bytes: delta.truncated.then_some(total_bytes),
             clamped: Vec::new(),
         }
     }
@@ -72,7 +103,7 @@ struct ParsedArgs {
     workdir: Option<String>,
     tty: bool,
     yield_ms: u64,
-    max_output_tokens: usize,
+    max_output_tokens: Option<usize>,
     clamped: Vec<crate::tool::clamp::Clamp>,
 }
 
@@ -118,8 +149,7 @@ impl ExecCommandTool {
         {
             clamped.push(note);
         }
-        let max_output_tokens =
-            max_tokens_value.map_or(DEFAULT_MAX_OUTPUT_TOKENS, |value| value.value as usize);
+        let max_output_tokens = max_tokens_value.map(|value| value.value as usize);
         Ok(ParsedArgs {
             cmd,
             workdir,
@@ -148,10 +178,6 @@ impl ExecCommandTool {
         Ok(resolved)
     }
 
-    fn output_max_bytes(max_output_tokens: usize) -> usize {
-        max_output_tokens.saturating_mul(4).max(1024)
-    }
-
     async fn run(&self, input: Value, execution: ToolExecutionContext) -> ToolCallResult {
         let args = match Self::parse_args(&input) {
             Ok(args) => args,
@@ -169,7 +195,7 @@ impl ExecCommandTool {
             session_id = %execution.session_id,
             tty = args.tty,
             yield_ms = args.yield_ms,
-            max_output_tokens = args.max_output_tokens,
+            max_output_tokens = ?args.max_output_tokens,
             "unified exec start"
         );
         let scope = crate::tool::run_scope::current().unwrap_or_default();
@@ -213,7 +239,7 @@ impl ExecCommandTool {
             Ok(decision) => decision,
             Err(_) => return coded_error("io", "exec supervisor dropped the result"),
         };
-        let max_bytes = Self::output_max_bytes(args.max_output_tokens);
+        let max_bytes = resolve_output_max_bytes(args.max_output_tokens, execution.output_limit);
         match decision {
             PipeDecision::Exited { job_id, exit_code } => {
                 self.jobs
@@ -225,6 +251,8 @@ impl ExecCommandTool {
                     .unwrap_or_else(|| crate::terminal::OutputDelta {
                         text: String::new(),
                         original_bytes: 0,
+                        total_file_bytes: 0,
+                        output_file: String::new(),
                         alive: false,
                         exit_code: None,
                         truncated: false,
@@ -246,6 +274,8 @@ impl ExecCommandTool {
                     .unwrap_or_else(|| crate::terminal::OutputDelta {
                         text: String::new(),
                         original_bytes: 0,
+                        total_file_bytes: 0,
+                        output_file: String::new(),
                         alive: true,
                         exit_code: None,
                         truncated: false,
@@ -652,7 +682,9 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
         session_id: Some("bg_00000001".into()),
         exit_code: Some(0),
         output: "hello\n".into(),
+        output_file: ".litecode/run/bg_00000001.stdout".into(),
         truncated: Some(true),
+        total_bytes: Some(2048),
         clamped: vec![crate::tool::clamp::Clamp {
             parameter: "yield_time_ms".into(),
             requested: serde_json::json!(900000),
@@ -663,7 +695,9 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
         session_id: None,
         exit_code: None,
         output: String::new(),
+        output_file: String::new(),
         truncated: None,
+        total_bytes: None,
         clamped: Vec::new(),
     };
     ["exec_command", "write_stdin"]

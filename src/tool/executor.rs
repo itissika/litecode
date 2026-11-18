@@ -512,7 +512,7 @@ pub async fn execute_tool_call(
     sink: &dyn PermissionSink,
     cancel: CancellationToken,
     data_root: &std::path::Path,
-    spill_threshold: usize,
+    _spill_threshold: usize,
     _turn_anchor_seq: Option<i64>,
     write_lock: Arc<WorkspaceWriteLock>,
     session: Option<crate::session::SessionDataReader>,
@@ -840,10 +840,27 @@ pub async fn execute_tool_call(
         }
         output
     } else {
+        let existing_file = if matches!(tu_name.as_str(), "exec_command" | "write_stdin") {
+            output
+                .data
+                .as_ref()
+                .and_then(|d| d.get("output_file"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        } else {
+            None
+        };
         let output = crate::tools::code::render_direct_code_contract_result(&tu_name, output);
-        let mut output = wire_result(output);
-        output.content = output::cap_direct_content(tool.as_ref(), &output.content);
-        match output::finalize_tool_call_result(output, data_root, spill_threshold) {
+        let output = wire_result(output);
+        let max_bytes = output::direct_output_max_bytes(tool.as_ref());
+        match output::finalize_direct_tool_call_result(
+            output,
+            data_root,
+            &ctx.cwd,
+            &tu_name,
+            max_bytes,
+            existing_file.as_deref(),
+        ) {
             Ok(processed) => processed,
             Err(e) => {
                 tracing::error!(tool = %tu_name, error = %e, "tool output processing failed");

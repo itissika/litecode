@@ -10,7 +10,6 @@ use super::validate::{Issue, Severity};
 
 pub const CARD_LIMIT: usize = 5;
 pub const SUMMARY_CHARS: usize = 120;
-pub const PAGE_CHARS: usize = 6_000;
 
 const WELCOME: &str = "\
 The knowledge base is human-owned. The agent helps record durable invariants: design principles, architecture, workflows, and goals.\n\
@@ -516,15 +515,6 @@ pub fn dashboard(
         ),
         section("# Commands", BUTTONS),
     ])
-}
-
-pub fn page(body: &str, cap: usize) -> (String, Option<String>) {
-    if body.chars().count() <= cap {
-        return (body.to_string(), None);
-    }
-    let head: String = body.chars().take(cap).collect();
-    let rest: String = body.chars().skip(cap).collect();
-    (head, Some(rest))
 }
 
 fn join_sections(parts: &[String]) -> String {

@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type {
@@ -8,7 +8,6 @@ import type {
 } from "../api/types";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
-import { useBashStore } from "../stores/bashStore";
 import { useTurnStore } from "../stores/turnStore";
 import { InlineToolRow } from "./InlineToolRow";
 
@@ -33,7 +32,6 @@ afterEach(() => {
   cleanup();
   useSessionStore.setState({ sessions: [] });
   useMessageStore.setState({ bySession: new Map() });
-  useBashStore.getState().reset();
   useTurnStore.setState({ byId: new Map() });
 });
 
@@ -233,24 +231,6 @@ function toolOutput(text: string): FunctionCallOutputItem {
   return { type: "function_call_output", call_id: "call_t", output: text };
 }
 
-const RUNNING_BASH =
-  "status: running\nbash_id: bg_a\noutput_file: .litecode/bash/bg_a.output\n";
-
-function seedBashJob(callId = "call_t", id = "bg_a"): void {
-  useBashStore.getState().applySnapshot("s1", {
-    jobs: [
-      {
-        id,
-        call_id: callId,
-        command_preview: "sleep 8",
-        output_file: `.litecode/bash/${id}.output`,
-        started_at_ms: Date.now(),
-      },
-    ],
-    waits: [],
-  });
-}
-
 describe("InlineToolRow — session-mount capsules render as single-line summaries", () => {
   it("renders todo as the summary toolTitle already produces", () => {
     const { container } = render(
@@ -281,61 +261,6 @@ describe("InlineToolRow — session-mount capsules render as single-line summari
     expect(screen.getByTestId("inline-plan-summary").textContent).toBe(
       ".litecode/plan/calm-river.md",
     );
-  });
-});
-
-describe("InlineToolRow — background bash is a single-line row", () => {
-  it("shows the command, a running timer and the Kill action without a card", () => {
-    seedBashJob();
-    const { container } = render(
-      <InlineToolRow
-        call={toolCall("bash", { command: "sleep 8" })}
-        output={toolOutput(RUNNING_BASH)}
-        sessionId="s1"
-      />,
-    );
-
-    expect(screen.getByTestId("inline-bash-command").textContent).toBe(
-      "sleep 8",
-    );
-    expect(screen.getByTestId("inline-bash-status").textContent).toMatch(
-      /^\d+s$/,
-    );
-    expect(screen.getByTestId("inline-bash-kill")).toBeTruthy();
-    expect(container.querySelector(".foldcard-header")).toBeNull();
-  });
-
-  it("settles to `exited` and drops Kill once the job leaves the snapshot", () => {
-    seedBashJob();
-    render(
-      <InlineToolRow
-        call={toolCall("bash", { command: "sleep 8" })}
-        output={toolOutput(RUNNING_BASH)}
-        sessionId="s1"
-      />,
-    );
-    expect(screen.getByTestId("inline-bash-kill")).toBeTruthy();
-
-    act(() => {
-      useBashStore.getState().applySnapshot("s1", { jobs: [], waits: [] });
-    });
-
-    expect(screen.getByTestId("inline-bash-status").textContent).toBe("exited");
-    expect(screen.queryByTestId("inline-bash-kill")).toBeNull();
-  });
-
-  it("reports a seeded exit code instead of the timer", () => {
-    render(
-      <InlineToolRow
-        call={toolCall("bash", { command: "false" })}
-        output={toolOutput("exit_code: 1\n")}
-        sessionId="s1"
-      />,
-    );
-    expect(screen.getByTestId("inline-bash-status").textContent).toBe(
-      "exit_code: 1",
-    );
-    expect(screen.queryByTestId("inline-bash-kill")).toBeNull();
   });
 });
 

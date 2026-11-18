@@ -118,7 +118,7 @@ impl Tool for CountingRead {
         result.data = Some(json!({
             "path": "a.txt",
             "start_line": 1,
-            "lines": ["hello"],
+            "lines": [{"line": 1, "text": "hello"}],
             "total_lines": 1,
             "has_more": false,
             "skipped_in_context": 0
@@ -128,7 +128,7 @@ impl Tool for CountingRead {
 }
 
 /// Claims to be `read` and returns a shape the contract does not allow:
-/// `lines` must be an array of strings.
+/// `lines` must be an array of `{ line, text }` objects.
 struct BadRead;
 
 impl Tool for BadRead {
@@ -146,8 +146,7 @@ impl Tool for BadRead {
         _execution: ToolExecutionContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let mut result = ToolCallResult::ok(String::new());
-        // `message` is present so the only violation is `lines`: a number where
-        // the contract says an array of strings.
+        // `lines` is a number where the contract says an array of line objects.
         result.data = Some(json!({ "lines": 42 }));
         Box::pin(std::future::ready(result))
     }
@@ -320,6 +319,49 @@ async fn edit_on_a_session_record_rejects_with_permission_code() {
     .await;
     assert_eq!(result.error_code.as_deref(), Some("permission"), "{}", result.content);
     assert!(!dir.path().join("after.txt").exists(), "downstream call must not run");
+}
+
+#[tokio::test]
+async fn uncaught_apply_edits_failure_surfaces_nearest_line_and_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let long_rel = format!("{}/target.rs", "very/deeply/nested/module/".repeat(4));
+    let target_abs = dir.path().join(&long_rel);
+    std::fs::create_dir_all(target_abs.parent().unwrap()).unwrap();
+    std::fs::write(dir.path().join("ok.txt"), "before\n").unwrap();
+    std::fs::write(&target_abs, "fn alpha() {}\n    fn beta_target_here() {}\n").unwrap();
+    let script = format!(
+        r#"
+        await tools.apply_edits({{
+          edits: [
+            {{ path: "ok.txt", old_string: "before", new_string: "after" }},
+            {{ path: {long_rel:?}, old_string: "    fn betta_target_here() {{}}", new_string: "    fn gamma() {{}}" }}
+          ]
+        }});
+        await tools.write({{ path: "after.txt", content: "should_not_run" }});
+        "#
+    );
+    let result = run_program(
+        dir.path(),
+        vec![
+            Arc::new(ApplyEditsTool::new()),
+            Arc::new(crate::tools::write::WriteTool::new()),
+        ],
+        &script,
+    )
+    .await;
+    assert_eq!(result.error_code.as_deref(), Some("no_match"), "{}", result.content);
+    assert_eq!(std::fs::read_to_string(dir.path().join("ok.txt")).unwrap(), "after\n");
+    assert!(!dir.path().join("after.txt").exists(), "downstream write must not run");
+    assert!(
+        result.content.contains("closest match is at line 2:     fn beta_target_here() {}"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("↳ #1 tools.apply_edits edit #2"),
+        "{}",
+        result.content
+    );
 }
 
 /// Claims to be `grep` and returns grep-shaped data, so a read can be checked
@@ -1236,7 +1278,7 @@ impl Tool for SlowRead {
                     result.data = Some(json!({
                         "path": "a.txt",
                         "start_line": 1,
-                        "lines": ["slow-ok"],
+                        "lines": [{"line": 1, "text": "slow-ok"}],
                         "total_lines": 1,
                         "has_more": false,
                         "skipped_in_context": 0
@@ -1326,7 +1368,7 @@ async fn over_budget_spill_file_is_readable_by_tools_read() {
         serde_json::to_string(&format!("{head}{}{middle}{}{tail}", "H ".repeat(4000), "T ".repeat(2500))).unwrap()
     );
     let first = run_program(dir.path(), vec![read_tool.clone()], &code).await;
-    let marker = ".litecode/bash/run_code_";
+    let marker = ".litecode/run/run_code_";
     let start = first.content.find(marker).expect("spill path in output");
     let end = first.content[start..].find(".txt").unwrap() + start + 4;
     let rel = &first.content[start..end];
@@ -1341,7 +1383,7 @@ async fn over_budget_spill_file_is_readable_by_tools_read() {
     .await;
     assert!(second.error.is_none(), "{}", second.content);
     let spilled = std::fs::read_to_string(dir.path().join(rel)).unwrap();
+    assert!(spilled.contains("HEAD_SPILL_TEST"));
     assert!(spilled.contains("MID_SPILL_LINE_3000"));
-    assert!(!spilled.contains("HEAD_SPILL_TEST"));
-    assert!(!spilled.contains("TAIL_SPILL_TEST"));
+    assert!(spilled.contains("TAIL_SPILL_TEST"));
 }

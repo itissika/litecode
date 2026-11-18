@@ -39,8 +39,8 @@ pub const MAX_RUN_TIMEOUT_MS: u64 = 600_000;
 pub const DEFAULT_RUN_TIMEOUT_MS: u64 = MAX_RUN_TIMEOUT_MS;
 /// Hard wall-clock cap per `run_code` call (30 minutes), including nested tool waits.
 pub const MAX_RUN_WALL_TIMEOUT_MS: u64 = 1_800_000;
-/// Runtime output cap. This is the only hard cap; the outer result is not truncated again.
-pub const MAX_CODE_OUTPUT_BYTES: usize = 1_048_576;
+/// Runtime runaway output circuit breaker (8 MiB, aligned with terminal log max).
+pub const MAX_CODE_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 /// Full ledger lines kept in submission order. Later calls are counted, and a
 /// bounded priority pool keeps errors, rejections, unsettled calls, and partial edits.
 const LEDGER_KEEP: usize = 256;
@@ -839,7 +839,7 @@ async fn invoke_binding(
     // return only a slice of this value, or none of it. A failure envelope is
     // one of those facts — the program may read it and carry on, and the view
     // would otherwise say nothing at all about that call.
-    let mut texts: Vec<(render::ReminderKind, String)> =
+    let texts: Vec<(render::ReminderKind, String)> =
         render::reminders_for_call_with_metadata(&sdk_name, &value, result.metadata.as_ref())
             .into_iter()
             .map(|text| (render::ReminderKind::Boundary, text))
@@ -1280,6 +1280,7 @@ fn run_report(
                 code: info.code.clone(),
                 message: failure.message.clone(),
                 summary,
+                details: info.details.clone(),
             })
         }),
         uncaught_type_error: outcome

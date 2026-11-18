@@ -7,7 +7,6 @@ import { groupNodes, rowsToNodes } from "../lib/transcriptProjection";
 import { NodeView, ProcessGroup } from "./transcript/NodeView";
 import type { HumanRow } from "../api/types";
 import { userTextItem } from "../api/adapter";
-import { useBashStore } from "../stores/bashStore";
 import { useMessageStore } from "../stores/messageStore";
 import { clearFoldCardOpen } from "./foldCardState";
 
@@ -201,7 +200,6 @@ const liveTool: HumanRow = {
 afterEach(() => {
   cleanup();
   grantPermission.mockClear();
-  useBashStore.getState().reset();
   useMessageStore.setState({ bySession: new Map() });
   clearFoldCardOpen("session-1");
   turnState.recallPendingMessages.mockClear();
@@ -705,10 +703,10 @@ describe("ProcessGroup header buckets", () => {
         state: "final",
         body: {
           type: "function_call",
-          id: "fc_bash",
-          call_id: "call_bash",
-          name: "bash",
-          arguments: JSON.stringify({ command: "echo hi" }),
+          id: "fc_exec",
+          call_id: "call_exec",
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "echo hi" }),
           status: "completed",
         },
       },
@@ -1228,7 +1226,7 @@ describe("MessageList compacting now marker", () => {
   });
 });
 
-function bashRows(output: string): HumanRow[] {
+function execRows(output: string): HumanRow[] {
   return [
     {
       seq: 1,
@@ -1236,10 +1234,10 @@ function bashRows(output: string): HumanRow[] {
       state: "final",
       body: {
         type: "function_call",
-        id: "fc_bash",
-        call_id: "call_bash",
-        name: "bash",
-        arguments: JSON.stringify({ command: "sleep 8" }),
+        id: "fc_exec",
+        call_id: "call_exec",
+        name: "exec_command",
+        arguments: JSON.stringify({ cmd: "sleep 8" }),
         status: "completed",
       },
     },
@@ -1249,37 +1247,17 @@ function bashRows(output: string): HumanRow[] {
       state: "final",
       body: {
         type: "function_call_output",
-        call_id: "call_bash",
+        call_id: "call_exec",
         output,
       },
     },
   ];
 }
 
-const RUNNING_DOC = `status: running
-bash_id: bg_a
-output_file: .litecode/bash/bg_a.output
-`;
-
-function seedBashJob(): void {
-  useBashStore.getState().applySnapshot("session-1", {
-    jobs: [
-      {
-        id: "bg_a",
-        call_id: "call_bash",
-        command_preview: "sleep 8",
-        output_file: ".litecode/bash/bg_a.output",
-        started_at_ms: Date.now(),
-      },
-    ],
-    waits: [],
-  });
-}
-
-describe("MessageList tool routing (inline row vs rich card)", () => {
-  it("keeps a FOREGROUND bash on its rich card", () => {
+describe("MessageList tool routing (exec_command uses rich card)", () => {
+  it("renders exec_command as a collapsible FoldCard", () => {
     const node = rowsToNodes(
-      bashRows(`exit_code: 0
+      execRows(`exit_code: 0
 all good
 `),
     )[0]!;
@@ -1287,26 +1265,8 @@ all good
       <NodeView node={node} projectRoot={null} sessionId="session-1" />,
     );
 
-    // Still a collapsible tool card, not a single-line row. (The card body is
-    // unmounted while collapsed — it is exercised directly in
-    // BashToolView.test.tsx.)
     expect(container.querySelector(".foldcard-header")).toBeTruthy();
     expect(screen.queryByTestId("inline-bash-command")).toBeNull();
-    expect(screen.queryByTestId("bash-console")).toBeNull();
-  });
-
-  it("routes a BACKGROUND bash to the single-line row", () => {
-    seedBashJob();
-    const node = rowsToNodes(bashRows(RUNNING_DOC))[0]!;
-    const { container } = render(
-      <NodeView node={node} projectRoot={null} sessionId="session-1" />,
-    );
-
-    expect(screen.getByTestId("inline-bash-command").textContent).toBe(
-      "sleep 8",
-    );
-    expect(container.querySelector(".foldcard-header")).toBeNull();
-    expect(screen.queryByTestId("bash-console")).toBeNull();
   });
 });
 

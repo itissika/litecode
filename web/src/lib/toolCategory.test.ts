@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import { isInlineCall, isInlineTool, processToolBucket } from "./toolCategory";
 
 describe("processToolBucket", () => {
-  it("maps bash and edit to dedicated buckets", () => {
-    expect(processToolBucket("bash")).toBe("bash");
+  it("maps exec_command, write_stdin, and edit to dedicated buckets", () => {
+    expect(processToolBucket("exec_command")).toBe("bash");
+    expect(processToolBucket("write_stdin")).toBe("bash");
     expect(processToolBucket("edit")).toBe("edit");
   });
 
@@ -47,10 +48,9 @@ describe("isInlineTool", () => {
 });
 
 describe("isInlineCall", () => {
-  it("routes a BACKGROUND bash to the one-line row and keeps foreground bash on its card", () => {
-    expect(isInlineCall("bash", true)).toBe(true);
-    expect(isInlineCall("bash", false)).toBe(false);
-    expect(isInlineCall("bash")).toBe(false);
+  it("routes exec_command and write_stdin to rich cards", () => {
+    expect(isInlineCall("exec_command")).toBe(false);
+    expect(isInlineCall("write_stdin")).toBe(false);
   });
 
   it("delegates every name-only family to isInlineTool", () => {

@@ -9,7 +9,6 @@ use crate::config::workspace::workspace_root_from_paths;
 use crate::context_pipeline::Context;
 use crate::runtime::{RuntimeHandle, TurnOptions};
 use crate::session::SessionService;
-use crate::session::store::Session;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
@@ -341,14 +340,7 @@ impl Tool for SubagentLaunchTool {
         if !execution.session_id.is_empty() {
             tool.parent_session_id = execution.session_id.clone();
         }
-        Box::pin(async move {
-            let mut result = tool.launch(input).await.finalize_signals();
-            let max = tool.max_result_size();
-            if max < usize::MAX {
-                result.content = Session::truncated_tool_result(&result.content, max);
-            }
-            result
-        })
+        Box::pin(async move { tool.launch(input).await.finalize_signals() })
     }
 
     fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {

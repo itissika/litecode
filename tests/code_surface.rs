@@ -1926,7 +1926,7 @@ mod edit_write {
     }
     async function lineText(result) {
       const line = result && result.lines && result.lines[0];
-      return line ? line : "";
+      return line ? line.text : "";
     }
     async function markerText(path) {
       try {
@@ -2782,7 +2782,7 @@ mod approval_concurrency {
                 r#"
     const page = await tools.read({ path: "other.txt" });
     const found = await tools.grep({ pattern: "OTHER_NEEDLE", path: "other.txt" });
-    return { line: page.lines[0], hits: found.hits.length };
+    return { line: page.lines[0].text, hits: found.hits.length };
     "#,
                 &litecode::permission::DenyPermissionSink,
                 CancellationToken::new(),

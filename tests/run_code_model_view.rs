@@ -80,27 +80,16 @@ async fn captured_with(build: impl FnOnce(&std::path::Path) -> Value) -> String 
 
 #[tokio::test(flavor = "current_thread")]
 async fn large_result_is_budgeted_in_the_request() {
-    let text = captured_run_code(r#"return "A".repeat(200000) + "END_SENTINEL";"#).await;
+    let text = captured_run_code(r#"return "START_SENTINEL" + "A".repeat(200000) + "END_SENTINEL";"#).await;
     assert!(text.len() <= 65_536, "{}", text.len());
     assert!(!text.starts_with("[blob:"), "{text}");
-    // Token budget (10k) keeps both ends; the first line names the token cut.
-    let result = text.split_once("result:\n").expect("result section").1;
-    assert!(
-        result
-            .lines()
-            .next()
-            .unwrap_or("")
-            .contains("exceeds 10.0k; truncated by token budget"),
-        "{text}"
-    );
-    assert!(result.contains("END_SENTINEL"), "{text}");
-    // The 10k-token cut can still be byte-heavy (here it is), so the shared
-    // 64KB guard may add a second, explicitly byte-side marker.
-    assert!(
-        result.contains("tok omitted from the middle") || result.contains("truncated by byte cap"),
-        "{text}"
-    );
     assert!(text.starts_with("run_code ok"), "{text}");
+    assert!(text.contains("START_SENTINEL"), "{text}");
+    assert!(text.contains("END_SENTINEL"), "{text}");
+    assert!(
+        text.contains("bytes total; full output: .litecode/run/run_code_"),
+        "{text}"
+    );
 }
 
 /// A caught failure is counted in the head and stated once above the stream:

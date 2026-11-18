@@ -73,7 +73,7 @@ function bashCallSelector(callId: string): string {
     typeof CSS !== "undefined" && typeof CSS.escape === "function"
       ? CSS.escape(callId)
       : callId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  return `[data-bash-call-id="${escaped}"]`;
+  return `[data-exec-call-id="${escaped}"]`;
 }
 
 function seqHitSelector(seq: number): string {

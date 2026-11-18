@@ -74,18 +74,13 @@ describe("toolTitle", () => {
     ).toBe(".litecode/plan/active.md");
   });
 
-  it("uses the command as the bash title (description is optional)", () => {
+  it("uses cmd as the exec_command title and session_id/chars for write_stdin", () => {
     expect(
-      toolTitle("bash", { command: "cargo test --workspace" })
-        .summary,
+      toolTitle("exec_command", { cmd: "cargo test --workspace" }).summary,
     ).toBe("cargo test --workspace");
-    // description is not in the bash schema; the command wins even if present.
     expect(
-      toolTitle("bash", {
-        command: "git status",
-        description: "Check repo state",
-      }).summary,
-    ).toBe("git status");
+      toolTitle("write_stdin", { session_id: "bg_1", chars: "yes\n" }).summary,
+    ).toContain("bg_1");
   });
 
   it("keeps a deterministic readable fallback", () => {

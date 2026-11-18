@@ -112,17 +112,17 @@ impl EditEngine {
                     "multiple_matches" => "ambiguous",
                     _ => "invalid_input",
                 };
-                // A miss names its nearest line so the model fixes one typo
-                // instead of re-reading the file. `multiple_matches` already
-                // carries exact lines in its own text.
+                // A miss names its nearest line and shows the line text so the
+                // model fixes one typo or escape drift without re-reading.
+                // `multiple_matches` already carries exact lines in its text.
                 let nearest = (reason.code() == "no_match")
-                    .then(|| matcher::nearest_line(&content, &spec.old_string))
+                    .then(|| matcher::nearest_line_preview(&content, &spec.old_string))
                     .flatten();
                 // One plain sentence for the batch table: the cause plus the
-                // line hint, so a miss is fixable without re-reading the file.
+                // line hint and preview, so a miss is fixable without re-reading.
                 let mut detail = reason.message();
-                if let Some(line) = nearest {
-                    detail.push_str(&format!("; closest match is at line {line}"));
+                if let Some((line, preview)) = nearest {
+                    detail.push_str(&format!("; closest match is at line {line}: {preview}"));
                 }
                 return Ok(EditResult::failure(raw_path, detail)
                     .because(code)

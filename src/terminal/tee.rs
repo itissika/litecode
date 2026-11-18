@@ -1,20 +1,14 @@
-//! Bounded stdout capture for agent foreground bash: tee to a workspace file,
-//! keep only a head+tail window in memory.
+//! Bounded stdout capture for agent commands: tee clean UTF-8 output to a workspace
+//! `.litecode/run/` file up to `FILE_MAX`, and read tail/delta slices back cleanly.
 
 use std::fs::File;
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
 use super::ansi::strip_ansi;
 use super::error::{TerminalError, TerminalResult};
 
-/// Bytes kept at the start of the model-facing window.
-pub const INLINE_HEAD: usize = 8 * 1024;
-/// Bytes kept at the end of the model-facing window.
-pub const INLINE_TAIL: usize = 32 * 1024;
-/// Grow the in-memory buffer until this size, then freeze into head+tail.
-pub const INLINE_FULL: usize = INLINE_HEAD + INLINE_TAIL;
-/// Stop writing the on-disk log after this many bytes.
+/// Stop writing the on-disk log after this many bytes (8 MiB).
 pub const FILE_MAX: usize = 8 * 1024 * 1024;
 
 pub struct BoundedTee {
@@ -23,10 +17,6 @@ pub struct BoundedTee {
     file_written: usize,
     pub total_bytes: usize,
     pub truncated_on_disk: bool,
-    frozen: bool,
-    buf: String,
-    head: String,
-    tail: String,
 }
 
 impl BoundedTee {
@@ -43,10 +33,6 @@ impl BoundedTee {
             file_written: 0,
             total_bytes: 0,
             truncated_on_disk: false,
-            frozen: false,
-            buf: String::new(),
-            head: String::new(),
-            tail: String::new(),
         })
     }
 
@@ -63,15 +49,6 @@ impl BoundedTee {
         }
         self.total_bytes += chunk.len();
         self.write_file(chunk);
-        if !self.frozen {
-            self.buf.push_str(chunk);
-            if self.buf.len() > INLINE_FULL {
-                self.freeze();
-            }
-        } else {
-            self.tail.push_str(chunk);
-            trim_to_tail(&mut self.tail);
-        }
     }
 
     fn write_file(&mut self, chunk: &str) {
@@ -94,60 +71,54 @@ impl BoundedTee {
         }
     }
 
-    fn freeze(&mut self) {
-        self.frozen = true;
-        let (head, rest) = split_at_bytes(&self.buf, INLINE_HEAD);
-        self.head = head.to_string();
-        self.tail = rest.to_string();
-        self.buf.clear();
-        trim_to_tail(&mut self.tail);
-    }
-
     pub fn flush_file(&mut self) -> std::io::Result<()> {
         self.file.flush()
     }
-
-    pub fn snapshot_capture(&self) -> TeeCapture {
-        if self.frozen {
-            TeeCapture {
-                path: self.path.clone(),
-                head: self.head.clone(),
-                tail: self.tail.clone(),
-                frozen: true,
-                total_bytes: self.total_bytes,
-                truncated_on_disk: self.truncated_on_disk,
-            }
-        } else {
-            TeeCapture {
-                path: self.path.clone(),
-                head: self.buf.clone(),
-                tail: String::new(),
-                frozen: false,
-                total_bytes: self.total_bytes,
-                truncated_on_disk: self.truncated_on_disk,
-            }
-        }
-    }
 }
 
-#[derive(Debug, Clone)]
-pub struct TeeCapture {
-    pub path: PathBuf,
-    pub head: String,
-    pub tail: String,
-    pub frozen: bool,
-    pub total_bytes: usize,
-    pub truncated_on_disk: bool,
-}
-
-impl TeeCapture {
-    pub fn snapshot(&self) -> String {
-        if self.frozen {
-            format!("{}{}", self.head, self.tail)
-        } else {
-            self.head.clone()
+/// Read up to `max_bytes` from the tail of `path` starting no earlier than
+/// `start_offset`. Skips leading UTF-8 continuation bytes after a non-zero
+/// seek so multi-byte characters split by a byte offset never produce `\u{FFFD}`.
+/// Returns `(text, new_cursor, new_bytes_since_cursor, truncated)`.
+pub(crate) fn read_tail_utf8_clean(
+    path: &Path,
+    start_offset: u64,
+    max_bytes: usize,
+) -> (String, u64, usize, bool) {
+    let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if len <= start_offset {
+        return (String::new(), start_offset, 0, false);
+    }
+    let total_new = usize::try_from(len - start_offset).unwrap_or(usize::MAX);
+    if max_bytes == 0 {
+        return (String::new(), len, total_new, true);
+    }
+    let read_start = len.saturating_sub(max_bytes as u64).max(start_offset);
+    let mut bytes = Vec::new();
+    if let Ok(mut file) = File::open(path) {
+        if file.seek(SeekFrom::Start(read_start)).is_ok() {
+            let _ = file.read_to_end(&mut bytes);
         }
     }
+    let mut start_idx = 0usize;
+    if read_start > 0 {
+        while start_idx < bytes.len()
+            && start_idx < 3
+            && (bytes[start_idx] & 0b1100_0000) == 0b1000_0000
+        {
+            start_idx += 1;
+        }
+    }
+    let slice = &bytes[start_idx..];
+    let text = match std::str::from_utf8(slice) {
+        Ok(s) => s.to_string(),
+        Err(e) if e.error_len().is_none() => std::str::from_utf8(&slice[..e.valid_up_to()])
+            .unwrap_or_default()
+            .to_string(),
+        Err(_) => String::from_utf8_lossy(slice).into_owned(),
+    };
+    let truncated = (len - start_offset) > max_bytes as u64;
+    (text, len, total_new, truncated)
 }
 
 fn split_at_bytes(s: &str, max: usize) -> (&str, &str) {
@@ -159,37 +130,6 @@ fn split_at_bytes(s: &str, max: usize) -> (&str, &str) {
         i -= 1;
     }
     s.split_at(i)
-}
-
-fn tail_byte_start(s: &str) -> usize {
-    let mut i = s.len().saturating_sub(INLINE_TAIL);
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
-}
-
-/// After the byte window cut, drop a partial first line so tail starts on `\n`.
-fn align_tail_start_to_line(s: &str, byte_start: usize) -> usize {
-    if byte_start == 0 {
-        return 0;
-    }
-    match s[byte_start..].find('\n') {
-        Some(pos) => byte_start + pos + 1,
-        None => byte_start,
-    }
-}
-
-fn trim_to_tail(tail: &mut String) {
-    if tail.len() <= INLINE_TAIL {
-        return;
-    }
-    let byte_start = tail_byte_start(tail);
-    let mut start = align_tail_start_to_line(tail, byte_start);
-    if start >= tail.len() {
-        start = byte_start;
-    }
-    tail.replace_range(..start, "");
 }
 
 #[cfg(test)]
@@ -206,41 +146,32 @@ mod tests {
         let mut t = tee_in(dir.path());
         t.push_clean(&"x".repeat(FILE_MAX + 50));
         let _ = t.flush_file();
-        let cap = t.snapshot_capture();
-        assert!(cap.truncated_on_disk);
-        assert_eq!(cap.total_bytes, FILE_MAX + 50);
-        let on_disk = std::fs::read(&cap.path).unwrap();
+        assert!(t.truncated_on_disk);
+        assert_eq!(t.total_bytes, FILE_MAX + 50);
+        let on_disk = std::fs::read(&t.path).unwrap();
         assert_eq!(on_disk.len(), FILE_MAX);
     }
 
     #[test]
-    fn inline_window_keeps_8k_head_and_32k_tail() {
-        assert_eq!(INLINE_HEAD, 8 * 1024);
-        assert_eq!(INLINE_TAIL, 32 * 1024);
-        assert_eq!(INLINE_FULL, 40 * 1024);
-
+    fn read_tail_utf8_clean_handles_multibyte_boundaries() {
         let dir = tempfile::tempdir().unwrap();
         let mut t = tee_in(dir.path());
-        let input: String = (0..3_000)
-            .map(|index| format!("line {index:04} payload payload\n"))
-            .collect();
-        for chunk in input.as_bytes().chunks(97) {
-            t.push_clean(std::str::from_utf8(chunk).unwrap());
-        }
-        let cap = t.snapshot_capture();
-        assert!(cap.frozen);
-        assert_eq!(cap.total_bytes, input.len());
-        assert!(cap.head.len() <= INLINE_HEAD, "{}", cap.head.len());
-        assert!(cap.tail.len() <= INLINE_TAIL, "{}", cap.tail.len());
-        assert!(cap.head.starts_with("line 0000 payload"));
-        let snapshot = cap.snapshot();
-        assert!(snapshot.contains("line 2999 payload"), "missing tail");
-        assert!(snapshot.len() <= INLINE_FULL, "{}", snapshot.len());
-        assert!(
-            snapshot.len() > INLINE_HEAD + INLINE_TAIL / 2,
-            "{}",
-            snapshot.len()
-        );
-        assert_eq!(std::fs::read(&cap.path).unwrap().len(), input.len());
+        let body = format!("HEAD_{}\nTAIL_END", "中".repeat(50));
+        t.push_clean(&body);
+        t.flush_file().unwrap();
+
+        // Cut size not divisible by 3 so `len - 17` lands mid-character.
+        let (tail, cursor, total_new, truncated) = read_tail_utf8_clean(&t.path, 0, 17);
+        assert!(truncated);
+        assert_eq!(cursor, body.len() as u64);
+        assert_eq!(total_new, body.len());
+        assert!(!tail.contains('\u{FFFD}'), "replacement char in: {tail:?}");
+        assert!(tail.ends_with("TAIL_END"), "{tail:?}");
+
+        let (empty, cursor2, new2, trunc2) = read_tail_utf8_clean(&t.path, cursor, 17);
+        assert!(empty.is_empty());
+        assert_eq!(cursor2, cursor);
+        assert_eq!(new2, 0);
+        assert!(!trunc2);
     }
 }

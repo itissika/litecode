@@ -2,8 +2,8 @@ import type { ReactElement } from "react";
 
 import type { FunctionCallOutputItem } from "../../api/types";
 import type { ToolStatus } from "../ToolIcon";
-import { BashToolView } from "./BashToolView";
 import { EditToolView } from "./EditToolView";
+import { ExecToolView } from "./ExecToolView";
 import { FileParamView } from "./FileParamView";
 import { CodeSearchToolView } from "./CodeSearchToolView";
 import { RunCodeToolView } from "./RunCodeToolView";
@@ -38,7 +38,8 @@ const TOOL_VIEWS: Record<
   read: FileParamView,
   write: WriteToolView,
   edit: EditToolView,
-  bash: BashToolView,
+  exec_command: ExecToolView,
+  write_stdin: ExecToolView,
   run_code: RunCodeToolView,
   subagent_launch: SubagentLaunchToolView,
   subagent_wait: SubagentWaitToolView,
@@ -63,7 +64,8 @@ export function getToolView(
  * file-path views — leaves output to the default renderer.
  */
 const OUTPUT_OWNED_BY_VIEW: ReadonlySet<string> = new Set([
-  "bash",
+  "exec_command",
+  "write_stdin",
   "run_code",
   "subagent_launch",
   "subagent_wait",

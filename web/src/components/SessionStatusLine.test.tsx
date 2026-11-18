@@ -36,7 +36,7 @@ const bashJob: BashJob = {
   id: "bg_a",
   call_id: "c1",
   command_preview: "sleep 1",
-  output_file: ".litecode/bash/bg_a.output",
+  output_file: ".litecode/run/bg_a.stdout",
   started_at_ms: Date.now(),
 };
 
@@ -44,7 +44,7 @@ const bashJob2: BashJob = {
   id: "bg_b",
   call_id: "c2",
   command_preview: "sleep 2",
-  output_file: ".litecode/bash/bg_b.output",
+  output_file: ".litecode/run/bg_b.stdout",
   started_at_ms: Date.now(),
 };
 
@@ -99,7 +99,7 @@ function bashCallRow(
   callId: string,
   args: Record<string, unknown>,
   seq = 1,
-  name = "bash",
+  name = "exec_command",
 ): HumanRow {
   return {
     seq,
@@ -113,15 +113,6 @@ function bashCallRow(
       arguments: JSON.stringify(args),
       status: "completed",
     },
-  };
-}
-
-function bashResultRow(callId: string, output: string, seq = 2): HumanRow {
-  return {
-    seq,
-    kind: "item/tool_result",
-    state: "final",
-    body: { type: "function_call_output", call_id: callId, output },
   };
 }
 
@@ -800,7 +791,7 @@ describe("SessionStatusLine — vertical expand", () => {
     ).toBeNull();
   });
 
-  it("renders the shared bash view with the live tail for a background job", async () => {
+  it("renders LiveTerminalView with the live tail for an exec_command background job", async () => {
     const sendRpc = vi.fn(async (method: string) => {
       if (method === "bash/tail") {
         return {
@@ -813,26 +804,18 @@ describe("SessionStatusLine — vertical expand", () => {
       throw new Error(`unexpected rpc ${method}`);
     });
     useConnectionStore.setState({ state: "connected", sendRpc } as never);
-    // The transcript supplies the full command + the sealed running doc, so
-    // the view can address the job by its bash id.
     seedRows("s1", [
       bashCallRow("c1", {
-        command: "npm run dev -- --host",
-        run_in_background: true,
+        cmd: "npm run dev -- --host",
       }),
-      bashResultRow(
-        "c1",
-        "status: running\nbash_id: bg_a\noutput_file: .litecode/bash/bg_a.output\n",
-      ),
     ]);
     useBashStore.getState().applySnapshot("s1", { jobs: [bashJob], waits: [] });
     render(<SessionStatusLine sessionId="s1" />);
 
     fireEvent.click(screen.getByTestId("capsule-terminal"));
 
-    const console = screen.getByTestId("bash-console");
-    // The full command comes from the call arguments, not the 80-char preview.
-    expect(within(console).getByText("npm run dev -- --host")).toBeTruthy();
+    const terminal = screen.getByTestId("live-terminal");
+    expect(within(terminal).getByText("npm run dev -- --host")).toBeTruthy();
     expect(await screen.findByText("live-out")).toBeTruthy();
     await waitFor(() => {
       expect(sendRpc).toHaveBeenCalledWith("bash/tail", { bash_id: "bg_a" });

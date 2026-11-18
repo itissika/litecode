@@ -3177,15 +3177,6 @@ impl Session {
         Ok(())
     }
 
-    pub fn truncated_tool_result(content: &str, max_tokens: usize) -> String {
-        let byte_limit = max_tokens.saturating_mul(4);
-        if byte_limit >= content.len() {
-            return content.to_string();
-        }
-        let preview = crate::types::utf8::prefix_utf8(content, byte_limit);
-        format!("{preview}\n... [truncated]")
-    }
-
     /// Remove orphan `FunctionCallOutput` items whose `call_id` has no matching
     /// `FunctionCall` in the transcript. Does not rewrite output text.
     pub fn snip_stale_results(transcript: &mut Transcript) {

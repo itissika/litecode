@@ -269,8 +269,11 @@ mod tests {
                 }),
                 execution,
             ));
-        assert!(result.error.is_none(), "{}", result.content);
-        let results = result.data.as_ref().unwrap()["results"].as_array().unwrap();
+        assert!(result.error.is_some(), "{}", result.content);
+        let details = result.error_details.as_ref().expect("error_details");
+        assert_eq!(details["applied"], 2);
+        assert_eq!(details["total"], 3);
+        let results = details["results"].as_array().unwrap();
         assert_eq!(results.len(), 3);
         assert_eq!(results[0]["ok"], true);
         assert_eq!(results[1]["ok"], false);
@@ -278,8 +281,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "ALPHA\nBETA\n");
     }
 
-    /// A miss names the nearest line in `detail`: the model fixes one typo
-    /// without re-reading the file.
+    /// A miss names the nearest line and preview in `detail`: the model fixes
+    /// one typo without re-reading the file.
     #[test]
     fn a_near_miss_names_its_nearest_line() {
         let (dir, path) = write_temp("a.txt", "fn alpha() {}
@@ -306,13 +309,13 @@ fn gamma() {}
                 }),
                 execution,
             ));
-        assert!(result.error.is_none(), "{}", result.content);
-        let item = &result.data.as_ref().unwrap()["results"][0];
+        assert!(result.error.is_some(), "{}", result.content);
+        let item = &result.error_details.as_ref().unwrap()["results"][0];
         assert_eq!(item["ok"], false, "{item}");
         assert_eq!(item["reason"], "no_match", "{item}");
         assert!(item.get("message").is_none(), "{item}");
         let detail = item["detail"].as_str().unwrap_or_default();
-        assert!(detail.contains("closest match is at line 2"), "{item}");
+        assert!(detail.contains("closest match is at line 2: fn beta() {}"), "{item}");
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "fn alpha() {}
@@ -349,8 +352,8 @@ alpha
                 }),
                 execution,
             ));
-        assert!(result.error.is_none(), "{}", result.content);
-        let item = &result.data.as_ref().unwrap()["results"][0];
+        assert!(result.error.is_some(), "{}", result.content);
+        let item = &result.error_details.as_ref().unwrap()["results"][0];
         assert_eq!(item["ok"], false, "{item}");
         assert_eq!(item["reason"], "ambiguous", "{item}");
         let detail = item["detail"].as_str().unwrap_or_default();

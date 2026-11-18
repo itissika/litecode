@@ -5,8 +5,6 @@ import {
   WrenchIcon,
 } from "@phosphor-icons/react";
 
-import { functionCallOutputText } from "../../api/adapter";
-import { isBackgroundBashResult } from "../../lib/bashLive";
 import { foldId, type RenderNode } from "../../lib/transcriptProjection";
 import { isInlineCall, processToolBucket } from "../../lib/toolCategory";
 import { useEditorStore } from "../../stores/editorStore";
@@ -106,14 +104,7 @@ export function NodeView({
         </div>
       );
     case "tool": {
-      // Background bash is the one call that goes inline on its RESULT rather
-      // than its name; foreground bash keeps the rich card.
-      const backgroundBash =
-        node.call.name === "bash" &&
-        isBackgroundBashResult(
-          node.output ? functionCallOutputText(node.output) : "",
-        );
-      if (isInlineCall(node.call.name, backgroundBash)) {
+      if (isInlineCall(node.call.name)) {
         return (
           <InlineToolRow
             call={node.call}

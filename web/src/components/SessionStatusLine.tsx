@@ -19,10 +19,9 @@ import { normalizeToolFilePath } from "../api/adapter";
 import type { BashJob, HumanRow, MemoryEntry } from "../api/types";
 import { readFile } from "../api/workspace";
 import {
-  bashCallMetaByCallId,
+  terminalCallCommandByCallId,
   terminalRevealCallId,
-  type BashCallMeta,
-} from "../lib/bashLive";
+} from "../lib/terminalLive";
 import { paintDragCursor, viewOf } from "../lib/domView";
 import { killBashJob } from "../lib/litecodeBash";
 import { useBashStore } from "../stores/bashStore";
@@ -34,7 +33,7 @@ import { useWorkspaceChangeStore } from "../stores/workspaceChangeStore";
 import { composerCardClass } from "./composerCard";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { SubagentRosterPanel } from "./SubagentRosterPanel";
-import { BashToolView } from "./toolviews/BashToolView";
+import { LiveTerminalView } from "./toolviews/LiveTerminalView";
 
 type TodoItemStatus = "pending" | "in_progress" | "completed";
 type TodoItem = { id: string; content: string; status: TodoItemStatus };
@@ -151,8 +150,8 @@ export function SessionStatusLine({
   const messageRows = useMessageStore(
     (s) => s.bySession.get(sessionId)?.display,
   );
-  const bashCallMeta = useMemo(
-    () => bashCallMetaByCallId(messageRows ?? []),
+  const terminalCommands = useMemo(
+    () => terminalCallCommandByCallId(messageRows ?? []),
     [messageRows],
   );
   // Minimal worker summary: total children and the live running count.
@@ -525,7 +524,7 @@ export function SessionStatusLine({
       <TerminalPanel
         sessionId={sessionId}
         jobs={bashJobs}
-        callMeta={bashCallMeta}
+        commands={terminalCommands}
         rows={messageRows ?? []}
         onRevealBash={onRevealBash}
         allowKill={!subagentView}
@@ -890,21 +889,19 @@ function PanelEmpty({ children }: { children: ReactNode }) {
   );
 }
 
-/** Live jobs from the session snapshot. Each job renders the shared
- *  `BashToolView` body, which polls `bash/tail` for the stdout tail. The
- *  compact header carries Kill and, when the transcript has a row to scroll
- *  to, Reveal. A missing `bash` card does not hide the job. */
+/** Live jobs from the session snapshot. Each job renders `<LiveTerminalView>`,
+ *  polling `bash/tail` for the stdout tail. */
 function TerminalPanel({
   sessionId,
   jobs,
-  callMeta,
+  commands,
   rows,
   onRevealBash,
   allowKill,
 }: {
   sessionId: string;
   jobs: BashJob[];
-  callMeta: ReadonlyMap<string, BashCallMeta>;
+  commands: ReadonlyMap<string, string>;
   rows: HumanRow[];
   onRevealBash?: (callId: string) => void;
   /** `false` in the subagent variant: Kill is a write on the parent's own
@@ -919,7 +916,7 @@ function TerminalPanel({
           key={job.id}
           job={job}
           sessionId={sessionId}
-          meta={callMeta.get(job.call_id)}
+          fullCommand={commands.get(job.call_id)}
           revealCallId={terminalRevealCallId(job.call_id, rows)}
           onRevealBash={onRevealBash}
           allowKill={allowKill}
@@ -929,26 +926,23 @@ function TerminalPanel({
   );
 }
 
-/** One live terminal: a compact command row (Kill + Reveal) over the shared
- *  bash view, which owns the live `bash/tail` poll. */
+/** One live terminal: a compact command row (Kill + Reveal) over `<LiveTerminalView>`. */
 function TerminalJob({
   job,
   sessionId,
-  meta,
+  fullCommand,
   revealCallId,
   onRevealBash,
   allowKill,
 }: {
   job: BashJob;
   sessionId: string;
-  meta?: BashCallMeta;
+  fullCommand?: string;
   revealCallId?: string;
   onRevealBash?: (callId: string) => void;
   allowKill: boolean;
 }) {
-  // Full command from a loaded historical bash call; the wire's collapsed
-  // preview is the command when that call is not in the transcript.
-  const command = meta?.command ?? job.command_preview;
+  const command = fullCommand ?? job.command_preview;
   return (
     <div data-testid={`terminal-job-${job.id}`} className="flex flex-col gap-1">
       {/* pr-8 keeps the actions clear of the panel's absolute resize handle,
@@ -994,12 +988,9 @@ function TerminalJob({
           </button>
         )}
       </div>
-      <BashToolView
-        name="bash"
-        status="running"
-        input={{ command }}
-        output={meta?.output}
-        call_id={job.call_id}
+      <LiveTerminalView
+        job={job}
+        command={command}
         sessionId={sessionId}
       />
     </div>

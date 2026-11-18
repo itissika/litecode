@@ -29,12 +29,12 @@ pub fn project_code_result(tool: &str, mut result: ToolCallResult) -> ToolCallRe
     match tool {
         "exec_command" | "write_stdin" => {
             let mut kept = Map::new();
-            for key in ["session_id", "exit_code", "output"] {
+            for key in ["session_id", "exit_code", "output", "output_file"] {
                 if let Some(value) = data.remove(key) {
                     kept.insert(key.to_string(), value);
                 }
             }
-            move_keys(&mut data, &mut metadata, &["truncated", "clamped"]);
+            move_keys(&mut data, &mut metadata, &["truncated", "total_bytes", "clamped"]);
             data = kept;
         }
         "write" => {
@@ -160,7 +160,7 @@ mod tests {
             "read",
             json!({
                 "path": "a.txt",
-                "lines": ["one"],
+                "lines": [{"line": 1, "text": "one"}],
                 "start_line": 1,
                 "total_lines": 3,
                 "has_more": true,
@@ -168,7 +168,10 @@ mod tests {
                 "clamped": [{"parameter": "limit", "requested": 0, "applied": 1}]
             }),
         );
-        assert_eq!(result.data, Some(json!({"lines": ["one"]})));
+        assert_eq!(
+            result.data,
+            Some(json!({"lines": [{"line": 1, "text": "one"}]}))
+        );
         assert_eq!(
             result.metadata,
             Some(json!({
@@ -247,18 +250,26 @@ mod more_tests {
                 "session_id": "bg_1",
                 "exit_code": null,
                 "output": "hello",
+                "output_file": ".litecode/run/bg_1.stdout",
                 "truncated": true,
+                "total_bytes": 12000,
                 "clamped": [{"parameter": "yield_time_ms", "requested": 60000, "applied": 30000}]
             })),
         );
         assert_eq!(
             result.data,
-            Some(json!({"session_id": "bg_1", "exit_code": null, "output": "hello"}))
+            Some(json!({
+                "session_id": "bg_1",
+                "exit_code": null,
+                "output": "hello",
+                "output_file": ".litecode/run/bg_1.stdout"
+            }))
         );
         assert_eq!(
             result.metadata,
             Some(json!({
                 "truncated": true,
+                "total_bytes": 12000,
                 "clamped": [{"parameter": "yield_time_ms", "requested": 60000, "applied": 30000}]
             }))
         );

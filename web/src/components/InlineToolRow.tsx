@@ -1,15 +1,5 @@
-import { useEffect, useState } from "react";
-
 import { functionCallOutputText, parseFunctionArguments } from "../api/adapter";
 import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
-import {
-  formatElapsed,
-  headExitCode,
-  isBashJobLive,
-  matchJob,
-} from "../lib/bashLive";
-import { killBashJob } from "../lib/litecodeBash";
-import { useBashStore } from "../stores/bashStore";
 import { useTurnStore } from "../stores/turnStore";
 import { SubagentLaunchToolView } from "./toolviews/SubagentLaunchToolView";
 import { SubagentListToolView } from "./toolviews/SubagentListToolView";
@@ -96,13 +86,6 @@ export function InlineToolRow({
           output={output}
           sessionId={sessionId}
         />
-      ) : toolName === "bash" ? (
-        <InlineBashLine
-          callId={call.call_id}
-          input={input}
-          output={output}
-          sessionId={sessionId}
-        />
       ) : null}
     </div>
   );
@@ -141,77 +124,5 @@ function SummaryLine({
     >
       {summary}
     </span>
-  );
-}
-
-/**
- * Background `bash` row: command, live elapsed time while the job runs (with the
- * Kill action), settling to the exit code / `exited` once it is gone.
- *
- * Liveness comes from the job snapshot here — the sealed result is a one-way
- * `status: running` seal, so a vanished job means the process ended.
- */
-function InlineBashLine({
-  callId,
-  input,
-  output,
-  sessionId,
-}: {
-  callId: string;
-  input: unknown;
-  output?: FunctionCallOutputItem;
-  sessionId?: string;
-}) {
-  const rawOutput = output ? functionCallOutputText(output) : "";
-  const job = useBashStore((s) => {
-    if (!sessionId) return undefined;
-    return matchJob(s.bySession.get(sessionId)?.jobs ?? [], callId, rawOutput);
-  });
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!job) return;
-    const t = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(t);
-  }, [job]);
-
-  const obj =
-    input && typeof input === "object" && !Array.isArray(input)
-      ? (input as Record<string, unknown>)
-      : {};
-  const command = typeof obj.command === "string" ? obj.command : "";
-  const exitCode = headExitCode(rawOutput);
-  const live = isBashJobLive(rawOutput, job);
-  const statusText =
-    live && job
-      ? formatElapsed(now - job.started_at_ms)
-      : exitCode !== null
-        ? `exit_code: ${exitCode}`
-        : "exited";
-
-  return (
-    <>
-      <span
-        data-testid="inline-bash-command"
-        className="min-w-0 flex-1 truncate font-mono text-(--_dk-text-body)"
-      >
-        {command}
-      </span>
-      <span
-        data-testid="inline-bash-status"
-        className="shrink-0 font-mono text-dk-2xs text-(--_dk-text-muted)"
-      >
-        {statusText}
-      </span>
-      {live && job && (
-        <button
-          type="button"
-          data-testid="inline-bash-kill"
-          onClick={() => void killBashJob(sessionId, job.id)}
-          className="btn-danger btn-xs shrink-0"
-        >
-          Kill
-        </button>
-      )}
-    </>
   );
 }

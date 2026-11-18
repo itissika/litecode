@@ -2,7 +2,7 @@ type ProcessToolBucket = "bash" | "edit" | "tool";
 
 /** Classify a tool call for ProcessGroup header bucketing. */
 export function processToolBucket(name: string): ProcessToolBucket | null {
-  if (name === "bash") return "bash";
+  if (name === "exec_command" || name === "write_stdin") return "bash";
   if (name === "edit") return "edit";
   // Session-mount capsules: a single-line row carries no card, so it must not
   // inflate the process-group header either.
@@ -32,12 +32,7 @@ export function isInlineTool(name: string): boolean {
 
 /**
  * Inline-row routing for a tool node.
- *
- * `isInlineTool` is name-only; `bash` is the one call whose card-vs-row choice
- * depends on its RESULT (a `run_in_background` / timed-out command seals as a
- * background job), so the caller passes that verdict in. Foreground bash keeps
- * its rich card.
  */
-export function isInlineCall(name: string, backgroundBash = false): boolean {
-  return isInlineTool(name) || (name === "bash" && backgroundBash);
+export function isInlineCall(name: string): boolean {
+  return isInlineTool(name);
 }

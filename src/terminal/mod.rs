@@ -10,7 +10,7 @@ mod shell;
 mod tee;
 
 pub use ansi::strip_ansi;
-pub use tee::{FILE_MAX, INLINE_FULL, INLINE_HEAD, INLINE_TAIL, TeeCapture};
+pub use tee::FILE_MAX;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

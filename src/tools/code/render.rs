@@ -2,26 +2,24 @@
 //!
 //! The view is a header, one **upfloat block**, then **one ordered stream**:
 //! console lines and the program's return value in the order they happened, the
-//! value last. There is no `logs:` half and no `result:` half, and exactly one
-//! token budget ([`RUN_CODE_VIEW_TOKENS`]) covers everything. On failure the
+//! value last. There is no `logs:` half and no `result:` half, and one single
+//! byte budget ([`RUN_CODE_VIEW_MAX_BYTES`]) covers everything. On failure the
 //! header is followed by a brief of the calls that already settled, then the
 //! block, then the same stream.
 //!
 //! The block sits **above** the stream because its facts are what the stream
 //! cannot say: a cut, a path outside the workspace, a clamped argument, a
-//! failure the program swallowed. Read after the output, "the first 40 of 213"
-//! arrives after the model has already taken 40 for all of them. Nothing this
-//! module generates may follow the stream.
+//! failure the program swallowed. Nothing this module generates follows the
+//! stream.
 //!
 //! Uniformly shaped object arrays render as `[N]{a,b}:` tables (columns in
 //! first-seen key order, a key a row omits renders as an empty cell); other
 //! values render as compact JSON. A log line or value string that is itself one
-//! JSON value is lexically compacted; other strings stay verbatim. Structured
-//! values degrade structurally, while over-budget strings keep both a head and
-//! a tail (WP-210 C). [`RUN_CODE_VIEW_MAX_BYTES`] remains the hard byte
-//! fallback. Cuts land on UTF-8 boundaries, and every omission marker says
-//! whether the token budget or the byte cap caused it. This module does not
-//! emit a JSON copy of the run.
+//! JSON value is lexically compacted; other strings stay verbatim. When the
+//! stream exceeds [`RUN_CODE_VIEW_MAX_BYTES`], the complete unclipped stream is
+//! spilled to `.litecode/run/` and the view keeps a simple 50/50 head+tail cut
+//! with `… N bytes total; full output: <path>`. This module does not emit a
+//! JSON copy of the run.
 
 use std::collections::BTreeMap;
 
@@ -33,10 +31,6 @@ use crate::types::utf8::prefix_utf8;
 
 /// Hard cap for the model-facing `run_code` view, including omission notes.
 pub const RUN_CODE_VIEW_MAX_BYTES: usize = 65_536;
-/// The one cl100k budget for the whole output stream. Omission markers count
-/// against it. There is deliberately no second budget: the return value is just
-/// the last entry and competes with the console lines for the same tokens.
-pub const RUN_CODE_VIEW_TOKENS: usize = 10_000;
 
 const HEADER_CAP: usize = 1024;
 const HEAD_MESSAGE_CAP: usize = 240;
@@ -54,13 +48,15 @@ pub(super) struct LedgerSnap {
     pub brief: Option<String>,
 }
 
-/// An uncaught nested-call error, used for the header failure tag.
+/// An uncaught nested-call error, used for the header failure tag and per-item
+/// failure details.
 pub(super) struct UncaughtToolError {
     pub seq: u64,
     pub tool: String,
     pub code: String,
     pub message: String,
     pub summary: String,
+    pub details: Option<Value>,
 }
 
 /// A one-line summary of one call's facts.
@@ -95,7 +91,7 @@ pub(super) enum ReminderKind {
 }
 
 /// One reminder takes one line, at most this many characters, and is charged to
-/// the same token budget as the stream.
+/// the shared view budget.
 const REMINDER_MAX_CHARS: usize = 120;
 /// A contract warning is longer by nature: it carries the real field list, and
 /// cutting it at the reminder cap would drop the part the model has to read.
@@ -147,84 +143,6 @@ pub(super) struct RunReport {
     pub coerced_non_finite: Option<String>,
 }
 
-pub(super) struct SpillTarget {
-    workspace_root: Option<std::path::PathBuf>,
-    rel_path: String,
-    chunks: Vec<String>,
-}
-
-impl SpillTarget {
-    fn new(workspace_root: Option<&std::path::Path>) -> Self {
-        let rel_path = if workspace_root.is_some() {
-            format!(".litecode/bash/run_code_{}.txt", crate::terminal::bash_nonce())
-        } else {
-            String::new()
-        };
-        Self {
-            workspace_root: workspace_root.map(std::path::Path::to_path_buf),
-            rel_path,
-            chunks: Vec::new(),
-        }
-    }
-
-    fn path_hint(&self) -> Option<&str> {
-        self.workspace_root.as_ref().map(|_| self.rel_path.as_str())
-    }
-
-    fn checkpoint(&self) -> usize {
-        self.chunks.len()
-    }
-
-    fn rollback(&mut self, checkpoint: usize) {
-        self.chunks.truncate(checkpoint);
-    }
-
-    fn push(&mut self, text: impl Into<String>) {
-        if self.workspace_root.is_none() {
-            return;
-        }
-        let text = text.into();
-        if !text.is_empty() {
-            self.chunks.push(text);
-        }
-    }
-
-    fn commit(self) {
-        let Some(root) = self.workspace_root else {
-            return;
-        };
-        if self.chunks.is_empty() {
-            return;
-        }
-        let body = if self.chunks.len() == 1 {
-            self.chunks.into_iter().next().unwrap_or_default()
-        } else {
-            self.chunks
-                .into_iter()
-                .enumerate()
-                .map(|(index, chunk)| {
-                    if index == 0 {
-                        chunk
-                    } else {
-                        format!("--- [omitted chunk {}] ---\n{chunk}", index + 1)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        };
-        let target = root.join(&self.rel_path);
-        if let Some(parent) = target.parent()
-            && let Err(error) = std::fs::create_dir_all(parent)
-        {
-            tracing::warn!(error = %error, "failed to create run_code spill directory");
-            return;
-        }
-        if let Err(error) = std::fs::write(&target, body) {
-            tracing::warn!(error = %error, path = %target.display(), "failed to write run_code spill file");
-        }
-    }
-}
-
 #[cfg(test)]
 pub(super) fn render_model_view(report: &RunReport) -> String {
     render_model_view_in(report, None)
@@ -234,41 +152,41 @@ pub(super) fn render_model_view_in(
     report: &RunReport,
     workspace_root: Option<&std::path::Path>,
 ) -> String {
-    let mut spill = SpillTarget::new(workspace_root);
     let header = render_header_block(report);
-    // One budget covers everything the model sees: header, manifest, block, stream.
-    let mut budget = RUN_CODE_VIEW_TOKENS.saturating_sub(count_tokens(&header));
     let manifest = render_completed_calls(report);
-    if let Some(manifest) = &manifest {
-        budget = budget.saturating_sub(count_tokens(manifest));
-    }
-    let output_limited = report.failure_kind == Some(FailureKind::OutputLimit);
-    // Facts the stream cannot state come first: a cut or a risk read after the
-    // output is read too late to change what the model took the output for.
-    let upfloat = render_upfloat(report, budget / 2, manifest.as_deref());
-    let stream = render_stream(
-        &report.entries,
-        budget.saturating_sub(count_tokens(&upfloat)),
-        output_limited,
-        &mut spill,
-    );
-    let mut sections = vec![header];
-    sections.extend(manifest);
+    let after_head = RUN_CODE_VIEW_MAX_BYTES
+        .saturating_sub(header.len())
+        .saturating_sub(manifest.as_ref().map_or(0, |m| m.len() + 2));
+    let upfloat = render_upfloat(report, after_head / 3, manifest.as_deref());
+
+    let mut prefix_parts = vec![header];
+    prefix_parts.extend(manifest);
     if !upfloat.is_empty() {
-        sections.push(upfloat);
+        prefix_parts.push(upfloat);
     }
-    if !stream.is_empty() {
-        sections.push(stream);
+    let prefix = prefix_parts.join("\n\n");
+
+    let output_limited = report.failure_kind == Some(FailureKind::OutputLimit);
+    if report.entries.is_empty() {
+        return prefix;
     }
-    let text = sections.join("\n\n");
-    let rendered = if text.len() <= RUN_CODE_VIEW_MAX_BYTES {
-        text
+    let mut lines: Vec<String> = report.entries.iter().map(entry_line).collect();
+    if output_limited && let Some(last) = lines.last_mut() {
+        last.push_str(OUTPUT_LIMIT_MARK);
+    }
+    let full_stream = lines.join("\n");
+    let stream_budget = RUN_CODE_VIEW_MAX_BYTES.saturating_sub(prefix.len() + 2);
+    let shown_stream = crate::tool::output::cut_and_spill_full(
+        &full_stream,
+        stream_budget,
+        workspace_root,
+        "run_code",
+    );
+    if shown_stream.is_empty() {
+        prefix
     } else {
-        // Byte-heavy content can still trip the cap after the token budget passed.
-        byte_cut(&text, RUN_CODE_VIEW_MAX_BYTES, &mut spill)
-    };
-    spill.commit();
-    rendered
+        format!("{prefix}\n\n{shown_stream}")
+    }
 }
 
 
@@ -285,6 +203,7 @@ const OUTPUT_LIMIT_MARK: &str = " [output limit reached]";
 /// already landed is not undone by the failure. Compressed to tool, outcome and a
 /// one-line digest.
 fn render_completed_calls(report: &RunReport) -> Option<String> {
+    const MANIFEST_MAX_BYTES: usize = RUN_CODE_VIEW_MAX_BYTES / 3;
     if report.failure_kind.is_none() || did_not_start(report) {
         return None;
     }
@@ -297,7 +216,9 @@ fn render_completed_calls(report: &RunReport) -> Option<String> {
         return None;
     }
     let mut lines = Vec::with_capacity(settled.len());
-    for call in settled {
+    let mut used = 0usize;
+    let mut shown = 0usize;
+    for call in &settled {
         let status = if call.state.starts_with("error") {
             match &call.error_code {
                 Some(code) => format!("failed({code})"),
@@ -314,34 +235,25 @@ fn render_completed_calls(report: &RunReport) -> Option<String> {
         } else {
             format!(" {}", call.summary)
         };
-        lines.push(format!(
+        let line = format!(
             "#{} {}{summary} → {status}: {brief}",
             call.seq,
             tool_path(&call.tool)
-        ));
+        );
+        let cost = line.len() + usize::from(!lines.is_empty());
+        if used + cost + 24 > MANIFEST_MAX_BYTES && !lines.is_empty() {
+            break;
+        }
+        used += cost;
+        shown += 1;
+        lines.push(line);
     }
-    let hidden = call_total(report).saturating_sub(report.calls.len());
+    let hidden = call_total(report).saturating_sub(report.calls.len())
+        + settled.len().saturating_sub(shown);
     if hidden > 0 {
         lines.push(format!("… {hidden} more"));
     }
     Some(lines.join("\n"))
-}
-
-/// Final byte-cap cut: both ends survive and the middle says why.
-fn byte_cut(text: &str, cap: usize, spill: &mut SpillTarget) -> String {
-    if text.len() <= cap {
-        return text.to_string();
-    }
-    let head = crate::types::utf8::prefix_utf8(text, cap * 2 / 3).to_string();
-    let tail = crate::types::utf8::suffix_utf8(text, cap / 4).to_string();
-    let omitted_slice = &text[head.len()..text.len() - tail.len()];
-    let omitted = omitted_slice.len();
-    spill.push(omitted_slice);
-    let saved = match spill.path_hint() {
-        Some(path) => format!("; omitted part saved to {path}"),
-        None => String::new(),
-    };
-    format!("{head}\n… [truncated by byte cap: {omitted} bytes omitted{saved}] …\n{tail}")
 }
 
 /// Summaries for one settled call, keyed by the tool that produced it.
@@ -477,12 +389,15 @@ fn render_direct_read_body(data: &Value, metadata: Option<&Value>) -> String {
     let Some(lines) = data.get("lines").and_then(Value::as_array) else {
         return render_result_body(data);
     };
+    if lines.is_empty() {
+        return "lines: (empty)".to_string();
+    }
+    if let Some(rendered) = render_line_text_array(lines) {
+        return rendered;
+    }
     let Some(strs): Option<Vec<&str>> = lines.iter().map(Value::as_str).collect() else {
         return render_result_body(data);
     };
-    if strs.is_empty() {
-        return "lines: (empty)".to_string();
-    }
     let meta = metadata.and_then(Value::as_object);
     let skipped = meta
         .and_then(|m| m.get("skipped_in_context"))
@@ -613,7 +528,16 @@ fn unified_exec_reminders(
         ));
     }
     if object.get("truncated").and_then(Value::as_bool) == Some(true) {
-        out.push("output was clipped by max_output_tokens".to_string());
+        let total_bytes = object
+            .get("total_bytes")
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .unwrap_or(0);
+        let output_file = object.get("output_file").and_then(Value::as_str);
+        out.push(crate::tool::output::full_output_notice(
+            total_bytes,
+            output_file,
+        ));
     }
     out.extend(clamp_reminders(object));
 }
@@ -823,88 +747,9 @@ fn entry_line(entry: &EntryView) -> String {
     }
 }
 
-/// Render the whole stream within one token budget.
-///
-/// Fits: everything, in order. Over budget: every entry gets a fair share of the
-/// same budget (water-filling, so one long line cannot starve the rest). Too many
-/// entries for a meaningful share: keep the head and say how many are gone. The
-/// return value is not special-cased; it is the last entry and is cut like one.
-fn omitted_entries_marker(omitted: usize, spill_path: Option<&str>) -> String {
-    match spill_path {
-        Some(path) => format!(
-            "… {omitted} entries omitted (token budget; omitted entries saved to {path})"
-        ),
-        None => format!("… {omitted} entries omitted (token budget)"),
-    }
-}
-
-fn render_stream(
-    entries: &[EntryView],
-    budget: usize,
-    output_limited: bool,
-    spill: &mut SpillTarget,
-) -> String {
-    if entries.is_empty() || budget == 0 {
-        return String::new();
-    }
-    let mut lines: Vec<String> = entries.iter().map(entry_line).collect();
-    if output_limited && let Some(last) = lines.last_mut() {
-        last.push_str(OUTPUT_LIMIT_MARK);
-    }
-    let costs: Vec<usize> = lines.iter().map(|line| count_tokens(line)).collect();
-    let total: usize = costs.iter().sum();
-    if total <= budget {
-        return lines.join("
-");
-    }
-    if let Some(allowances) = water_fill_allowances(&costs, budget) {
-        let checkpoint = spill.checkpoint();
-        let mut out = Vec::with_capacity(entries.len());
-        for (index, entry) in entries.iter().enumerate() {
-            out.push(entry_within(entry, &lines[index], allowances[index], spill));
-        }
-        let text = out.join("
-");
-        if count_tokens(&text) <= budget {
-            return text;
-        }
-        spill.rollback(checkpoint);
-    }
-    // Not even a minimum share per entry: keep the head of the stream.
-    let reserve = count_tokens(&omitted_entries_marker(999, spill.path_hint())) + 1;
-    let mut kept = 0usize;
-    let mut used = 0usize;
-    for cost in &costs {
-        if used + cost + reserve > budget {
-            break;
-        }
-        used += cost;
-        kept += 1;
-    }
-    // BPE counts are not additive across line joins, so trim until it fits.
-    loop {
-        let mut out: Vec<String> = lines[..kept].to_vec();
-        let omitted = lines.len() - kept;
-        if omitted > 0 {
-            out.push(omitted_entries_marker(omitted, spill.path_hint()));
-        }
-        let text = out.join("
-");
-        if count_tokens(&text) <= budget || kept == 0 {
-            if omitted > 0 {
-                spill.push(lines[kept..].join("\n"));
-            }
-            return text;
-        }
-        kept -= 1;
-    }
-}
-
 /// The one block above the stream: every fact the program's own output cannot
 /// state, in a fixed order — contract violations, a failure the program
-/// swallowed, then the per-call boundary facts. One budget for the block: the
-/// two trailing sections it replaces could use `budget / 4` each, so this can
-/// never cost the stream more than before.
+/// swallowed, then the per-call boundary facts.
 fn render_upfloat(report: &RunReport, budget: usize, manifest: Option<&str>) -> String {
     // Failure lines are built first: a contract warning that one of them already
     // states is the same fact, and the anchored line is the one that can be
@@ -938,28 +783,30 @@ fn render_upfloat(report: &RunReport, budget: usize, manifest: Option<&str>) -> 
         lines.push(warning_line(warning));
     }
     lines.extend(failures.into_iter().map(|(_, line)| line));
+    lines.extend(uncaught_tool_error_detail_lines(report));
     for reminder in report
         .reminders
         .iter()
         .filter(|reminder| reminder.kind == ReminderKind::Boundary)
     {
-        lines.push(reminder_line(&anchor_line(reminder)));
+        let text = anchor_line(reminder);
+        if text.contains("full output: ") {
+            lines.push(warning_line(&text));
+        } else {
+            lines.push(reminder_line(&text));
+        }
     }
     let mut seen = std::collections::HashSet::new();
     lines.retain(|line| seen.insert(line.clone()));
     let mut kept: Vec<String> = Vec::with_capacity(lines.len());
     let mut used = 0usize;
     for line in lines {
-        let cost = count_tokens(&line);
+        let cost = line.len() + usize::from(!kept.is_empty());
         if used + cost > budget && !kept.is_empty() {
             break;
         }
         used += cost;
         kept.push(line);
-    }
-    // BPE counts are not additive across the line joins; trim until it fits.
-    while kept.len() > 1 && count_tokens(&kept.join("\n")) > budget {
-        kept.pop();
     }
     kept.join("\n")
 }
@@ -981,6 +828,61 @@ fn tool_path(tool: &str) -> String {
     } else {
         format!("tools.{tool}")
     }
+}
+
+/// Per-item failures for an uncaught batch error (such as `apply_edits`) or an
+/// unclipped error message when the 240-byte head banner cut off details.
+fn uncaught_tool_error_detail_lines(report: &RunReport) -> Vec<String> {
+    let Some(error) = &report.tool_error else {
+        return Vec::new();
+    };
+    let prefix = format!("{REMINDER_MARK}#{} {}", error.seq, tool_path(&error.tool));
+    if let Some(results) = error
+        .details
+        .as_ref()
+        .and_then(|details| details.get("results"))
+        .and_then(Value::as_array)
+    {
+        let mut out = Vec::new();
+        for item in results {
+            if item.get("ok").and_then(Value::as_bool) != Some(false) {
+                continue;
+            }
+            let index = item.get("index").and_then(Value::as_u64).unwrap_or(0);
+            let path = item.get("path").and_then(Value::as_str).unwrap_or("?");
+            let reason = item
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or(&error.code);
+            let detail = item.get("detail").and_then(Value::as_str).unwrap_or("");
+            let trimmed = detail.trim();
+            if trimmed.is_empty() {
+                out.push(format!("{prefix} edit #{index} ({path}) [{reason}]"));
+                continue;
+            }
+            let collapsed = trimmed.replace(['\r', '\n'], " ");
+            let capped: String = collapsed.chars().take(WARNING_MAX_CHARS).collect();
+            let suffix = if capped.len() < collapsed.len() { "…" } else { "" };
+            out.push(format!(
+                "{prefix} edit #{index} ({path}) [{reason}]: {capped}{suffix}"
+            ));
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
+    let first_line = error.message.lines().next().map(str::trim).unwrap_or("");
+    let trimmed = error.message.trim();
+    if !trimmed.is_empty()
+        && (error.message.len() > HEAD_MESSAGE_CAP || first_line != trimmed)
+    {
+        let collapsed = trimmed.replace(['\r', '\n'], " ");
+        let cap = WARNING_MAX_CHARS * 2;
+        let capped: String = collapsed.chars().take(cap).collect();
+        let suffix = if capped.len() < collapsed.len() { "…" } else { "" };
+        return vec![format!("{prefix}: {capped}{suffix}")];
+    }
+    Vec::new()
 }
 
 /// A failure line carries the reason code and what to fix, so it gets the
@@ -1036,529 +938,26 @@ fn reminder_line(text: &str) -> String {
     marker_line(text, REMINDER_MAX_CHARS)
 }
 
-/// Render one entry inside its share of the budget.
-fn entry_within(
-    entry: &EntryView,
-    line: &str,
-    allowance: usize,
-    spill: &mut SpillTarget,
-) -> String {
-    let cost = count_tokens(line);
-    match entry {
-        EntryView::Text { .. } => {
-            if cost <= allowance {
-                line.to_string()
-            } else {
-                truncate_string_result(line, allowance, "", cost, spill)
-            }
-        }
-        EntryView::Value(value) => {
-            let body = budget_value(value, allowance, spill);
-            if body.is_empty() {
-                spill.push(render_result_body(value));
-                match spill.path_hint() {
-                    Some(path) => format!("… [value omitted (token budget; saved to {path})]"),
-                    None => "… [value omitted (token budget)]".to_string(),
-                }
-            } else {
-                body
-            }
-        }
-    }
-}
-
-
-fn count_tokens(text: &str) -> usize {
-    crate::session::estimate::count_text_tokens(text)
-}
-
 fn log_line(level: &str, message: &str) -> String {
     let message = compact_json_text(message).unwrap_or_else(|| message.to_string());
     format!("[{level}] {message}")
 }
 
-/// Least tokens one entry must get before fair sharing is worth it; below this
-/// a truncated entry is almost all marker.
-const MIN_LOG_ENTRY_TOKENS: usize = 64;
-
-/// Per-entry token allowances covering the whole section: entries at or under
-/// the current share keep everything, the rest split the leftover evenly
-/// (water-filling). None when not every entry can get MIN_LOG_ENTRY_TOKENS;
-/// that many entries are better served by the head prefix plus one omission
-/// marker.
-fn water_fill_allowances(costs: &[usize], budget: usize) -> Option<Vec<usize>> {
-    if costs.is_empty() || budget == 0 {
+fn render_line_text_array(items: &[Value]) -> Option<String> {
+    if items.is_empty() {
         return None;
     }
-    let mut share = budget / costs.len();
-    if share < MIN_LOG_ENTRY_TOKENS {
-        return None;
-    }
-    let mut fixed = vec![false; costs.len()];
-    loop {
-        let mut used = 0usize;
-        let mut pending = 0usize;
-        for (index, cost) in costs.iter().enumerate() {
-            if fixed[index] {
-                used += cost;
-            } else if *cost <= share {
-                fixed[index] = true;
-                used += cost;
-            } else {
-                pending += 1;
-            }
-        }
-        if pending == 0 {
-            return Some(costs.to_vec());
-        }
-        let next = budget.saturating_sub(used) / pending;
-        if next < MIN_LOG_ENTRY_TOKENS {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let map = item.as_object()?;
+        if map.len() != 2 {
             return None;
         }
-        if next == share {
-            let mut allowances = costs.to_vec();
-            for (index, allowance) in allowances.iter_mut().enumerate() {
-                if !fixed[index] {
-                    *allowance = share;
-                }
-            }
-            return Some(allowances);
-        }
-        share = next;
+        let line = map.get("line")?.as_u64()?;
+        let text = map.get("text")?.as_str()?;
+        out.push(format!("{line}: {text}"));
     }
-}
-
-fn format_ktok(tokens: usize) -> String {
-    if tokens >= 1000 {
-        format!("{:.1}k", tokens as f64 / 1000.0)
-    } else {
-        tokens.to_string()
-    }
-}
-
-fn over_budget_notice(total: usize, budget: usize, spill_path: Option<&str>) -> String {
-    match spill_path {
-        Some(path) => format!(
-            "result {} tok exceeds {}; truncated by token budget; omitted content saved to {path} — return summary/counts/paths",
-            format_ktok(total),
-            format_ktok(budget),
-        ),
-        None => format!(
-            "result {} tok exceeds {}; truncated by token budget — return summary/counts/paths",
-            format_ktok(total),
-            format_ktok(budget),
-        ),
-    }
-}
-
-fn fits(text: &str, budget: usize) -> bool {
-    text.len() <= budget || count_tokens(text) <= budget
-}
-
-/// Render `value` within `budget` cl100k tokens, counting the over-budget
-/// notice and omission markers (WP-210 C).
-///
-/// Strings are text and keep both ends: a token-budgeted head, a middle-cut
-/// marker, and a token-budgeted tail. Structured values degrade structurally
-/// and stay valid JSON / whole table rows:
-/// 1. every array keeps its first K items, the rest become `"… N more"`
-///    (tables: one `… N more rows` line);
-/// 2. strings longer than S chars become `prefix…(N chars)`;
-/// 3. containers deeper than D become `"{… N keys}"` / `"[… N items]"`.
-///
-/// Content comes before structure: cutting a long string keeps the key and the
-/// useful prefix, while collapsing a container would throw all of it away to
-/// save the same bytes. Each knob is the largest value that fits (binary
-/// search).
-fn budget_value(value: &Value, budget: usize, spill: &mut SpillTarget) -> String {
-    let body = render_result_body(value);
-    if fits(&body, budget) {
-        return body;
-    }
-    if budget == 0 {
-        return String::new();
-    }
-    let total = count_tokens(&body);
-    let notice = over_budget_notice(total, budget, spill.path_hint());
-    if let Value::String(_) = value {
-        return truncate_string_result(&body, budget, &notice, total, spill);
-    }
-    let render = |shape: &Shape| render_result_body(&degrade(value, shape, 0));
-    let fits_with_notice = |candidate: &str| fits(&format!("{notice}\n{candidate}"), budget);
-    let max_len = longest_array(value);
-    let mut shape = Shape {
-        keep: max_len,
-        depth: DEGRADE_MAX_DEPTH,
-        chars: usize::MAX,
-    };
-    // 1. array length
-    let (mut lo, mut hi) = (0usize, max_len);
-    while lo < hi {
-        let mid = (lo + hi + 1) / 2;
-        shape.keep = mid;
-        if fits_with_notice(&render(&shape)) {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    shape.keep = lo.max(1);
-    if fits_with_notice(&render(&shape)) {
-        if let Some(omitted) = extract_degrade_omitted(value, &shape, 0) {
-            spill.push(compact_json(&omitted));
-        }
-        return format!("{notice}\n{}", render(&shape));
-    }
-    // 2. string length. Try content-preserving cuts before any container
-    //    collapse: a shallow object of long file texts otherwise "fits" by
-    //    replacing every value with `{… N keys}`, which drops the whole payload.
-    let (mut lo, mut hi) = (0usize, longest_string(value));
-    while lo < hi {
-        let mid = (lo + hi + 1) / 2;
-        shape.chars = mid;
-        if fits_with_notice(&render(&shape)) {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    shape.chars = lo;
-    if fits_with_notice(&render(&shape)) {
-        if let Some(omitted) = extract_degrade_omitted(value, &shape, 0) {
-            spill.push(compact_json(&omitted));
-        }
-        return format!("{notice}\n{}", render(&shape));
-    }
-    // 3. depth. Even empty strings are too much; collapse deep containers.
-    let max_depth = depth_of(value);
-    let (mut lo, mut hi) = (1usize, max_depth.clamp(1, DEGRADE_MAX_DEPTH));
-    while lo < hi {
-        let mid = (lo + hi + 1) / 2;
-        shape.depth = mid;
-        if fits_with_notice(&render(&shape)) {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    shape.depth = lo;
-    if fits_with_notice(&render(&shape)) {
-        if let Some(omitted) = extract_degrade_omitted(value, &shape, 0) {
-            spill.push(compact_json(&omitted));
-        }
-        return format!("{notice}\n{}", render(&shape));
-    }
-    // Still over (e.g. a huge flat object): whole leading lines only, with an
-    // explicit token-budget marker so this cut is distinguishable from the
-    // 64KB byte fallback.
-    let marker = match spill.path_hint() {
-        Some(path) => format!("… [truncated by token budget; omitted part saved to {path}]"),
-        None => "… [truncated by token budget]".to_string(),
-    };
-    let reserve = count_tokens(&notice) + count_tokens(&marker) + 1;
-    let mut cap = budget.saturating_sub(reserve);
-    loop {
-        let kept = token_prefix(&body, cap);
-        let rendered = format!("{notice}\n{kept}\n{marker}");
-        if fits(&rendered, budget) {
-            spill.push(&body[kept.len()..]);
-            return rendered;
-        }
-        if cap == 0 {
-            break;
-        }
-        let over = count_tokens(&rendered).saturating_sub(budget).max(1);
-        cap = cap.saturating_sub(over);
-    }
-    let compact = format!("{notice}\n{marker}");
-    if fits(&compact, budget) {
-        spill.push(body);
-        return compact;
-    }
-    if fits(&notice, budget) {
-        spill.push(body);
-        return notice;
-    }
-    String::new()
-}
-
-fn middle_cut_marker(
-    kept_tokens: usize,
-    total: usize,
-    omitted_tokens: usize,
-    spill_path: Option<&str>,
-) -> String {
-    match spill_path {
-        Some(path) => format!(
-            "\n… [truncated by token budget: {kept_tokens} of {total} tok kept; {omitted_tokens} tok omitted from the middle; omitted part saved to {path}] …\n"
-        ),
-        None => format!(
-            "\n… [truncated by token budget: {kept_tokens} of {total} tok kept; {omitted_tokens} tok omitted from the middle] …\n"
-        ),
-    }
-}
-
-fn truncate_string_result(
-    body: &str,
-    budget: usize,
-    notice: &str,
-    total: usize,
-    spill: &mut SpillTarget,
-) -> String {
-    let prefix = if notice.is_empty() {
-        String::new()
-    } else {
-        format!("{notice}\n")
-    };
-    let mut content_budget = budget
-        .saturating_sub(count_tokens(notice))
-        .saturating_sub(if spill.path_hint().is_some() { 56 } else { 32 });
-    loop {
-        let head_budget = content_budget * 2 / 3;
-        let head = token_prefix(body, head_budget);
-        let head_tokens = count_tokens(head);
-        let tail_budget = content_budget.saturating_sub(head_tokens);
-        let tail = if head.len() < body.len() {
-            token_suffix(&body[head.len()..], tail_budget)
-        } else {
-            ""
-        };
-        let kept_tokens = head_tokens + count_tokens(tail);
-        let omitted_tokens = total.saturating_sub(kept_tokens);
-        let marker = middle_cut_marker(kept_tokens, total, omitted_tokens, spill.path_hint());
-        let rendered = if tail.is_empty() {
-            format!("{prefix}{head}{marker}")
-        } else {
-            format!("{prefix}{head}{marker}{tail}")
-        };
-        if count_tokens(&rendered) <= budget {
-            let tail_start = body.len().saturating_sub(tail.len());
-            if head.len() < tail_start {
-                spill.push(&body[head.len()..tail_start]);
-            }
-            return rendered;
-        }
-        if content_budget == 0 {
-            break;
-        }
-        let over = count_tokens(&rendered).saturating_sub(budget).max(16);
-        content_budget = content_budget.saturating_sub(over);
-    }
-    let compact = match spill.path_hint() {
-        Some(path) => format!(
-            "{prefix}… [truncated by token budget: 0 of {total} tok kept; omitted part saved to {path}]"
-        ),
-        None => format!("{prefix}… [truncated by token budget: 0 of {total} tok kept]"),
-    };
-    if fits(&compact, budget) {
-        spill.push(body);
-        compact
-    } else {
-        String::new()
-    }
-}
-
-/// Extract only the slices omitted by [`degrade`] so a spilled file never
-/// repeats array prefixes, kept keys, or kept string prefixes already shown.
-fn extract_degrade_omitted(value: &Value, shape: &Shape, depth: usize) -> Option<Value> {
-    match value {
-        Value::Array(items) => {
-            if depth >= shape.depth && !items.is_empty() {
-                return Some(value.clone());
-            }
-            let keep = items.len().min(shape.keep);
-            let mut out = serde_json::Map::new();
-            let sub: Vec<Value> = items[..keep]
-                .iter()
-                .enumerate()
-                .filter_map(|(i, item)| {
-                    extract_degrade_omitted(item, shape, depth + 1)
-                        .map(|rest| serde_json::json!({"index": i, "omitted": rest}))
-                })
-                .collect();
-            if !sub.is_empty() {
-                out.insert("truncated_items".into(), Value::Array(sub));
-            }
-            if keep < items.len() {
-                out.insert("omitted_from_index".into(), Value::from(keep));
-                out.insert("omitted_items".into(), Value::Array(items[keep..].to_vec()));
-            }
-            (!out.is_empty()).then_some(Value::Object(out))
-        }
-        Value::Object(map) => {
-            if depth >= shape.depth && !map.is_empty() {
-                return Some(value.clone());
-            }
-            let mut out = serde_json::Map::new();
-            for (key, child) in map {
-                if let Some(rest) = extract_degrade_omitted(child, shape, depth + 1) {
-                    out.insert(key.clone(), rest);
-                }
-            }
-            (!out.is_empty()).then_some(Value::Object(out))
-        }
-        Value::String(text) => {
-            let count = text.chars().count();
-            if count > shape.chars {
-                let tail: String = text.chars().skip(shape.chars).collect();
-                Some(Value::String(tail))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-const DEGRADE_MAX_DEPTH: usize = 256;
-
-struct Shape {
-    keep: usize,
-    depth: usize,
-    chars: usize,
-}
-
-fn more_marker(count: usize) -> Value {
-    Value::String(format!("… {count} more"))
-}
-
-fn is_more_marker(value: &Value) -> Option<usize> {
-    let text = value.as_str()?;
-    text.strip_prefix("… ")?.strip_suffix(" more")?.parse().ok()
-}
-
-/// Apply `shape` to a copy of `value`. Recursion is bounded by
-/// [`DEGRADE_MAX_DEPTH`]: anything deeper collapses to a placeholder.
-fn degrade(value: &Value, shape: &Shape, depth: usize) -> Value {
-    match value {
-        Value::Array(items) => {
-            if depth >= shape.depth && !items.is_empty() {
-                return Value::String(format!("[…{} items]", items.len()));
-            }
-            let keep = items.len().min(shape.keep);
-            let mut out: Vec<Value> = items[..keep]
-                .iter()
-                .map(|item| degrade(item, shape, depth + 1))
-                .collect();
-            if keep < items.len() {
-                out.push(more_marker(items.len() - keep));
-            }
-            Value::Array(out)
-        }
-        Value::Object(map) => {
-            if depth >= shape.depth && !map.is_empty() {
-                return Value::String(format!("{{…{} keys}}", map.len()));
-            }
-            Value::Object(
-                map.iter()
-                    .map(|(key, child)| (key.clone(), degrade(child, shape, depth + 1)))
-                    .collect(),
-            )
-        }
-        Value::String(text) => {
-            let count = text.chars().count();
-            if count > shape.chars {
-                let cut: String = text.chars().take(shape.chars).collect();
-                Value::String(format!("{cut}…({count} chars)"))
-            } else {
-                value.clone()
-            }
-        }
-        other => other.clone(),
-    }
-}
-
-fn walk_stats(value: &Value) -> (usize, usize, usize) {
-    // (longest array, max depth, longest string in chars), iterative.
-    let (mut array, mut depth, mut string) = (0usize, 0usize, 0usize);
-    let mut stack = vec![(value, 1usize)];
-    while let Some((node, level)) = stack.pop() {
-        depth = depth.max(level);
-        match node {
-            Value::Array(items) => {
-                array = array.max(items.len());
-                stack.extend(items.iter().map(|item| (item, level + 1)));
-            }
-            Value::Object(map) => stack.extend(map.values().map(|child| (child, level + 1))),
-            Value::String(text) => string = string.max(text.chars().count()),
-            _ => {}
-        }
-    }
-    (array, depth, string)
-}
-
-fn longest_array(value: &Value) -> usize {
-    walk_stats(value).0
-}
-
-fn depth_of(value: &Value) -> usize {
-    walk_stats(value).1
-}
-
-fn longest_string(value: &Value) -> usize {
-    walk_stats(value).2
-}
-
-/// Longest prefix within `budget` tokens. Cuts at a line end when at least one
-/// whole line fits (tables never lose half a row), otherwise at a char boundary.
-fn token_prefix(body: &str, budget: usize) -> &str {
-    let line_ends: Vec<usize> = body
-        .char_indices()
-        .filter(|(_, c)| *c == '\n')
-        .map(|(i, _)| i)
-        .collect();
-    // Largest k such that the first k lines fit.
-    let (mut lo, mut hi) = (0usize, line_ends.len());
-    while lo < hi {
-        let mid = (lo + hi + 1) / 2;
-        if count_tokens(&body[..line_ends[mid - 1]]) <= budget {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    if lo > 0 {
-        return &body[..line_ends[lo - 1]];
-    }
-    let first = &body[..line_ends.first().copied().unwrap_or(body.len())];
-    let bounds: Vec<usize> = first
-        .char_indices()
-        .map(|(i, _)| i)
-        .chain([first.len()])
-        .collect();
-    let (mut lo, mut hi) = (0usize, bounds.len() - 1);
-    while lo < hi {
-        let mid = (lo + hi + 1) / 2;
-        if count_tokens(&first[..bounds[mid]]) <= budget {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    &first[..bounds[lo]]
-}
-
-/// Longest suffix of `text` within `budget` tokens, cut at a char boundary.
-fn token_suffix(text: &str, budget: usize) -> &str {
-    if text.len() <= budget || count_tokens(text) <= budget {
-        return text;
-    }
-    let bounds: Vec<usize> = text
-        .char_indices()
-        .map(|(i, _)| i)
-        .chain([text.len()])
-        .collect();
-    // Smallest start index whose suffix fits.
-    let (mut lo, mut hi) = (0usize, bounds.len() - 1);
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        if count_tokens(&text[bounds[mid]..]) <= budget {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    &text[bounds[lo]..]
+    Some(out.join("\n"))
 }
 
 fn render_read_lines_object(map: &serde_json::Map<String, Value>) -> Option<String> {
@@ -1566,11 +965,14 @@ fn render_read_lines_object(map: &serde_json::Map<String, Value>) -> Option<Stri
         return None;
     }
     let lines = map.get("lines")?.as_array()?;
-    let strs: Option<Vec<&str>> = lines.iter().map(Value::as_str).collect();
-    let strs = strs?;
-    if strs.is_empty() {
+    if lines.is_empty() {
         return Some("lines: (empty)".to_string());
     }
+    if let Some(rendered) = render_line_text_array(lines) {
+        return Some(format!("lines:\n{rendered}"));
+    }
+    let strs: Option<Vec<&str>> = lines.iter().map(Value::as_str).collect();
+    let strs = strs?;
     let mut out = String::from("lines:");
     for line in strs {
         out.push('\n');
@@ -1582,10 +984,15 @@ fn render_read_lines_object(map: &serde_json::Map<String, Value>) -> Option<Stri
 fn render_result_body(value: &Value) -> String {
     match value {
         Value::String(text) => compact_json_text(text).unwrap_or_else(|| text.clone()),
-        Value::Array(items) => match table_columns(items) {
-            Some(columns) => render_table("", items, &columns),
-            None => compact_json(value),
-        },
+        Value::Array(items) => {
+            if let Some(rendered) = render_line_text_array(items) {
+                return rendered;
+            }
+            match table_columns(items) {
+                Some(columns) => render_table("", items, &columns),
+                None => compact_json(value),
+            }
+        }
         Value::Object(map) => {
             if let Some(rendered) = render_read_lines_object(map) {
                 return rendered;
@@ -1690,27 +1097,8 @@ const TABLE_MIN_ROWS: usize = 3;
 /// array with one unique key per row would otherwise render a useless table.
 const TABLE_MAX_COLUMNS: usize = 16;
 
-/// Rows and the trailing `… N more` marker added by [`degrade`], if any.
-fn split_more(items: &[Value]) -> (&[Value], Option<usize>) {
-    match items.split_last() {
-        Some((last, rows)) => match is_more_marker(last) {
-            Some(count) => (rows, Some(count)),
-            None => (items, None),
-        },
-        None => (items, None),
-    }
-}
-
-/// Columns of a table-shaped array, or `None` when it is not tabular.
-///
-/// Table shape: every row is an object, at least 3 rows (counting rows cut by
-/// the budget), no row is empty, every value is primitive, and the union of
-/// keys stays within `TABLE_MAX_COLUMNS`. Rows need not share the same key
-/// set: the columns are the union in first-seen order (the first row's key
-/// order first), and a row that omits a key renders it as an empty cell.
 fn table_columns(items: &[Value]) -> Option<Vec<String>> {
-    let (items, more) = split_more(items);
-    if items.len() + more.unwrap_or(0) < TABLE_MIN_ROWS || items.is_empty() {
+    if items.len() < TABLE_MIN_ROWS {
         return None;
     }
     let mut columns: Vec<String> = Vec::new();
@@ -1748,14 +1136,9 @@ fn quote(text: &str) -> String {
     serde_json::to_string(text).unwrap_or_else(|_| format!("\"{text}\""))
 }
 
-/// `key[N]{a,b,c}:` then one `v1,v2,v3` row per element. Columns come from
-/// `table_columns`; a row missing a column renders that cell empty. Rows cut
-/// by the budget end the block with `… N more rows`.
 fn render_table(key: &str, items: &[Value], columns: &[String]) -> String {
-    let (items, more) = split_more(items);
     let header: Vec<String> = columns.iter().map(|c| cell_text(c)).collect();
-    let total = items.len() + more.unwrap_or(0);
-    let mut out = format!("{key}[{total}]{{{}}}:", header.join(","));
+    let mut out = format!("{key}[{}]{{{}}}:", items.len(), header.join(","));
     for item in items {
         let Value::Object(map) = item else { continue };
         let row: Vec<String> = columns
@@ -1764,9 +1147,6 @@ fn render_table(key: &str, items: &[Value], columns: &[String]) -> String {
             .collect();
         out.push('\n');
         out.push_str(&row.join(","));
-    }
-    if let Some(more) = more {
-        out.push_str(&format!("\n… {more} more rows"));
     }
     out
 }
@@ -2250,11 +1630,6 @@ mod tests {
             .retain(|entry| !matches!(entry, EntryView::Value(_)));
         report.entries.push(EntryView::Value(value));
     }
-
-    fn tokens(text: &str) -> usize {
-        crate::session::estimate::count_text_tokens(text)
-    }
-
 
     /// A reminder lands after the entry its call produced.
 
@@ -3157,7 +2532,7 @@ mod tests {
             })
             .collect();
         let out = render_model_view(&report);
-        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tokens", tokens(&out));
+        assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{} bytes", out.len());
         let block: String = out
             .lines()
             .filter(|line| line.starts_with("↳"))
@@ -3165,9 +2540,9 @@ mod tests {
             .join("\n");
         assert!(!block.is_empty(), "{out}");
         assert!(
-            tokens(&block) <= RUN_CODE_VIEW_TOKENS / 2,
-            "{} tokens",
-            tokens(&block)
+            block.len() <= RUN_CODE_VIEW_MAX_BYTES / 2,
+            "{} bytes",
+            block.len()
         );
     }
     /// One line, at most REMINDER_MAX_CHARS, and newlines are collapsed.
@@ -3207,7 +2582,7 @@ mod tests {
             })
             .collect();
         let out = render_model_view(&report);
-        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tokens", tokens(&out));
+        assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{} bytes", out.len());
     }
 
     /// A reminder is distinguishable from a bare returned string.
@@ -3239,7 +2614,6 @@ mod tests {
 
     #[test]
     fn one_budget_covers_the_whole_view() {
-        assert_eq!(RUN_CODE_VIEW_TOKENS, 10_000);
         assert_eq!(RUN_CODE_VIEW_MAX_BYTES, 65_536);
     }
 
@@ -3305,35 +2679,30 @@ mod tests {
         report.entries = (0..200).map(|i| text("log", &format!("line {i}"))).collect();
         let out = render_model_view(&report);
         assert!(
-            tokens(&out) <= RUN_CODE_VIEW_TOKENS + 64,
-            "manifest and stream share one budget: {} tokens",
-            tokens(&out)
+            out.len() <= RUN_CODE_VIEW_MAX_BYTES,
+            "manifest and stream share one budget: {} bytes",
+            out.len()
         );
     }
 
     #[test]
-    fn over_budget_stream_keeps_order_and_marks_the_cut() {
+    fn over_budget_stream_keeps_head_and_tail_and_marks_the_cut() {
         let mut report = base_report();
-        let body = "word ".repeat(12_000);
+        let body = "word ".repeat(20_000);
         report.entries = vec![
+            text("log", "HEAD_STREAM_SENTINEL"),
             text("log", &body),
-            text("log", "MIDDLE_SENTINEL"),
             EntryView::Value(serde_json::json!({ "tail": "TAIL_SENTINEL" })),
         ];
         let out = render_model_view(&report);
-        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tokens", tokens(&out));
+        assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{} bytes", out.len());
         assert!(
-            out.contains("truncated by token budget")
-                || out.contains("entries omitted (token budget)")
-                || out.contains("truncated by byte cap"),
-            "the cut names the budget: {}",
+            out.contains("bytes total"),
+            "the cut names the notice: {}",
             &out[out.len().saturating_sub(300)..]
         );
-        // The first entry keeps its head, the stream keeps its order.
-        assert!(out.contains("[log] word word"), "{out}");
-        let first = out.find("[log] word word").unwrap();
-        let middle = out.find("MIDDLE_SENTINEL").expect("later entries survive");
-        assert!(first < middle, "order is preserved: {out}");
+        assert!(out.contains("HEAD_STREAM_SENTINEL"), "{out}");
+        assert!(out.contains("TAIL_SENTINEL"), "{out}");
     }
 
     #[test]
@@ -3346,62 +2715,22 @@ mod tests {
             }))))
             .collect();
         let out = render_model_view(&report);
-        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tokens", tokens(&out));
-        // The value competes with the log lines: it is cut like any entry.
+        assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{} bytes", out.len());
+        assert!(out.contains("line 0 "), "{out}");
         assert!(
-            out.contains("truncated by token budget")
-                || out.contains("… [value omitted")
-                || out.contains("entries omitted (token budget)"),
+            out.contains("bytes total"),
             "{}",
             &out[out.len().saturating_sub(400)..]
         );
     }
 
-
-    /// Over budget, nothing fits: the stream degrades to one marker line.
     #[test]
-    fn over_budget_stream_snapshot() {
-        let entries = vec![
-            text("log", "alpha alpha alpha alpha"),
-            text("log", "beta beta beta beta"),
-        ];
-        assert_eq!(
-            render_stream(&entries, 12, false, &mut SpillTarget::new(None)),
-            "… 2 entries omitted (token budget)"
-        );
-        // Enough room: the same stream, whole, in order.
-        assert_eq!(
-            render_stream(&entries, 40, false, &mut SpillTarget::new(None)),
-            "[log] alpha alpha alpha alpha\n[log] beta beta beta beta"
-        );
-    }
-
-    #[test]
-    fn many_entries_fall_back_to_a_head_prefix() {
-        let mut report = base_report();
-        report.entries = (0..2_000)
-            .map(|i| text("log", &format!("entry {i} {}", "z".repeat(200))))
-            .collect();
-        let out = render_model_view(&report);
-        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tokens", tokens(&out));
-        assert!(out.contains("entries omitted (token budget)"), "{out}");
-    }
-
-    #[test]
-    fn byte_fallback_keeps_the_tail_and_names_the_byte_cap() {
-        let mut body = String::from("HEAD_SENTINEL");
-        body.push_str(&"a".repeat(RUN_CODE_VIEW_MAX_BYTES));
-        body.push_str("TAIL_SENTINEL");
-        let cut = byte_cut(&body, RUN_CODE_VIEW_MAX_BYTES, &mut SpillTarget::new(None));
-        assert!(cut.len() <= RUN_CODE_VIEW_MAX_BYTES + 120, "{}", cut.len());
-        assert!(cut.contains("HEAD_SENTINEL"), "head kept");
-        assert!(cut.contains("TAIL_SENTINEL"), "tail kept");
-        assert!(cut.contains("truncated by byte cap"), "{cut}");
-        // A huge payload never escapes the cap through the model view.
+    fn byte_fallback_keeps_head_and_tail_for_multibyte_cjk() {
         let mut report = base_report();
         set_logs(&mut report, vec![("log", "中".repeat(60_000))]);
         let out = render_model_view(&report);
-        assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES + 120, "{}", out.len());
+        assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", out.len());
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
     }
 
     #[test]
@@ -3422,11 +2751,10 @@ mod tests {
         let body = format!("HEAD{}\n{}TAIL", "m".repeat(60_000), "n".repeat(60_000));
         report.entries = vec![text("log", &body)];
         let out = render_model_view(&report);
-        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tokens", tokens(&out));
+        assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{} bytes", out.len());
         assert!(out.contains("HEAD"), "{out}");
         assert!(out.contains("TAIL"), "{out}");
     }
-
 
     #[test]
     fn dropped_undefined_and_non_finite_lines_sit_in_the_header() {
@@ -3445,15 +2773,7 @@ mod tests {
     }
 
     #[test]
-    fn cjk_value_is_cut_by_tokens_not_bytes() {
-        let body = "中".repeat(40_000);
-        let out = budget_value(&serde_json::json!(body), 400, &mut SpillTarget::new(None));
-        assert!(out.contains("truncated by token budget"), "{out}");
-        assert!(out.chars().count() < 40_000, "{out}");
-    }
-
-    #[test]
-    fn over_budget_spills_only_omitted_middle_without_repeating_context() {
+    fn over_budget_spills_full_stream_to_litecode_run() {
         let dir = tempfile::tempdir().unwrap();
         let mut report = base_report();
         let middle = (0..12_000)
@@ -3466,17 +2786,17 @@ mod tests {
         );
         report.entries = vec![text("log", &body)];
         let out = render_model_view_in(&report, Some(dir.path()));
-        assert!(tokens(&out) <= RUN_CODE_VIEW_TOKENS, "{} tok", tokens(&out));
+        assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{} bytes", out.len());
         assert!(out.contains("HEAD_START_SENTINEL"), "{out}");
         assert!(out.contains("TAIL_END_SENTINEL"), "{out}");
-        let rel_marker = ".litecode/bash/run_code_";
-        let start = out.find(rel_marker).expect("spill path in marker");
+        let rel_marker = ".litecode/run/run_code_";
+        let start = out.find(rel_marker).expect("spill path in notice");
         let end = out[start..].find(".txt").unwrap() + start + 4;
         let rel = &out[start..end];
         let spilled = std::fs::read_to_string(dir.path().join(rel)).unwrap();
+        assert!(spilled.contains("HEAD_START_SENTINEL"));
         assert!(spilled.contains("MID_LINE_6000"));
-        assert!(!spilled.contains("HEAD_START_SENTINEL"));
-        assert!(!spilled.contains("TAIL_END_SENTINEL"));
+        assert!(spilled.contains("TAIL_END_SENTINEL"));
     }
 
     #[test]
@@ -3486,11 +2806,11 @@ mod tests {
         report.entries = vec![text("log", "short clean output")];
         let out = render_model_view_in(&report, Some(dir.path()));
         assert!(out.contains("short clean output"));
-        assert!(!dir.path().join(".litecode/bash").exists());
+        assert!(!dir.path().join(".litecode/run").exists());
     }
 
     #[test]
-    fn over_budget_object_spills_only_omitted_array_tail() {
+    fn over_budget_object_spills_full_json_to_litecode_run() {
         let dir = tempfile::tempdir().unwrap();
         let mut report = base_report();
         let items: Vec<Value> = (0..4_000)
@@ -3498,12 +2818,12 @@ mod tests {
             .collect();
         set_value(&mut report, serde_json::json!({"items": items}));
         let out = render_model_view_in(&report, Some(dir.path()));
-        let rel_marker = ".litecode/bash/run_code_";
+        let rel_marker = ".litecode/run/run_code_";
         let start = out.find(rel_marker).expect("spill path in notice");
         let end = out[start..].find(".txt").unwrap() + start + 4;
         let rel = &out[start..end];
         let spilled = std::fs::read_to_string(dir.path().join(rel)).unwrap();
-        assert!(!spilled.contains("ITEM_0_MARKER"));
+        assert!(spilled.contains("ITEM_0_MARKER"));
         assert!(spilled.contains("ITEM_3999_MARKER"));
     }
     #[test]
@@ -3530,6 +2850,7 @@ mod tests {
             code: "invalid_args".into(),
             message: "nope".into(),
             summary: "path=a.txt".into(),
+            details: None,
         });
         report.call_total = Some(2);
         let line = header_line(&report);
@@ -3580,8 +2901,46 @@ mod tests {
             render_result_body(&value),
             "lines:\npattern = r\"^[a-z]+\\d\\s*\\\"quoted\\\"$\"\nline\twith\ttabs"
         );
+        let numbered_obj = serde_json::json!({
+            "lines": [
+                { "line": 10, "text": r#"pattern = r"^[a-z]+\d\s*\"quoted\"$""# },
+                { "line": 12, "text": "line\twith\ttabs" },
+            ]
+        });
+        assert_eq!(
+            render_result_body(&numbered_obj),
+            "lines:\n10: pattern = r\"^[a-z]+\\d\\s*\\\"quoted\\\"$\"\n12: line\twith\ttabs"
+        );
         let empty = serde_json::json!({ "lines": [] });
         assert_eq!(render_result_body(&empty), "lines: (empty)");
+    }
+
+    #[test]
+    fn uncaught_apply_edits_details_survive_head_cap() {
+        let long_path = format!("src/{}/target.rs", "nested/".repeat(18));
+        let detail = "old_string was not found; closest match is at line 42:     let needle = true;";
+        let mut report = base_report();
+        report.failure_kind = Some(FailureKind::Exception);
+        report.tool_error = Some(UncaughtToolError {
+            seq: 2,
+            tool: "apply_edits".into(),
+            code: "no_match".into(),
+            message: format!(
+                "applied 1/2 edits (valid edits saved on disk); failed: #2 ({long_path}) [no_match]: {detail}"
+            ),
+            summary: String::new(),
+            details: Some(json!({
+                "applied": 1,
+                "total": 2,
+                "results": [
+                    { "index": 1, "ok": true, "path": "src/ok.rs", "reason": null, "detail": "" },
+                    { "index": 2, "ok": false, "path": long_path, "reason": "no_match", "detail": detail }
+                ]
+            })),
+        });
+        let out = render_model_view(&report);
+        assert!(out.contains("↳ #2 tools.apply_edits edit #2"), "{out}");
+        assert!(out.contains(detail), "{out}");
     }
 
     #[test]
@@ -3703,7 +3062,7 @@ mod tests {
     }
 
     #[test]
-    fn large_string_result_keeps_head_and_tail_under_the_token_budget() {
+    fn large_string_result_keeps_head_and_tail_under_the_byte_cap() {
         let mut report = base_report();
         let body = format!(
             "{}RESULT_END_SENTINEL",
@@ -3716,74 +3075,10 @@ mod tests {
         assert!(text.starts_with("run_code ok"));
         assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
         let result = result_of(&text);
-        assert!(
-            result.contains("truncated by token budget"),
-            "{result}"
-        );
         assert!(result.contains("line 0 alpha"), "{result}");
         assert!(result.contains("RESULT_END_SENTINEL"), "{result}");
-        assert!(result.contains("tok omitted from the middle"), "{result}");
-        assert!(!result.contains("byte cap"), "{result}");
+        assert!(result.contains("bytes total"), "{result}");
         assert!(!text.starts_with("[blob:"));
-    }
-
-    #[test]
-    fn over_budget_object_degrades_structurally_and_stays_valid_json() {
-        let items: Vec<Value> = (0..4_000)
-            .map(|i| serde_json::json!({"id": i, "tags": ["x", "y"], "note": "word ".repeat(10)}))
-            .collect();
-        let text = ok_with(serde_json::json!({"total": 4000, "items": items, "done": true}));
-        let result = result_of(&text);
-        let (notice, body) = result.split_once('\n').unwrap();
-        assert!(notice.contains("exceeds 10.0k; truncated"), "{notice}");
-        let parsed: Value = serde_json::from_str(body).expect("still valid JSON");
-        assert_eq!(parsed["total"], 4000);
-        assert_eq!(parsed["done"], true);
-        let kept = parsed["items"].as_array().unwrap();
-        let marker = kept.last().unwrap().as_str().unwrap();
-        assert_eq!(marker, format!("… {} more", 4000 - (kept.len() - 1)));
-        assert!(crate::session::estimate::count_text_tokens(body) <= RUN_CODE_VIEW_TOKENS);
-        // Key order of the agent survives degradation.
-        assert!(
-            body.starts_with("{\"total\":4000,\"items\":["),
-            "{}",
-            &body[..40]
-        );
-    }
-
-    #[test]
-    fn long_strings_are_cut_before_containers_collapse_to_key_counts() {
-        // Shape from a real run: four file reads returned as {path,n,text}.
-        // At ~11k tokens the result must keep useful prefixes, not become
-        // {"catalog":"{…3 keys}",...}, which drops the whole payload.
-        // Sized so the degraded object stays under the byte cap: this test is
-        // about strings being cut before containers collapse, not about the cap.
-        let value = serde_json::json!({
-            "catalog": {"path": "src/apps/catalog.rs", "n": 660, "text": "x".repeat(8_000)},
-            "app_panel": {"path": "web/src/lib/appPanel.ts", "n": 420, "text": "x".repeat(8_000)},
-            "app_tab": {"path": "web/src/dockview/tabs/AppTab.tsx", "n": 310, "text": "x".repeat(8_000)},
-            "app_view": {"path": "web/src/dockview/panels/AppViewPanel.tsx", "n": 280, "text": "x".repeat(8_000)},
-        });
-        let text = ok_with(value);
-        let result = result_of(&text);
-        let body = match result.split_once('\n') {
-            Some((notice, rest)) if notice.contains("exceeds") => rest,
-            _ => result,
-        };
-        let parsed: Value = serde_json::from_str(body).expect("still valid JSON");
-        for (key, path) in [
-            ("catalog", "src/apps/catalog.rs"),
-            ("app_panel", "web/src/lib/appPanel.ts"),
-            ("app_tab", "web/src/dockview/tabs/AppTab.tsx"),
-            ("app_view", "web/src/dockview/panels/AppViewPanel.tsx"),
-        ] {
-            assert_eq!(parsed[key]["path"].as_str(), Some(path), "{body}");
-            let kept = parsed[key]["text"].as_str().expect("text kept");
-            assert!(kept.starts_with('x'), "{kept}");
-            assert!(kept.len() > 1_000, "{}", kept.len());
-        }
-        assert!(!body.contains("{…"), "{body}");
-        assert!(crate::session::estimate::count_text_tokens(body) <= RUN_CODE_VIEW_TOKENS);
     }
 
     #[test]
@@ -3894,21 +3189,24 @@ mod tests {
     }
 
     #[test]
-    fn table_is_truncated_on_whole_rows() {
+    fn large_table_spills_complete_rows_and_keeps_head_and_tail() {
+        let dir = tempfile::tempdir().unwrap();
         let rows: Vec<Value> = (0..5_000)
             .map(|i| serde_json::json!({"path": format!("src/mod_{i}/file.rs"), "line": i}))
             .collect();
-        let text = ok_with(Value::Array(rows));
+        let mut report = base_report();
+        set_value(&mut report, Value::Array(rows));
+        let text = render_model_view_in(&report, Some(dir.path()));
+        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
         let result = result_of(&text);
-        let body: Vec<&str> = result.lines().collect();
-        assert!(body[1].starts_with("[5000]{path,line}:"), "{}", body[1]);
-        // Whole rows only, then one `… N more rows` line (WP-210 C).
-        let marker = body[body.len() - 1];
-        let shown = body.len() - 3;
-        assert_eq!(marker, format!("… {} more rows", 5000 - shown), "{marker}");
-        let last_row = body[body.len() - 2];
-        let (path, line) = last_row.rsplit_once(',').unwrap();
-        assert_eq!(path, format!("src/mod_{line}/file.rs"));
+        assert!(result.starts_with("[5000]{path,line}:\nsrc/mod_0/file.rs,0"), "{result}");
+        assert!(result.contains("src/mod_4999/file.rs,4999"), "{result}");
+        let rel_marker = ".litecode/run/run_code_";
+        let start = result.find(rel_marker).expect("spill path in notice");
+        let end = result[start..].find(".txt").unwrap() + start + 4;
+        let rel = &result[start..end];
+        let spilled = std::fs::read_to_string(dir.path().join(rel)).unwrap();
+        assert!(spilled.contains("src/mod_2500/file.rs,2500"));
     }
 
     #[test]
@@ -3966,9 +3264,15 @@ mod metadata_reminder_tests {
 
     #[test]
     fn exec_reminders_use_data_for_identity_and_metadata_for_facts() {
-        let data = json!({"ok": true, "session_id": "bg_1", "output": ""});
+        let data = json!({
+            "ok": true,
+            "session_id": "bg_1",
+            "output": "",
+            "output_file": ".litecode/run/bg_1.stdout"
+        });
         let metadata = json!({
             "truncated": true,
+            "total_bytes": 12000,
             "clamped": [{"parameter": "yield_time_ms", "requested": 60000, "applied": 30000}]
         });
         let lines = reminders_for_call_with_metadata(
@@ -3980,7 +3284,7 @@ mod metadata_reminder_tests {
             lines,
             vec![
                 "session bg_1 is live; poll with tools.write_stdin or wait for its exit reminder",
-                "output was clipped by max_output_tokens",
+                "… 12000 bytes total; full output: .litecode/run/bg_1.stdout",
                 "yield_time_ms 30000 used instead of 60000",
             ]
         );
@@ -3991,9 +3295,15 @@ mod metadata_reminder_tests {
 
     #[test]
     fn write_stdin_does_not_repeat_the_live_session_reminder() {
-        let data = json!({"ok": true, "session_id": "bg_1", "output": ""});
+        let data = json!({
+            "ok": true,
+            "session_id": "bg_1",
+            "output": "",
+            "output_file": ".litecode/run/bg_1.stdout"
+        });
         let metadata = json!({
             "truncated": true,
+            "total_bytes": 12000,
             "clamped": [{"parameter": "yield_time_ms", "requested": 600000, "applied": 300000}]
         });
         let lines = reminders_for_call_with_metadata(
@@ -4004,7 +3314,7 @@ mod metadata_reminder_tests {
         assert_eq!(
             lines,
             vec![
-                "output was clipped by max_output_tokens",
+                "… 12000 bytes total; full output: .litecode/run/bg_1.stdout",
                 "yield_time_ms 300000 used instead of 600000",
             ]
         );
@@ -4029,7 +3339,7 @@ mod metadata_reminder_tests {
         let read_res = crate::types::ToolCallResult {
             data: Some(json!({
                 "start_line": 10,
-                "lines": [r#"re.compile(r"\d+\"x\"")"#],
+                "lines": [{"line": 10, "text": r#"re.compile(r"\d+\"x\"")"#}],
                 "total_lines": 25,
                 "has_more": true
             })),

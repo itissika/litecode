@@ -336,10 +336,10 @@ describe("locateBashTool", () => {
       state: "final",
       body: {
         type: "function_call",
-        id: "fc_bash",
+        id: "fc_exec",
         call_id: "c1",
-        name: "bash",
-        arguments: JSON.stringify({ command: "sleep 1" }),
+        name: "exec_command",
+        arguments: JSON.stringify({ cmd: "sleep 1" }),
         status: "in_progress",
       },
     };

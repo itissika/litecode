@@ -16,10 +16,11 @@ use serde_json::{Value, json};
 
 fn run_code_result(content: &str) -> Value {
     let rest = content
-        .split_once("result:\n")
-        .unwrap_or_else(|| panic!("missing result section in {content}"))
+        .split_once("\n\n")
+        .unwrap_or_else(|| panic!("missing stream section in {content}"))
         .1;
-    serde_json::from_str(rest.trim()).unwrap_or_else(|_| Value::String(rest.trim().to_string()))
+    let last = rest.lines().last().unwrap_or("").trim();
+    serde_json::from_str(last).unwrap_or_else(|_| Value::String(rest.trim().to_string()))
 }
 
 #[tokio::test(flavor = "current_thread")]

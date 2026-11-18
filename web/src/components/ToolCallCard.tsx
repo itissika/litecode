@@ -7,7 +7,7 @@ import {
   parseFunctionArguments,
 } from "../api/adapter";
 import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
-import { formatElapsed, matchJob } from "../lib/bashLive";
+import { formatElapsed, matchJobByCallId } from "../lib/terminalLive";
 import { killBashJob } from "../lib/litecodeBash";
 import { formatRunCodeData, runCodeChips } from "../lib/runCodeSummary";
 import { useBashStore } from "../stores/bashStore";
@@ -103,11 +103,12 @@ export function ToolCallCard({
   // subagent_launch is rendered as a single-line inline row (InlineToolRow); it
   // never reaches this card, so there is no agent-led header / child-session
   // coupling here any more.
-  const isBash = toolName === "bash";
+  const isExecTool =
+    toolName === "exec_command" || toolName === "write_stdin";
   const bashJob = useBashStore((s) => {
-    if (!isBash || !sessionId) return undefined;
+    if (!isExecTool || !sessionId) return undefined;
     const jobs = s.bySession.get(sessionId)?.jobs ?? [];
-    return matchJob(jobs, call.call_id, rawOutput);
+    return matchJobByCallId(jobs, call.call_id);
   });
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

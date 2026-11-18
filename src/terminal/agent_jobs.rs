@@ -6,7 +6,6 @@
 //! until EOF, so a nested or turn cancel cannot stop them after detach.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -218,27 +217,6 @@ fn output_file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
-fn read_output_delta(path: &Path, cursor: u64, max_bytes: usize) -> (String, u64, usize, bool) {
-    let len = output_file_len(path);
-    if len <= cursor {
-        return (String::new(), cursor, 0, false);
-    }
-    let start = len.saturating_sub(max_bytes as u64).max(cursor);
-    let mut bytes = Vec::new();
-    if let Ok(mut file) = std::fs::File::open(path) {
-        if file.seek(SeekFrom::Start(start)).is_ok() {
-            let _ = file.read_to_end(&mut bytes);
-        }
-    }
-    let truncated = len.saturating_sub(cursor) > max_bytes as u64;
-    (
-        String::from_utf8_lossy(&bytes).into_owned(),
-        len,
-        (len - cursor) as usize,
-        truncated,
-    )
-}
-
 #[derive(Debug, Clone)]
 pub struct SignalledJob {
     pub delivered: bool,
@@ -250,6 +228,8 @@ pub struct SignalledJob {
 pub struct OutputDelta {
     pub text: String,
     pub original_bytes: usize,
+    pub total_file_bytes: usize,
+    pub output_file: String,
     pub alive: bool,
     pub exit_code: Option<u32>,
     pub truncated: bool,
@@ -430,38 +410,6 @@ impl AgentJobRegistry {
         self.emit_jobs_changed(&session_id);
     }
 
-    pub fn snapshot_capture(&self, id: &str) -> Option<super::tee::TeeCapture> {
-        let g = self.inner.lock().expect("jobs lock");
-        let rec = g.jobs.get(id)?;
-        rec.tee.lock().ok().map(|t| t.snapshot_capture())
-    }
-
-    /// Stdout and stderr windows plus both log paths. The registry lock is not
-    /// held while the tees are snapshotted.
-    pub fn pipe_streams(
-        &self,
-        id: &str,
-    ) -> Option<(
-        super::tee::TeeCapture,
-        super::tee::TeeCapture,
-        PathBuf,
-        PathBuf,
-    )> {
-        let (stdout_tee, stderr_tee, stdout_path, stderr_path) = {
-            let g = self.inner.lock().expect("jobs lock");
-            let rec = g.jobs.get(id)?;
-            (
-                Arc::clone(&rec.tee),
-                Arc::clone(&rec.stderr_tee),
-                rec.output_path.clone(),
-                rec.stderr_path.clone(),
-            )
-        };
-        let stdout = stdout_tee.lock().ok()?.snapshot_capture();
-        let stderr = stderr_tee.lock().ok()?.snapshot_capture();
-        Some((stdout, stderr, stdout_path, stderr_path))
-    }
-
     /// Remove a job that never detached, once its readers are done. A finished
     /// call must not leave a row or a mailbox notice. Returns false while the
     /// id is missing, already detached, or still draining.
@@ -636,19 +584,22 @@ impl AgentJobRegistry {
     /// advancement is committed even when the reply is truncated, so a large
     /// burst cannot be replayed forever.
     pub fn output_delta(&self, id: &str, max_bytes: usize) -> Option<OutputDelta> {
-        let (path, cursor, alive, exit_code) = {
+        let (path, workspace_root, cursor, alive, exit_code) = {
             let g = self.inner.lock().expect("jobs lock");
             let rec = g.jobs.get(id)?;
             (
                 rec.output_path.clone(),
+                rec.workspace_root.clone(),
                 rec.read_cursor,
                 rec.alive,
                 rec.exit_code,
             )
         };
         let max_bytes = max_bytes.max(1);
+        let total_file_bytes = usize::try_from(output_file_len(&path)).unwrap_or(usize::MAX);
+        let output_file = output_file_rel(&path, &workspace_root);
         let (text, new_cursor, original_bytes, truncated) =
-            read_output_delta(&path, cursor, max_bytes);
+            super::tee::read_tail_utf8_clean(&path, cursor, max_bytes);
         if let Ok(mut g) = self.inner.lock() {
             if let Some(rec) = g.jobs.get_mut(id) {
                 rec.read_cursor = new_cursor;
@@ -657,6 +608,8 @@ impl AgentJobRegistry {
         Some(OutputDelta {
             text,
             original_bytes,
+            total_file_bytes,
+            output_file,
             alive,
             exit_code,
             truncated,
@@ -1011,16 +964,30 @@ impl AgentJobRegistry {
     }
 
     pub fn tail_view(&self, id: &str) -> Option<BashTailView> {
-        let g = self.inner.lock().expect("jobs lock");
-        let rec = g.jobs.get(id)?;
-        let cap = rec.tee.lock().ok()?.snapshot_capture();
-        let text = if cap.frozen { cap.tail } else { cap.head };
+        const TAIL_VIEW_MAX_BYTES: usize = 32 * 1024;
+        let (path, truncated_on_disk, alive, draining, exit_code) = {
+            let g = self.inner.lock().expect("jobs lock");
+            let rec = g.jobs.get(id)?;
+            let truncated_on_disk = rec
+                .tee
+                .lock()
+                .map(|t| t.truncated_on_disk)
+                .unwrap_or(false);
+            (
+                rec.output_path.clone(),
+                truncated_on_disk,
+                rec.alive,
+                !rec.alive && !rec.reader_eof,
+                rec.exit_code,
+            )
+        };
+        let (text, ..) = super::tee::read_tail_utf8_clean(&path, 0, TAIL_VIEW_MAX_BYTES);
         Some(BashTailView {
             text,
-            truncated_on_disk: cap.truncated_on_disk,
-            alive: rec.alive,
-            draining: !rec.alive && !rec.reader_eof,
-            exit_code: rec.exit_code,
+            truncated_on_disk,
+            alive,
+            draining,
+            exit_code,
         })
     }
 

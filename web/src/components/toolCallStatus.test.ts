@@ -37,11 +37,11 @@ describe("deriveToolStatus", () => {
     ).toBe("ok");
   });
 
-  it("keeps a sealed background-bash running document neutral", () => {
+  it("keeps a live session_id exec document neutral", () => {
     expect(
       deriveToolStatus(
         result(
-          "status: running\nbash_id: bg_a\noutput_file: .litecode/bash/bg_a.output\n",
+          "↳ session bg_a is live\nsession_id: bg_a\n",
         ),
         false,
         "completed",

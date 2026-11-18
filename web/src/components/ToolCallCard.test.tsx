@@ -275,16 +275,16 @@ describe("ToolCallCard open state", () => {
       <ToolCallCard
         call={{
           type: "function_call",
-          id: "fc_bash",
+          id: "fc_exec",
           call_id: "call_1",
-          name: "bash",
-          arguments: JSON.stringify({ command: "sleep 8" }),
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "sleep 8" }),
           status: "completed",
         }}
         output={{
           type: "function_call_output",
           call_id: "call_1",
-          output: "status: running\nbash_id: bg_a\n",
+          output: "session_id: bg_a\n",
         }}
         projectRoot={null}
         onOpenFile={() => {}}

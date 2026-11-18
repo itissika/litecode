@@ -141,6 +141,8 @@ type ExecCommandData = {
   exit_code: Integer | null;
   /** Output since the previous call on this session; the first call returns output since spawn. */
   output: string;
+  /** Workspace-relative path to the complete `.litecode/run/<job>.stdout` log (always full output on disk). */
+  output_file: string;
 };
 
 interface Tools {
@@ -190,7 +192,10 @@ interface Tools {
     start_line?: Integer; // First line to read, 1-based, inclusive. @default 1
     limit?: Integer; // Lines to return. 1-5000. @default 2000
   }): Promise<{
-    lines: string[]; // Line contents for this page, in file order.
+    lines: Array<{
+      line: Integer; // 1-based line number.
+      text: string; // Line content.
+    }>; // Lines for this page, in file order.
   }>;
   /** Replace a file's contents. */
   write(args: {
@@ -248,14 +253,14 @@ interface Tools {
     workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.
     tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.
     yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 600000. It does not limit the process lifetime.
-    max_output_tokens?: Integer; // Output token budget for this call; default 10000.
+    max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB in run_code or 10000 tokens otherwise.
   }): Promise<ExecCommandData>;
   /** Poll, feed, or interrupt an existing exec session. Empty chars waits until the session exits or yield_time_ms expires, returning accumulated output; on exit, exit_code is set and session_id is null. */
   write_stdin(args: {
     session_id: string; // Session id from exec_command.
     chars?: string; // Bytes to write; empty polls. "\u0003" sends SIGINT to the process group.
     yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap.
-    max_output_tokens?: Integer; // Output token budget for this call; default 10000.
+    max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB in run_code or 10000 tokens otherwise.
   }): Promise<ExecCommandData>;
 
   /** Fetch one http(s) URL. */

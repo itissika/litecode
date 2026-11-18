@@ -301,21 +301,27 @@ pub(super) fn truncate_hint(s: &str, max_chars: usize) -> String {
     format!("{kept}…")
 }
 
-/// The line a failed `old_string` most likely meant to point at.
+/// The line a failed `old_string` most likely meant to point at, plus its text.
 ///
-/// One number is the cheapest correction a model can act on without re-reading
-/// the whole file. The first non-blank line of `old_string` is compared with
-/// every file line; the closest one wins when enough of it survives, so a typo
-/// or an indentation drift still lands somewhere useful. `None` when nothing is
-/// close enough: a wrong line is worse than no line.
-pub(super) fn nearest_line(content: &str, old_string: &str) -> Option<u32> {
-    let needle = old_string.lines().find(|line| !line.trim().is_empty())?.trim();
-    let needle_len = needle.chars().count();
-    // Too short to be evidence: half of a two-character needle is noise.
-    if needle_len < 4 {
-        return None;
-    }
-    let mut best: Option<(usize, u32)> = None;
+/// One number + preview is the cheapest correction a model can act on without
+/// re-reading the whole file. The longest non-blank line (`>= 4` chars) of
+/// `old_string` is compared with every file line; the closest one wins when
+/// enough of it survives, so a typo or an indentation drift still lands
+/// somewhere useful. `None` when nothing is close enough: a wrong line is worse
+/// than no line.
+pub(super) fn nearest_line_preview(content: &str, old_string: &str) -> Option<(u32, String)> {
+    let (needle, needle_len) = old_string
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.chars().count() >= 4)
+        .fold(None, |best: Option<(&str, usize)>, line| {
+            let len = line.chars().count();
+            match best {
+                Some((_, best_len)) if best_len >= len => best,
+                _ => Some((line, len)),
+            }
+        })?;
+    let mut best: Option<(usize, u32, &str)> = None;
     for (index, line) in content.lines().take(5000).enumerate() {
         let hay = line.trim();
         if hay.is_empty() {
@@ -325,15 +331,20 @@ pub(super) fn nearest_line(content: &str, old_string: &str) -> Option<u32> {
         if shared < 4 {
             continue;
         }
-        if best.is_none_or(|(top, _)| shared > top) {
-            best = Some((shared, index as u32 + 1));
+        if best.is_none_or(|(top, _, _)| shared > top) {
+            best = Some((shared, index as u32 + 1, line.trim_end()));
         }
         if shared == needle_len {
             break;
         }
     }
-    let (shared, line) = best?;
-    (shared * 2 >= needle_len).then_some(line)
+    let (shared, line, raw) = best?;
+    (shared * 2 >= needle_len).then(|| (line, truncate_hint(raw, PREVIEW_CHARS)))
+}
+
+#[cfg(test)]
+pub(super) fn nearest_line(content: &str, old_string: &str) -> Option<u32> {
+    nearest_line_preview(content, old_string).map(|(line, _)| line)
 }
 
 /// Longest common subsequence of two trimmed lines, in characters.
@@ -406,6 +417,15 @@ gamma
     fn a_too_short_needle_is_no_line() {
         assert_eq!(nearest_line("abc
 ", "ab"), None);
+    }
+
+    #[test]
+    fn nearest_line_preview_skips_short_opening_brace_and_returns_line_text() {
+        let content = "fn alpha() {}\n    fn beta_target() {}\n";
+        assert_eq!(
+            nearest_line_preview(content, "{\n    fn betta_target() {}\n}"),
+            Some((2, "    fn beta_target() {}".to_string()))
+        );
     }
 
 }

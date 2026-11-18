@@ -18,7 +18,9 @@ use crate::tool::clamp::clamp_int;
 use crate::tool::outcome::ToolOutcome;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tools::command_job;
-use crate::tools::exec_command::{DEFAULT_MAX_OUTPUT_TOKENS, ExecCommandData, MAX_OUTPUT_TOKENS};
+use crate::tools::exec_command::{
+    ExecCommandData, MAX_OUTPUT_TOKENS, resolve_output_max_bytes,
+};
 use crate::tools::file_path::coded_error;
 use crate::types::ToolCallResult;
 
@@ -33,7 +35,7 @@ struct ParsedArgs {
     session_id: String,
     chars: String,
     yield_ms: u64,
-    max_output_tokens: usize,
+    max_output_tokens: Option<usize>,
     clamped: Vec<crate::tool::clamp::Clamp>,
 }
 
@@ -79,8 +81,7 @@ impl WriteStdinTool {
         {
             clamped.push(note);
         }
-        let max_output_tokens =
-            max_tokens_value.map_or(DEFAULT_MAX_OUTPUT_TOKENS, |value| value.value as usize);
+        let max_output_tokens = max_tokens_value.map(|value| value.value as usize);
         Ok(ParsedArgs {
             session_id,
             chars,
@@ -88,10 +89,6 @@ impl WriteStdinTool {
             max_output_tokens,
             clamped,
         })
-    }
-
-    fn output_max_bytes(max_output_tokens: usize) -> usize {
-        max_output_tokens.saturating_mul(4).max(1024)
     }
 
     async fn run(&self, input: Value, execution: ToolExecutionContext) -> ToolCallResult {
@@ -152,15 +149,15 @@ impl WriteStdinTool {
                 return coded_error("cancelled", "write_stdin cancelled");
             }
         }
+        let max_bytes = resolve_output_max_bytes(args.max_output_tokens, execution.output_limit);
         let delta = self
             .jobs
-            .output_delta(
-                &args.session_id,
-                Self::output_max_bytes(args.max_output_tokens),
-            )
+            .output_delta(&args.session_id, max_bytes)
             .unwrap_or_else(|| crate::terminal::OutputDelta {
                 text: String::new(),
                 original_bytes: 0,
+                total_file_bytes: 0,
+                output_file: String::new(),
                 alive: false,
                 exit_code: None,
                 truncated: false,

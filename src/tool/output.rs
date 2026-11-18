@@ -3,105 +3,146 @@ use std::path::{Path, PathBuf};
 
 use crate::authority::responses::FunctionCallOutput;
 use crate::session::media::{MAX_MEDIA_BLOB_SIZE, write_media_blob};
-use crate::session::store::Session;
 use crate::tool::trait_::Tool;
 use crate::types::{Item, MediaSource, Result, ToolCallResult, ToolOutputPart};
+use crate::types::utf8::{prefix_utf8, suffix_utf8};
 
-/// Direct callers still cap model-facing text. Code callers do not consult this.
-pub fn direct_output_limit(tool: &dyn Tool) -> usize {
-    tool.max_result_size()
-}
-
-pub fn cap_direct_content(tool: &dyn Tool, content: &str) -> String {
-    let max = direct_output_limit(tool);
-    if max < usize::MAX {
-        Session::truncated_tool_result(content, max)
-    } else {
-        content.to_string()
-    }
-}
-
+pub const RUN_SPILL_DIR: &str = ".litecode/run";
 pub const BLOB_PREFIX: &str = "[blob:";
-
-pub const EMERGENCY_HARD_CAP_CHARS: usize = 400_000;
-pub const EMERGENCY_PREVIEW_CHARS: usize = 2_000;
-
 pub const DEFAULT_SPILL_THRESHOLD: usize = 32_768;
+pub const DIRECT_VIEW_MAX_BYTES: usize = 65_536;
 
 pub fn blob_dir(data_root: &Path) -> PathBuf {
     data_root.join("blobs")
 }
 
-/// Circuit-breaker for runaway tool output before spill/persist.
-pub fn apply_emergency_cap(content: String) -> String {
-    if content.len() <= EMERGENCY_HARD_CAP_CHARS {
-        return content;
+pub fn direct_output_limit(tool: &dyn Tool) -> usize {
+    tool.max_result_size()
+}
+
+pub fn direct_output_max_bytes_from_limit(tokens: usize) -> usize {
+    if tokens == usize::MAX {
+        usize::MAX
+    } else {
+        tokens.saturating_mul(4).min(DIRECT_VIEW_MAX_BYTES)
     }
-    let estimated_tokens = content.len() / 4;
-    tracing::warn!(
-        chars = content.len(),
-        estimated_tokens,
-        "tool output exceeds token cap — circuit breaker fired"
-    );
-    // Head and tail share the same preview budget the old head-only cut used;
-    // the marker between them says how much is missing, so the two slices never
-    // read as adjacent text.
-    let head_budget = EMERGENCY_PREVIEW_CHARS / 2;
-    let tail_budget = EMERGENCY_PREVIEW_CHARS - head_budget;
-    let head = crate::types::utf8::prefix_utf8(&content, head_budget);
-    let tail = crate::types::utf8::suffix_utf8(&content, tail_budget);
-    let omitted = content.len() - head.len() - tail.len();
-    format!(
-        "<persisted-output>\n\
-         Output exceeded token budget (~{et} tokens, {ch} chars).  \
-         Full output not shown. Re-run with narrower parameters.\n\
-         \n\
-         Preview (first {head_bytes} bytes + last {tail_bytes} bytes):\n\n\
-         {head}\n\n... [omitted {omitted} bytes] ...\n\n{tail}\n\
-         </persisted-output>",
-        et = estimated_tokens,
-        ch = content.len(),
-        head_bytes = head.len(),
-        tail_bytes = tail.len(),
-        head = head,
-        tail = tail,
-        omitted = omitted,
-    )
 }
 
-/// Normalize a single tool result: emergency cap, then optional blob spill.
-pub fn finalize_tool_output(
-    content: String,
-    data_root: &Path,
-    spill_threshold: usize,
-) -> Result<String> {
-    let content = apply_emergency_cap(content);
-    spill_content_if_needed(content, data_root, spill_threshold)
+/// Byte ceiling for a direct-surface tool result.
+pub fn direct_output_max_bytes(tool: &dyn Tool) -> usize {
+    direct_output_max_bytes_from_limit(direct_output_limit(tool))
 }
 
-pub fn finalize_tool_call_result(
-    result: ToolCallResult,
+fn sanitize_stem(stem: &str) -> String {
+    let cleaned: String = stem
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    if cleaned.is_empty() {
+        "output".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Write the complete unclipped output once to `.litecode/run/{stem}_{nonce}.txt`.
+pub fn spill_full_text(
+    workspace_root: &Path,
+    stem: &str,
+    full_text: &str,
+) -> std::io::Result<String> {
+    let dir = workspace_root.join(".litecode").join("run");
+    fs::create_dir_all(&dir)?;
+    let name = format!("{}_{}.txt", sanitize_stem(stem), crate::terminal::bash_nonce());
+    fs::write(dir.join(&name), full_text.as_bytes())?;
+    Ok(format!("{RUN_SPILL_DIR}/{name}"))
+}
+
+/// Unified omission notice pointing at the complete on-disk output file.
+pub fn full_output_notice(total_bytes: usize, full_path: Option<&str>) -> String {
+    match full_path {
+        Some(path) => format!("… {total_bytes} bytes total; full output: {path}"),
+        None => format!("… {total_bytes} bytes total"),
+    }
+}
+
+/// Cut `text` with a simple 50% head + 50% tail UTF-8-safe split and the
+/// single unified notice marker.
+pub fn cut_head_tail_with_notice(text: &str, max_bytes: usize, full_path: Option<&str>) -> String {
+    cut_head_tail_with_total(text, max_bytes, text.len(), full_path)
+}
+
+fn cut_head_tail_with_total(
+    text: &str,
+    max_bytes: usize,
+    total_bytes: usize,
+    full_path: Option<&str>,
+) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let notice = full_output_notice(total_bytes, full_path);
+    if max_bytes <= notice.len() {
+        return notice;
+    }
+    let preview_budget = max_bytes.saturating_sub(notice.len() + 2);
+    let head_budget = preview_budget / 2;
+    let tail_budget = preview_budget - head_budget;
+    let head = prefix_utf8(text, head_budget);
+    let tail = suffix_utf8(&text[head.len()..], tail_budget);
+    match (head.is_empty(), tail.is_empty()) {
+        (false, false) => format!("{head}\n{notice}\n{tail}"),
+        (false, true) => format!("{head}\n{notice}"),
+        (true, false) => format!("{notice}\n{tail}"),
+        (true, true) => notice,
+    }
+}
+
+/// Unified spill helper: return `text` untouched if it fits `max_bytes`,
+/// otherwise persist the full text under `.litecode/run/` and keep 50/50 head+tail.
+pub fn cut_and_spill_full(
+    text: &str,
+    max_bytes: usize,
+    workspace_root: Option<&Path>,
+    stem: &str,
+) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let full_path = workspace_root.and_then(|root| match spill_full_text(root, stem, text) {
+        Ok(rel) => Some(rel),
+        Err(error) => {
+            tracing::warn!(error = %error, stem, "failed to spill full tool output");
+            None
+        }
+    });
+    cut_head_tail_with_notice(text, max_bytes, full_path.as_deref())
+}
+
+/// Normalize a single Direct-surface tool result: materialize media parts first,
+/// then apply the single unified full-output spill + 50/50 cut if over budget.
+pub fn finalize_direct_tool_call_result(
+    mut result: ToolCallResult,
     data_root: &Path,
-    spill_threshold: usize,
+    workspace_root: &Path,
+    tool_name: &str,
+    max_bytes: usize,
+    existing_output_file: Option<&str>,
 ) -> Result<ToolCallResult> {
-    // Materialize media before text spill so a media failure cannot leave an
-    // orphaned text blob while discarding the structured parts.
-    let parts = materialize_media_parts(result.parts, data_root)?;
-    Ok(ToolCallResult {
-        content: finalize_tool_output(result.content, data_root, spill_threshold)?,
-        data: result.data,
-        error: result.error,
-        parts,
-        metadata: result.metadata,
-        level: result.level,
-        hint: result.hint,
-        warning_status: result.warning_status,
-        appendix: result.appendix,
-        composed: result.composed,
-        diagnostics: result.diagnostics,
-        error_code: result.error_code,
-        error_details: result.error_details,
-    })
+    result.parts = materialize_media_parts(result.parts, data_root)?;
+    if max_bytes < usize::MAX && result.content.len() > max_bytes {
+        if let Some(rel_path) = existing_output_file.filter(|p| !p.is_empty()) {
+            let total_bytes = fs::metadata(workspace_root.join(rel_path))
+                .map(|m| m.len() as usize)
+                .unwrap_or(result.content.len());
+            result.content =
+                cut_head_tail_with_total(&result.content, max_bytes, total_bytes, Some(rel_path));
+        } else {
+            result.content =
+                cut_and_spill_full(&result.content, max_bytes, Some(workspace_root), tool_name);
+        }
+    }
+    Ok(result)
 }
 
 fn materialize_media_parts(
@@ -226,55 +267,7 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
-fn spill_content_if_needed(body: String, data_root: &Path, threshold: usize) -> Result<String> {
-    if threshold == 0 || body.len() <= threshold || body.starts_with(BLOB_PREFIX) {
-        return Ok(body);
-    }
-    let original_len = body.len();
-    let blob_id = ulid::Ulid::new().to_string();
-    let blob_dir = blob_dir(data_root);
-    fs::create_dir_all(&blob_dir)?;
-    let blob_path = blob_dir.join(format!("{blob_id}.txt"));
-    fs::write(&blob_path, body.as_bytes())?;
-    // The same 500-byte preview budget as before, split between both ends so a
-    // spilled result still shows how it finishes.
-    let preview_len = 500.min(original_len);
-    let head_budget = preview_len / 2;
-    let tail_budget = preview_len - head_budget;
-    let head = crate::types::utf8::prefix_utf8(&body, head_budget);
-    let tail = crate::types::utf8::suffix_utf8(&body, tail_budget);
-    let omitted = original_len - head.len() - tail.len();
-    Ok(format!(
-        "{BLOB_PREFIX}{blob_id}]\n{head}\n\n... [omitted {omitted} bytes] ...\n\n{tail}... [spilled, {original_len} bytes total]",
-    ))
-}
-
-/// Spill oversized function_call_output text to `{data_root}/blobs/`.
-pub fn spill_tool_results(items: &mut [Item], data_root: &Path, threshold: usize) -> Result<()> {
-    if threshold == 0 {
-        return Ok(());
-    }
-    for item in items.iter_mut() {
-        if let Item::FunctionCallOutput(out) = item
-            && let FunctionCallOutput::Text(body) = &mut out.output
-        {
-            if body.len() <= threshold || body.starts_with(BLOB_PREFIX) {
-                continue;
-            }
-            let call_id = out.call_id.clone();
-            let spilled = spill_content_if_needed(std::mem::take(body), data_root, threshold)?;
-            tracing::debug!(
-                call_id = %call_id,
-                bytes = spilled.len(),
-                "spilled tool result to blob"
-            );
-            *body = spilled;
-        }
-    }
-    Ok(())
-}
-
-/// Resolve `[blob:{id}]` references back to full content for materialization.
+/// Resolve `[blob:{id}]` references back to full content for historical client hydration.
 pub fn resolve_body_refs(items: &mut [Item], data_root: &Path) -> Result<()> {
     let blob_dir = blob_dir(data_root);
     for item in items.iter_mut() {
@@ -299,96 +292,34 @@ pub fn resolve_single_blob(body: &str, blob_dir: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The two ends of the emergency preview, split by the omission marker.
-    fn capped_preview(capped: &str) -> (&str, &str) {
-        let body = capped.split("bytes):\n\n").nth(1).expect("preview body");
-        let (head, rest) = body
-            .split_once("\n\n... [omitted")
-            .expect("omission marker");
-        let tail = rest.split_once("] ...\n\n").expect("marker end").1;
-        (
-            head,
-            tail.strip_suffix("\n</persisted-output>").unwrap_or(tail),
-        )
-    }
+    #[test]
+    fn cut_and_spill_full_writes_complete_text_to_litecode_run_and_keeps_50_50_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = format!("HEAD_X\n{}MID_X\n{}TAIL_X", "a".repeat(2_000), "b".repeat(2_000));
+        let rendered = cut_and_spill_full(&body, 400, Some(dir.path()), "probe");
+        assert!(rendered.len() <= 400, "rendered len={}", rendered.len());
+        assert!(rendered.contains("HEAD_X"), "{rendered}");
+        assert!(rendered.contains("TAIL_X"), "{rendered}");
+        assert!(rendered.contains(&format!("{} bytes total; full output: .litecode/run/probe_", body.len())), "{rendered}");
 
-    fn spilled_preview(spilled: &str) -> (&str, &str) {
-        let body = spilled.split_once("]\n").expect("blob header").1;
-        let (head, rest) = body
-            .split_once("\n\n... [omitted")
-            .expect("omission marker");
-        let tail = rest.split_once("] ...\n\n").expect("marker end").1;
-        let tail = tail.split_once("... [spilled,").expect("spill tail").0;
-        (head, tail)
+        let rel = rendered
+            .split_once("full output: ")
+            .unwrap()
+            .1
+            .lines()
+            .next()
+            .unwrap();
+        let disk = fs::read_to_string(dir.path().join(rel)).unwrap();
+        assert_eq!(disk, body);
     }
 
     #[test]
-    fn emergency_cap_keeps_both_ends_and_names_the_gap() {
-        let content = format!(
-            "HEAD-MARKER{}{}TAIL-MARKER",
-            "x".repeat(EMERGENCY_HARD_CAP_CHARS),
-            "y".repeat(32)
-        );
-        let omitted = content.len() - EMERGENCY_PREVIEW_CHARS;
-        let capped = apply_emergency_cap(content);
-
-        assert!(capped.contains("HEAD-MARKER"), "{capped}");
-        assert!(capped.contains("TAIL-MARKER"), "{capped}");
-        assert!(
-            capped.contains("Preview (first 1000 bytes + last 1000 bytes):"),
-            "the label must describe what is actually shown: {capped}"
-        );
-        assert!(
-            capped.contains(&format!("omitted {omitted} bytes")),
-            "{capped}"
-        );
-        let (head, tail) = capped_preview(&capped);
-        assert_eq!(
-            head.len() + tail.len(),
-            EMERGENCY_PREVIEW_CHARS,
-            "the preview budget must not grow"
-        );
-        assert!(head.starts_with("HEAD-MARKER"));
-        assert!(tail.ends_with("TAIL-MARKER"));
-    }
-
-    #[test]
-    fn spill_keeps_both_ends_and_names_the_gap() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let body = format!("HEAD{}TAIL", "z".repeat(5_000));
-        let omitted = body.len() - 500;
-        let spilled = spill_content_if_needed(body, dir.path(), 1_000).expect("spill");
-
-        assert!(spilled.starts_with(BLOB_PREFIX), "{spilled}");
-        assert!(spilled.contains("HEAD"));
-        assert!(spilled.contains("TAIL"));
-        assert!(
-            spilled.contains(&format!("omitted {omitted} bytes")),
-            "{spilled}"
-        );
-        assert!(
-            spilled.contains(&format!("{} bytes total", 5008)),
-            "{spilled}"
-        );
-        let (head, tail) = spilled_preview(&spilled);
-        assert_eq!(
-            head.len() + tail.len(),
-            500,
-            "the preview budget must not grow"
-        );
-        assert!(head.starts_with("HEAD"));
-        assert!(tail.ends_with("TAIL"));
-    }
-
-    #[test]
-    fn both_previews_cut_on_utf8_boundaries() {
-        let content = format!("头{}🚀{}尾", "中".repeat(200_000), "🙂".repeat(200_000));
-        let capped = apply_emergency_cap(content);
-        assert!(capped.contains('头') && capped.contains('尾'));
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let body = format!("头{}🚀{}尾", "中".repeat(5_000), "🙂".repeat(5_000));
-        let spilled = spill_content_if_needed(body, dir.path(), 1_000).expect("spill");
-        assert!(spilled.contains('头') && spilled.contains('尾'));
+    fn cut_and_spill_respects_utf8_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = format!("头{}🚀{}尾", "中".repeat(5_000), "🙂".repeat(5_000));
+        let rendered = cut_and_spill_full(&content, 600, Some(dir.path()), "utf8");
+        assert!(rendered.len() <= 600, "{}", rendered.len());
+        assert!(rendered.contains('头') && rendered.contains('尾'), "{rendered}");
+        assert!(!rendered.contains('\u{FFFD}'));
     }
 }
