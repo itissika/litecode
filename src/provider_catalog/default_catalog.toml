@@ -600,11 +600,13 @@ reasoning = { summary = "summarized", tiers = { off = "disabled", low = "low", m
 id = "gpt-5.6-sol"
 provider_id = "commandcode"
 label = "GPT-5.6 Sol"
+endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
 max_output = 128000
-# Chat Completions only carries text parts in this codec.
-modalities = ["text"]
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { summary = "auto", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
 [[models]]
 id = "gpt-6.1-sol"
@@ -641,6 +643,10 @@ max_output = 128000
 modalities = ["text", "image"]
 reasoning = { tiers = { low = "low", medium = "medium", high = "xhigh" } }
 
+# GLM-5.3, GLM-5.3 Flash, and Kimi K3 stay on Chat Completions: on /responses,
+# GLM-5.3 drops `instructions` and reasoning text, GLM-5.3 Flash is chat-only,
+# and Kimi K3 drops input reasoning items across tool turns.
+
 [[models]]
 id = "zai-org/GLM-5.3"
 provider_id = "commandcode"
@@ -675,11 +681,13 @@ reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 id = "deepseek/deepseek-v4.1-flash"
 provider_id = "commandcode"
 label = "DeepSeek V4.1 Flash"
+endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1000000
 max_output = 128000
-modalities = ["text"]
-reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+modalities = ["text", "image"]
+usage_patch = "map_max_effort_to_xhigh"
+reasoning = { replay = "text", tiers = { off = "none", low = "low", medium = "high", high = "max" } }
 
 # Gemini's ladder is none/low/medium/high. Responses so image input is kept.
 

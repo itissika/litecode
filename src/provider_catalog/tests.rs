@@ -68,6 +68,50 @@ fn request_url_comes_from_endpoint_type() {
 }
 
 #[test]
+fn commandcode_endpoint_selection_matches_verified_capabilities() {
+    let catalog = seeded();
+    for reference in [
+        "commandcode/gpt-5.6-sol",
+        "commandcode/deepseek/deepseek-v4.1-flash",
+    ] {
+        let model = catalog.model(reference).unwrap();
+        assert_eq!(model.endpoint_type, super::schema::EndpointKind::Responses);
+        assert_eq!(
+            model.request_url,
+            "https://api.commandcode.ai/provider/v1/responses"
+        );
+        assert_eq!(
+            model.usage_patch,
+            super::schema::UsagePatch::MapMaxEffortToXhigh
+        );
+        assert_eq!(model.reasoning_off.as_deref(), Some("none"));
+        assert!(model.supports(super::schema::Modality::Image));
+    }
+    assert_eq!(
+        catalog
+            .model("commandcode/deepseek/deepseek-v4.1-flash")
+            .unwrap()
+            .reasoning_replay,
+        super::schema::ReasoningReplay::Text
+    );
+    for reference in [
+        "commandcode/zai-org/GLM-5.3",
+        "commandcode/zai-org/GLM-5.3-Flash",
+        "commandcode/moonshotai/Kimi-K3",
+    ] {
+        let model = catalog.model(reference).unwrap();
+        assert_eq!(
+            model.endpoint_type,
+            super::schema::EndpointKind::ChatCompletions
+        );
+        assert_eq!(
+            model.request_url,
+            "https://api.commandcode.ai/provider/v1/chat/completions"
+        );
+    }
+}
+
+#[test]
 fn eval_endpoint_override_rewrites_the_provider_and_its_models() {
     let catalog = seeded()
         .with_provider_endpoint("deepseek", "http://127.0.0.1:9001/openai/v1")
