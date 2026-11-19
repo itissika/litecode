@@ -981,12 +981,89 @@ fn render_read_lines_object(map: &serde_json::Map<String, Value>) -> Option<Stri
     Some(out)
 }
 
+fn render_exec_output_object(map: &serde_json::Map<String, Value>) -> Option<String> {
+    let output = map.get("output")?.as_str()?;
+    let mut has_exec_meta = false;
+    for (k, v) in map {
+        match k.as_str() {
+            "output" => {}
+            "exit_code" => {
+                if !(v.is_i64() || v.is_null()) {
+                    return None;
+                }
+                has_exec_meta = true;
+            }
+            "session_id" | "output_file" => {
+                if !(v.is_string() || v.is_null()) {
+                    return None;
+                }
+                has_exec_meta = true;
+            }
+            _ => return None,
+        }
+    }
+    if !has_exec_meta {
+        return None;
+    }
+    let header = if let Some(code) = map.get("exit_code").and_then(Value::as_i64) {
+        format!("exit_code: {code}")
+    } else if let Some(sid) = map
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        format!("session_id: {sid}")
+    } else {
+        "exit_code: null".to_string()
+    };
+    if output.is_empty() {
+        Some(header)
+    } else {
+        Some(format!("{header}\n{output}"))
+    }
+}
+
+fn is_multiline_plain_string(value: &Value) -> bool {
+    match value {
+        Value::String(s) => s.contains('\n') && compact_json_text(s).is_none(),
+        _ => false,
+    }
+}
+
+fn is_structured_value(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            render_read_lines_object(map).is_some()
+                || render_exec_output_object(map).is_some()
+                || map.values().any(is_structured_value)
+        }
+        Value::Array(items) => {
+            render_line_text_array(items).is_some() || items.iter().any(is_structured_value)
+        }
+        _ => false,
+    }
+}
+
 fn render_result_body(value: &Value) -> String {
     match value {
         Value::String(text) => compact_json_text(text).unwrap_or_else(|| text.clone()),
         Value::Array(items) => {
             if let Some(rendered) = render_line_text_array(items) {
                 return rendered;
+            }
+            if items
+                .iter()
+                .any(|item| is_structured_value(item) || is_multiline_plain_string(item))
+            {
+                let blocks: Vec<String> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, item)| {
+                        let body = render_result_body(item);
+                        format!("[{idx}]\n{}", body.trim_end_matches('\n'))
+                    })
+                    .collect();
+                return blocks.join("\n\n");
             }
             match table_columns(items) {
                 Some(columns) => render_table("", items, &columns),
@@ -997,9 +1074,21 @@ fn render_result_body(value: &Value) -> String {
             if let Some(rendered) = render_read_lines_object(map) {
                 return rendered;
             }
+            if let Some(rendered) = render_exec_output_object(map) {
+                return rendered;
+            }
             let mut rest = serde_json::Map::new();
             let mut tables = Vec::new();
             for (key, v) in map {
+                if is_structured_value(v) || is_multiline_plain_string(v) {
+                    let body = render_result_body(v);
+                    tables.push(format!(
+                        "{}:\n{}",
+                        table_key(key),
+                        body.trim_end_matches('\n')
+                    ));
+                    continue;
+                }
                 match v
                     .as_array()
                     .and_then(|items| table_columns(items).map(|columns| (items, columns)))
@@ -3362,5 +3451,47 @@ mod metadata_reminder_tests {
         let rendered_edit = render_direct_code_contract_result("apply_edits", partial_fail_with_content);
         assert!(rendered_edit.content.contains("applied 1/2 edits"));
         assert!(rendered_edit.content.contains("language server reported errors"));
+    }
+
+    #[test]
+    fn render_result_body_formats_exec_output_object_verbatim_with_exit_code() {
+        let val = json!({
+            "exit_code": 0,
+            "output": "line 1\nline 2\n",
+            "output_file": ""
+        });
+        assert_eq!(render_result_body(&val), "exit_code: 0\nline 1\nline 2\n");
+
+        let live = json!({
+            "session_id": "bg_3",
+            "output": "running...\n",
+            "output_file": ".litecode/run/bg_3.stdout"
+        });
+        assert_eq!(render_result_body(&live), "session_id: bg_3\nrunning...\n");
+    }
+
+    #[test]
+    fn render_result_body_formats_promise_all_and_composite_objects_losslessly() {
+        let batch = json!([
+            { "exit_code": 0, "output": "a\nb\n", "output_file": "" },
+            { "exit_code": 1, "output": "err\n", "output_file": "" },
+            { "exit_code": 0, "output": "ok\n", "output_file": "" }
+        ]);
+        assert_eq!(
+            render_result_body(&batch),
+            "[0]\nexit_code: 0\na\nb\n\n[1]\nexit_code: 1\nerr\n\n[2]\nexit_code: 0\nok"
+        );
+
+        let composite = json!({
+            "status": "done",
+            "build": { "exit_code": 0, "output": "compiled\n", "output_file": "" },
+            "file": { "lines": ["1: alpha", "2: beta"] },
+            "raw_log": "first line\nsecond line\n"
+        });
+        let rendered = render_result_body(&composite);
+        assert!(rendered.contains(r#"{"status":"done"}"#), "{rendered}");
+        assert!(rendered.contains("build:\nexit_code: 0\ncompiled"), "{rendered}");
+        assert!(rendered.contains("file:\nlines:\n1: alpha\n2: beta"), "{rendered}");
+        assert!(rendered.contains("raw_log:\nfirst line\nsecond line"), "{rendered}");
     }
 }

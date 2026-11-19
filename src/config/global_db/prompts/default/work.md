@@ -4,7 +4,7 @@ Finish the task in this workspace. When the change can be made in code, don't st
 
 Stay inside what was asked. Don't widen the change.
 
-Take local, reversible steps yourself. Don't take destructive actions, or actions that touch other people or shared state, until that scope is allowed.
+Optimize for token efficiency and low turn count. Prefer concurrent operations and multi-step orchestration over one-step-per-turn probing.
 
 When something fails, diagnose it before retrying. Retry only when the cause is transient.
 
