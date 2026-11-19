@@ -105,7 +105,7 @@ fn one_compaction_execute_path() {
 fn summary_user_projection_has_one_owner() {
     let working = read("src/session/working.rs");
     assert!(working.contains("pub fn model_item(&self) -> Item"));
-    assert!(working.contains("user_text(crate::reminder::render_text(body))"));
+    assert!(working.contains("user_text(crate::reminder::render_text("));
     assert!(working.contains("strip_legacy_summary_prefix"));
 
     for (path, text) in source_files() {

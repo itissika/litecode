@@ -859,9 +859,9 @@ async fn manual_controller_rejects_prune_when_no_tail_is_eligible() {
     for index in 0..4 {
         let call_id = format!("controller-call-{index}");
         seed.push(call(&call_id));
-        // ~24k chars / ~4.8k tokens each. Four of these stay inside the default
-        // 20k keep-recent window but still save >60% of the conversation prefix.
-        seed.push(output(&call_id, "word ".repeat(4_800)));
+        // ~16k chars / ~3.2k tokens each. Four of these stay inside the
+        // 14.4k keep-recent window at 100k (and 18.4k at 128k).
+        seed.push(output(&call_id, "word ".repeat(3_200)));
     }
     sessions.insert_detail_rows(&sid, &seed).expect("seed");
 

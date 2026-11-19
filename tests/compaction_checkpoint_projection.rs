@@ -55,6 +55,10 @@ fn assert_checkpoint_user(item: &Item) {
     let text = item_text_preview(item);
     assert!(text.starts_with("<system-reminder>\n"), "{text}");
     assert!(text.ends_with("\n</system-reminder>"), "{text}");
+    assert!(
+        text.contains(litecode::config::global_db::CHECKPOINT_PREAMBLE.trim()),
+        "{text}"
+    );
     assert!(!text.contains("<compacted-summary>"), "{text}");
     assert!(!text.contains("<previous-summary>"), "{text}");
 }

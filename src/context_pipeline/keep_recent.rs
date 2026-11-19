@@ -1,15 +1,15 @@
 //! Keep-recent cut and output-cap policy for compaction.
 //!
-//! Split: output reserve (next completion) comes off the window first; the
-//! remainder is history_budget. Keep-recent takes verbatim items up to
-//! `min(20k, window/4)` inside that budget. The compact request separately
-//! reserves the main binding's `max_output`; this module does not size it.
-//! One LLM pass — no second-pass / aggressive rewrite.
+//! Split: output reserve (next completion) comes off the window first;
+//! keep-recent retains a proportional share (`16%`) of that remaining message
+//! budget (`window - output_reserve`), bounded inside `history_budget`. The
+//! compact request separately reserves the main binding's `max_output`; this
+//! module does not size it. One LLM pass — no second-pass / aggressive rewrite.
 
 use crate::authority::responses::{Item, MessageItem};
 use crate::session::estimate::{autocompact_threshold, item_token_estimate};
 
-pub use super::limits::KEEP_RECENT_CAP;
+pub use super::limits::KEEP_RECENT_RATIO_PERCENT;
 
 const OUTPUT_RESERVE_MIN: usize = 2_048;
 const MIN_SUMMARY_TOKENS: usize = 512;
@@ -38,13 +38,15 @@ pub fn history_budget_tokens(context_window: usize) -> usize {
     threshold.min(w.saturating_sub(reserved)).max(1)
 }
 
-/// Default recent window: `min(20_000, window/4, history_budget - min_summary)`.
+/// Default recent window: `16%` of post-reserve message budget, bounded by
+/// `history_budget - min_summary`.
 pub fn default_keep_recent_tokens(context_window: usize) -> usize {
     let w = window_or_fallback(context_window);
-    let quarter = (w / 4).max(1);
+    let message_budget = w.saturating_sub(output_reserve_tokens(w));
     let hist = history_budget_tokens(w);
-    KEEP_RECENT_CAP
-        .min(quarter)
+    message_budget
+        .saturating_mul(KEEP_RECENT_RATIO_PERCENT)
+        .saturating_div(100)
         .min(hist.saturating_sub(MIN_SUMMARY_TOKENS))
         .max(1)
 }
@@ -197,7 +199,9 @@ mod tests {
 
     #[test]
     fn keep_recent_plus_main_output_reserve_fits_under_history_budget() {
-        for window in [8_000usize, 16_000, 32_000, 128_000, 200_000] {
+        for window in [
+            8_000usize, 16_000, 32_000, 128_000, 200_000, 256_000, 1_000_000,
+        ] {
             let keep = default_keep_recent_tokens(window);
             let out = output_reserve_tokens(window);
             let hist = history_budget_tokens(window);
@@ -211,6 +215,12 @@ mod tests {
                 "window={window}: post-compact cap must stay under 80% trigger"
             );
         }
+    }
+
+    #[test]
+    fn default_keep_recent_scales_with_context_window() {
+        assert_eq!(default_keep_recent_tokens(256_000), 38_338);
+        assert_eq!(default_keep_recent_tokens(1_000_000), 157_378);
     }
 
     fn reasoning(text: &str) -> Item {

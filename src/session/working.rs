@@ -26,7 +26,13 @@ impl CompactionCheckpoint {
     /// this framed user message is view-only and must never be persisted back.
     pub fn model_item(&self) -> Item {
         let body = strip_legacy_summary_prefix(&self.summary);
-        user_text(crate::reminder::render_text(body))
+        let preamble = crate::config::global_db::CHECKPOINT_PREAMBLE.trim();
+        let framed = if body.is_empty() {
+            preamble.to_string()
+        } else {
+            format!("{preamble}\n\n{body}")
+        };
+        user_text(crate::reminder::render_text(&framed))
     }
 
     /// The raw summary shown to UI/reader consumers that need the body rather
@@ -307,6 +313,10 @@ mod tests {
         let text = crate::types::item_text_preview(&item);
         assert!(text.starts_with("<system-reminder>\n"), "{text}");
         assert!(text.ends_with("\n</system-reminder>"), "{text}");
+        assert!(
+            text.contains(crate::config::global_db::CHECKPOINT_PREAMBLE.trim()),
+            "{text}"
+        );
         assert!(!text.contains("<compacted-summary>"), "{text}");
         assert!(text.contains("## Primary Request and Intent"));
     }

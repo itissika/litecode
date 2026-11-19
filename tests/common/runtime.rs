@@ -158,7 +158,7 @@ pub fn test_compaction_request(
         provider,
         api_key: "test-key".into(),
         model: target.id.clone(),
-        context_window: target.context_window_max,
+        context_window: target.context_window,
         max_output_tokens: target.max_output,
         target,
         thinking: litecode::platform_knobs::ThinkingSpec::Tier(Default::default()),

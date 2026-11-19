@@ -118,7 +118,7 @@ pub const FALLBACK_BUDGET_LIMIT: usize = super::limits::FALLBACK_CONTEXT_WINDOW;
 #[derive(Debug, Clone)]
 pub struct BudgetPolicy {
     pub context_window: usize,
-    /// Verbatim recent window retained across compaction (`min(20k, window/4)` by default).
+    /// Verbatim recent window retained across compaction (`16%` of post-reserve budget).
     pub keep_recent_tokens: usize,
 }
 

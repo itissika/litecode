@@ -40,8 +40,9 @@ pub struct CompactionRequestContext {
     pub api_key: String,
     /// Wire model id of the current main binding.
     pub model: String,
-    /// Provider physical context ceiling for the compaction call. This is not
-    /// the session's product context cap.
+    /// Session product context window (`256K` / `1M`), used to size
+    /// keep-recent retention, mechanical prune protection, and post-compact
+    /// hard-limit checks. The compaction call itself uses `target.context_window_max`.
     pub context_window: usize,
     /// Resolved main model, used for the same projection as the main view.
     pub target: Arc<ResolvedModel>,

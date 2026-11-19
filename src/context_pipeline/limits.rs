@@ -10,8 +10,9 @@ pub const FALLBACK_CONTEXT_WINDOW: usize = 128_000;
 /// Largest prompt-side reserve used by the keep-recent split.
 pub const MAX_PROMPT_RESERVE_TOKENS: usize = 16_384;
 
-/// Verbatim recent-window cap retained across compaction.
-pub const KEEP_RECENT_CAP: usize = 20_000;
+/// Share of the post-reserve message budget retained verbatim across
+/// compaction (`context_window - output_reserve`).
+pub const KEEP_RECENT_RATIO_PERCENT: usize = 16;
 
 /// Ceiling for the final compaction summary text. This is a quality gate on
 /// the produced text, never the model request's `max_output_tokens`.

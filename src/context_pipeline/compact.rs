@@ -2821,7 +2821,7 @@ max_output = 8192
             provider,
             api_key: "sk-test".into(),
             model: target.id.clone(),
-            context_window: target.context_window_max,
+            context_window: target.context_window,
             target,
             thinking: ThinkingSpec::Tier(Default::default()),
             max_output_tokens: max_output,
@@ -4301,6 +4301,98 @@ max_output = 8192
         assert!(
             plan.meets_rewritten_share(),
             "the denominator is the rewritten suffix, not the whole prefix: {plan:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dual_window_compaction_uses_product_window_for_budget_and_physical_max_for_input() {
+        let sessions = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            String::new(),
+        ));
+        let sid = sessions
+            .open_session_sync("/p", "default", Some("test/test-primary-model"))
+            .expect("open session");
+
+        let mut seed = Vec::with_capacity(17);
+        for i in 0..15 {
+            seed.push(user_text(format!("old-{i} {}", "word ".repeat(16_000))));
+        }
+        for j in 0..2 {
+            seed.push(user_text(format!("keep-{j} {}", "word ".repeat(20_000))));
+        }
+        sessions.insert_detail_rows(&sid, &seed).expect("seed");
+        let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+
+        let provider = Arc::new(RetrySummaryProvider::new());
+        let mut request = compact_context(provider.clone());
+        let mut target = (*request.target).clone();
+        target.context_window = 256_000;
+        target.context_window_max = 1_000_000;
+        target.max_output = 128_000;
+        request.target = Arc::new(target);
+        request.context_window = 256_000;
+        request.max_output_tokens = 128_000;
+
+        let budget = BudgetPolicy::new(request.context_window);
+        assert_eq!(budget.keep_recent_tokens, 38_338);
+        assert!(protected_conversation_tokens_for_request(&request) < 153_600);
+
+        let compacted = CompactPolicy::compact_transcript(
+            &budget,
+            &sessions,
+            &sid,
+            &request,
+            crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
+            &ProviderPromptBaseline::default(),
+            &mut rows,
+            &CancellationToken::new(),
+            CompactionTrigger::Manual,
+            Some("dual-window"),
+            &sessions.data_root_path(),
+            MAX_SUMMARY_ATTEMPTS,
+        )
+        .await
+        .expect("dual-window compaction must succeed")
+        .expect("manual compaction over 276K history must commit");
+
+        assert!(compacted.text.contains("Short checkpoint text"));
+        let requests = provider.requests();
+        assert!(!requests.is_empty());
+        assert!(
+            requests[0]
+                .input
+                .iter()
+                .any(|item| item_text_preview(item).contains("old-0 ")),
+            "1M physical ceiling must retain old-0 instead of truncating to 256K during summary"
+        );
+
+        let checkpoint_text = item_text_preview(&rows[0].payload.model_item());
+        assert!(checkpoint_text.contains("<system-reminder>"));
+        assert!(checkpoint_text.contains(crate::config::global_db::CHECKPOINT_PREAMBLE.trim()));
+        assert!(checkpoint_text.contains("</system-reminder>"));
+
+        let retained_previews = rows[1..]
+            .iter()
+            .filter_map(|row| row.item())
+            .map(|item| {
+                let text = item_text_preview(item);
+                let head: String = text.chars().take(24).collect();
+                (head, crate::session::estimate::item_token_estimate(item))
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            retained_previews.iter().any(|(head, _)| head.contains("keep-0 ")),
+            "keep-0 missing from retained tail: {retained_previews:?}"
+        );
+        assert!(
+            retained_previews.iter().any(|(head, _)| head.contains("keep-1 ")),
+            "keep-1 missing from retained tail: {retained_previews:?}"
+        );
+        assert!(
+            !retained_previews.iter().any(|(head, _)| head.contains("old-")),
+            "unexpected old row in retained tail (budget keep_recent={}): {retained_previews:?}",
+            budget.keep_recent_tokens
         );
     }
 }

@@ -33,10 +33,12 @@ impl TurnLlmBinding {
     /// Freeze the main request shape for a compaction call mode.
     ///
     /// The caller supplies the instructions and active tools from the same
-    /// turn; provider/model/target all come from this binding. The context
-    /// window is the provider's physical ceiling: compaction does not inherit
-    /// the session's product context cap. No hidden compaction binding is
-    /// resolved here or anywhere downstream.
+    /// turn; provider/model/target all come from this binding. `context_window`
+    /// keeps the session's active product window (`Standard` / `Max`) so
+    /// retention, prune protection, and post-compact checks match the target
+    /// session window, while the compaction call's input capacity still uses
+    /// `target.context_window_max`. No hidden compaction binding is resolved
+    /// here or anywhere downstream.
     pub fn compaction_context(
         &self,
         instructions: String,
@@ -47,9 +49,7 @@ impl TurnLlmBinding {
             provider: Arc::clone(&self.provider),
             api_key: self.api_key.clone(),
             model: self.api_model_id.clone(),
-            // Compaction is its own request shape: it uses the provider's
-            // physical ceiling, not the session's product context cap.
-            context_window: self.model.context_window_max,
+            context_window: self.context_window,
             target: Arc::clone(&self.model),
             thinking: crate::platform_knobs::ThinkingSpec::Tier(self.thinking_tier),
             max_output_tokens: self.max_tokens,
@@ -553,8 +553,19 @@ max_output = 128000
         };
 
         let compaction = binding.compaction_context("system".into(), Vec::new(), "s1".into());
-        assert_eq!(compaction.context_window, 1_000_000);
+        assert_eq!(compaction.context_window, 256_000);
+        assert_eq!(compaction.target.context_window_max, 1_000_000);
         assert_eq!(compaction.max_output_tokens, 128_000);
         assert_eq!(binding.context_window, 256_000);
+
+        let max_binding = TurnLlmBinding {
+            context_window: compaction.target.context_window_max,
+            context_mode: ContextMode::Max,
+            ..binding
+        };
+        let max_compaction =
+            max_binding.compaction_context("system".into(), Vec::new(), "s1".into());
+        assert_eq!(max_compaction.context_window, 1_000_000);
+        assert_eq!(max_compaction.target.context_window_max, 1_000_000);
     }
 }
