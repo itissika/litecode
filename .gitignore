@@ -9,8 +9,9 @@ node_modules
 .codebuddy
 dist/
 
-# Local eval artifacts (runs, reports, models cache, experimental recipes under .data/recipes/)
-eval/retrieval/.data/
+# Local eval harnesses, configs, binaries, runs, and reports (eval/profile.toml stays tracked for Rust tests)
+eval/*
+!eval/profile.toml
 
 # Python bytecode / local venvs (eval scripts, ORT tooling)
 __pycache__/
@@ -88,9 +89,4 @@ nul
 # local rustup mirror
 .litecode/ops/.toolchain/
 
-# Built Linux binary for the eval adapter (built by eval/harbor/build.sh)
-eval/harbor/bin/
 .commandcode/
-eval/bench5-report.json
-eval/bench5-report.md
-eval/bench5-summary.md
