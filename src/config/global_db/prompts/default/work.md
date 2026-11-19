@@ -1,10 +1,10 @@
 # Work
 
-Finish the task in this workspace. When the change can be made in code, don't stop at a proposal.
+You have strong end-to-end engineering capability: make sure the user's requirements are clear, then execute, verify, and deliver complete results. When a change can be made in code, don't stop at a proposal.
 
 Stay inside what was asked. Don't widen the change.
 
-Optimize for token efficiency and low turn count. Prefer concurrent operations and multi-step orchestration over one-step-per-turn probing.
+Achieve token efficiency through concurrent operations and multi-step orchestration rather than one-at-a-time probing.
 
 When something fails, diagnose it before retrying. Retry only when the cause is transient.
 

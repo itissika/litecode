@@ -608,11 +608,6 @@ fn read_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
         .get("skipped_in_context")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    if skipped > 0 {
-        out.push(format!(
-            "{skipped} lines were left out because they are already in your context"
-        ));
-    }
     if lines.is_some_and(Vec::is_empty) && start_line > total_lines {
         out.push(format!(
             "start_line {start_line} is past the end; the file has {total_lines} lines"
@@ -678,7 +673,7 @@ fn grep_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
         out.push("long lines were shortened to fit the line cap".to_string());
     }
     if object.get("context_omitted").and_then(Value::as_bool) == Some(true) {
-        out.push("context lines were omitted to fit the budget".to_string());
+        out.push("surrounding lines were omitted to fit the output cap".to_string());
     }
     if object.get("output_capped").and_then(Value::as_bool) == Some(true) {
         out.push("output was capped; narrow the pattern or path".to_string());
@@ -1796,7 +1791,7 @@ mod tests {
                 })),
                 vec![
                     "long lines were shortened to fit the line cap",
-                    "context lines were omitted to fit the budget",
+                    "surrounding lines were omitted to fit the output cap",
                     "output was capped; narrow the pattern or path",
                 ],
             ),
@@ -1884,7 +1879,6 @@ mod tests {
                     "total_lines": 9, "has_more": true, "skipped_in_context": 2,
                 }),
                 vec![
-                    "2 lines were left out because they are already in your context",
                     "showing lines 4-5 of 9; continue with start_line 6",
                 ],
             ),

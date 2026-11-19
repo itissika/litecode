@@ -1025,7 +1025,7 @@ async fn compact_input(
 pub const TOOL_RESULT_PRUNE_THRESHOLD_CHARS: usize = 8_192;
 pub const TOOL_RESULT_PRUNE_HEAD_CHARS: usize = 4_096;
 pub const TOOL_RESULT_PRUNE_TAIL_CHARS: usize = 1_024;
-pub const TOOL_RESULT_PRUNE_MARKER: &str = "[... tool result middle pruned ...]";
+pub const TOOL_RESULT_PRUNE_MARKER: &str = "[...]";
 /// The first share of the effective context window whose request prefix is
 /// never rewritten by mechanical pruning. A replacement may start only at or
 /// after this token position, so the provider's cached prefix survives.
@@ -1403,8 +1403,8 @@ fn is_media_part(part: &InputContent) -> bool {
 
 fn media_placeholder(part: &InputContent) -> &'static str {
     match part {
-        InputContent::InputImage(_) => "[image already viewed; removed from context]",
-        InputContent::InputFile(_) => "[file already viewed; removed from context]",
+        InputContent::InputImage(_) => "[image already viewed]",
+        InputContent::InputFile(_) => "[file already viewed]",
         InputContent::InputText(_) => "",
     }
 }
@@ -4201,7 +4201,7 @@ max_output = 8192
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert_eq!(text, "look\n[image already viewed; removed from context]");
+        assert_eq!(text, "look\n[image already viewed]");
         assert_eq!(
             prune_media_count(rows[6].item().unwrap()),
             1,

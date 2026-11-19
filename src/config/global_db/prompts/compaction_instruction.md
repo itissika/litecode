@@ -18,10 +18,10 @@ Output EXACTLY the Markdown structure below: keep every section, in order. Use t
 - [explicitly requested work not yet completed]
 
 ## Current Work
-- [precisely what was in progress at this checkpoint]
+- [precisely what was in progress]
 
 ## Next Step
-- [the single next action, directly in line with the most recent request, or "(none)"]
+- [concrete next actions required to complete the request, or "(none)"]
 
 ## Critical Context
 - [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]

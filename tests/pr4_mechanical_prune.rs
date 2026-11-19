@@ -803,7 +803,7 @@ async fn historical_user_media_is_replaced_by_stable_text_in_the_surface() {
     assert_eq!(media_count(&replacement_item), 0);
     assert!(
         item_text_preview(&replacement_item)
-            .contains("[image already viewed; removed from context]")
+            .contains("[image already viewed]")
     );
     let original = events
         .iter()

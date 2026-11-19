@@ -173,7 +173,7 @@ fn strip_input_media(parts: &mut [InputContent]) -> bool {
             InputContent::InputText(_) => continue,
         };
         *part = InputContent::InputText(InputTextContent {
-            text: format!("[{kind} already viewed; removed from context]"),
+            text: format!("[{kind} already viewed]"),
         });
         stripped = true;
     }
@@ -199,7 +199,7 @@ fn strip_tool_output(output: &mut FunctionCallOutputItemParam) -> bool {
         .collect::<Vec<_>>()
         .join("\n");
     let note = format!(
-        "[{stripped} media part(s) already viewed; removed from context. Call the tool again to view]"
+        "[{stripped} media part(s) already viewed; call the tool again to view]"
     );
     output.output = FunctionCallOutput::Text(if text.is_empty() {
         note
@@ -366,7 +366,7 @@ mod tests {
         use crate::authority::responses::ReasoningItem;
 
         let items = vec![
-            user_text("[image already viewed; removed from context]"),
+            user_text("[image already viewed]"),
             Item::Reasoning(ReasoningItem {
                 id: Some("rs_media".into()),
                 summary: vec![],
