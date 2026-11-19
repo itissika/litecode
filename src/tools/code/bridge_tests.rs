@@ -1387,3 +1387,46 @@ async fn over_budget_spill_file_is_readable_by_tools_read() {
     assert!(spilled.contains("MID_SPILL_LINE_3000"));
     assert!(spilled.contains("TAIL_SPILL_TEST"));
 }
+
+#[tokio::test]
+async fn console_only_prompts_to_return_while_console_plus_return_stays_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(crate::tools::read::ReadTool::default())];
+    let console_only = run_program(dir.path(), tools.clone(), "console.log('step 1');").await;
+    assert!(console_only.error.is_none(), "{}", console_only.content);
+    assert!(
+        console_only
+            .content
+            .contains("↳ Returned nothing (console output only). End with 'return' on tool results instead."),
+        "{}",
+        console_only.content
+    );
+    assert!(console_only.content.contains("[log] step 1"), "{}", console_only.content);
+
+    let both = run_program(
+        dir.path(),
+        tools.clone(),
+        "console.log('progress'); return { ok: true };",
+    )
+    .await;
+    assert!(both.error.is_none(), "{}", both.content);
+    assert!(
+        !both.content.contains("Returned nothing"),
+        "{}",
+        both.content
+    );
+    assert!(both.content.contains("[log] progress"), "{}", both.content);
+    assert!(both.content.contains(r#"{"ok":true}"#), "{}", both.content);
+
+    let failed = run_program(
+        dir.path(),
+        tools,
+        "console.log('step 1'); throw new Error('boom');",
+    )
+    .await;
+    assert!(
+        !failed.content.contains("Returned nothing"),
+        "{}",
+        failed.content
+    );
+}

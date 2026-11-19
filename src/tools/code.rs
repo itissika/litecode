@@ -1222,9 +1222,16 @@ fn run_report(
             brief: line.brief.clone(),
         });
     }
+    let mut warnings = outcome.warnings.clone();
+    if failure_kind.is_none() && outcome.used_console && outcome.value().is_none() {
+        warnings.push(
+            "Returned nothing (console output only). End with 'return' on tool results instead."
+                .to_string(),
+        );
+    }
     render::RunReport {
         reminders,
-        warnings: outcome.warnings.clone(),
+        warnings,
         dropped_undefined: outcome.dropped_undefined.head_line(),
         coerced_non_finite: outcome.dropped_undefined.non_finite_head_line(),
         entries,
@@ -1458,6 +1465,7 @@ mod outcome_tests {
             entries: Vec::new(),
             warnings: Vec::new(),
             dropped_undefined: Default::default(),
+            used_console: false,
             failure: Some(Failure::cancelled()),
             duration_ms: 0,
             calls: vec![CallRecord {
@@ -1514,6 +1522,7 @@ mod outcome_tests {
             entries: Vec::new(),
             warnings: Vec::new(),
             dropped_undefined: Default::default(),
+            used_console: false,
             failure: None,
             duration_ms: 0,
             calls: vec![CallRecord {
@@ -1577,6 +1586,7 @@ mod outcome_tests {
                 body: crate::ptc::EntryBody::Value(Json::new(json!("done"))),
             }],
             dropped_undefined: Default::default(),
+            used_console: false,
             failure: None,
             duration_ms: 42,
             calls: vec![
@@ -1622,5 +1632,33 @@ mod outcome_tests {
         assert_eq!(data["by_tool"]["read"]["fail"], 0);
         assert_eq!(data["by_tool"]["write"]["ok"], 0);
         assert_eq!(data["by_tool"]["write"]["fail"], 1);
+    }
+
+    #[test]
+    fn internal_warn_entry_without_console_never_triggers_console_only_reminder() {
+        let ledger = CallLedger::new();
+        let outcome = Outcome {
+            warnings: Vec::new(),
+            entries: vec![crate::ptc::Entry {
+                order: 1,
+                body: crate::ptc::EntryBody::Text {
+                    level: crate::ptc::LogLevel::Warn,
+                    text: "internal notice".into(),
+                },
+            }],
+            dropped_undefined: Default::default(),
+            used_console: false,
+            failure: None,
+            duration_ms: 5,
+            calls: Vec::new(),
+        };
+        let result = render_run_output(&ledger, &outcome, 120_000, "", Vec::new());
+        assert!(result.error.is_none(), "{}", result.content);
+        assert!(
+            !result.content.contains("Returned nothing"),
+            "{}",
+            result.content
+        );
+        assert!(result.content.contains("[warn] internal notice"), "{}", result.content);
     }
 }

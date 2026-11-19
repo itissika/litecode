@@ -16,6 +16,7 @@ pub(crate) struct OutputLedger {
     entries: Vec<Entry>,
     order: u64,
     tripped: bool,
+    used_console: bool,
     dropped_undefined: DroppedUndefined,
 }
 
@@ -27,8 +28,17 @@ impl OutputLedger {
             entries: Vec::new(),
             order: 0,
             tripped: false,
+            used_console: false,
             dropped_undefined: Default::default(),
         }
+    }
+
+    pub(crate) fn mark_console_used(&mut self) {
+        self.used_console = true;
+    }
+
+    pub(crate) fn used_console(&self) -> bool {
+        self.used_console
     }
 
     pub(crate) fn tripped(&self) -> bool {

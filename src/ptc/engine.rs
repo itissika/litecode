@@ -556,6 +556,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     };
     let entries = output.borrow().entries().to_vec();
     let dropped_undefined = output.borrow().dropped_undefined().clone();
+    let used_console = output.borrow().used_console();
     let warnings = faults.warnings();
     let calls = calls.snapshot();
     let duration_ms = clock.wall_elapsed().as_millis() as u64;
@@ -567,6 +568,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
             calls,
             duration_ms,
             dropped_undefined,
+            used_console,
         },
         EndKind::CancelledAfterReturn => Outcome {
             entries,
@@ -575,6 +577,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
             calls,
             duration_ms,
             dropped_undefined,
+            used_console,
         },
         EndKind::Failure(failure) => Outcome {
             entries,
@@ -583,6 +586,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
             calls,
             duration_ms,
             dropped_undefined,
+            used_console,
         },
     }
 }
@@ -911,7 +915,9 @@ fn install_console(
             ctx.clone(),
             move |ctx: Ctx<'_>, args: Rest<Value<'_>>| -> rquickjs::Result<()> {
                 let message = format_console(&args.0);
-                let accepted = output.borrow_mut().push_text(level, message);
+                let mut ledger = output.borrow_mut();
+                ledger.mark_console_used();
+                let accepted = ledger.push_text(level, message);
                 if !accepted {
                     flags.output.store(true, Ordering::Release);
                     faults.record(Faults::OUTPUT);

@@ -512,6 +512,8 @@ pub struct Outcome {
     pub duration_ms: u64,
     /// Result paths where `undefined` was dropped / nulled (WP-206 #7).
     pub dropped_undefined: boundary::DroppedUndefined,
+    /// True when the program itself called `console.*` at least once.
+    pub used_console: bool,
 }
 
 impl Outcome {
@@ -534,6 +536,7 @@ impl Outcome {
             calls: Vec::new(),
             duration_ms: 0,
             dropped_undefined: Default::default(),
+            used_console: false,
         }
     }
 }
