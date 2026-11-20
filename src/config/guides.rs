@@ -8,8 +8,8 @@
 //! Consumers:
 //! - `init_workspace` writes [`WORKSPACE_README`] (compile-time assembly) to
 //!   `.litecode/README.md`, regenerated on every open.
-//! - the `litecode_workspace` tool prints one topic on demand (`guide <topic>`)
-//!   or [`GUIDE_INDEX`] when no topic is given.
+//! - `tools.workspace.help({ topic })` returns one topic (or [`GUIDE_INDEX`]
+//!   when omitted).
 //!
 //! Fragment contract: every fragment starts with a heading, ends with exactly
 //! one newline, and contains no `---` section separator line — the assembler
@@ -80,19 +80,20 @@ pub const WORKSPACE_README: &str = concat!(
     include_str!("guides/quickref.md"),
 );
 
-/// Topic index printed when `guide` is called without a topic: keeps the
-/// panel cheap instead of dumping every fragment into the turn.
+/// Topic index printed when `workspace.help` is called without a topic: keeps the
+/// result concise instead of dumping every fragment into the turn.
 pub const GUIDE_INDEX: &str = concat!(
-    "# guide\n\n",
-    "- `guide setup` — first-run checklist: look around, tune excludes, recommend apps, suggest next steps\n",
-    "- `guide excludes` — path / file excludes (`.litecode/excludes.json`)\n",
-    "- `guide mcp` — MCP servers (`.litecode/mcp.json`)\n",
-    "- `guide custom_tools` — custom tools (`.litecode/custom_tools.json`)\n",
-    "- `guide apps` — local apps (`.litecode/apps.json`)\n",
-    "\nLive app state: `apps [id]` lists built-in and custom apps, status, URL, and last error.\n",
+    "# workspace.help\n\n",
+    "- `setup` — first-run checklist: look around, tune excludes, check apps, suggest next steps\n",
+    "- `excludes` — path / file excludes (`.litecode/excludes.json`)\n",
+    "- `mcp` — MCP servers (`.litecode/mcp.json`)\n",
+    "- `custom_tools` — custom tools (`.litecode/custom_tools.json`)\n",
+    "- `apps` — local apps (`.litecode/apps.json`)\n",
+    "\nConfig validation: `workspace.refresh()` checks `.litecode/{excludes,mcp,custom_tools,apps}.json`.\n",
+    "Live runtime view: `workspace.status()` summarizes loaded config, active subagents, and apps.\n",
     "\nThese topics are also in `.litecode/README.md` \
      (product-owned, rewritten on every open).\n",
-    "\nBoundaries: this tool does not write files or flip switches. \
+    "\nBoundaries: `workspace.*` does not write config files or flip switches. \
      Engines stay in Settings → Engines. Enabling an MCP server \
      or a custom tool stays in Settings → Agents.\n",
 );

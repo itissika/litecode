@@ -994,11 +994,7 @@ impl AgentRuntime {
             .runtime_handle
             .subagent_hub
             .take_notices(&self.session_id);
-        let custom_notices = self
-            .runtime_handle
-            .custom_tool_hub
-            .take_mailbox(&self.session_id);
-        stages.mark("subagent_and_custom_mailbox");
+        stages.mark("subagent_mailbox");
 
         let changed = self.sessions.take_changed_files(&self.session_id);
         let changed_paths = changed
@@ -1079,30 +1075,7 @@ impl AgentRuntime {
             }
             detail
         };
-        let custom_tool_settled = custom_notices
-            .iter()
-            .map(|notice| {
-                let (status, detail) = match &notice.outcome {
-                    crate::tools::custom_hub::CustomToolOutcome::Ok { output } => {
-                        ("ok".to_string(), output.clone())
-                    }
-                    crate::tools::custom_hub::CustomToolOutcome::Error { message } => {
-                        ("error".to_string(), message.clone())
-                    }
-                    crate::tools::custom_hub::CustomToolOutcome::Cancelled => {
-                        ("cancelled".to_string(), String::new())
-                    }
-                };
-                crate::reminder::CustomToolSettledEntry {
-                    job_id: notice.job_id.clone(),
-                    call_id: notice.call_id.clone(),
-                    tool_name: notice.tool_name.clone(),
-                    status,
-                    detail,
-                }
-            })
-            .collect::<Vec<_>>();
-        stages.mark("settled_and_custom_format");
+        stages.mark("settled_format");
 
         let memory = match self.sessions.load_memory(&self.session_id) {
             Ok(memory) => memory,
@@ -1120,7 +1093,7 @@ impl AgentRuntime {
         let view = match self.sessions.spine_reminder_view(&self.session_id) {
             Ok(view) => view,
             Err(error) => {
-                self.restore_seam_sources(&bash_notices, completions, &custom_notices);
+                self.restore_seam_sources(&bash_notices, completions);
                 self.restore_parent_notices(&parent_notices);
                 // ISSUE-032: take_changed_files already advanced snaps; undo so
                 // the next seam can still report these paths.
@@ -1172,7 +1145,6 @@ impl AgentRuntime {
             bash_running: running_bash,
             settled,
             settled_detail,
-            custom_tool_settled,
             changed_paths,
         };
         stages.mark("spine_reminder_view");
@@ -1181,7 +1153,6 @@ impl AgentRuntime {
         stages.note("reminders", reminders.len());
         let mut bash_written = false;
         let mut subagent_written = false;
-        let mut custom_written = false;
         let mut files_changed_written = false;
         let mut appended = false;
         for reminder in &reminders {
@@ -1191,7 +1162,6 @@ impl AgentRuntime {
                     match reminder.kind() {
                         ReminderKind::BashExit => bash_written = true,
                         ReminderKind::SubagentSettled => subagent_written = true,
-                        ReminderKind::CustomToolSettled => custom_written = true,
                         ReminderKind::FilesChanged => files_changed_written = true,
                         _ => {}
                     }
@@ -1200,9 +1170,6 @@ impl AgentRuntime {
                     if reminder.kind() == ReminderKind::SubagentSettled {
                         if !bash_written {
                             self.restore_bash_mailbox(&bash_notices);
-                        }
-                        if !custom_written {
-                            self.restore_custom_mailbox(&custom_notices);
                         }
                         if !changed.is_empty() && !files_changed_written {
                             self.sessions
@@ -1234,10 +1201,7 @@ impl AgentRuntime {
         if !subagent_written {
             self.restore_parent_notices(&parent_notices);
         }
-        if !custom_written {
-            self.restore_custom_mailbox(&custom_notices);
-        }
-        // ISSUE-032: soft restore like bash/custom when FilesChanged was not
+        // ISSUE-032: soft restore like bash when FilesChanged was not
         // persisted (append warn path or sync omitted the kind).
         if !changed.is_empty() && !files_changed_written {
             self.sessions
@@ -1251,7 +1215,6 @@ impl AgentRuntime {
         &self,
         notices: &[crate::terminal::ExitNotice],
         completions: Vec<crate::tools::subagent::CompletionRef>,
-        custom_notices: &[crate::tools::custom_hub::CustomToolExitNotice],
     ) {
         self.restore_bash_mailbox(notices);
         if !completions.is_empty() {
@@ -1259,7 +1222,6 @@ impl AgentRuntime {
                 .subagent_hub
                 .restore_completions(&self.session_id, completions);
         }
-        self.restore_custom_mailbox(custom_notices);
     }
 
     fn restore_parent_notices(&self, notices: &[crate::tools::subagent::ParentNotice]) {
@@ -1269,15 +1231,6 @@ impl AgentRuntime {
         self.runtime_handle
             .subagent_hub
             .restore_notices(&self.session_id, notices.to_vec());
-    }
-
-    fn restore_custom_mailbox(&self, notices: &[crate::tools::custom_hub::CustomToolExitNotice]) {
-        if notices.is_empty() {
-            return;
-        }
-        self.runtime_handle
-            .custom_tool_hub
-            .restore_mailbox(&self.session_id, notices.to_vec());
     }
 
     fn restore_bash_mailbox(&self, notices: &[crate::terminal::ExitNotice]) {

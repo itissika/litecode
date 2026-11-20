@@ -292,11 +292,11 @@ impl ResolvedConfig {
         map
     }
 
-    /// Merged custom tools with suite surface/rules folded in.
+    /// Merged custom tools with suite rules folded in.
     ///
     /// A workspace suite shadows the whole global suite group: global members
     /// of that suite are not part of this workspace. This keeps one suite to one
-    /// rules surface and one binding.
+    /// rules binding.
     pub fn custom_tools(&self) -> Vec<CustomToolDefinition> {
         let mut map: HashMap<String, CustomToolDefinition> = HashMap::new();
         for tool in &self.global.custom_tools {
@@ -314,7 +314,6 @@ impl ResolvedConfig {
         let suites = self.custom_suites();
         for tool in map.values_mut() {
             if let Some(suite) = tool.suite.as_deref().and_then(|name| suites.get(name)) {
-                tool.surface = Some(suite.surface);
                 tool.rules = suite.rules.clone();
             }
         }

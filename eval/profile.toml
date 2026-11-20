@@ -60,19 +60,24 @@ off = [
   # A question needs a human to answer it. In a scored run nobody does, so the
   # call does not get refused, it waits forever.
   "ask_user",
-  "plan",
+  "plan.create",
+  "plan.finish",
   # Product surface: says nothing about how well the task was solved.
-  "todo",
-  "knowledge",
-  "litecode_workspace",
+  "todo.write",
+  "knowledge.list",
+  "knowledge.check",
+  "knowledge.refs",
+  "knowledge.create",
+  "workspace.help",
+  "workspace.refresh",
+  "workspace.status",
   # Subagents: the same model in another context. The eval scores one
   # trajectory, and spawning would make the score depend on delegation.
-  "subagent_launch",
-  "subagent_wait",
-  "subagent_stop",
-  "subagent_list",
-  "subagent_send",
-  "subagent_delete",
+  "subagent.launch",
+  "subagent.wait",
+  "subagent.stop",
+  "subagent.list",
+  "subagent.send",
 ]
 # Follows `web` above: bound when the probe says the container has a network.
 network = [

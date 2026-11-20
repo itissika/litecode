@@ -136,7 +136,7 @@ describe("CustomToolsSection persist UX", () => {
     await waitFor(() => {
       expect(saveCustomSuite).toHaveBeenCalledWith(
         "deck",
-        { surface: "code", label: "Deck", rules: [] },
+        { label: "Deck", rules: [] },
         "global",
       );
     });

@@ -1,175 +1,39 @@
-const MAX_TITLE_CHARS = 90;
-const MAX_TOKEN_CHARS = 24;
-
-interface ToolTitle {
+export interface ToolTitle {
   summary: string;
 }
 
+const MAX_TITLE_CHARS = 72;
+
 function truncate(value: string, max = MAX_TITLE_CHARS): string {
-  return value.length > max ? `${value.slice(0, max)}…` : value;
-}
-
-function stringField(
-  input: Record<string, unknown>,
-  name: string,
-): string | null {
-  const value = input[name];
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function formatScope(input: Record<string, unknown>, fields: string[]): string {
-  for (const field of fields) {
-    const value = stringField(input, field);
-    if (value) return ` · in ${value}`;
-  }
-  return "";
-}
-
-function todoSummary(outputText?: string): string {
-  const match = outputText?.match(
-    /Status\s+—\s+pending:\s*(\d+),\s*in_progress:\s*(\d+),\s*completed:\s*(\d+)/,
-  );
-  if (!match) return "Updating tasks…";
-  const [, pending, active, completed] = match;
-  return `${active} active · ${pending} pending · ${completed} done`;
-}
-
-function planSummary(
-  input: Record<string, unknown>,
-  outputText?: string,
-  activePlanPath?: string | null,
-): string {
-  const created = outputText
-    ?.match(/^Created plan at\s+(.+?)(?:\r?\n|$)/m)?.[1]
-    ?.trim();
-  if (created) return created;
-  if (outputText?.includes("Active plan cleared."))
-    return "Active plan cleared";
-  if (input.action === "create" && activePlanPath) return activePlanPath;
-  return input.action === "finish" ? "Clearing active plan…" : "Creating plan…";
-}
-
-function lspSummary(input: Record<string, unknown>): string {
-  const action = stringField(input, "action");
-  const filePath = stringField(input, "file_path");
-  const label: Record<string, string> = {
-    goToDefinition: "def",
-    definition: "def",
-    findReferences: "refs",
-    references: "refs",
-    hover: "hover",
-    diagnostics: "diag",
-  };
-  const line = typeof input.line === "number" ? `:${input.line}` : "";
-  const text = stringField(input, "text");
-  const token = text ? ` ${truncate(text, MAX_TOKEN_CHARS)}` : "";
-  return [
-    label[action ?? ""] ?? action,
-    filePath ? `${filePath}${line}${token}` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const oneLine = value.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }
 
 function fallbackSummary(input: unknown): string {
-  if (input === undefined) return "";
+  if (input == null) return "";
   if (typeof input === "string") return truncate(input);
-  if (input && typeof input === "object" && !Array.isArray(input)) {
-    const obj = input as Record<string, unknown>;
-    const preferred = Object.entries(obj).find(
-      ([, value]) => typeof value === "string" && value.trim(),
-    );
-    const [key, value] = preferred ?? Object.entries(obj)[0] ?? [];
-    if (key) return truncate(`${key}=${JSON.stringify(value)}`);
+  if (typeof input !== "object" || Array.isArray(input)) {
+    return truncate(JSON.stringify(input));
+  }
+  const obj = input as Record<string, unknown>;
+  for (const value of Object.values(obj)) {
+    if (
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      return truncate(String(value));
+    }
   }
   return truncate(JSON.stringify(input));
 }
 
-/** Human-oriented FoldCard title text. Keep execution mechanics in the body. */
+/** Human-oriented FoldCard header summary; dedicated per-tool titles are retired. */
 export function toolTitle(
   toolName: string,
   input: unknown,
-  outputText?: string,
-  context: { activePlanPath?: string | null } = {},
+  _outputText?: string,
 ): ToolTitle {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    return { summary: fallbackSummary(input) };
-  }
-  const obj = input as Record<string, unknown>;
-
-  if (toolName === "todo") return { summary: todoSummary(outputText) };
-  if (toolName === "plan") {
-    return { summary: planSummary(obj, outputText, context.activePlanPath) };
-  }
-  if (toolName === "lsp") return { summary: lspSummary(obj) };
-
-  // MCP tools are named `mcp_<server_id>`; surface the server id plus the
-  // first meaningful string argument instead of a raw key=value fallback.
-  if (toolName.startsWith("mcp_")) {
-    const server = toolName.slice("mcp_".length);
-    const arg = Object.values(obj).find(
-      (value): value is string => typeof value === "string" && !!value.trim(),
-    );
-    return { summary: arg ? `${server} · ${truncate(arg)}` : server };
-  }
-
-  if (toolName === "grep") {
-    const pattern = stringField(obj, "pattern");
-    return {
-      summary: pattern
-        ? truncate(`/${pattern}/${formatScope(obj, ["path", "glob"])}`)
-        : fallbackSummary(input),
-    };
-  }
-  if (toolName === "glob") {
-    const pattern = stringField(obj, "pattern");
-    return {
-      summary: pattern
-        ? truncate(`${pattern}${formatScope(obj, ["path"])}`)
-        : fallbackSummary(input),
-    };
-  }
-  if (toolName === "knowledge") {
-    const command = stringField(obj, "command");
-    return { summary: command ? truncate(command) : "board" };
-  }
-  if (toolName === "litecode_workspace") {
-    const action = stringField(obj, "action");
-    return { summary: action ? truncate(action) : "panel" };
-  }
-  if (["code_search", "session_search"].includes(toolName)) {
-    const query = stringField(obj, "query");
-    return {
-      summary: query
-        ? truncate(
-            `${query}${formatScope(obj, ["include_pattern", "session_id"])}`,
-          )
-        : fallbackSummary(input),
-    };
-  }
-  if (toolName === "websearch") {
-    return { summary: stringField(obj, "query") ?? fallbackSummary(input) };
-  }
-  if (toolName === "webfetch") {
-    return { summary: stringField(obj, "url") ?? fallbackSummary(input) };
-  }
-  if (["read", "write", "edit"].includes(toolName)) {
-    return { summary: stringField(obj, "file_path") ?? fallbackSummary(input) };
-  }
-  if (toolName === "exec_command") {
-    const cmd = stringField(obj, "cmd") ?? stringField(obj, "command");
-    return { summary: truncate(cmd ?? "") };
-  }
-  if (toolName === "write_stdin") {
-    const sid = stringField(obj, "session_id");
-    const chars = stringField(obj, "chars");
-    if (sid && chars) return { summary: truncate(`${sid} · ${chars}`) };
-    return { summary: truncate(sid ?? chars ?? "") };
-  }
-  if (["shell", "command"].includes(toolName)) {
-    const description = stringField(obj, "description");
-    const command = stringField(obj, "command");
-    return { summary: truncate(description ?? command ?? "") };
-  }
+  if (toolName === "run_code") return { summary: "" };
   return { summary: fallbackSummary(input) };
 }

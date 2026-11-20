@@ -45,21 +45,6 @@ describe("groupToolCards", () => {
     ]);
   });
 
-  it("puts code-surface cards before direct ones in every section", () => {
-    const groups = groupToolCards([
-      card("run", "core", { surface: undefined }),
-      card("plan", "core", { surface: "direct" }),
-      card("write", "core", { surface: "code" }),
-      card("read", "core", { surface: "code" }),
-      card("lsp", "engine", { surface: "direct" }),
-      card("code_search", "engine", { surface: "code" }),
-    ]);
-    expect(groups.map((group) => group.tools.map((tool) => tool.id))).toEqual([
-      ["read", "write", "run", "plan"],
-      ["code_search", "lsp"],
-    ]);
-  });
-
   it("orders other sections by label, then id", () => {
     const groups = groupToolCards([
       card("suite:zzz", "custom", { label: "alpha" }),

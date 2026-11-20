@@ -253,9 +253,6 @@ impl Tool for CodeSearchTool {
         "code_search"
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
         true
@@ -960,8 +957,14 @@ mod tests {
         assert_eq!(value["hits"], serde_json::json!([]));
         assert!(value.get("message").is_none(), "{value}");
         assert!(
-            crate::tool::schema_validate(&surface.tools["code_search"].output_schema, &value)
-                .is_ok(),
+            crate::tool::schema_validate(
+                surface.tools["code_search"]
+                    .output_schema
+                    .as_ref()
+                    .expect("code_search output schema"),
+                &value
+            )
+            .is_ok(),
             "{value}"
         );
     }
@@ -969,7 +972,10 @@ mod tests {
     #[test]
     fn generated_output_schema_requires_hit_shapes() {
         let surface = code_search_surface();
-        let schema = &surface.tools["code_search"].output_schema;
+        let schema = surface.tools["code_search"]
+            .output_schema
+            .as_ref()
+            .expect("code_search output schema");
         assert_eq!(schema["required"], serde_json::json!(["hits"]));
         let hit = schema["properties"]["hits"]["items"].as_object().unwrap();
         assert_eq!(

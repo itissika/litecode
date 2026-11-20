@@ -1254,8 +1254,8 @@ function execRows(output: string): HumanRow[] {
   ];
 }
 
-describe("MessageList tool routing (exec_command uses rich card)", () => {
-  it("renders exec_command as a collapsible FoldCard", () => {
+describe("MessageList tool routing (every tool call uses FoldCard)", () => {
+  it("renders tool calls as a collapsible FoldCard", () => {
     const node = rowsToNodes(
       execRows(`exit_code: 0
 all good
@@ -1268,10 +1268,8 @@ all good
     expect(container.querySelector(".foldcard-header")).toBeTruthy();
     expect(screen.queryByTestId("inline-bash-command")).toBeNull();
   });
-});
 
-describe("MessageList session-mount capsules route to single-line rows", () => {
-  const capsule = (name: string, output: string): HumanRow[] => [
+  const legacyCall = (name: string, output: string): HumanRow[] => [
     {
       seq: 1,
       kind: "item/tool_call",
@@ -1293,32 +1291,20 @@ describe("MessageList session-mount capsules route to single-line rows", () => {
     },
   ];
 
-  it("renders todo as a summary row, never a card", () => {
-    const node = rowsToNodes(
-      capsule("todo", "OK. Status — pending: 2, in_progress: 1, completed: 3"),
-    )[0]!;
-    const { container } = render(
-      <NodeView node={node} sessionId="session-1" />,
-    );
-
-    expect(screen.getByTestId("inline-todo-summary").textContent).toBe(
-      "1 active · 2 pending · 3 done",
-    );
-    expect(container.querySelector(".foldcard-header")).toBeNull();
-  });
-
-  it("renders plan as a summary row, never a card", () => {
-    const node = rowsToNodes(
-      capsule("plan", "Created plan at .litecode/plan/calm-river.md\nsaved."),
-    )[0]!;
-    const { container } = render(
-      <NodeView node={node} sessionId="session-1" />,
-    );
-
-    expect(screen.getByTestId("inline-plan-summary").textContent).toBe(
-      ".litecode/plan/calm-river.md",
-    );
-    expect(container.querySelector(".foldcard-header")).toBeNull();
+  it("renders legacy todo/plan calls through the generic FoldCard instead of dedicated inline rows", () => {
+    for (const [name, output] of [
+      ["todo", "OK. Status — pending: 2, in_progress: 1, completed: 3"],
+      ["plan", "Created plan at .litecode/plan/calm-river.md\nsaved."],
+    ]) {
+      const node = rowsToNodes(legacyCall(name, output))[0]!;
+      const { container, unmount } = render(
+        <NodeView node={node} sessionId="session-1" />,
+      );
+      expect(container.querySelector(".foldcard-header")).toBeTruthy();
+      expect(screen.queryByTestId("inline-todo-summary")).toBeNull();
+      expect(screen.queryByTestId("inline-plan-summary")).toBeNull();
+      unmount();
+    }
   });
 });
 

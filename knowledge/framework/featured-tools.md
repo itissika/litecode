@@ -19,12 +19,12 @@ h : 517
   - 知识需要稳定，知识之间的引用关系必须保持稳定，且基于事实。知识库的核心在于关系，知识节点之间的关系，知识正文中与文件的关系，这些关系是机械式的，可验证的稳定关系，通过关系，能够知道，知识飘了没，知识该不该更新。
   - 对话中可以引用，自动展开内容给agent，方便引用知识节点，对人来说很重要，方便，才能够经常用；而对agent来说，知识本身很重要，没有知识的定义，agent实现起来就会谨慎，偏离了知识要求的轨道，agent则能够自省；
 
-- tool：subagent（launch / send / wait / stop / list / delete）
-  - 由于底层完全共享同一套基础设施，所以primary agent和subagent session之间的关系就是人类和primary的关系，primary能够对subagent做大部分事情：看（list / wait 取最新结果）、发（send：queue / steer / stop_and_send）、停（stop）、删（delete）。
-  - 刻意排除的操作，成本敏感：模型，上下文，思考强度；工作范围：agent类型；复杂度：revert回退会话；
+- tool：subagent（launch / send / wait / stop / list，通过 `tools.subagent.*` 调用）
+  - 由于底层完全共享同一套基础设施，所以primary agent和subagent session之间的关系就是人类和primary的关系，primary能够对subagent做：启动（launch）、看（list / wait 取最新结果）、发（send：queue / steer / stop_and_send）、停（stop）。
+  - 刻意排除的操作，成本敏感：模型，上下文，思考强度；工作范围：agent类型；复杂度：revert回退会话；以及不在会话内删除子会话。
 
-- tool：litecode_workspace
-  - 工作区门面，全部只读：status / sessions / guide / seed / refresh，永不写文件。
+- tool：workspace（`workspace.help` / `workspace.refresh` / `workspace.status`）
+  - 工作区只读门面（能力卡 id 为 `litecode_workspace`）：`help` 按主题查配置指引，`refresh` 一次校验工作区 JSON 配置（excludes / mcp / custom_tools / apps），`status` 返回运行态摘要，永不写文件。
   - 一个工作区可能有多个session并行，session之间应该能够互相感知，而协作要求是给到人类的，人类应该做好工作安排
 
 - tool：lsp

@@ -21,7 +21,6 @@ import { EMPTY_SLICE, useTurnStore } from "../stores/turnStore";
 import { AgentChatInput } from "./AgentChatInput";
 import { SessionStatusLine } from "./SessionStatusLine";
 import { SubagentRosterPanel } from "./SubagentRosterPanel";
-import { SubagentLaunchToolView } from "./toolviews/SubagentLaunchToolView";
 
 vi.mock("../dockview/workbench/commands", async (orig) => ({
   ...(await orig<typeof import("../dockview/workbench/commands")>()),
@@ -194,19 +193,6 @@ describe("WP-089 T4 deleted 事件", () => {
     render(<SubagentRosterPanel sessionId={PARENT} />);
     expect(screen.getByText("No subagents")).toBeTruthy();
     cleanup();
-
-    render(
-      <SubagentLaunchToolView
-        name="subagent_launch"
-        input={{ agent: "worker" }}
-        status="ok"
-        call_id="call_1"
-        sessionId={PARENT}
-      />,
-    );
-    const line = screen.getByTestId("subagent-launch-line");
-    expect(line.tagName).toBe("DIV");
-    expect(line.textContent).toContain("Deleted");
   });
   it("级联：每个子各一条 deleted 都各自处理", () => {
     for (const id of ["c-a", "c-b"]) {
@@ -334,22 +320,8 @@ describe("WP-089 T8 墓碑 subagent_binding_states", () => {
       subagent_bindings: { call_1: CHILD },
       ...(states ? { subagent_binding_states: states } : {}),
     });
-  const launch = () =>
-    render(
-      <SubagentLaunchToolView
-        name="subagent_launch"
-        input={{ agent: "worker" }}
-        status="ok"
-        call_id="call_1"
-        sessionId={PARENT}
-      />,
-    );
-  it("buffer load deleted=true → 已删除不可点，名单/计数排除", () => {
+  it("buffer load deleted=true → 名单/计数排除", () => {
     load({ call_1: { child_session_id: CHILD, deleted: true } });
-    launch();
-    expect(screen.getByTestId("subagent-launch-line").tagName).toBe("DIV");
-    expect(screen.getByText("Deleted")).toBeTruthy();
-    cleanup();
     render(<SubagentRosterPanel sessionId={PARENT} />);
     expect(screen.getByText("No subagents")).toBeTruthy();
   });
@@ -358,14 +330,13 @@ describe("WP-089 T8 墓碑 subagent_binding_states", () => {
     useMessageStore.getState().applySubagentBindingStates(PARENT, {
       call_1: { child_session_id: CHILD, deleted: true },
     });
-    launch();
-    expect(screen.getByText("Deleted")).toBeTruthy();
+    render(<SubagentRosterPanel sessionId={PARENT} />);
+    expect(screen.getByText("No subagents")).toBeTruthy();
   });
-  it("deleted=false → 正常可点", () => {
+  it("deleted=false → 正常显示在 Roster 面板", () => {
     load({ call_1: { child_session_id: CHILD, deleted: false } });
-    launch();
-    expect(screen.getByTestId("subagent-launch-line").tagName).toBe("BUTTON");
-    expect(screen.queryByText("Deleted")).toBeNull();
+    render(<SubagentRosterPanel sessionId={PARENT} />);
+    expect(screen.getByText("worker")).toBeTruthy();
   });
   it("字段缺失 / 无对应 call_id → 视为未删除", () => {
     load();
@@ -373,8 +344,6 @@ describe("WP-089 T8 墓碑 subagent_binding_states", () => {
     expect(
       deletedChildIds({ other: { child_session_id: "x", deleted: false } }, {}).has(CHILD),
     ).toBe(false);
-    launch();
-    expect(screen.getByTestId("subagent-launch-line").tagName).toBe("BUTTON");
     expect(childStatusWord(undefined, "ok", false)).toBe("accepted");
   });
   it("计数排除已删除子会话（对照：未删时有 0/1）", () => {

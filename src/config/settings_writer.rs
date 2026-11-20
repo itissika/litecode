@@ -1396,9 +1396,13 @@ pub(crate) fn validate_custom_suite(id: &str, def: &mut CustomSuiteDefinition) -
         || tools::is_optional_builtin(id)
         || crate::tools::lsp::LSP_CODE_TOOL_NAMES.contains(&id)
         || crate::tool::code_contract::is_builtin_code_binding(id)
+        || matches!(
+            id,
+            "file" | "search" | "process" | "web" | "workspace" | "subagent" | "bot"
+        )
     {
         return Err(LitecodeError::Config(format!(
-            "custom suite id '{id}' conflicts with a builtin tool"
+            "custom suite id '{id}' conflicts with a builtin tool or namespace"
         )));
     }
     if let Some(error) = crate::permission::policy::custom_rule_ids_error(&def.rules) {
@@ -1421,7 +1425,7 @@ pub(crate) fn custom_definition_diagnostic(
     source: &str,
     file: Option<String>,
 ) -> Option<crate::config::schema::CustomToolDiagnostic> {
-    use crate::config::schema::{CallSurface, CustomToolDiagnostic};
+    use crate::config::schema::CustomToolDiagnostic;
 
     let tool = if def.name.trim().is_empty() {
         id.to_string()
@@ -1528,16 +1532,8 @@ pub(crate) fn custom_definition_diagnostic(
         ));
     }
 
-    let surface = match suite.as_deref() {
+    match suite.as_deref() {
         Some(suite_name) => {
-            if def.surface.is_some() {
-                return Some(diag(
-                    "surface",
-                    serde_json::to_string(&def.surface).ok(),
-                    "omitted on a suite member",
-                    "remove surface; the suite owns it",
-                ));
-            }
             if !def.rules.is_empty() {
                 return Some(diag(
                     "rules",
@@ -1560,7 +1556,7 @@ pub(crate) fn custom_definition_diagnostic(
                     Some(suite_name.to_string()),
                     "an existing suites entry",
                     &format!(
-                        "add suites.{suite_name} with surface, label and rules, or remove suite from the tool"
+                        "add suites.{suite_name} with label and rules, or remove suite from the tool"
                     ),
                 ));
             };
@@ -1573,17 +1569,8 @@ pub(crate) fn custom_definition_diagnostic(
                     "fix the suite rule ids",
                 ));
             }
-            suite_def.surface
         }
         None => {
-            let Some(surface) = def.surface else {
-                return Some(diag(
-                    "surface",
-                    None,
-                    "`direct` or `code` (standalone), or a suite reference",
-                    "add surface: \"direct\" for model-facing tools, or suite: \"<name>\" for members",
-                ));
-            };
             if let Some(error) = crate::permission::policy::custom_rule_ids_error(&def.rules) {
                 return Some(diag(
                     "rules",
@@ -1592,68 +1579,21 @@ pub(crate) fn custom_definition_diagnostic(
                     "fix the rule ids",
                 ));
             }
-            surface
         }
-    };
-
-    match surface {
-        CallSurface::Direct => {
-            if def.output_schema.is_some() {
-                return Some(diag(
-                    "output_schema",
-                    Some("present".into()),
-                    "omitted on a direct tool",
-                    "remove output_schema; direct tools return text or an envelope",
-                ));
-            }
-        }
-        CallSurface::Code => {
-            let Some(schema) = def.output_schema.as_ref() else {
-                return Some(diag(
-                    "output_schema",
-                    None,
-                    "an object schema",
-                    "add output_schema: { \"type\": \"object\", \"properties\": {}, \"required\": [] }",
-                ));
-            };
-            if schema.get("type").and_then(serde_json::Value::as_str) != Some("object") {
-                return Some(diag(
-                    "output_schema",
-                    Some("not an object schema".into()),
-                    "type: object",
-                    "make output_schema an object schema",
-                ));
-            }
-        }
-    }
-
-    if def
-        .schema
-        .properties
-        .as_object()
-        .is_some_and(|properties| properties.contains_key("run_in_background"))
-    {
-        return Some(diag(
-            "schema.properties.run_in_background",
-            Some("present".into()),
-            "absent",
-            "remove run_in_background; Litecode adds it for direct tools",
-        ));
     }
 
     let mut effective = def.clone();
-    effective.surface = Some(surface);
     if let Some(suite_name) = suite.as_deref() {
         if let Some(suite_def) = suites.get(suite_name) {
             effective.rules = suite_def.rules.clone();
         }
     }
-    if let Err(error) = crate::tools::custom::validate_custom_code_contract(&effective, surface) {
+    if let Err(error) = crate::tools::custom::validate_custom_code_contract(&effective) {
         return Some(diag(
             "schema",
-            Some(error.clone()),
-            "a code-admissible object schema",
-            "use a simple input/output object schema with no unsupported keywords (no $ref), or declare surface \"direct\"",
+            Some(error),
+            "an object input schema",
+            "ensure the custom tool input schema describes an object",
         ));
     }
     None
@@ -1751,29 +1691,19 @@ max_output = 1024
     }
 
     #[test]
-    fn code_surface_custom_tool_rejects_unrenderable_schema_with_field_reason() {
+    fn complex_json_schema_keywords_are_admitted_in_code_only_custom_tools() {
         let mut def = custom_def("code_probe", Vec::new());
-        def.surface = Some(crate::config::schema::CallSurface::Code);
-        def.output_schema = Some(serde_json::json!({
-            "type": "object", "properties": {}, "required": []
-        }));
-        validate_custom_definition("code_probe", &mut def).expect("simple schema is admissible");
-
         def.schema.properties = serde_json::json!({
             "item": { "$ref": "#/Item" }
         });
-        let error = validate_custom_definition("code_probe", &mut def)
-            .expect_err("unresolved ref must fail code admission");
-        let message = error.to_string();
-        assert!(message.contains("surface 'code'"), "{message}");
-        assert!(message.contains("direct"), "{message}");
+        validate_custom_definition("code_probe", &mut def)
+            .expect("tolerant lowering admits complex JSON schema keywords");
     }
 
     fn custom_def(name: &str, rules: Vec<crate::permission::PolicyRule>) -> CustomToolDefinition {
         use crate::config::schema::ToolSchema;
         CustomToolDefinition {
             name: name.into(),
-            output_schema: None,
             description: String::new(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -1784,7 +1714,6 @@ max_output = 1024
             args: Vec::new(),
             timeout: 120,
             rules,
-            surface: Some(crate::config::schema::CallSurface::Direct),
             suite: None,
         }
     }
@@ -1798,10 +1727,9 @@ max_output = 1024
     }
 
     fn diagnostic(
-        surface: Option<crate::config::schema::CallSurface>,
+        command: &str,
         suite: Option<&str>,
         rules: Vec<crate::permission::PolicyRule>,
-        output_schema: Option<serde_json::Value>,
     ) -> crate::config::schema::CustomToolDiagnostic {
         let def = CustomToolDefinition {
             name: "probe".into(),
@@ -1811,13 +1739,11 @@ max_output = 1024
                 properties: serde_json::json!({}),
                 required: Vec::new(),
             },
-            command: "echo".into(),
+            command: command.into(),
             args: Vec::new(),
             timeout: 120,
             rules,
-            surface,
             suite: suite.map(str::to_string),
-            output_schema,
         };
         custom_definition_diagnostic("probe", &def, &HashMap::new(), "test", None)
             .expect("probe must be invalid")
@@ -1825,53 +1751,25 @@ max_output = 1024
 
     #[test]
     fn custom_definition_diagnostics_name_the_field_and_fix() {
-        let missing = diagnostic(None, None, Vec::new(), None);
-        assert_eq!(missing.field, "surface");
-        assert!(missing.fix.contains("direct"), "{}", missing.fix);
+        let empty_cmd = diagnostic("", None, Vec::new());
+        assert_eq!(empty_cmd.field, "command");
 
-        let direct_output = diagnostic(
-            Some(crate::config::schema::CallSurface::Direct),
-            None,
-            Vec::new(),
-            Some(serde_json::json!({"type": "object"})),
-        );
-        assert_eq!(direct_output.field, "output_schema");
+        let missing_suite = diagnostic("echo", Some("deck"), Vec::new());
+        assert_eq!(missing_suite.field, "suite");
 
-        let code_missing = diagnostic(
-            Some(crate::config::schema::CallSurface::Code),
-            None,
-            Vec::new(),
-            None,
-        );
-        assert_eq!(code_missing.field, "output_schema");
-        assert!(code_missing.fix.contains("output_schema"));
-
-        let member_surface = diagnostic(
-            Some(crate::config::schema::CallSurface::Code),
-            Some("deck"),
-            Vec::new(),
-            Some(serde_json::json!({"type": "object"})),
-        );
-        assert_eq!(member_surface.field, "surface");
-
-        let member_rules = diagnostic(
-            None,
-            Some("deck"),
-            declared_rules(),
-            Some(serde_json::json!({"type": "object"})),
-        );
+        let member_rules = diagnostic("echo", Some("deck"), declared_rules());
         assert_eq!(member_rules.field, "rules");
     }
 
     #[test]
     fn one_bad_definition_keeps_the_same_field_and_fix_across_sources() {
         let mut def = custom_def("probe", Vec::new());
-        def.surface = None;
+        def.command.clear();
         let suites = HashMap::new();
         let settings = crate::config::settings_writer::custom_definition_diagnostic(
             "probe", &def, &suites, "settings", None,
         )
-        .expect("missing surface");
+        .expect("empty command");
         let refresh = crate::config::settings_writer::custom_definition_diagnostic(
             "probe",
             &def,
@@ -1879,30 +1777,19 @@ max_output = 1024
             "refresh",
             Some(".litecode/custom_tools.json".into()),
         )
-        .expect("missing surface");
-        let validate = crate::config::settings_writer::custom_definition_diagnostic(
-            "probe",
-            &def,
-            &suites,
-            "validate_custom",
-            None,
-        )
-        .expect("missing surface");
-        for other in [&refresh, &validate] {
-            assert_eq!(settings.field, other.field);
-            assert_eq!(settings.expected, other.expected);
-            assert_eq!(settings.fix, other.fix);
-            assert_eq!(settings.actual, other.actual);
-        }
+        .expect("empty command");
+        assert_eq!(settings.field, refresh.field);
+        assert_eq!(settings.expected, refresh.expected);
+        assert_eq!(settings.fix, refresh.fix);
+        assert_eq!(settings.actual, refresh.actual);
     }
 
     #[test]
-    fn suite_member_inherits_surface_and_output_contract() {
+    fn suite_member_validates_against_declared_suite() {
         let mut suites = HashMap::new();
         suites.insert(
             "deck".into(),
             CustomSuiteDefinition {
-                surface: crate::config::schema::CallSurface::Code,
                 label: "Deck".into(),
                 rules: Vec::new(),
             },
@@ -1919,18 +1806,10 @@ max_output = 1024
             args: Vec::new(),
             timeout: 120,
             rules: Vec::new(),
-            surface: None,
             suite: Some("deck".into()),
-            output_schema: Some(serde_json::json!({
-                "type": "object", "properties": {}, "required": []
-            })),
         };
         validate_custom_definition_with_suites("probe", &mut def, &suites)
-            .expect("suite member inherits a code surface");
-
-        def.output_schema = None;
-        let error = validate_custom_definition_with_suites("probe", &mut def, &suites).unwrap_err();
-        assert!(error.to_string().contains("output_schema"), "{error}");
+            .expect("suite member without output_schema must validate");
     }
 
     #[test]
@@ -1939,7 +1818,6 @@ max_output = 1024
         suites.insert(
             "deck".into(),
             CustomSuiteDefinition {
-                surface: crate::config::schema::CallSurface::Direct,
                 label: "Deck".into(),
                 rules: Vec::new(),
             },
@@ -1969,22 +1847,15 @@ max_output = 1024
     }
 
     #[test]
-    fn workspace_custom_tool_surface_roundtrips_through_json() {
+    fn workspace_custom_tool_roundtrips_through_json() {
         let ws = TempDir::new().unwrap();
         let root = ws.path().to_path_buf();
         let mut def = custom_def("code_probe", Vec::new());
-        def.surface = Some(crate::config::schema::CallSurface::Code);
-        def.output_schema = Some(serde_json::json!({
-            "type": "object", "properties": {}, "required": []
-        }));
-        validate_custom_definition("code_probe", &mut def).expect("valid code contract");
+        validate_custom_definition("code_probe", &mut def).expect("valid custom tool");
         workspace::upsert_workspace_custom_tool(&root, def).unwrap();
 
         let loaded = workspace::read_workspace_custom_tools(&root).unwrap();
-        assert_eq!(
-            loaded.tools["code_probe"].surface,
-            Some(crate::config::schema::CallSurface::Code)
-        );
+        assert_eq!(loaded.tools["code_probe"].command, "demo");
     }
 
     #[test]
@@ -1995,7 +1866,6 @@ max_output = 1024
         suites.insert(
             "deck".into(),
             CustomSuiteDefinition {
-                surface: crate::config::schema::CallSurface::Direct,
                 label: "Deck".into(),
                 rules: declared_rules(),
             },
@@ -2025,7 +1895,6 @@ max_output = 1024
         let global = [(
             "deck".to_string(),
             CustomSuiteDefinition {
-                surface: crate::config::schema::CallSurface::Direct,
                 label: "Deck".into(),
                 rules: declared_rules(),
             },
@@ -2033,7 +1902,6 @@ max_output = 1024
         let workspace = [(
             "deck".to_string(),
             CustomSuiteDefinition {
-                surface: crate::config::schema::CallSurface::Direct,
                 label: "Deck".into(),
                 rules: Vec::new(),
             },

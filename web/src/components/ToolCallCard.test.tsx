@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -7,8 +7,6 @@ import {
   processGroupAutoOpen,
 } from "./toolCallStatus";
 import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
-import { useBashStore } from "../stores/bashStore";
-import { useConnectionStore } from "../stores/connectionStore";
 import { ToolCallCard } from "./ToolCallCard";
 import { clearFoldCardOpen } from "./foldCardState";
 
@@ -34,7 +32,6 @@ afterEach(() => {
   // foldCardState is module-global; the same foldCardId is reused across
   // cases, so drop it between tests (production ids are unique per bubble).
   clearFoldCardOpen("session-1");
-  useBashStore.getState().reset();
 });
 
 describe("deriveToolStatus", () => {
@@ -203,51 +200,10 @@ describe("ToolCallCard open state", () => {
     );
   }
 
-  it("mounts a sealed edit/bash/write card collapsed (no forced defaultOpen)", () => {
+  it("mounts a sealed card collapsed (no forced defaultOpen)", () => {
     renderCard({ output });
     const header = screen.getByRole("button", { name: /write/i });
     expect(header.getAttribute("aria-expanded")).toBe("false");
-  });
-
-  it("shows edit header as file + line-level +N/−M diff", () => {
-    const editCall: FunctionCallItem = {
-      type: "function_call",
-      id: "fc_edit",
-      call_id: "call_edit",
-      name: "edit",
-      arguments: JSON.stringify({
-        file_path: "src/a.ts",
-        old_string: "foo\nbar\nbaz",
-        new_string: "foo\nqux\nbaz\nquux",
-      }),
-      status: "completed",
-    };
-    renderCard({ call: editCall, output });
-    const header = screen.getByRole("button", { name: /edit/i });
-    expect(header.textContent).toContain("src/a.ts");
-    expect(header.textContent).toContain("+2");
-    expect(header.textContent).toContain("−1");
-  });
-
-  it("sums +N/−M across edits[] request previews", () => {
-    const editCall: FunctionCallItem = {
-      type: "function_call",
-      id: "fc_edit_batch",
-      call_id: "call_edit_batch",
-      name: "edit",
-      arguments: JSON.stringify({
-        file_path: "src/a.ts",
-        edits: [
-          { old_string: "foo\nbar\nbaz", new_string: "foo\nqux\nbaz\nquux" },
-          { old_string: "a", new_string: "b\nc" },
-        ],
-      }),
-      status: "completed",
-    };
-    renderCard({ call: editCall, output });
-    const header = screen.getByRole("button", { name: /edit/i });
-    expect(header.textContent).toContain("src/a.ts");
-    expect(header.textContent).toContain("+");
   });
 
   it("mounts a live tool card collapsed by default", () => {
@@ -256,44 +212,24 @@ describe("ToolCallCard open state", () => {
     expect(header.getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("shows Kill on a live bash card and calls bash/kill", () => {
-    const sendRpc = vi.fn(async () => ({ ok: true }));
-    useConnectionStore.setState({ sendRpc } as never);
-    useBashStore.getState().applySnapshot("session-1", {
-      jobs: [
-        {
-          id: "bg_a",
-          call_id: "call_1",
-          command_preview: "sleep 8",
-          output_file: ".litecode/bash/bg_a.output",
-          started_at_ms: Date.now() - 12_000,
-        },
-      ],
-      waits: [],
+  it("renders a generic FoldCard header for run_code without per-tool special headers", () => {
+    renderCard({
+      call: {
+        type: "function_call",
+        id: "fc_code",
+        call_id: "call_code",
+        name: "run_code",
+        arguments: JSON.stringify({ code: "return await tools.read({ file_path: 'a.txt' });" }),
+        status: "completed",
+      },
+      output: {
+        type: "function_call_output",
+        call_id: "call_code",
+        output: "ok",
+      },
     });
-    render(
-      <ToolCallCard
-        call={{
-          type: "function_call",
-          id: "fc_exec",
-          call_id: "call_1",
-          name: "exec_command",
-          arguments: JSON.stringify({ cmd: "sleep 8" }),
-          status: "completed",
-        }}
-        output={{
-          type: "function_call_output",
-          call_id: "call_1",
-          output: "session_id: bg_a\n",
-        }}
-        projectRoot={null}
-        onOpenFile={() => {}}
-        sessionId="session-1"
-        foldCardId="session-1:bubble:tool:call_1"
-      />,
-    );
-    expect(screen.getByRole("button", { name: /^Kill$/ })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /^Kill$/ }));
-    expect(sendRpc).toHaveBeenCalledWith("bash/kill", { bash_id: "bg_a" });
+    const header = screen.getByRole("button", { name: /run_code/i });
+    expect(header.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: /^Kill$/ })).toBeNull();
   });
 });

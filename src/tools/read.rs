@@ -29,9 +29,6 @@ impl Tool for ReadTool {
         "read"
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn effects(
         &self,

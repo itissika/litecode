@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isInlineCall, isInlineTool, processToolBucket } from "./toolCategory";
+import { processToolBucket } from "./toolCategory";
 
 describe("processToolBucket", () => {
   it("maps exec_command, write_stdin, and edit to dedicated buckets", () => {
@@ -22,44 +22,8 @@ describe("processToolBucket", () => {
   });
 
   it("groups remaining tools under tool", () => {
+    expect(processToolBucket("run_code")).toBe("tool");
     expect(processToolBucket("read")).toBe("tool");
     expect(processToolBucket("grep")).toBe("tool");
-    expect(processToolBucket("wait_shell")).toBe("tool");
-    expect(processToolBucket("kill_shell")).toBe("tool");
-  });
-});
-
-describe("isInlineTool", () => {
-  it("identifies auxiliary subagent tools", () => {
-    expect(isInlineTool("wait_shell")).toBe(false);
-    expect(isInlineTool("kill_shell")).toBe(false);
-    expect(isInlineTool("subagent_wait")).toBe(true);
-    expect(isInlineTool("subagent_stop")).toBe(true);
-    expect(isInlineTool("bash")).toBe(false);
-    expect(isInlineTool("subagent_launch")).toBe(true);
-    expect(isInlineTool("subagent_list")).toBe(true);
-  });
-
-  it("identifies the session-mount capsules todo / plan", () => {
-    expect(isInlineTool("todo")).toBe(true);
-    expect(isInlineTool("plan")).toBe(true);
-    expect(isInlineTool("read")).toBe(false);
-  });
-});
-
-describe("isInlineCall", () => {
-  it("routes exec_command and write_stdin to rich cards", () => {
-    expect(isInlineCall("exec_command")).toBe(false);
-    expect(isInlineCall("write_stdin")).toBe(false);
-  });
-
-  it("delegates every name-only family to isInlineTool", () => {
-    expect(isInlineCall("todo")).toBe(true);
-    expect(isInlineCall("plan")).toBe(true);
-    expect(isInlineCall("wait_shell")).toBe(false);
-    expect(isInlineCall("subagent_send")).toBe(true);
-    expect(isInlineCall("subagent_list")).toBe(true);
-    expect(isInlineCall("read")).toBe(false);
-    expect(isInlineCall("edit")).toBe(false);
   });
 });

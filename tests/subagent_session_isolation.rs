@@ -34,7 +34,7 @@ use tokio_util::sync::CancellationToken;
 fn reviewer_resolved(cwd: &std::path::Path) -> litecode::config::ResolvedConfig {
     let workspace = test_workspace(cwd);
     set_runtime_paths(workspace.paths.clone());
-    let base = test_resolved("default", &["subagent_launch".into()]);
+    let base = test_resolved("default", &["subagent_tools".into()]);
     let mut global = base.global().clone();
     if let Some(default) = global.agents.get_mut("default") {
         default.allowed_subagents = vec!["reviewer".into()];

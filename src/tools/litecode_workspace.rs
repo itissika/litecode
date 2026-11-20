@@ -1,1146 +1,315 @@
-//! Agent `litecode_workspace` — the workspace facade.
+//! Workspace configuration guides, one-shot JSON refresh, and live status.
 //!
-//! One `action` string in command-line form. No argument opens the panel:
-//! current state, plus the buttons that open the next popup. Every command
-//! reads. This tool never writes a config file and never enables a tool.
-//! A valid excludes file is already in effect. MCP and custom tools take
-//! effect at the start of the next turn.
+//! Split cleanly into three code-surface tools:
+//! - `workspace.help` — read embedded guides (`overview | setup | excludes | mcp | custom_tools | apps`)
+//! - `workspace.refresh` — validate `.litecode/{excludes,mcp,custom_tools,apps}.json` in one check
+//! - `workspace.status` — inspect active excludes, MCP servers, custom tools, and Apps
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
+use std::future::Future;
+use std::path::Path;
+use std::pin::Pin;
 
+use serde::Serialize;
 use serde_json::Value;
 
-use crate::apps::service::{AppList, AppView};
+use crate::apps::registry::AppRegistry;
 use crate::config::global_db::tools::mcp_catalog_id;
-use crate::config::guides::{self, GuideTopic};
-use crate::config::schema::{CallSurface, CustomToolDefinition, McpServerDefinition, ToolOrigin};
-use crate::config::settings_writer::validate_mcp_definition;
+use crate::config::guides::{self, GUIDE_INDEX, GuideTopic};
+use crate::config::schema::{McpServerDefinition, McpTransport, ToolOrigin};
+use crate::config::settings_writer::{
+    custom_definition_diagnostic, normalize_custom_definition, validate_custom_suite,
+    validate_mcp_definition,
+};
 use crate::config::workspace::{read_workspace_custom_tools, read_workspace_mcp};
-use crate::context_pipeline::Context;
-use crate::engines::session_search::short_session_ref;
 use crate::mcp::{McpRunState, McpServerSnapshot};
 use crate::runtime::RuntimeHandle;
-use crate::session::SessionDataReader;
-use crate::session::manager::{SessionActivityRow, SessionManager, SessionStatus};
 use crate::tool::Tool;
 use crate::tool::availability::agent_tool_enabled;
+use crate::tool::outcome::ToolOutcome;
 use crate::tool::trait_::ToolExecutionContext;
-use crate::tools::custom::validate_custom_tool_run;
+use crate::tools::file_path::coded_error;
 use crate::types::ToolCallResult;
 use crate::workspace::filter::{
-    WorkspaceExcludesFile, active_workspace_excludes, read_workspace_excludes,
-    workspace_excludes_path,
+    WorkspaceExcludesFile, activate_workspace_excludes, active_workspace_excludes,
+    read_workspace_excludes, workspace_excludes_path,
 };
 
-/// Running rows in the panel / `sessions` before the list is truncated.
-const MAX_RUNNING_ROWS: usize = 10;
-/// Recently active rows (idle sessions) in the panel / `sessions`.
-const MAX_RECENT_ROWS: usize = 5;
-/// "Recently active" window for the idle list.
-const RECENT_WINDOW_MS: i64 = 5 * 60 * 1000;
-/// One-line user-message preview cap.
-const MAX_PREVIEW_CHARS: usize = 100;
-/// Bound the self-subtree walk.
-const MAX_SUBTREE_NODES: usize = 64;
-/// `sessions --limit` upper bound.
-const MAX_LIMIT: usize = 200;
+pub const WORKSPACE_HELP_TOOL: &str = "workspace.help";
+pub const WORKSPACE_REFRESH_TOOL: &str = "workspace.refresh";
+pub const WORKSPACE_STATUS_TOOL: &str = "workspace.status";
 
-const FILE_BROKEN: &str = "The file is broken; fix it.";
-/// A definitions file that passed validation applies at the next turn start.
-const APPLIES_NEXT_TURN: &str = "Takes effect at the start of the next turn. Tell the human.";
-const ASK_HUMAN: &str = "If you actually need it, ask a human to enable it in Settings → \
-     Agents. Otherwise stay silent.";
-struct CommandSpec {
-    name: &'static str,
-    usage: &'static str,
-    summary: &'static str,
-    help: &'static str,
+#[derive(Debug, Serialize)]
+struct WorkspaceHelpData {
+    topic: &'static str,
+    content: &'static str,
 }
 
-const COMMANDS: &[CommandSpec] = &[
-    CommandSpec {
-        name: "help",
-        usage: "help [command]",
-        summary: "the panel, or one command",
-        help: "`help` opens the panel. `help <command>` prints that command.",
-    },
-    CommandSpec {
-        name: "status",
-        usage: "status",
-        summary: "the picture again, without the button table",
-        help: "`status` prints the same sections as the panel and skips the button table.",
-    },
-    CommandSpec {
-        name: "sessions",
-        usage: "sessions [--all] [--limit N]",
-        summary: "sessions in this workspace",
-        help: "`sessions` lists running sessions (longest first) and idle sessions from the \
-               last 5 minutes. By default it hides you, your ancestors, and your subtree (your \
-               children are `subagent_list`); `--all` shows you and your ancestors but still \
-               hides your subtree. Your own row is marked `it's you`. `--limit N` caps each \
-               list (default: 10 running, 5 idle).",
-    },
-    CommandSpec {
-        name: "apps",
-        usage: "apps [id]",
-        summary: "built-in and custom apps, state, URL, and last error",
-        help: "`apps` lists every app in this workspace with its source, install kind, status, \
-               URL, data dir, and last install/runtime error. `apps <id>` prints one app. \
-               Read-only: install, trust, and start stay with the human in the Apps panel. \
-               Use `guide apps` for the registry format.",
-    },
-    CommandSpec {
-        name: "guide",
-        usage: "guide [setup|excludes|mcp|custom_tools|apps]",
-        summary: "how to start here, or how to edit that file",
-        help: "`guide` lists topics. `guide setup` is the first-run checklist: look around, \
-               tune excludes, recommend 1–2 apps, and suggest next steps. `guide <topic>` \
-               prints that topic.",
-    },
-    CommandSpec {
-        name: "refresh",
-        usage: "refresh [excludes|mcp|custom_tools|all]",
-        summary: "whether those files will be accepted",
-        help: "`refresh` checks `.litecode/excludes.json`, `mcp.json`, and \
-               `custom_tools.json`. A valid excludes file is already in effect. MCP and \
-               custom tools take effect at the start of the next turn. \
-               A file that fails validation names the error; fix it and run `refresh` again.",
-    },
-    CommandSpec {
-        name: "validate_custom",
-        usage: "validate_custom  (also pass definition + sample_input fields)",
-        summary: "run a custom tool once without registering it",
-        help: "Set `action` to `validate_custom`, plus `definition` (custom tool body) and `
-               sample_input` (stdin JSON object). It validates the definition and, for
-               `surface: code`, the run_code admission contract before running the process.
-               Does not write files, enable the tool, or evaluate `rules` (PASS covers
-               process/envelope and code admission only). Strips `run_in_background`
-               from sample stdin like production.",
-    },
-];
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Action {
-    Panel,
-    Help(String),
-    Status,
-    Sessions {
-        all: bool,
-        /// Rows per list; `None` keeps the panel defaults (10 running / 5 recent).
-        limit: Option<usize>,
-    },
-    Apps {
-        id: Option<String>,
-    },
-    Guide(Option<GuideTopic>),
-    Refresh(Option<RefreshTarget>),
+#[derive(Debug, Serialize)]
+struct WorkspaceRefreshData {
+    ok: bool,
+    summary: String,
+    excludes_ok: bool,
+    mcp_ok: bool,
+    custom_tools_ok: bool,
+    apps_ok: bool,
+    issues: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RefreshTarget {
-    Excludes,
-    Mcp,
-    CustomTools,
+#[derive(Debug, Serialize)]
+struct McpStatusRow {
+    id: String,
+    enabled: bool,
+    origin: String,
+    state: String,
+    command: String,
 }
 
-const TOPICS: &str = "\
-topics:\n\
-\n\
-- `setup`\n\
-- `excludes`\n\
-- `mcp`\n\
-- `custom_tools`\n\
-- `apps`";
+#[derive(Debug, Serialize)]
+struct CustomToolStatusRow {
+    id: String,
+    suite: Option<String>,
+    enabled: bool,
+    origin: String,
+    timeout_secs: u64,
+    command: String,
+}
 
-fn call_surface_label(surface: CallSurface) -> &'static str {
-    match surface {
-        CallSurface::Direct => "surface=direct",
-        CallSurface::Code => "surface=code",
+#[derive(Debug, Serialize)]
+struct AppStatusRow {
+    id: String,
+    kind: String,
+    status: String,
+    url: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkspaceStatusData {
+    summary: String,
+    excludes: String,
+    mcp: Vec<McpStatusRow>,
+    custom_tools: Vec<CustomToolStatusRow>,
+    apps: Vec<AppStatusRow>,
+}
+
+/// Read workspace setup or `.litecode/*.json` guides.
+#[derive(Debug, Default)]
+pub struct WorkspaceHelpTool;
+
+impl WorkspaceHelpTool {
+    pub fn new() -> Self {
+        Self
     }
 }
 
-fn effective_custom_definition(
-    def: &CustomToolDefinition,
-    suites: &std::collections::HashMap<String, crate::config::schema::CustomSuiteDefinition>,
-) -> CustomToolDefinition {
-    let mut effective = def.clone();
-    if let Some(suite) = def.suite.as_deref().and_then(|suite| suites.get(suite)) {
-        effective.surface = Some(suite.surface);
-        effective.rules = suite.rules.clone();
+impl Tool for WorkspaceHelpTool {
+    fn name(&self) -> &str {
+        WORKSPACE_HELP_TOOL
     }
-    effective
-}
 
-fn dynamic_contract_error(def: &CustomToolDefinition) -> Option<String> {
-    if def.effective_surface() != CallSurface::Code {
-        return None;
+    fn is_concurrency_safe(&self, _input: &Value) -> bool {
+        true
     }
-    crate::tool::dynamic_contract::validate_custom_code_contract(def, CallSurface::Code).err()
-}
 
-fn parse_validate_custom(input: &Value) -> Result<(CustomToolDefinition, Value), String> {
-    let def_val = input.get("definition").ok_or_else(|| {
-        "# error\n\n`validate_custom` requires a `definition` object (custom tool body).\n"
-            .to_string()
-    })?;
-    let mut def: CustomToolDefinition = serde_json::from_value(def_val.clone())
-        .map_err(|e| format!("# error\n\ninvalid `definition`: {e}\n"))?;
-    if def.name.trim().is_empty() {
-        if let Some(n) = input.get("name").and_then(Value::as_str) {
-            def.name = n.to_string();
-        }
-    }
-    if def.name.trim().is_empty() {
-        return Err("# error\n\n`definition.name` is required.\n".into());
-    }
-    let sample_input = input
-        .get("sample_input")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    if !sample_input.is_object() {
-        return Err("# error\n\n`sample_input` must be a JSON object (tool stdin).\n".into());
-    }
-    Ok((def, sample_input))
-}
-
-fn parse_action(raw: &str) -> Result<Action, String> {
-    let mut tokens = raw.split_whitespace();
-    let Some(command) = tokens.next() else {
-        return Ok(Action::Panel);
-    };
-    let rest: Vec<&str> = tokens.collect();
-    match command {
-        "help" => match rest.as_slice() {
-            [] => Ok(Action::Panel),
-            [name] => Ok(Action::Help((*name).to_string())),
-            _ => Err(usage_error("help")),
-        },
-        "status" => {
-            if rest.is_empty() {
-                Ok(Action::Status)
-            } else {
-                Err(usage_error("status"))
+    fn call_inner(&self, input: Value) -> ToolCallResult {
+        let raw_topic = match input.get("topic") {
+            None | Some(Value::Null) => "overview",
+            Some(Value::String(s)) => s.trim(),
+            Some(_) => {
+                return coded_error("invalid_input", "workspace.help: `topic` must be a string");
             }
-        }
-        "sessions" => parse_sessions(&rest),
-        "apps" => match rest.as_slice() {
-            [] => Ok(Action::Apps { id: None }),
-            [id] => Ok(Action::Apps {
-                id: Some((*id).to_string()),
-            }),
-            _ => Err(usage_error("apps")),
-        },
-        "guide" => match rest.as_slice() {
-            [] => Ok(Action::Guide(None)),
-            [topic] => GuideTopic::parse(topic)
-                .map(|topic| Action::Guide(Some(topic)))
-                .ok_or_else(|| format!("# error\n\nunknown guide topic '{topic}'\n\n{TOPICS}\n")),
-            _ => Err(usage_error("guide")),
-        },
-        "refresh" => match rest.as_slice() {
-            [] | ["all"] => Ok(Action::Refresh(None)),
-            [topic] => match *topic {
-                "excludes" => Ok(Action::Refresh(Some(RefreshTarget::Excludes))),
-                "mcp" => Ok(Action::Refresh(Some(RefreshTarget::Mcp))),
-                "custom_tools" => Ok(Action::Refresh(Some(RefreshTarget::CustomTools))),
-                other => Err(format!(
-                    "# error\n\nunknown refresh topic '{other}'\n\n{TOPICS}\n\nor `all`.\n"
-                )),
-            },
-            _ => Err(usage_error("refresh")),
-        },
-        other => Err(format!(
-            "# error\n\nunknown command '{other}'\n\n{}\n",
-            buttons()
-        )),
-    }
-}
+        };
 
-fn parse_sessions(rest: &[&str]) -> Result<Action, String> {
-    let mut all = false;
-    let mut limit: Option<usize> = None;
-    let mut index = 0;
-    while index < rest.len() {
-        match rest[index] {
-            "--all" => {
-                all = true;
-                index += 1;
-            }
-            "--limit" => {
-                let Some(value) = rest.get(index + 1) else {
-                    return Err(format!(
-                        "`--limit` needs a number\n\n{}",
-                        usage_error("sessions")
-                    ));
-                };
-                let parsed: usize = value.parse().map_err(|_| {
-                    format!(
-                        "`--limit {value}` is not a number\n\n{}",
-                        usage_error("sessions")
-                    )
-                })?;
-                if parsed == 0 || parsed > MAX_LIMIT {
-                    return Err(format!(
-                        "`--limit {value}` is out of range (1..={MAX_LIMIT})\n\n{}",
-                        usage_error("sessions")
-                    ));
-                }
-                limit = Some(parsed);
-                index += 2;
-            }
+        let (topic, content) = match raw_topic {
+            "" | "overview" => ("overview", GUIDE_INDEX),
+            "setup" => ("setup", guides::topic(GuideTopic::Setup)),
+            "excludes" => ("excludes", guides::topic(GuideTopic::Excludes)),
+            "mcp" => ("mcp", guides::topic(GuideTopic::Mcp)),
+            "custom_tools" => ("custom_tools", guides::topic(GuideTopic::CustomTools)),
+            "apps" => ("apps", guides::topic(GuideTopic::Apps)),
             other => {
-                return Err(format!(
-                    "unknown flag '{other}'\n\n{}",
-                    usage_error("sessions")
-                ));
+                return coded_error(
+                    "invalid_input",
+                    format!(
+                        "unknown workspace.help topic '{other}'; expected overview, setup, excludes, mcp, custom_tools, or apps"
+                    ),
+                );
             }
-        }
-    }
-    Ok(Action::Sessions { all, limit })
-}
+        };
 
-fn format_apps(list: &AppList, only: Option<&str>) -> Result<String, String> {
-    let selected: Vec<&AppView> = match only {
-        Some(id) => match list.apps.iter().find(|app| app.id == id) {
-            Some(app) => vec![app],
-            None => {
-                if let Some(rec) = list.recommendations.iter().find(|rec| rec.id == id) {
-                    return Ok(format_recommendation(rec));
-                }
-                let ids = list
-                    .apps
-                    .iter()
-                    .map(|app| format!("'{}'", app.id))
-                    .chain(
-                        list.recommendations
-                            .iter()
-                            .map(|rec| format!("'{}' (recommendation)", rec.id)),
-                    )
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(format!("unknown app id '{id}'.\n\nKnown ids: {ids}\n"));
-            }
-        },
-        None => list.apps.iter().collect(),
-    };
-
-    let builtin = list
-        .apps
-        .iter()
-        .filter(|app| !app.source.is_custom())
-        .count();
-    let custom = list.apps.len() - builtin;
-    let recommendations = list.recommendations.len();
-    let mut out = String::new();
-    out.push_str(&format!(
-        "- registry: workspace '{}' · global '{}'\n",
-        list.registry_paths.workspace, list.registry_paths.global
-    ));
-    out.push_str(&format!(
-        "- apps: {} (built-in {builtin}, custom {custom})\n",
-        list.apps.len()
-    ));
-    out.push_str(&format!(
-        "- external recommendations not registered: {recommendations}\n"
-    ));
-    if list.registry_errors.is_empty() {
-        out.push_str("- registry errors: none\n");
-    } else {
-        out.push_str("- registry errors:\n");
-        for error in &list.registry_errors {
-            let app = error
-                .app_id
-                .as_deref()
-                .map(|id| format!(" app '{}'", id))
-                .unwrap_or_default();
-            out.push_str(&format!(
-                "  - {}{}: {} ({})\n",
-                error.source, app, error.message, error.file
-            ));
-        }
-    }
-
-    for app in selected {
-        out.push_str(&format!("\n## {} ('{}')\n", app.name, app.id));
-        out.push_str(&format!(
-            "- source: {} · status: {}\n",
-            app.source.as_str(),
-            app.status.as_str()
-        ));
-        if !app.description.is_empty() {
-            out.push_str(&format!("- {}\n", app.description));
-        }
-        if let Some(repo) = app.repo.as_deref() {
-            out.push_str(&format!("- repo: {repo}\n"));
-        }
-        if let Some(docs) = app.docs_url.as_deref() {
-            out.push_str(&format!("- docs: {docs}\n"));
-        }
-        if let Some(url) = app.url.as_deref() {
-            out.push_str(&format!("- url: {url}\n"));
-        }
-        if let Some(install) = &app.install {
-            out.push_str(&format!(
-                "- install: {}{}\n",
-                if install.installed {
-                    "present"
-                } else {
-                    "missing"
-                },
-                if install.can_install || install.can_uninstall {
-                    " (managed by LiteCode)"
-                } else {
-                    ""
-                }
-            ));
-            if let Some(progress) = &install.progress {
-                let percent = progress
-                    .percent
-                    .map(|p| format!(" {p}%"))
-                    .unwrap_or_default();
-                out.push_str(&format!(
-                    "- install progress:{percent} {}{}\n",
-                    progress.phase,
-                    progress
-                        .message
-                        .as_deref()
-                        .map(|message| format!(" — {message}"))
-                        .unwrap_or_default()
-                ));
-            }
-            if let Some(error) = &install.error {
-                out.push_str(&format!("- install error: {}\n", error.message));
-                if let Some(path) = error.log_path.as_deref() {
-                    out.push_str(&format!("- install log: {path}\n"));
-                }
-                if let Some(tail) = error.tail.as_deref() {
-                    let excerpt = tail_excerpt(tail);
-                    if !excerpt.is_empty() {
-                        out.push_str("- install log tail:\n");
-                        for line in excerpt.lines() {
-                            out.push_str(&format!("  {line}\n"));
-                        }
-                    }
-                }
-            }
-        } else if app.builtin_view.is_none() {
-            out.push_str("- install: none — this app brings its own dependencies\n");
-        }
-        if !app.permissions.is_empty() {
-            out.push_str(&format!("- permissions: {}\n", app.permissions.join(", ")));
-        }
-        if !app.trusted {
-            out.push_str("- trust: waiting for human confirmation\n");
-        }
-        if let Some(error) = &app.runtime_error {
-            out.push_str(&format!("- runtime error: {error}\n"));
-        }
-        out.push_str(&format!("- next: {}\n", human_next(app)));
-    }
-
-    if only.is_none() && !list.recommendations.is_empty() {
-        out.push_str("\n## External recommendations (not registered)\n");
-        for rec in &list.recommendations {
-            out.push_str(&format!(
-                "- {} ('{}'): {} — {}\n",
-                rec.name, rec.id, rec.description, rec.repo
-            ));
-        }
-        out.push_str(
-            "- next: when the human asks, install the runtime, write a registry entry with real paths, then let the human trust and start it\n",
-        );
-    }
-    Ok(out)
-}
-
-fn format_recommendation(rec: &crate::apps::service::RecommendationView) -> String {
-    format!(
-        "## {} ('{}')\n- external recommendation, not registered\n- {}\n- repo: {}\n- next: human copies the agent prompt from Apps; install the runtime, register it, then human trusts and starts it\n",
-        rec.name, rec.id, rec.description, rec.repo
-    )
-}
-
-fn human_next(app: &AppView) -> String {
-    if !app.trusted {
-        return "human confirms trust in the Apps detail, then starts it".into();
-    }
-    if app.builtin_view.is_some() {
-        return "human opens the built-in panel from Apps".into();
-    }
-    if matches!(app.status, crate::apps::schema::AppStatus::Installing) {
-        return "installing; wait for it to finish".into();
-    }
-    if let Some(install) = app.install.as_ref() {
-        if !install.installed {
-            if install.can_install {
-                return "human clicks Install in Apps".into();
-            }
-            return "human provides the bundled runtime files, then clicks Start".into();
-        }
-    }
-    if app.running {
-        return "human opens it from Apps; use the url above".into();
-    }
-    if app.can_start {
-        return "human clicks Start in Apps".into();
-    }
-    "no action available; report the status and error".into()
-}
-
-fn tail_excerpt(tail: &str) -> String {
-    const MAX_LINES: usize = 12;
-    const MAX_CHARS: usize = 1400;
-    let mut lines: Vec<&str> = tail.lines().rev().take(MAX_LINES).collect();
-    lines.reverse();
-    let mut out = lines.join("\n");
-    let chars = out.chars().count();
-    if chars > MAX_CHARS {
-        out = out.chars().skip(chars - MAX_CHARS).collect();
-        out.insert(0, '…');
-    }
-    out
-}
-
-fn usage_error(command: &str) -> String {
-    match COMMANDS.iter().find(|spec| spec.name == command) {
-        Some(spec) => format!(
-            "# {command}\n\n- usage: `{}`\n\n{}\n",
-            spec.usage, spec.help
-        ),
-        None => buttons(),
+        ToolOutcome::ok(WorkspaceHelpData { topic, content }).into_call_result(content)
     }
 }
 
-fn buttons() -> String {
-    let mut out = String::from("# Buttons\n\n| command | popup |\n| --- | --- |\n");
-    for spec in COMMANDS {
-        if spec.name == "help" {
-            continue;
-        }
-        out.push_str(&format!(
-            "| `{}` | {} |\n",
-            spec.usage.replace('|', "\\|"),
-            spec.summary
-        ));
-    }
-    out
+/// Validate `.litecode/{excludes,mcp,custom_tools,apps}.json` in one check.
+pub struct WorkspaceRefreshTool {
+    runtime: Option<RuntimeHandle>,
 }
 
-pub struct LitecodeWorkspaceTool {
-    runtime: RuntimeHandle,
-    sessions: Arc<SessionManager>,
-    agent_id: String,
-}
-
-impl LitecodeWorkspaceTool {
-    pub fn new(runtime: RuntimeHandle, sessions: Arc<SessionManager>, agent_id: String) -> Self {
+impl WorkspaceRefreshTool {
+    pub fn new(runtime: RuntimeHandle) -> Self {
         Self {
-            runtime,
-            sessions,
-            agent_id,
+            runtime: Some(runtime),
         }
     }
 
-    /// Re-check that a custom schema is representable in the dynamic
-    /// code-tool fallback when a bundle is projected.
-    fn dynamic_contract_error(&self, def: &CustomToolDefinition) -> Option<String> {
-        dynamic_contract_error(def)
+    pub fn cold() -> Self {
+        Self { runtime: None }
     }
 
-    fn run(&self, input: &Value, execution: &ToolExecutionContext) -> ToolCallResult {
-        let raw = input.get("action").and_then(Value::as_str).unwrap_or("");
-        if raw.trim() == "validate_custom" {
-            return match parse_validate_custom(input) {
-                Err(message) => ToolCallResult::error(message),
-                Ok((mut def, sample_input)) => {
-                    let id = def.name.clone();
-                    let suites = self.runtime.resolved.custom_suites();
-                    crate::config::settings_writer::normalize_custom_definition(&id, &mut def);
-                    if let Some(diagnostic) =
-                        crate::config::settings_writer::custom_definition_diagnostic(
-                            &id,
-                            &def,
-                            &suites,
-                            "validate_custom",
-                            None,
-                        )
-                    {
-                        return ToolCallResult::error(format!(
-                            "# validate_custom — FAIL\n\n- tool: `{id}`\n- source: validate_custom\n- suite: {}\n- field: `{}`\n- expected: {}\n- actual: {}\n- fix: {}\n- detail: {}\n- next: fix the definition; do not register or enable it until validate_custom passes\n",
-                            diagnostic.suite.as_deref().unwrap_or("none"),
-                            diagnostic.field,
-                            diagnostic.expected,
-                            diagnostic.actual.as_deref().unwrap_or("missing"),
-                            diagnostic.fix,
-                            diagnostic.message
-                        ));
+    fn run_for_root(&self, workspace_root: &Path, reload_excludes_cache: bool) -> ToolCallResult {
+        let mut issues = Vec::new();
+
+        // 1. .litecode/excludes.json
+        let excludes_ok = if workspace_excludes_path(workspace_root).exists() {
+            match read_workspace_excludes(workspace_root) {
+                Ok(file) => {
+                    if reload_excludes_cache {
+                        activate_workspace_excludes(file);
                     }
-                    let effective = effective_custom_definition(&def, &suites);
-                    let surface = effective.effective_surface();
-                    if let Some(reason) = self.dynamic_contract_error(&effective) {
-                        return ToolCallResult::error(format!(
-                            "# validate_custom — FAIL\n\n- tool: `{id}`\n- {}\n- code admission: PASS\n- dynamic contract: FAIL\n- detail: {reason}\n- next: use a simple input/output object schema with supported JSON Schema keywords, or declare surface \"direct\"\n",
-                            call_surface_label(surface)
-                        ));
-                    }
-                    let mut result = validate_custom_tool_run(
-                        &effective,
-                        &sample_input,
-                        self.runtime.workspace_root(),
-                    );
-                    if surface == CallSurface::Code && result.error.is_none() {
-                        result.content = result.content.replacen(
-                            "- code admission: PASS\n",
-                            "- code admission: PASS\n- dynamic contract: PASS\n",
-                            1,
-                        );
-                    }
-                    result
-                }
-            };
-        }
-        match parse_action(raw) {
-            Err(message) => ToolCallResult::error(message),
-            Ok(Action::Panel) => self.panel(execution, true),
-            Ok(Action::Help(name)) => match COMMANDS.iter().find(|spec| spec.name == name) {
-                Some(spec) => ToolCallResult::ok(format!(
-                    "# {}\n\n- usage: `{}`\n- {}\n\n{}\n",
-                    spec.name, spec.usage, spec.summary, spec.help
-                )),
-                None => ToolCallResult::error(format!(
-                    "# error\n\nunknown command '{name}'\n\n{}\n",
-                    buttons()
-                )),
-            },
-            Ok(Action::Status) => self.panel(execution, false),
-            Ok(Action::Sessions { all, limit }) => {
-                let (running_limit, recent_limit) = match limit {
-                    Some(limit) => (limit, limit),
-                    None => (MAX_RUNNING_ROWS, MAX_RECENT_ROWS),
-                };
-                match self.sessions_section(execution, all, running_limit, recent_limit) {
-                    Ok((body, warning)) => {
-                        let result = ToolCallResult::ok(format!("# sessions\n\n{body}"));
-                        match warning {
-                            Some(warning) => result.with_warning(warning),
-                            None => result,
-                        }
-                    }
-                    Err(error) => ToolCallResult::error(error),
-                }
-            }
-            Ok(Action::Apps { id }) => self.apps_section(id.as_deref()),
-            Ok(Action::Guide(topic)) => match topic {
-                Some(topic) => ToolCallResult::ok(guides::topic(topic)),
-                None => ToolCallResult::ok(guides::GUIDE_INDEX),
-            },
-            Ok(Action::Refresh(target)) => self.refresh(target),
-        }
-    }
-
-    /// Read-only app snapshot: definitions, install state, URLs, and last errors.
-    fn apps_section(&self, id: Option<&str>) -> ToolCallResult {
-        let Some(service) = self.runtime.apps() else {
-            return ToolCallResult::ok(
-                "# apps\n\n- The app service is attached only in the LiteCode workbench; this CLI session has none.\n- 'guide apps' explains the registry, and built-in apps appear in the workbench Apps panel.\n",
-            );
-        };
-        match format_apps(&service.list(), id) {
-            Ok(body) => ToolCallResult::ok(format!("# apps\n\n{body}")),
-            Err(message) => ToolCallResult::error(format!("# apps\n\n{message}")),
-        }
-    }
-
-    /// Panel (`with_buttons`) or the same picture without the button table.
-    fn panel(&self, execution: &ToolExecutionContext, with_buttons: bool) -> ToolCallResult {
-        let (sessions, sessions_warning) =
-            match self.sessions_section(execution, false, MAX_RUNNING_ROWS, MAX_RECENT_ROWS) {
-                Ok((body, warning)) => (body, warning),
-                Err(error) => (unavailable(&error), None),
-            };
-        let mut sections = vec![
-            section("excludes", self.excludes_section()),
-            section("mcp", self.mcp_section()),
-            section("custom tools", self.custom_tools_section()),
-            section("sessions", Ok(sessions)),
-        ];
-        if with_buttons {
-            sections.push(buttons());
-        }
-        let out = format!("# Workspace\n\n{}\n", sections.join("\n---\n\n"));
-        let mut warnings = Vec::new();
-        if let Some(warning) = sessions_warning {
-            warnings.push(warning);
-        }
-        let result = ToolCallResult::ok(out);
-        if warnings.is_empty() {
-            result
-        } else {
-            result.with_warning(warnings.join(" · "))
-        }
-    }
-
-    fn excludes_section(&self) -> Result<String, String> {
-        let root = self.runtime.workspace_root();
-        let exists = workspace_excludes_path(root).exists();
-        let active = active_workspace_excludes();
-        let mut out = format!(
-            "- file: `.litecode/excludes.json`{}\n",
-            if exists {
-                ""
-            } else {
-                " (missing — builtin defaults)"
-            }
-        );
-        out.push_str(&format!("- active: {}\n", excludes_counts(&active)));
-        if exists && read_workspace_excludes(root).is_err() {
-            out.push_str(&format!("- {FILE_BROKEN}\n"));
-        }
-        Ok(out)
-    }
-
-    fn mcp_section(&self) -> Result<String, String> {
-        let resolved = &self.runtime.resolved;
-        let servers = resolved.mcp_servers();
-        let snapshots = self.mcp_snapshots();
-        let mut ids: Vec<String> = servers.keys().cloned().collect();
-        ids.sort();
-        let mut out = String::new();
-        let mut any_off = false;
-        if ids.is_empty() {
-            out.push_str("- none\n");
-        }
-        for id in &ids {
-            let snapshot = snapshots.get(&resolved.mcp_pool_key(id));
-            let on = agent_tool_enabled(resolved, &self.agent_id, &mcp_catalog_id(id));
-            if !on {
-                any_off = true;
-            }
-            out.push_str(&format!(
-                "- `{id}` · {} · {} · {}\n",
-                run_state_label(snapshot),
-                gate_label(on),
-                origin_label(resolved.mcp_origin(id))
-            ));
-        }
-        match read_workspace_mcp(self.runtime.workspace_root()) {
-            Ok(file) => {
-                let drift = def_drift(resolved.workspace_mcp_servers(), &file.servers);
-                if !drift.is_empty() {
-                    out.push_str(&format!("- drift: {drift}\n"));
-                    out.push_str(&format!("- next: {APPLIES_NEXT_TURN}\n"));
-                }
-            }
-            Err(_error) => {
-                out.push_str(&format!("- {FILE_BROKEN}\n"));
-            }
-        }
-        if any_off {
-            out.push_str(&format!("- next: {ASK_HUMAN}\n"));
-        }
-        Ok(out)
-    }
-
-    fn custom_tools_section(&self) -> Result<String, String> {
-        let resolved = &self.runtime.resolved;
-        let mut tools = resolved.custom_tools();
-        tools.sort_by(|a, b| a.name.cmp(&b.name));
-        let mut out = String::new();
-        let mut any_off = false;
-        if tools.is_empty() {
-            out.push_str("- none\n");
-        }
-        for tool in &tools {
-            let on = agent_tool_enabled(resolved, &self.agent_id, &tool.name);
-            if !on {
-                any_off = true;
-            }
-            out.push_str(&format!(
-                "- `{}` · {} · `{}` · {} · {} · {}\n",
-                tool.name,
-                call_surface_label(tool.effective_surface()),
-                command_line_parts(&tool.command, &tool.args),
-                timeout_label(tool.timeout),
-                gate_label(on),
-                origin_label(resolved.custom_origin(&tool.name))
-            ));
-        }
-        match read_workspace_custom_tools(self.runtime.workspace_root()) {
-            Ok(file) => {
-                let loaded: HashMap<String, CustomToolDefinition> =
-                    resolved.workspace_custom_tools().clone();
-                let drift = def_drift(&loaded, &file.tools);
-                if !drift.is_empty() {
-                    out.push_str(&format!("- drift: {drift}\n"));
-                    out.push_str(&format!("- next: {APPLIES_NEXT_TURN}\n"));
-                }
-            }
-            Err(_error) => {
-                out.push_str(&format!("- {FILE_BROKEN}\n"));
-            }
-        }
-        if any_off {
-            out.push_str(&format!("- next: {ASK_HUMAN}\n"));
-        }
-        Ok(out)
-    }
-
-    /// Running turns + recently active sessions + total count.
-    fn sessions_section(
-        &self,
-        execution: &ToolExecutionContext,
-        all: bool,
-        running_limit: usize,
-        recent_limit: usize,
-    ) -> Result<(String, Option<String>), String> {
-        let reader = execution.session_reader().map_err(|error| reason(&error))?;
-        let me = (!execution.session_id.is_empty()).then_some(execution.session_id.as_str());
-        let hidden = hidden_session_ids(reader, me, all);
-        let now = now_ms();
-
-        let mut running: Vec<SessionActivityRow> = self
-            .sessions
-            .activity_snapshot()
-            .into_iter()
-            .filter(|row| row.status != SessionStatus::Idle)
-            .filter(|row| !hidden.contains(&row.session_id))
-            .collect();
-        running.sort_by(|a, b| {
-            turn_elapsed_ms(b, now)
-                .cmp(&turn_elapsed_ms(a, now))
-                .then_with(|| a.session_id.cmp(&b.session_id))
-        });
-        let running_total = running.len();
-
-        let running_ids: HashSet<String> =
-            running.iter().map(|row| row.session_id.clone()).collect();
-        let mut recent: Vec<(String, Option<String>, i64, String, String)> = reader
-            .list_session_activity_blocking(now - RECENT_WINDOW_MS)
-            .map_err(|error| reason(&error))?
-            .into_iter()
-            .filter(|(id, ..)| !hidden.contains(id) && !running_ids.contains(id))
-            .collect();
-        recent.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
-        let recent_total = recent.len();
-
-        let total = reader
-            .list_session_ids_blocking()
-            .map_err(|error| reason(&error))?
-            .len();
-
-        let running_shown = running_total.min(running_limit);
-        running.truncate(running_shown);
-        let recent_shown = recent_total.min(recent_limit);
-        recent.truncate(recent_shown);
-
-        let mut out = format!("- running ({running_total}):\n");
-        if running.is_empty() {
-            out.push_str("  - none\n");
-        }
-        for row in &running {
-            out.push_str(&format!("  - {}\n", running_row(reader, row, now, me)));
-        }
-        if running_total > running_shown {
-            out.push_str(&format!(
-                "  - … and {} more running (showing the {running_shown} longest running sessions)\n",
-                running_total - running_shown
-            ));
-        }
-        out.push_str(&format!(
-            "- idle (last {}m, {recent_total}):\n",
-            RECENT_WINDOW_MS / 60_000
-        ));
-        if recent.is_empty() {
-            out.push_str("  - none\n");
-        }
-        for (id, parent, updated_at, agent, last_message) in &recent {
-            out.push_str(&format!(
-                "  - {}\n",
-                recent_row(
-                    id,
-                    parent.as_deref(),
-                    *updated_at,
-                    agent,
-                    last_message,
-                    now,
-                    me,
-                )
-            ));
-        }
-        if recent_total > recent_shown {
-            out.push_str(&format!(
-                "  - … and {} more idle sessions in the last {}m\n",
-                recent_total - recent_shown,
-                RECENT_WINDOW_MS / 60_000
-            ));
-        }
-        out.push_str(&format!("- total: {total} sessions in this workspace\n"));
-        if running_total > running_shown || recent_total > recent_shown {
-            out.push_str(
-                "- next: `sessions --limit N`; your own children stay on `subagent_list`\n",
-            );
-        }
-
-        let warning = (running_total > running_shown).then(|| {
-            format!(
-                "{running_total} running sessions in this workspace; only the {running_shown} \
-                 longest are listed — use `subagent_list` for your own children, or \
-                 `sessions --limit N`."
-            )
-        });
-        Ok((out, warning))
-    }
-
-    fn mcp_snapshots(&self) -> HashMap<String, McpServerSnapshot> {
-        let pool = Arc::clone(&self.runtime.mcp_pool);
-        let hub = Arc::clone(&pool);
-        pool.block_on_hub(async move { hub.snapshots().await })
-            .unwrap_or_default()
-    }
-
-    fn refresh(&self, target: Option<RefreshTarget>) -> ToolCallResult {
-        let mut out = String::new();
-        let mut warnings: Vec<String> = Vec::new();
-        let targets: Vec<RefreshTarget> = match target {
-            Some(target) => vec![target],
-            None => vec![
-                RefreshTarget::Excludes,
-                RefreshTarget::Mcp,
-                RefreshTarget::CustomTools,
-            ],
-        };
-        let mut blocks = Vec::new();
-        for target in &targets {
-            let (body, mut found) = match target {
-                RefreshTarget::Excludes => self.refresh_excludes(),
-                RefreshTarget::Mcp => self.refresh_mcp(),
-                RefreshTarget::CustomTools => self.refresh_custom_tools(),
-            };
-            blocks.push(body.trim_end().to_string());
-            warnings.append(&mut found);
-        }
-        out.push_str(&blocks.join("\n\n---\n\n"));
-        out.push('\n');
-        let result = ToolCallResult::ok(out);
-        if warnings.is_empty() {
-            result
-        } else {
-            result.with_warning(warnings.join(" · "))
-        }
-    }
-
-    fn refresh_excludes(&self) -> (String, Vec<String>) {
-        let root = self.runtime.workspace_root();
-        let mut out = String::from("# refresh excludes\n\n");
-        let mut warnings: Vec<String> = Vec::new();
-        let active = active_workspace_excludes();
-        let exists = workspace_excludes_path(root).exists();
-        if exists && read_workspace_excludes(root).is_err() {
-            out.push_str(&format!(
-                "- file: `.litecode/excludes.json`\n- active: {}\n- {FILE_BROKEN}\n",
-                excludes_counts(&active)
-            ));
-            warnings.push("excludes.json is broken; the counts above are what is in effect".into());
-            return (out, warnings);
-        }
-        out.push_str(&format!(
-            "- file: `.litecode/excludes.json`{}\n- active: {}\n",
-            if exists {
-                ""
-            } else {
-                " (missing — builtin defaults)"
-            },
-            excludes_counts(&active)
-        ));
-        (out, warnings)
-    }
-
-    fn refresh_mcp(&self) -> (String, Vec<String>) {
-        let root = self.runtime.workspace_root();
-        let mut out = String::from("# refresh mcp\n\n");
-        let mut warnings: Vec<String> = Vec::new();
-        let file = match read_workspace_mcp(root) {
-            Ok(file) => file,
-            Err(_error) => {
-                out.push_str(&format!("- file: `.litecode/mcp.json`\n- {FILE_BROKEN}\n"));
-                warnings.push("mcp.json is broken".into());
-                return (out, warnings);
-            }
-        };
-        let mut ids: Vec<String> = file.servers.keys().cloned().collect();
-        ids.sort();
-        out.push_str(&format!(
-            "- file: `.litecode/mcp.json` — {} server(s)\n",
-            ids.len()
-        ));
-        if ids.is_empty() {
-            out.push_str("- none in this file\n");
-        }
-        let mut valid: HashMap<String, McpServerDefinition> = HashMap::new();
-        let mut rejected = 0usize;
-        let mut off: Vec<String> = Vec::new();
-        let resolved = &self.runtime.resolved;
-        for id in &ids {
-            let original = file.servers[id].clone();
-            let mut checked = original.clone();
-            match validate_mcp_definition(id, &mut checked) {
-                Ok(()) => {
-                    out.push_str(&format!("- `{id}`: ok — `{}`\n", command_line(&original)));
-                    if !agent_tool_enabled(resolved, &self.agent_id, &mcp_catalog_id(id)) {
-                        off.push(id.clone());
-                    }
-                    valid.insert(id.clone(), original);
+                    true
                 }
                 Err(error) => {
-                    rejected += 1;
-                    out.push_str(&format!("- `{id}`: rejected — {}\n", reason(&error)));
+                    issues.push(format!("excludes.json: {}", reason(&error)));
+                    false
                 }
             }
-        }
-        let drift = def_drift(resolved.workspace_mcp_servers(), &valid);
-        if !drift.is_empty() {
-            out.push_str(&format!("- not in effect yet: {drift}\n"));
-        }
-        out.push_str(&finish_refresh("mcp", rejected, &off));
-        if rejected > 0 {
-            warnings.push(format!(
-                "{rejected} MCP definition(s) would be rejected by the settings page"
-            ));
-        }
-        (out, warnings)
-    }
-
-    fn refresh_custom_tools(&self) -> (String, Vec<String>) {
-        let root = self.runtime.workspace_root();
-        let mut out = String::from("# refresh custom_tools\n\n");
-        let mut warnings: Vec<String> = Vec::new();
-        let file = match read_workspace_custom_tools(root) {
-            Ok(file) => file,
-            Err(error) => {
-                out.push_str(&format!(
-                    "- file: `.litecode/custom_tools.json`\n- {FILE_BROKEN}\n- error: {error}\n- next: rewrite the file in the direct/code + suites format, then run `refresh custom_tools` again\n"
-                ));
-                warnings.push("custom_tools.json is broken".into());
-                return (out, warnings);
-            }
+        } else {
+            true
         };
-        let mut ids: Vec<String> = file.tools.keys().cloned().collect();
-        ids.sort();
-        out.push_str(&format!(
-            "- file: `.litecode/custom_tools.json` — {} tool(s)\n",
-            ids.len()
-        ));
-        if ids.is_empty() {
-            out.push_str("- none in this file\n");
-        }
-        let mut valid: HashMap<String, CustomToolDefinition> = HashMap::new();
-        let mut rejected = 0usize;
-        let mut off: Vec<String> = Vec::new();
-        let resolved = &self.runtime.resolved;
-        for id in &ids {
-            let original = file.tools[id].clone();
-            let mut checked = original.clone();
-            crate::config::settings_writer::normalize_custom_definition(id, &mut checked);
-            let diagnostic = crate::config::settings_writer::custom_definition_diagnostic(
-                id,
-                &checked,
-                &file.suites,
-                "refresh",
-                Some(".litecode/custom_tools.json".into()),
-            );
-            match diagnostic {
-                None => {
-                    let effective = effective_custom_definition(&checked, &file.suites);
-                    let surface = effective.effective_surface();
-                    out.push_str(&format!(
-                        "- `{id}`: ok — {} · `{}` · {}\n",
-                        call_surface_label(surface),
-                        command_line_parts(&original.command, &original.args),
-                        timeout_label(original.timeout)
-                    ));
-                    if let Some(suite) = effective.suite.as_deref() {
-                        out.push_str(&format!(
-                            "  suite `{suite}`: surface and rules inherited; one binding for the whole suite.\n"
-                        ));
+
+        // 2. .litecode/mcp.json
+        let mut mcp_ok = true;
+        match read_workspace_mcp(workspace_root) {
+            Ok(mut file) => {
+                let mut ids: Vec<String> = file.servers.keys().cloned().collect();
+                ids.sort();
+                for id in ids {
+                    if let Some(def) = file.servers.get_mut(&id) {
+                        if let Err(error) = validate_mcp_definition(&id, def) {
+                            mcp_ok = false;
+                            issues.push(format!("mcp.json `{id}`: {}", reason(&error)));
+                        }
                     }
-                    if surface == CallSurface::Code {
-                        out.push_str(
-                            "  code result: `<output_schema fields>` from the stdout object; `run_in_background` is unavailable.\n",
-                        );
-                    }
-                    if original.timeout == 0 {
-                        out.push_str("  `timeout: 0` is not unlimited: settings save uses 120, a hand-written file runs 1s. Set timeout >= 1.\n");
-                    }
-                    if !agent_tool_enabled(resolved, &self.agent_id, id) {
-                        off.push(id.clone());
-                    }
-                    valid.insert(id.clone(), original);
-                }
-                Some(diagnostic) => {
-                    rejected += 1;
-                    out.push_str(&format!(
-                        "- `{id}`: rejected — {}\n  field: `{}` · expected: {} · actual: {}\n  fix: {}\n",
-                        diagnostic.message,
-                        diagnostic.field,
-                        diagnostic.expected,
-                        diagnostic.actual.as_deref().unwrap_or("missing"),
-                        diagnostic.fix
-                    ));
                 }
             }
+            Err(error) => {
+                mcp_ok = false;
+                issues.push(format!("mcp.json: {}", reason(&error)));
+            }
         }
-        let drift = def_drift(resolved.workspace_custom_tools(), &valid);
-        if !drift.is_empty() {
-            out.push_str(&format!("- not in effect yet: {drift}\n"));
+
+        // 3. .litecode/custom_tools.json
+        let mut custom_tools_ok = true;
+        match read_workspace_custom_tools(workspace_root) {
+            Ok(mut file) => {
+                let mut suite_ids: Vec<String> = file.suites.keys().cloned().collect();
+                suite_ids.sort();
+                for id in suite_ids {
+                    if let Some(suite_def) = file.suites.get_mut(&id) {
+                        if let Err(error) = validate_custom_suite(&id, suite_def) {
+                            custom_tools_ok = false;
+                            issues.push(format!(
+                                "custom_tools.json suite `{id}`: {}",
+                                reason(&error)
+                            ));
+                        }
+                    }
+                }
+
+                let mut tool_ids: Vec<String> = file.tools.keys().cloned().collect();
+                tool_ids.sort();
+                for id in tool_ids {
+                    if let Some(def) = file.tools.get_mut(&id) {
+                        normalize_custom_definition(&id, def);
+                        if let Some(diag) = custom_definition_diagnostic(
+                            &id,
+                            def,
+                            &file.suites,
+                            "workspace",
+                            Some(".litecode/custom_tools.json".into()),
+                        ) {
+                            custom_tools_ok = false;
+                            issues.push(format!("custom_tools.json: {}", diag.message));
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                custom_tools_ok = false;
+                issues.push(format!("custom_tools.json: {}", reason(&error)));
+            }
         }
-        out.push_str(&finish_refresh("custom_tools", rejected, &off));
-        if rejected > 0 {
-            warnings.push(format!(
-                "{rejected} custom tool definition(s) would be rejected by the settings page"
+
+        // 4. .litecode/apps.json
+        let app_errors = AppRegistry::validate_workspace_file(workspace_root);
+        let apps_ok = !app_errors.iter().any(|err| err.severity == "error");
+        for err in app_errors {
+            let app_part = err
+                .app_id
+                .as_deref()
+                .map(|id| format!(" `{id}`"))
+                .unwrap_or_default();
+            issues.push(format!(
+                "apps.json{app_part} ({}): {}",
+                err.severity, err.message
             ));
         }
-        (out, warnings)
+
+        let ok = excludes_ok && mcp_ok && custom_tools_ok && apps_ok;
+        let summary = if ok && issues.is_empty() {
+            "workspace configs valid (excludes, mcp, custom_tools, apps)".to_string()
+        } else if ok {
+            format!(
+                "workspace configs valid with {} warning(s) (excludes, mcp, custom_tools, apps)",
+                issues.len()
+            )
+        } else {
+            let mut failed = Vec::new();
+            if !excludes_ok {
+                failed.push("excludes");
+            }
+            if !mcp_ok {
+                failed.push("mcp");
+            }
+            if !custom_tools_ok {
+                failed.push("custom_tools");
+            }
+            if !apps_ok {
+                failed.push("apps");
+            }
+            format!(
+                "workspace validation failed: {} ({} issue(s))",
+                failed.join(", "),
+                issues.len()
+            )
+        };
+
+        let mut text = summary.clone();
+        if !issues.is_empty() {
+            text.push('\n');
+            for issue in &issues {
+                text.push_str(&format!("- {issue}\n"));
+            }
+        }
+
+        ToolOutcome::ok(WorkspaceRefreshData {
+            ok,
+            summary,
+            excludes_ok,
+            mcp_ok,
+            custom_tools_ok,
+            apps_ok,
+            issues,
+        })
+        .into_call_result(text)
     }
 }
 
-impl Tool for LitecodeWorkspaceTool {
+impl Tool for WorkspaceRefreshTool {
     fn name(&self) -> &str {
-        "litecode_workspace"
-    }
-
-    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-        let description =
-            crate::tools::description_text(include_str!("descriptions/litecode_workspace.md"));
-        let input_schema = {
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "description": "CLI-style command. Omit or leave empty to open the panel. Use `validate_custom` with `definition` + `sample_input` to trial a tool without registering it (no rules eval; run_in_background stripped from stdin)."
-                    },
-                    "definition": {
-                        "type": "object",
-                        "description": "Custom tool body for `validate_custom` (one tool object, not a full file). Standalone must set surface direct|code; suite member must set suite (already loaded) and omit surface/rules. Required: name/command/schema; code also requires output_schema (direct forbids it). Code returns the stdout object matching output_schema; direct supports run_in_background."
-                    },
-                    "sample_input": {
-                        "type": "object",
-                        "description": "JSON object written to custom tool stdin during `validate_custom` (run_in_background is stripped, same as production). Does not evaluate rules."
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "Optional name when definition.name is empty (validate_custom only)."
-                    }
-                }
-            })
-        };
-        Some(crate::tool::DirectToolSpec {
-            description,
-            input_schema,
-        })
+        WORKSPACE_REFRESH_TOOL
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
@@ -1149,42 +318,167 @@ impl Tool for LitecodeWorkspaceTool {
 
     fn execute(
         &self,
-        input: Value,
+        _input: Value,
         execution: ToolExecutionContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
-        Box::pin(std::future::ready(self.run(&input, &execution)))
+    ) -> Pin<Box<dyn Future<Output = ToolCallResult> + Send + '_>> {
+        let root = self
+            .runtime
+            .as_ref()
+            .map(|rt| rt.workspace_root())
+            .unwrap_or(&execution.workspace_root);
+        let reload = self.runtime.is_some();
+        Box::pin(std::future::ready(self.run_for_root(root, reload)))
     }
 
-    fn call_inner(&self, input: Value) -> ToolCallResult {
-        self.run(
-            &input,
-            &ToolExecutionContext {
-                path_mode: crate::workspace::ToolPathMode::All,
-                workspace_root: self.runtime.workspace_root().to_path_buf(),
-                call_id: String::new(),
-                cancel: tokio_util::sync::CancellationToken::new(),
-                output_limit: self.max_result_size(),
-                session_id: String::new(),
-                // ISSUE-042: reuse the session layer's reader; never open sessions.db here.
-                session: Some(self.sessions.reader()),
-            },
-        )
+    fn call_inner(&self, _input: Value) -> ToolCallResult {
+        if let Some(rt) = &self.runtime {
+            self.run_for_root(rt.workspace_root(), true)
+        } else {
+            coded_error("unavailable", "workspace.refresh requires an active runtime")
+        }
     }
 }
 
-fn section(title: &str, body: Result<String, String>) -> String {
-    match body {
-        Ok(body) => format!("## {title}\n\n{body}"),
-        Err(error) => format!("## {title}\n\n{}", unavailable(&error)),
+/// Inspect live workspace runtime state: excludes, MCP servers, custom tools, and Apps.
+pub struct WorkspaceStatusTool {
+    runtime: Option<RuntimeHandle>,
+    agent_id: String,
+}
+
+impl WorkspaceStatusTool {
+    pub fn new(runtime: RuntimeHandle, agent_id: impl Into<String>) -> Self {
+        Self {
+            runtime: Some(runtime),
+            agent_id: agent_id.into(),
+        }
+    }
+
+    pub fn cold() -> Self {
+        Self {
+            runtime: None,
+            agent_id: String::new(),
+        }
+    }
+
+    fn mcp_snapshots(runtime: &RuntimeHandle) -> HashMap<String, McpServerSnapshot> {
+        let pool = std::sync::Arc::clone(&runtime.mcp_pool);
+        let hub = std::sync::Arc::clone(&pool);
+        pool.block_on_hub(async move { hub.snapshots().await })
+            .unwrap_or_default()
+    }
+
+    fn build_status(&self, runtime: &RuntimeHandle) -> WorkspaceStatusData {
+        let resolved = &runtime.resolved;
+        let excludes = excludes_counts(&active_workspace_excludes());
+
+        let snapshots = Self::mcp_snapshots(runtime);
+        let servers = resolved.mcp_servers();
+        let mut mcp_ids: Vec<&String> = servers.keys().collect();
+        mcp_ids.sort();
+        let mcp: Vec<McpStatusRow> = mcp_ids
+            .into_iter()
+            .filter_map(|id| {
+                let def = servers.get(id)?;
+                let pool_key = resolved.mcp_pool_key(id);
+                let state = run_state_label(snapshots.get(&pool_key));
+                Some(McpStatusRow {
+                    id: id.clone(),
+                    enabled: agent_tool_enabled(resolved, &self.agent_id, &mcp_catalog_id(id)),
+                    origin: origin_label(resolved.mcp_origin(id)).to_string(),
+                    state,
+                    command: mcp_command_label(def),
+                })
+            })
+            .collect();
+
+        let mut custom = resolved.custom_tools();
+        custom.sort_by(|a, b| a.name.cmp(&b.name));
+        let custom_tools: Vec<CustomToolStatusRow> = custom
+            .into_iter()
+            .map(|tool| {
+                let enabled = agent_tool_enabled(resolved, &self.agent_id, &tool.name);
+                let origin = origin_label(resolved.custom_origin(&tool.name)).to_string();
+                let command = command_line_parts(&tool.command, &tool.args);
+                CustomToolStatusRow {
+                    id: tool.name,
+                    suite: tool.suite,
+                    enabled,
+                    origin,
+                    timeout_secs: tool.timeout,
+                    command,
+                }
+            })
+            .collect();
+
+        let apps: Vec<AppStatusRow> = runtime
+            .apps()
+            .map(|service| {
+                service
+                    .list()
+                    .apps
+                    .into_iter()
+                    .map(|app| {
+                        let error = app.runtime_error.or_else(|| {
+                            app.install
+                                .and_then(|install| install.error.map(|e| e.message))
+                        });
+                        AppStatusRow {
+                            id: app.id,
+                            kind: app.source.as_str().to_string(),
+                            status: app.status.as_str().to_string(),
+                            url: app.url,
+                            error,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let summary = format!(
+            "excludes ({}); {} mcp, {} custom tool(s), {} app(s)",
+            excludes,
+            mcp.len(),
+            custom_tools.len(),
+            apps.len()
+        );
+
+        WorkspaceStatusData {
+            summary,
+            excludes,
+            mcp,
+            custom_tools,
+            apps,
+        }
     }
 }
 
-fn unavailable(error: &str) -> String {
-    format!("- unavailable: {error}\n")
+impl Tool for WorkspaceStatusTool {
+    fn name(&self) -> &str {
+        WORKSPACE_STATUS_TOOL
+    }
+
+    fn is_concurrency_safe(&self, _input: &Value) -> bool {
+        true
+    }
+
+    fn execute(
+        &self,
+        _input: Value,
+        _execution: ToolExecutionContext,
+    ) -> Pin<Box<dyn Future<Output = ToolCallResult> + Send + '_>> {
+        Box::pin(std::future::ready(self.call_inner(Value::Null)))
+    }
+
+    fn call_inner(&self, _input: Value) -> ToolCallResult {
+        let Some(runtime) = &self.runtime else {
+            return coded_error("unavailable", "workspace.status requires an active runtime");
+        };
+        let status = self.build_status(runtime);
+        let summary = status.summary.clone();
+        ToolOutcome::ok(status).into_call_result(summary)
+    }
 }
 
-/// User-facing reason: validation and tool errors read better without the
-/// `config error: ` / `tool execution error: ` kind prefix.
 fn reason(error: &crate::types::LitecodeError) -> String {
     const PREFIXES: [&str; 5] = [
         "config error: ",
@@ -1205,8 +499,17 @@ fn reason(error: &crate::types::LitecodeError) -> String {
     }
 }
 
-fn command_line(def: &McpServerDefinition) -> String {
-    command_line_parts(&def.command, &def.args)
+fn mcp_command_label(def: &McpServerDefinition) -> String {
+    match &def.transport {
+        McpTransport::Stdio => command_line_parts(&def.command, &def.args),
+        McpTransport::Remote { url, .. } => {
+            if def.command.trim().is_empty() {
+                url.clone()
+            } else {
+                command_line_parts(&def.command, &def.args)
+            }
+        }
+    }
 }
 
 fn command_line_parts(command: &str, args: &[String]) -> String {
@@ -1215,14 +518,6 @@ fn command_line_parts(command: &str, args: &[String]) -> String {
     } else {
         format!("{command} {}", args.join(" "))
     }
-}
-
-fn timeout_label(timeout: u64) -> String {
-    format!("timeout {timeout}s")
-}
-
-fn gate_label(on: bool) -> &'static str {
-    if on { "on for you" } else { "off for you" }
 }
 
 fn origin_label(origin: Option<ToolOrigin>) -> &'static str {
@@ -1244,42 +539,6 @@ fn run_state_label(snapshot: Option<&McpServerSnapshot>) -> String {
     }
 }
 
-/// Passed files take effect at the start of the next turn. Rejections stay a
-/// separate next. Switches that are off are named on their own line.
-fn finish_refresh(topic: &str, rejected: usize, off: &[String]) -> String {
-    if rejected > 0 {
-        return format!("- next: fix the rejected entries and run `refresh {topic}` again\n");
-    }
-    let mut out = format!("- next: {APPLIES_NEXT_TURN}\n");
-    if !off.is_empty() {
-        let names: Vec<String> = off
-            .iter()
-            .map(|id| {
-                if topic == "mcp" {
-                    mcp_catalog_id(id)
-                } else {
-                    id.clone()
-                }
-            })
-            .collect();
-        out.push_str(&format!("- {}\n", off_for_you_line(&names)));
-    }
-    out
-}
-
-fn off_for_you_line(names: &[String]) -> String {
-    let listed = names
-        .iter()
-        .map(|id| format!("`{id}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let pronoun = if names.len() == 1 { "it" } else { "them" };
-    format!(
-        "{listed} off for you. If you actually need {pronoun}, ask a human to enable {pronoun} \
-         in Settings → Agents. Otherwise stay silent."
-    )
-}
-
 fn excludes_counts(file: &WorkspaceExcludesFile) -> String {
     format!(
         "files {} · search {} · watcher {} · code_index_extensions {} · git_ignore {} · explorer_git_ignore {}",
@@ -1292,238 +551,210 @@ fn excludes_counts(file: &WorkspaceExcludesFile) -> String {
     )
 }
 
-fn def_drift<T: PartialEq>(before: &HashMap<String, T>, disk: &HashMap<String, T>) -> String {
-    let mut ids: Vec<&String> = before.keys().chain(disk.keys()).collect();
-    ids.sort();
-    ids.dedup();
-    let mut parts: Vec<String> = Vec::new();
-    for id in ids {
-        match (before.get(id), disk.get(id)) {
-            (None, Some(_)) => parts.push(format!("`{id}` added on disk")),
-            (Some(_), None) => parts.push(format!("`{id}` removed on disk")),
-            (Some(old), Some(new)) if old != new => parts.push(format!("`{id}` changed on disk")),
-            _ => {}
-        }
-    }
-    parts.join(" · ")
-}
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    use crate::tool::outcome::ok_data;
 
-/// Self, self's ancestor chain, and self's whole subtree (best effort).
-fn hidden_session_ids(
-    reader: &SessionDataReader,
-    me: Option<&str>,
-    include_self_and_ancestors: bool,
-) -> HashSet<String> {
-    let mut hidden: HashSet<String> = HashSet::new();
-    let Some(me) = me else {
-        return hidden;
-    };
-    if !include_self_and_ancestors {
-        hidden.insert(me.to_string());
-        let mut cursor = me.to_string();
-        for _ in 0..8 {
-            let Ok(meta) = reader.meta_blocking(&cursor) else {
-                break;
-            };
-            match meta.parent_session_id {
-                Some(parent) => {
-                    if !hidden.insert(parent.clone()) {
-                        break;
-                    }
-                    cursor = parent;
-                }
-                None => break,
-            }
-        }
-    }
-    let mut queue = vec![me.to_string()];
-    while let Some(parent) = queue.pop() {
-        if hidden.len() > MAX_SUBTREE_NODES {
-            break;
-        }
-        if let Ok(children) = reader.list_child_ids_blocking(&parent) {
-            for child in children {
-                if hidden.insert(child.clone()) {
-                    queue.push(child);
-                }
-            }
-        }
-    }
-    hidden
-}
-
-fn turn_elapsed_ms(row: &SessionActivityRow, now: i64) -> i64 {
-    row.turn_started_at_ms.map(|start| now - start).unwrap_or(0)
-}
-
-fn running_row(
-    reader: &SessionDataReader,
-    row: &SessionActivityRow,
-    now: i64,
-    me: Option<&str>,
-) -> String {
-    let mut parts = vec![format!("`{}`", short_session_ref(&row.session_id))];
-    if me == Some(row.session_id.as_str()) {
-        parts.push("it's you".to_string());
-    }
-    if !row.agent_id.is_empty() {
-        parts.push(row.agent_id.clone());
-    }
-    if let Some(started) = row.turn_started_at_ms {
-        parts.push(format!("turn {}", duration_label(now - started)));
-    }
-    if let Some((step, step_max)) = row.step {
-        parts.push(format!("step {step}/{step_max}"));
-    }
-    if row.status == SessionStatus::Stopping {
-        parts.push("stopping".to_string());
-    }
-    if let Some(model) = row.model_id.as_deref().filter(|model| !model.is_empty()) {
-        parts.push(model.to_string());
-    }
-    let mut line = parts.join(" · ");
-    if let Ok(meta) = reader.meta_blocking(&row.session_id) {
-        let preview = one_line_preview(&meta.preview);
-        if !preview.is_empty() {
-            line.push_str(&format!(" · “{preview}”"));
-        }
-    }
-    line
-}
-
-fn recent_row(
-    id: &str,
-    parent: Option<&str>,
-    updated_at: i64,
-    agent: &str,
-    last_message: &str,
-    now: i64,
-    me: Option<&str>,
-) -> String {
-    let mut parts = vec![format!("`{}`", short_session_ref(id))];
-    if me == Some(id) {
-        parts.push("it's you".to_string());
-    }
-    let who = match parent {
-        Some(parent) => format!("{agent}, subagent of {}", short_session_ref(parent)),
-        None => agent.to_string(),
-    };
-    if !who.is_empty() {
-        parts.push(who);
-    }
-    parts.push(format!("idle {} ago", duration_label(now - updated_at)));
-    let mut line = parts.join(" · ");
-    let preview = one_line_preview(last_message);
-    if !preview.is_empty() {
-        line.push_str(&format!(" · “{preview}”"));
-    }
-    line
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-fn duration_label(elapsed_ms: i64) -> String {
-    let seconds = elapsed_ms.max(0) as u64 / 1000;
-    match seconds {
-        0..=59 => format!("{seconds}s"),
-        60..=3599 => format!("{}m{:02}s", seconds / 60, seconds % 60),
-        _ => format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60),
-    }
-}
-
-/// Collapse a stored user-message preview onto one short line.
-fn one_line_preview(raw: &str) -> String {
-    let collapsed: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut out: String = collapsed.chars().take(MAX_PREVIEW_CHARS).collect();
-    if collapsed.chars().count() > MAX_PREVIEW_CHARS {
-        out.push('…');
-    }
-    out.trim().to_string()
+    vec![
+        DriftCase {
+            tool: WORKSPACE_HELP_TOOL,
+            all_optional_present: ok_data(WorkspaceHelpData {
+                topic: "mcp",
+                content: guides::topic(GuideTopic::Mcp),
+            }),
+            all_optional_absent: ok_data(WorkspaceHelpData {
+                topic: "overview",
+                content: GUIDE_INDEX,
+            }),
+        },
+        DriftCase {
+            tool: WORKSPACE_REFRESH_TOOL,
+            all_optional_present: ok_data(WorkspaceRefreshData {
+                ok: false,
+                summary: "workspace validation failed: mcp (1 issue(s))".into(),
+                excludes_ok: true,
+                mcp_ok: false,
+                custom_tools_ok: true,
+                apps_ok: true,
+                issues: vec!["mcp.json `bad`: command must not be empty".into()],
+            }),
+            all_optional_absent: ok_data(WorkspaceRefreshData {
+                ok: true,
+                summary: "workspace configs valid (excludes, mcp, custom_tools, apps)".into(),
+                excludes_ok: true,
+                mcp_ok: true,
+                custom_tools_ok: true,
+                apps_ok: true,
+                issues: Vec::new(),
+            }),
+        },
+        DriftCase {
+            tool: WORKSPACE_STATUS_TOOL,
+            all_optional_present: ok_data(WorkspaceStatusData {
+                summary: "excludes (files 1); 1 mcp, 1 custom tool(s), 1 app(s)".into(),
+                excludes: "files 1 · search 1 · watcher 1 · code_index_extensions 1 · git_ignore true · explorer_git_ignore true".into(),
+                mcp: vec![McpStatusRow {
+                    id: "fs".into(),
+                    enabled: true,
+                    origin: "workspace".into(),
+                    state: "running".into(),
+                    command: "npx -y server".into(),
+                }],
+                custom_tools: vec![CustomToolStatusRow {
+                    id: "lint_check".into(),
+                    suite: Some("qa".into()),
+                    enabled: true,
+                    origin: "workspace".into(),
+                    timeout_secs: 60,
+                    command: "npm run lint".into(),
+                }],
+                apps: vec![AppStatusRow {
+                    id: "studio".into(),
+                    kind: "workspace".into(),
+                    status: "error".into(),
+                    url: Some("http://127.0.0.1:4100".into()),
+                    error: Some("port in use".into()),
+                }],
+            }),
+            all_optional_absent: ok_data(WorkspaceStatusData {
+                summary: "excludes (files 0); 1 mcp, 1 custom tool(s), 1 app(s)".into(),
+                excludes: "files 0 · search 0 · watcher 0 · code_index_extensions 0 · git_ignore false · explorer_git_ignore false".into(),
+                mcp: vec![McpStatusRow {
+                    id: "fs".into(),
+                    enabled: false,
+                    origin: "global".into(),
+                    state: "stopped".into(),
+                    command: "npx".into(),
+                }],
+                custom_tools: vec![CustomToolStatusRow {
+                    id: "lint".into(),
+                    suite: None,
+                    enabled: false,
+                    origin: "global".into(),
+                    timeout_secs: 120,
+                    command: "npm run lint".into(),
+                }],
+                apps: vec![AppStatusRow {
+                    id: "gallery".into(),
+                    kind: "builtin".into(),
+                    status: "stopped".into(),
+                    url: None,
+                    error: None,
+                }],
+            }),
+        },
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::ToolSchema;
+    use serde_json::json;
+    use tempfile::TempDir;
 
-    fn def(name: &str) -> CustomToolDefinition {
-        CustomToolDefinition {
-            name: name.into(),
-            output_schema: Some(serde_json::json!({
-                "type": "object", "properties": {}, "required": []
-            })),
-            description: "composition probe".into(),
-            schema: ToolSchema {
-                schema_type: "object".into(),
-                properties: serde_json::json!({}),
-                required: Vec::new(),
-            },
-            command: "echo".into(),
-            args: Vec::new(),
-            timeout: 120,
-            rules: Vec::new(),
-            surface: Some(CallSurface::Code),
-            suite: None,
+    fn exec_ctx(root: &Path) -> ToolExecutionContext {
+        ToolExecutionContext {
+            path_mode: crate::workspace::ToolPathMode::All,
+            workspace_root: root.to_path_buf(),
+            call_id: "ws-test".into(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            output_limit: 8000,
+            session_id: String::new(),
+            session: None,
         }
     }
 
     #[test]
-    fn composition_check_reports_bad_code_schema() {
-        let mut bad = def("foo_bar");
-        bad.schema.properties = serde_json::json!({
-            "item": { "$ref": "#/Item" }
-        });
-        let reason =
-            dynamic_contract_error(&bad).expect("unsupported dynamic schema must fail composition");
-        assert!(reason.contains("$ref"), "{reason}");
+    fn help_returns_overview_and_named_topics_and_rejects_unknown() {
+        let help = WorkspaceHelpTool::new();
+
+        let overview = help.call(json!({}));
+        assert_eq!(overview.level, crate::types::ToolSignalLevel::Ok);
+        let data = overview.data.expect("overview data");
+        assert_eq!(data["topic"], "overview");
+        assert_eq!(data["content"], GUIDE_INDEX);
+
+        let apps = help.call(json!({ "topic": "apps" }));
+        assert_eq!(apps.level, crate::types::ToolSignalLevel::Ok);
+        let data = apps.data.expect("apps data");
+        assert_eq!(data["topic"], "apps");
+        assert_eq!(data["content"], guides::topic(GuideTopic::Apps));
+
+        let bad = help.call(json!({ "topic": "sessions" }));
+        assert_eq!(bad.level, crate::types::ToolSignalLevel::Error);
     }
 
-    #[test]
-    fn composition_check_ignores_direct_tools() {
-        let mut def = def("direct_probe");
-        def.surface = Some(CallSurface::Direct);
-        assert!(dynamic_contract_error(&def).is_none());
-    }
+    #[tokio::test]
+    async fn refresh_returns_terse_success_when_all_workspace_configs_valid() {
+        let dir = TempDir::new().unwrap();
+        let dot = dir.path().join(".litecode");
+        std::fs::create_dir_all(&dot).unwrap();
+        std::fs::write(
+            dot.join("excludes.json"),
+            serde_json::to_string_pretty(&WorkspaceExcludesFile::builtin_defaults()).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dot.join("mcp.json"),
+            r#"{"version":1,"servers":{"docs":{"command":"npx","args":["-y","docs"]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dot.join("custom_tools.json"),
+            r#"{"version":2,"tools":{"echo_ok":{"name":"echo_ok","command":"echo","schema":{"type":"object","properties":{}}}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dot.join("apps.json"),
+            r#"{"version":2,"apps":{}}"#,
+        )
+        .unwrap();
 
-    #[test]
-    fn guide_setup_is_a_topic() {
+        let refresh = WorkspaceRefreshTool::cold();
+        let result = refresh.execute(json!({}), exec_ctx(dir.path())).await;
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok, "{}", result.content);
+        let data = result.data.expect("refresh data");
+        assert_eq!(data["ok"], true, "data={data}");
+        assert_eq!(data["excludes_ok"], true);
+        assert_eq!(data["mcp_ok"], true);
+        assert_eq!(data["custom_tools_ok"], true);
+        assert_eq!(data["apps_ok"], true);
+        assert_eq!(data["issues"], json!([]));
         assert_eq!(
-            parse_action("guide setup"),
-            Ok(Action::Guide(Some(GuideTopic::Setup)))
+            data["summary"],
+            "workspace configs valid (excludes, mcp, custom_tools, apps)"
         );
-        assert!(guides::topic(GuideTopic::Setup).contains("首次上手"));
-        assert!(guides::GUIDE_INDEX.contains("`guide setup`"));
     }
 
-    #[test]
-    fn apps_command_parses_optional_id() {
-        assert_eq!(parse_action("apps"), Ok(Action::Apps { id: None }));
-        assert_eq!(
-            parse_action("apps gallery"),
-            Ok(Action::Apps {
-                id: Some("gallery".into())
-            })
-        );
-        assert!(parse_action("apps one two").is_err());
-    }
+    #[tokio::test]
+    async fn refresh_collects_all_broken_config_issues_without_short_circuiting() {
+        let dir = TempDir::new().unwrap();
+        let dot = dir.path().join(".litecode");
+        std::fs::create_dir_all(&dot).unwrap();
+        std::fs::write(dot.join("excludes.json"), "{not-json").unwrap();
+        std::fs::write(
+            dot.join("mcp.json"),
+            r#"{"version":1,"servers":{"bad_mcp":{"command":""}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dot.join("custom_tools.json"),
+            r#"{"version":1,"tools":{}}"#,
+        )
+        .unwrap();
+        std::fs::write(dot.join("apps.json"), "{bad-apps-json").unwrap();
 
-    #[test]
-    fn apps_command_lists_builtins_and_rejects_unknown_ids() {
-        let dir = tempfile::tempdir().unwrap();
-        let service =
-            crate::apps::AppService::new(dir.path().join("workspace"), dir.path().join("global"));
-        let list = service.list();
-        let body = format_apps(&list, None).expect("apps list");
-        assert!(body.contains("Gallery"));
-        assert!(body.contains("built-in panel"));
-        let gallery = format_apps(&list, Some("gallery")).expect("gallery");
-        assert!(gallery.contains("Gallery"));
-        assert!(!gallery.contains("NocoDB"));
-        assert!(format_apps(&list, Some("no-such-app")).is_err());
+        let refresh = WorkspaceRefreshTool::cold();
+        let result = refresh.execute(json!({}), exec_ctx(dir.path())).await;
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        let data = result.data.expect("refresh data");
+        assert_eq!(data["ok"], false);
+        assert_eq!(data["excludes_ok"], false);
+        assert_eq!(data["mcp_ok"], false);
+        assert_eq!(data["custom_tools_ok"], false);
+        assert_eq!(data["apps_ok"], false);
+        let issues = data["issues"].as_array().unwrap();
+        assert_eq!(issues.len(), 4, "issues: {issues:?}");
     }
 }

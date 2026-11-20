@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::context_pipeline::Context;
 use crate::session::SessionService;
 use crate::session::live::LifecycleEvent;
 use crate::tool::Tool;
@@ -17,7 +16,7 @@ use super::jobs::CompletionRef;
 use super::status;
 
 pub struct SubagentWaitTool {
-    service: Arc<SessionService>,
+    service: Option<Arc<SessionService>>,
     cancel: CancellationToken,
     session_id: Mutex<String>,
 }
@@ -25,7 +24,15 @@ pub struct SubagentWaitTool {
 impl SubagentWaitTool {
     pub fn new(service: Arc<SessionService>) -> Self {
         Self {
-            service,
+            service: Some(service),
+            cancel: CancellationToken::new(),
+            session_id: Mutex::new(String::new()),
+        }
+    }
+
+    pub fn cold() -> Self {
+        Self {
+            service: None,
             cancel: CancellationToken::new(),
             session_id: Mutex::new(String::new()),
         }
@@ -41,13 +48,17 @@ impl SubagentWaitTool {
         child_id: &str,
         turn_id: &str,
     ) -> Option<crate::types::StopOrigin> {
-        match self.service.latest_turn_end(child_id) {
+        let service = self.service.as_ref()?;
+        match service.latest_turn_end(child_id) {
             Ok(Some((tid, _, by))) if tid == turn_id => by,
             _ => None,
         }
     }
 
     async fn call_wait(&self, input: Value) -> ToolCallResult {
+        let Some(service) = self.service.as_ref() else {
+            return ToolCallResult::error("subagent.wait requires an active session service");
+        };
         let parent = self.session_id();
         if parent.is_empty() {
             return ToolCallResult::error(
@@ -57,9 +68,8 @@ impl SubagentWaitTool {
 
         // Subscribe before freezing the running-turn snapshot so no completion
         // can fall between selection and observation.
-        let mut lifecycle = self.service.subscribe_lifecycle();
-        let descendants: HashSet<String> = self
-            .service
+        let mut lifecycle = service.subscribe_lifecycle();
+        let descendants: HashSet<String> = service
             .descendant_session_ids(&parent)
             .into_iter()
             .collect();
@@ -82,14 +92,14 @@ impl SubagentWaitTool {
                 }
                 continue;
             }
-            if let Some(progress) = self.service.cached_progress(&child_id) {
+            if let Some(progress) = service.cached_progress(&child_id) {
                 selected.insert(child_id, progress.turn_id);
                 continue;
             }
             if !explicit_ids {
                 continue;
             }
-            match self.service.latest_turn_result(&child_id) {
+            match service.latest_turn_result(&child_id) {
                 Ok(Some(result)) => {
                     let cancelled_by = self.latest_cancelled_by(&child_id, &result.turn_id);
                     completed.push(CompletionRef {
@@ -105,11 +115,9 @@ impl SubagentWaitTool {
             }
         }
         if selected.is_empty() && completed.is_empty() {
-            return ToolCallResult::ok(status::format_wait_outcome(
-                &self.service,
-                &completed,
-                &skipped,
-            ));
+            let text = status::format_wait_outcome(service, &completed, &skipped);
+            let data = status::format_wait_outcome_data(service, &completed, &skipped, &text);
+            return ToolCallResult::ok(text).with_data(data);
         }
         let available = selected.len() + completed.len();
         let target = input
@@ -121,11 +129,9 @@ impl SubagentWaitTool {
         loop {
             if completed.len() >= target {
                 completed.truncate(target);
-                return ToolCallResult::ok(status::format_wait_outcome(
-                    &self.service,
-                    &completed,
-                    &skipped,
-                ));
+                let text = status::format_wait_outcome(service, &completed, &skipped);
+                let data = status::format_wait_outcome_data(service, &completed, &skipped, &text);
+                return ToolCallResult::ok(text).with_data(data);
             }
             tokio::select! {
                 _ = self.cancel.cancelled() => {
@@ -155,7 +161,7 @@ impl SubagentWaitTool {
                             let settled = selected
                                 .iter()
                                 .filter_map(|(child_id, turn_id)| {
-                                    self.service
+                                    service
                                         .turn_result(child_id, turn_id)
                                         .ok()
                                         .map(|_| (child_id.clone(), turn_id.clone()))
@@ -185,33 +191,7 @@ impl SubagentWaitTool {
 
 impl Tool for SubagentWaitTool {
     fn name(&self) -> &str {
-        "subagent_wait"
-    }
-
-    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-        let description =
-            crate::tools::description_text(include_str!("../descriptions/subagent_wait.md"));
-        let input_schema = {
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "ids": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional child_session_ids. Omit to snapshot all currently running children."
-                    },
-                    "count": {
-                        "type": "integer",
-                        "description": "Number of selected child turns to await. Omit to await all selected turns."
-                    }
-                }
-            })
-        };
-        Some(crate::tool::DirectToolSpec {
-            description,
-            input_schema,
-        })
+        "subagent.wait"
     }
 
     fn execute(
@@ -220,7 +200,7 @@ impl Tool for SubagentWaitTool {
         execution: ToolExecutionContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let tool = SubagentWaitTool {
-            service: Arc::clone(&self.service),
+            service: self.service.clone(),
             cancel: execution.cancel,
             session_id: Mutex::new(execution.session_id),
         };

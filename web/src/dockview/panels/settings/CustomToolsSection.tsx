@@ -9,7 +9,6 @@ import {
 } from "../../../api/settings";
 import { FoldCard } from "../../../components/FoldCard";
 import { Dropdown, dropdownItemClass } from "../../../components/ui/Dropdown";
-import i18n from "../../../i18n";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { parseCustomToolJson } from "./jsonDefinitions";
 import {
@@ -28,7 +27,6 @@ import {
 
 const EMPTY_CUSTOM_JSON = `{
   "name": "echo_py",
-  "surface": "direct",
   "description": "Shown to the model when selecting tools",
   "command": "python",
   "args": ["examples/tools/echo_py.py"],
@@ -56,15 +54,12 @@ function prettyTool(def: CustomToolDefinition): string {
     },
   };
   if (def.suite) body.suite = def.suite;
-  else body.surface = def.surface ?? "direct";
-  if (def.output_schema) body.output_schema = def.output_schema;
   if (def.rules && def.rules.length > 0) body.rules = def.rules;
   return JSON.stringify(body, null, 2);
 }
 
 function prettySuite(def: CustomSuiteDefinition): string {
   const body: Record<string, unknown> = {
-    surface: def.surface,
     label: def.label ?? "",
     rules: def.rules ?? [],
   };
@@ -72,18 +67,13 @@ function prettySuite(def: CustomSuiteDefinition): string {
 }
 
 const EMPTY_SUITE_JSON = `{
-  "surface": "code",
   "label": "Deck",
   "rules": []
 }`;
 
 function parseSuiteJson(text: string): CustomSuiteDefinition {
   const parsed = JSON.parse(text) as Partial<CustomSuiteDefinition>;
-  if (parsed.surface !== "direct" && parsed.surface !== "code") {
-    throw new Error(i18n.t("settings.customTools.suiteSurfaceRequired"));
-  }
   return {
-    surface: parsed.surface,
     label: parsed.label ?? "",
     rules: Array.isArray(parsed.rules) ? parsed.rules : [],
   };
@@ -339,10 +329,10 @@ export function CustomToolsSection() {
   const toolSummary = (tool: CustomToolDefinition) =>
     tool.suite
       ? `${t("settings.customTools.memberOf", { suite: tool.suite })} · ${tool.command}`
-      : `${tool.surface ?? "direct"} · ${tool.command}`;
+      : tool.command;
 
   const suiteSummary = (id: string, suite: CustomSuiteDefinition) => {
-    const parts = [t("settings.customTools.suiteTag"), suite.surface];
+    const parts = [t("settings.customTools.suiteTag")];
     if (suite.label && suite.label !== id) parts.push(suite.label);
     const rules = suite.rules?.length ?? 0;
     if (rules > 0) {

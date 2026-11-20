@@ -8,70 +8,28 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::bot::{BotRecord, BotService};
-use crate::context_pipeline::Context;
 use crate::session::manager::SessionStatus;
+use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
-use crate::tool::{DirectToolSpec, Tool};
 use crate::types::ToolCallResult;
 
-pub const BOT_CREATE_TOOL: &str = "bot_create";
-pub const BOT_LIST_TOOL: &str = "bot_list";
-pub const BOT_SEND_TOOL: &str = "bot_send";
+pub const BOT_CREATE_TOOL: &str = "bot.create";
+pub const BOT_LIST_TOOL: &str = "bot.list";
+pub const BOT_SEND_TOOL: &str = "bot.send";
 
 /// Create a bot owned by the calling bot.
 pub struct BotCreateTool {
-    bots: Arc<BotService>,
+    bots: Option<Arc<BotService>>,
 }
 
 impl BotCreateTool {
     pub fn new(bots: Arc<BotService>) -> Self {
-        Self { bots }
+        Self { bots: Some(bots) }
     }
-}
 
-/// G6: the bot tools' input schemas are closed objects (no extra parameters).
-pub(crate) fn bot_create_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "Stable bot name, unique in this workspace."
-            },
-            "description": {
-                "type": "string",
-                "description": "Optional one-line purpose shown by bot_list."
-            }
-        },
-        "required": ["name"]
-    })
-}
-
-pub(crate) fn bot_list_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {}
-    })
-}
-
-pub(crate) fn bot_send_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "bot": {
-                "type": "string",
-                "description": "Target bot id (preferred) or a unique bot name, restricted to your visible org scope."
-            },
-            "message": {
-                "type": "string",
-                "description": "Message text queued for the target bot's session."
-            }
-        },
-        "required": ["bot", "message"]
-    })
+    pub fn cold() -> Self {
+        Self { bots: None }
+    }
 }
 
 impl Tool for BotCreateTool {
@@ -79,22 +37,19 @@ impl Tool for BotCreateTool {
         BOT_CREATE_TOOL
     }
 
-    fn direct_spec(&self, _ctx: &Context) -> Option<DirectToolSpec> {
-        Some(DirectToolSpec {
-            description: crate::tools::description_text(include_str!("descriptions/bot_create.md")),
-            input_schema: bot_create_schema(),
-        })
-    }
-
     fn execute(
         &self,
         input: Value,
         execution: ToolExecutionContext,
     ) -> Pin<Box<dyn Future<Output = ToolCallResult> + Send + '_>> {
-        let bots = Arc::clone(&self.bots);
+        let Some(bots) = self.bots.as_ref().map(Arc::clone) else {
+            return Box::pin(std::future::ready(ToolCallResult::error(
+                "bot.create requires an active bot service",
+            )));
+        };
         Box::pin(async move {
             if bots.bot_for_session(&execution.session_id).is_none() {
-                return ToolCallResult::error("bot_create is only available to bot sessions");
+                return ToolCallResult::error("bot.create is only available to bot sessions");
             }
             let name = match required_str(&input, "name") {
                 Ok(name) => name,
@@ -109,9 +64,14 @@ impl Tool for BotCreateTool {
                 .await
             {
                 Ok(bot) => ToolCallResult::ok(format!(
-                    "Created bot \"{}\" (id: {}). It has its own session; message it with bot_send.",
+                    "Created bot \"{}\" (id: {}). It has its own session; message it with bot.send.",
                     bot.name, bot.id
-                )),
+                ))
+                .with_data(json!({
+                    "id": bot.id,
+                    "name": bot.name,
+                    "session_id": bot.session_id,
+                })),
                 Err(error) => ToolCallResult::error(error.to_string()),
             }
         })
@@ -124,12 +84,16 @@ impl Tool for BotCreateTool {
 
 /// List every bot in this workspace.
 pub struct BotListTool {
-    bots: Arc<BotService>,
+    bots: Option<Arc<BotService>>,
 }
 
 impl BotListTool {
     pub fn new(bots: Arc<BotService>) -> Self {
-        Self { bots }
+        Self { bots: Some(bots) }
+    }
+
+    pub fn cold() -> Self {
+        Self { bots: None }
     }
 }
 
@@ -138,28 +102,46 @@ impl Tool for BotListTool {
         BOT_LIST_TOOL
     }
 
-    fn direct_spec(&self, _ctx: &Context) -> Option<DirectToolSpec> {
-        Some(DirectToolSpec {
-            description: crate::tools::description_text(include_str!("descriptions/bot_list.md")),
-            input_schema: bot_list_schema(),
-        })
-    }
-
     fn execute(
         &self,
         _input: Value,
         execution: ToolExecutionContext,
     ) -> Pin<Box<dyn Future<Output = ToolCallResult> + Send + '_>> {
-        let bots = Arc::clone(&self.bots);
+        let Some(bots) = self.bots.as_ref().map(Arc::clone) else {
+            return Box::pin(std::future::ready(ToolCallResult::error(
+                "bot.list requires an active bot service",
+            )));
+        };
         Box::pin(async move {
             let Some(caller) = bots.bot_for_session(&execution.session_id) else {
-                return ToolCallResult::error("bot_list is only available to bot sessions");
+                return ToolCallResult::error("bot.list is only available to bot sessions");
             };
             let visible = bots.list_for_caller(&caller.id);
-            ToolCallResult::ok(bot_list_text(&visible, &caller.id, |session_id| {
+            let rows: Vec<Value> = visible
+                .iter()
+                .map(|bot| {
+                    let st = bots
+                        .service()
+                        .status(&bot.session_id)
+                        .unwrap_or(SessionStatus::Idle);
+                    json!({
+                        "id": bot.id,
+                        "name": bot.name,
+                        "session_id": bot.session_id,
+                        "status": st.as_str(),
+                        "is_self": bot.id == caller.id,
+                        "description": bot.description,
+                    })
+                })
+                .collect();
+            let text = bot_list_text(&visible, &caller.id, |session_id| {
                 bots.service()
                     .status(session_id)
                     .unwrap_or(SessionStatus::Idle)
+            });
+            ToolCallResult::ok(text).with_data(json!({
+                "caller_id": caller.id,
+                "bots": rows,
             }))
         })
     }
@@ -175,12 +157,16 @@ impl Tool for BotListTool {
 
 /// Queue a message for another bot and return without waiting.
 pub struct BotSendTool {
-    bots: Arc<BotService>,
+    bots: Option<Arc<BotService>>,
 }
 
 impl BotSendTool {
     pub fn new(bots: Arc<BotService>) -> Self {
-        Self { bots }
+        Self { bots: Some(bots) }
+    }
+
+    pub fn cold() -> Self {
+        Self { bots: None }
     }
 }
 
@@ -189,22 +175,19 @@ impl Tool for BotSendTool {
         BOT_SEND_TOOL
     }
 
-    fn direct_spec(&self, _ctx: &Context) -> Option<DirectToolSpec> {
-        Some(DirectToolSpec {
-            description: crate::tools::description_text(include_str!("descriptions/bot_send.md")),
-            input_schema: bot_send_schema(),
-        })
-    }
-
     fn execute(
         &self,
         input: Value,
         execution: ToolExecutionContext,
     ) -> Pin<Box<dyn Future<Output = ToolCallResult> + Send + '_>> {
-        let bots = Arc::clone(&self.bots);
+        let Some(bots) = self.bots.as_ref().map(Arc::clone) else {
+            return Box::pin(std::future::ready(ToolCallResult::error(
+                "bot.send requires an active bot service",
+            )));
+        };
         Box::pin(async move {
             if bots.bot_for_session(&execution.session_id).is_none() {
-                return ToolCallResult::error("bot_send is only available to bot sessions");
+                return ToolCallResult::error("bot.send is only available to bot sessions");
             }
             let target = match required_str(&input, "bot") {
                 Ok(target) => target,
@@ -221,7 +204,13 @@ impl Tool for BotSendTool {
                 Ok(bot) => ToolCallResult::ok(format!(
                     "Queued a message for bot \"{}\" (id {}, session {}). This call returned without waiting for a reply.",
                     bot.name, bot.id, bot.session_id
-                )),
+                ))
+                .with_data(json!({
+                    "id": bot.id,
+                    "name": bot.name,
+                    "session_id": bot.session_id,
+                    "queued": true,
+                })),
                 Err(error) => ToolCallResult::error(error.to_string()),
             }
         })
@@ -230,6 +219,66 @@ impl Tool for BotSendTool {
     fn timeout(&self) -> Option<Duration> {
         Some(Duration::from_secs(10))
     }
+}
+
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    vec![
+        DriftCase {
+            tool: BOT_CREATE_TOOL,
+            all_optional_present: ToolCallResult::ok("ok").with_data(json!({
+                "id": "b1",
+                "name": "worker",
+                "session_id": "s1",
+            })),
+            all_optional_absent: ToolCallResult::ok("ok").with_data(json!({
+                "id": "b1",
+                "name": "worker",
+                "session_id": "s1",
+            })),
+        },
+        DriftCase {
+            tool: BOT_LIST_TOOL,
+            all_optional_present: ToolCallResult::ok("ok").with_data(json!({
+                "caller_id": "b0",
+                "bots": [{
+                    "id": "b1",
+                    "name": "worker",
+                    "session_id": "s1",
+                    "status": "idle",
+                    "is_self": false,
+                    "description": "helper",
+                }],
+            })),
+            all_optional_absent: ToolCallResult::ok("ok").with_data(json!({
+                "caller_id": "b0",
+                "bots": [{
+                    "id": "b1",
+                    "name": "worker",
+                    "session_id": "s1",
+                    "status": "idle",
+                    "is_self": false,
+                    "description": "",
+                }],
+            })),
+        },
+        DriftCase {
+            tool: BOT_SEND_TOOL,
+            all_optional_present: ToolCallResult::ok("ok").with_data(json!({
+                "id": "b1",
+                "name": "worker",
+                "session_id": "s1",
+                "queued": true,
+            })),
+            all_optional_absent: ToolCallResult::ok("ok").with_data(json!({
+                "id": "b1",
+                "name": "worker",
+                "session_id": "s1",
+                "queued": true,
+            })),
+        },
+    ]
 }
 
 /// The complete bot tool set, appended only for a bot session.
@@ -302,11 +351,9 @@ mod tests {
     /// validation instead of being silently ignored.
     #[test]
     fn bot_schemas_are_closed_objects_and_reject_unknown_parameters() {
-        for (name, schema) in [
-            ("bot_create", bot_create_schema()),
-            ("bot_list", bot_list_schema()),
-            ("bot_send", bot_send_schema()),
-        ] {
+        for name in [BOT_CREATE_TOOL, BOT_LIST_TOOL, BOT_SEND_TOOL] {
+            let schema = crate::tool::code_contract::builtin_input_schema(name)
+                .unwrap_or_else(|| panic!("missing contract schema for {name}"));
             assert_eq!(schema["type"], "object", "{name}");
             assert_eq!(schema["additionalProperties"], serde_json::json!(false), "{name}");
             let mut input = serde_json::Map::new();

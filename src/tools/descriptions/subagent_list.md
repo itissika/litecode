@@ -1,1 +1,0 @@
-List child sessions as labeled blocks: id, agent, responsibility, last_send, state, transcript (path .litecode/sessions/<id>.md) and transcript_lines (current total line count, read live); running children also include turn_age and step; idle children include the latest turn reason. New content starts after a previous transcript_lines value.

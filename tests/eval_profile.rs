@@ -236,22 +236,22 @@ fn the_shell_tier_is_all() {
     let fixture = Fixture::new();
     fixture.apply(&repo_profile(), WebMode::Off).expect("apply");
     let settings = fixture.settings();
-    let run = settings
+    let exec = settings
         .agents
         .get(AGENT_ID)
         .expect("default agent")
         .tools
-        .get("run")
-        .expect("run is bound");
-    assert_eq!(run.preset, Some(ToolPreset::All));
+        .get("exec")
+        .expect("exec is bound");
+    assert_eq!(exec.preset, Some(ToolPreset::All));
     let conn = rusqlite::Connection::open(&fixture.db).expect("open db");
     let stored: String = conn
         .query_row(
-            "SELECT preset FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'run'",
+            "SELECT preset FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'exec'",
             [AGENT_ID],
             |row| row.get(0),
         )
-        .expect("run row");
+        .expect("exec row");
     assert_eq!(stored, "ALL");
 }
 
@@ -288,21 +288,18 @@ fn half_a_card_is_refused() {
     let profile = EvalProfile::parse(
         r#"name = "t"
 [tools]
-on = ["run"]
+on = ["exec_command"]
 [permissions]
-run = "all"
+exec = "all"
 "#,
     )
     .expect("parses");
     let error = fixture
         .apply(&profile, WebMode::Off)
-        .expect_err("run is a card of three");
+        .expect_err("exec is a card of two");
     let message = error.to_string();
     assert!(message.contains("half bound"), "{message}");
-    assert!(
-        message.contains("wait") || message.contains("kill"),
-        "{message}"
-    );
+    assert!(message.contains("write_stdin"), "{message}");
 }
 
 /// A bound dial without a stated tier would apply an inherited default.
@@ -374,7 +371,7 @@ fn the_cli_writes_the_applied_document() {
     let document: serde_json::Value = serde_json::from_str(&text).expect("valid json");
     assert_eq!(document["name"], "harbor");
     assert_eq!(document["web"], "on");
-    assert_eq!(document["permissions"]["run"], "all");
+    assert_eq!(document["permissions"]["exec"], "all");
     let mut expected = repo_profile().tools.on;
     expected.push("webfetch".to_string());
     expected.push("websearch".to_string());

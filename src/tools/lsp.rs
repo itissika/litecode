@@ -229,9 +229,6 @@ impl Tool for LspOpTool {
         self.op.name()
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
         true
@@ -787,7 +784,6 @@ mod tests {
         let surface =
             crate::tool::code_contract::build_surface(&tools).expect("LSP JS contract surface");
         for tool in &tools {
-            assert_eq!(tool.surface(), crate::tool::ToolSurface::Code);
             assert_ne!(tool.name(), "lsp");
             assert!(surface.tools.contains_key(tool.name()));
         }

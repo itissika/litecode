@@ -59,7 +59,7 @@ impl SubagentHarness {
         let workspace = test_workspace(dir.path());
         set_runtime_paths(workspace.paths.clone());
 
-        let base = test_resolved(PARENT_AGENT, &["subagent_launch".into()]);
+        let base = test_resolved(PARENT_AGENT, &["subagent_tools".into()]);
         let mut global = base.global().clone();
         if let Some(default) = global.agents.get_mut(PARENT_AGENT) {
             default.allowed_subagents = vec![SUBAGENT_AGENT.into()];

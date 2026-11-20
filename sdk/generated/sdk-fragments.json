@@ -1,13 +1,16 @@
 {
   "version": 1,
-  "sdk_hash": "3cc388259d32b52e70d6e8408d27165a51a3ab4d534cf9ab02e34828fb9f0cae",
-  "prose": "`run_code` executes one async JavaScript function body with top-level `await` and `return`. Orchestrate multi-step work in a single call instead of one call at a time: run independent calls concurrently with `Promise.all`, chain dependent steps with `await`, branch or nest on intermediate results, and use loops to batch or filter work. You MUST end with `return` for the data or tool results you need—return result objects directly (single result, `Promise.all` array, or summary object) for full output and metadata, or return filtered/sliced summaries; the host automatically formats returned objects, tables, and multiline strings without JSON-escaping.\n\nCall tools as `tools.<name>(args)` (or `tools.<suite>.<member>(args)` for custom suites). A no-argument tool takes no argument; every other tool takes one object matching its declared input schema. Each call returns a promise that resolves to its declared data or rejects with an ordinary JavaScript `Error`; `try`/`catch` and `Promise.allSettled` handle rejections, and a rejected tool error carries `code`, `message`, and optional `details`. For strings containing backslashes or quotes (such as regex edits), use `String.raw` or template literals — but avoid `String.raw` or bare template literals if the embedded text itself contains backticks (`` ` ``) or `${...}` (e.g. Python docstrings, Markdown, or shell scripts), since `` ` `` cannot be backslash-escaped in `String.raw` and `${...}` is still evaluated; use regular quoted strings or concatenation instead. The declarations below are the source of truth for tool paths, argument shapes, and result fields.\n\n`fs` is a synchronous, read-only, workspace-relative probe (`ls`/`stat` throw `Error` on missing or out-of-workspace paths). `libs` are pure-JS helpers. Both are declared below. No direct network, process, module access, or timers (`setTimeout`/`setInterval`) exist; side effects and external IO go through the bound tools.\n\nUnknown tool bindings, output-contract violations, cancellation, the 600000 ms active JS execution cap (paused while tool calls run, subject to a 1800000 ms hard wall-clock cap per `run_code` call), and hard limits stop the cell and cannot be caught. Non-finite numbers in a result become `null` with a warning.\n\nWhen any output exceeds the display limit, it is cut to a head+tail preview with `… <N> bytes total; full output: <path>`. Every path under `.litecode/run/` holds the complete unclipped output—inspect that path with bounded reads or searches instead of re-running work.",
+  "sdk_hash": "dec4798a22b056ce7a08ef86cfc945a48159d6d69b1311c2b6403504ce1d6971",
+  "prose": "`run_code` executes one async JavaScript function body with top-level `await` and `return`. Orchestrate multi-step work in a single call instead of one call at a time: run independent calls concurrently with `Promise.all`, chain dependent steps with `await`, branch or nest on intermediate results, and use loops to batch or filter work. You MUST end with `return` for the data or tool results you need—return result objects directly (single result, `Promise.all` array, or summary object) for full output and metadata, or return filtered/sliced summaries; the host automatically formats returned objects, tables, and multiline strings without JSON-escaping. Only media handles (`media: [{ __litecode_media, kind, mime_type }]`) included in your `return` value are attached as multimodal outputs; unreturned media stays discarded.\n\nCall tools as `tools.<name>(args)` (or `tools.<suite>.<member>(args)` for custom suites). A no-argument tool takes no argument; every other tool takes one object matching its declared input schema. Each call returns a promise that resolves to its declared data or rejects with an ordinary JavaScript `Error`; `try`/`catch` and `Promise.allSettled` handle rejections, and a rejected tool error carries `code`, `message`, and optional `details`. For strings containing backslashes or quotes (such as regex edits), use `String.raw` or template literals — but avoid `String.raw` or bare template literals if the embedded text itself contains backticks (`` ` ``) or `${...}` (e.g. Python docstrings, Markdown, or shell scripts), since `` ` `` cannot be backslash-escaped in `String.raw` and `${...}` is still evaluated; use regular quoted strings or concatenation instead. The declarations below are the source of truth for tool paths, argument shapes, and result fields.\n\n`fs` is a synchronous, read-only, workspace-relative probe (`ls`/`stat` throw `Error` on missing or out-of-workspace paths). `libs` are pure-JS helpers. Both are declared below. No direct network, process, module access, or timers (`setTimeout`/`setInterval`) exist; side effects and external IO go through the bound tools.\n\nUnknown tool bindings, output-contract violations, cancellation, the 600000 ms active JS execution cap (paused while tool calls run, subject to a 1800000 ms hard wall-clock cap per `run_code` call), and hard limits stop the cell and cannot be caught. Non-finite numbers in a result become `null` with a warning.\n\nWhen any output exceeds the display limit, it is cut to a head+tail preview with `… <N> bytes total; full output: <path>`. Every path under `.litecode/run/` holds the complete unclipped output—inspect that path with bounded reads or searches instead of re-running work.",
   "declarations": "",
   "libs": "type CsvOptions = {\n  /** Field separator; one character. Default \",\". */\n  delimiter?: string;\n  /** Quote character; one character. Default is a double quote. */\n  quote?: string;\n  /** Trim fields while parsing. Default false. */\n  trim?: boolean;\n};\n\ntype HistogramBin = {\n  start: number;\n  end: number;\n  count: number;\n};\n\ntype DiffLine = {\n  kind: \"equal\" | \"insert\" | \"delete\";\n  text: string;\n};\n\ndeclare const libs: {\n  stats: {\n    sum(values: number[]): number;\n    mean(values: number[]): number;\n    median(values: number[]): number;\n    variance(values: number[], sample?: boolean): number;\n    stddev(values: number[], sample?: boolean): number;\n    quantile(values: number[], q: number): number;\n    histogram(values: number[], bins?: number): HistogramBin[];\n    min(values: number[]): number;\n    max(values: number[]): number;\n  };\n  csv: {\n    parse(text: string, options?: CsvOptions): string[][];\n    format(rows: Array<Array<unknown>>, options?: CsvOptions): string;\n  };\n  text: {\n    lines(text: string): string[];\n    words(text: string): string[];\n    count(text: string, needle: string): number;\n    normalizeNewlines(text: string): string;\n    truncate(text: string, maxChars: number, suffix?: string): string;\n    diffLines(left: string, right: string): DiffLine[];\n  };\n  data: {\n    groupBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, T[]>;\n    countBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, number>;\n    unique<T>(values: T[]): T[];\n    sortBy<T>(rows: T[], key: string | ((row: T) => unknown), direction?: \"asc\" | \"desc\"): T[];\n  };\n};\n\n/** Read-only workspace probes. Synchronous; paths are workspace-relative; throw Error on missing or out-of-workspace paths. */\ndeclare const fs: {\n  /** One level, sorted by name; more than 500 entries set `truncated`. */\n  ls(path: string): { entries: Array<{ name: string; type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number }>; truncated: boolean };\n  /** mtime is ms since the Unix epoch. */\n  stat(path: string): { type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number; mtime: number };\n  exists(path: string): boolean;\n};",
   "types": {
     "BrowserPage": "type BrowserPage = {\n  active: boolean;\n  agentOwned: boolean;\n  id: string;\n  title: string;\n  url: string;\n  visible: boolean;\n};",
     "ExecCommandData": "type ExecCommandData = {\n  /** Live session id; null once the session has exited. */\n  session_id: string | null;\n  /** Process exit code once the session has exited; null while it is live. */\n  exit_code: Integer | null;\n  /** Output since the previous call on this session; the first call returns output since spawn. */\n  output: string;\n  /** Workspace-relative path to the complete `.litecode/run/<job>.stdout` log (always full output on disk). */\n  output_file: string;\n};",
     "Integer": "/** Whole JSON number. The host rejects fractional values. @asType integer */\ntype Integer = number;",
+    "KnowledgeIssueRow": "type KnowledgeIssueRow = {\n  key: string;\n  folder: string;\n  path: string;\n  severity: \"error\" | \"warning\";\n  code: string;\n  ref_key: string | null;\n  message: string;\n};",
+    "KnowledgeNodeStatus": "type KnowledgeNodeStatus = \"enabled\" | \"disabled\" | \"pending\" | \"invalid\";",
+    "KnowledgeScope": "type KnowledgeScope = {\n  /** Restrict to these folders under the knowledge root. */\n  folders?: string[];\n  /** Restrict to these node keys. Union with folders when both are set. */\n  nodes?: string[];\n};",
     "Location": "type Location = {\n  /** Source file path. */\n  path: string;\n  /** 1-based line number. */\n  line: Integer;\n  /** 1-based UTF-16 column on that line. */\n  character: Integer;\n  /** Optional end column. */\n  end_character?: Integer;\n  /** Optional end line. */\n  end_line?: Integer;\n};",
     "LocationsData": "type LocationsData = {\n  locations: Location[];\n};",
     "NoArgs": "/** Empty input for tools that take no arguments. */\ntype NoArgs = {};",
@@ -27,7 +30,10 @@
     "RangeInput": "lsp",
     "LocationsData": "lsp",
     "Location": "lsp",
-    "RejectedItem": "memory"
+    "RejectedItem": "memory",
+    "KnowledgeScope": "knowledge",
+    "KnowledgeIssueRow": "knowledge",
+    "KnowledgeNodeStatus": "knowledge"
   },
   "tools": {
     "apply_edits": {
@@ -351,6 +357,226 @@
         "Integer",
         "RejectedItem"
       ]
+    },
+    "todo.write": {
+      "path": [
+        "todo",
+        "write"
+      ],
+      "suite": "todo",
+      "doc": "Replace the current session task list; clearing occurs automatically when all items are completed.",
+      "signature": "write(args: {\n  todos: {\n    /** Task description. */\n    content: string;\n    /** Task status. */\n    status: \"pending\" | \"in_progress\" | \"completed\";\n  }[];\n}): Promise<{\n  total: Integer;\n  pending: Integer;\n  in_progress: Integer;\n  completed: Integer;\n  cleared: boolean;\n}>;",
+      "type_deps": [
+        "Integer"
+      ]
+    },
+    "plan.create": {
+      "path": [
+        "plan",
+        "create"
+      ],
+      "suite": "plan",
+      "doc": "Propose creating a workspace plan file (opens user approval dialog). Write the plan file, then present it and ask the user to confirm before executing.",
+      "signature": "create(args: {\n  /** Short summary shown to the user for approval (not the full plan body). */\n  summary: string;\n}): Promise<{\n  approved: boolean;\n  plan_path?: string;\n  revision?: string;\n  opinion?: string;\n}>;",
+      "type_deps": []
+    },
+    "plan.finish": {
+      "path": [
+        "plan",
+        "finish"
+      ],
+      "suite": "plan",
+      "doc": "Clear the active plan pointer on this session when finished.",
+      "signature": "finish(args?: NoArgs): Promise<{\n  cleared: boolean;\n}>;",
+      "type_deps": [
+        "NoArgs"
+      ]
+    },
+    "ask_user": {
+      "path": [
+        "ask_user"
+      ],
+      "suite": "ask_user",
+      "doc": "Ask the user one or more structured questions via UI cards (free-text option included by system).",
+      "signature": "ask_user(args: {\n  /** Optional card title shown above the questions. */\n  summary?: string;\n  questions: {\n    /** Stable id keyed in answers. */\n    id: string;\n    /** Question text shown to the user. */\n    prompt: string;\n    /** Two or more choices for this question. */\n    options: {\n      /** Stable id returned in answers. */\n      id: string;\n      /** Display label shown to the user. */\n      label: string;\n    }[];\n    /** When true, the user may select multiple choices. Default false. */\n    multi_select?: boolean;\n  }[];\n}): Promise<{\n  outcome: \"answered\" | \"skipped\" | \"no_foreground_session\";\n  answers: {\n    id: string;\n    selected: string[];\n    free_text?: string;\n  }[];\n  text: string;\n}>;",
+      "type_deps": []
+    },
+    "knowledge.check": {
+      "path": [
+        "knowledge",
+        "check"
+      ],
+      "suite": "knowledge",
+      "doc": "Check workspace knowledge nodes for broken citations, duplicate keys, or invalid node headers (omit filters to check all).",
+      "signature": "check(args?: KnowledgeScope): Promise<{\n  root: string | null;\n  checked: Integer;\n  issue_count: Integer;\n  issues: KnowledgeIssueRow[];\n}>;",
+      "type_deps": [
+        "Integer",
+        "KnowledgeIssueRow",
+        "KnowledgeScope"
+      ]
+    },
+    "knowledge.create": {
+      "path": [
+        "knowledge",
+        "create"
+      ],
+      "suite": "knowledge",
+      "doc": "Create a new pending knowledge node markdown stub under `.litecode/knowledge/`.",
+      "signature": "create(args: {\n  key: string;\n  folder?: string;\n}): Promise<{\n  key: string;\n  path: string;\n  status: KnowledgeNodeStatus;\n}>;",
+      "type_deps": [
+        "KnowledgeNodeStatus"
+      ]
+    },
+    "knowledge.list": {
+      "path": [
+        "knowledge",
+        "list"
+      ],
+      "suite": "knowledge",
+      "doc": "List workspace knowledge nodes as flat summary rows (omit filters to list all); nodes use a `node` fence and `[@ key=\"...\"]` / `[@ file=\"...\"]` citations.",
+      "signature": "list(args?: KnowledgeScope): Promise<{\n  root: string | null;\n  total: Integer;\n  nodes: {\n    key: string;\n    folder: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    incoming_count: Integer;\n    issue_count: Integer;\n    summary: string;\n  }[];\n}>;",
+      "type_deps": [
+        "Integer",
+        "KnowledgeNodeStatus",
+        "KnowledgeScope"
+      ]
+    },
+    "knowledge.refs": {
+      "path": [
+        "knowledge",
+        "refs"
+      ],
+      "suite": "knowledge",
+      "doc": "Inspect one knowledge node's markdown body, incoming/outgoing citations, and issues.",
+      "signature": "refs(args: {\n  key: string;\n}): Promise<{\n  key: string;\n  folder: string;\n  path: string;\n  status: KnowledgeNodeStatus;\n  summary: string;\n  body: string;\n  incoming: {\n    key: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    summary: string;\n  }[];\n  outgoing: {\n    key: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    summary: string;\n  }[];\n  missing: string[];\n  issues: KnowledgeIssueRow[];\n}>;",
+      "type_deps": [
+        "KnowledgeIssueRow",
+        "KnowledgeNodeStatus"
+      ]
+    },
+    "workspace.help": {
+      "path": [
+        "workspace",
+        "help"
+      ],
+      "suite": "workspace",
+      "doc": "Read workspace setup or `.litecode/{excludes,mcp,custom_tools,apps}.json` configuration guides.",
+      "signature": "help(args?: {\n  topic?: \"overview\" | \"setup\" | \"excludes\" | \"mcp\" | \"custom_tools\" | \"apps\";\n}): Promise<{\n  topic: \"overview\" | \"setup\" | \"excludes\" | \"mcp\" | \"custom_tools\" | \"apps\";\n  content: string;\n}>;",
+      "type_deps": []
+    },
+    "workspace.refresh": {
+      "path": [
+        "workspace",
+        "refresh"
+      ],
+      "suite": "workspace",
+      "doc": "Validate `.litecode/{excludes,mcp,custom_tools,apps}.json` in one check.",
+      "signature": "refresh(args?: NoArgs): Promise<{\n  ok: boolean;\n  summary: string;\n  excludes_ok: boolean;\n  mcp_ok: boolean;\n  custom_tools_ok: boolean;\n  apps_ok: boolean;\n  issues: string[];\n}>;",
+      "type_deps": [
+        "NoArgs"
+      ]
+    },
+    "workspace.status": {
+      "path": [
+        "workspace",
+        "status"
+      ],
+      "suite": "workspace",
+      "doc": "Read live runtime workspace status: active excludes, loaded MCP servers, custom tools, and Apps.",
+      "signature": "status(args?: NoArgs): Promise<{\n  summary: string;\n  excludes: string;\n  mcp: {\n    id: string;\n    enabled: boolean;\n    origin: string;\n    state: string;\n    command: string;\n  }[];\n  custom_tools: {\n    id: string;\n    suite: string | null;\n    enabled: boolean;\n    origin: string;\n    timeout_secs: Integer;\n    command: string;\n  }[];\n  apps: {\n    id: string;\n    kind: string;\n    status: string;\n    url: string | null;\n    error: string | null;\n  }[];\n}>;",
+      "type_deps": [
+        "Integer",
+        "NoArgs"
+      ]
+    },
+    "subagent.launch": {
+      "path": [
+        "subagent",
+        "launch"
+      ],
+      "suite": "subagent",
+      "doc": "Launch a configured subagent child session asynchronously.",
+      "signature": "launch(args: {\n  /** Subagent id from allowed_subagents. */\n  agent: string;\n  /** Brief statement of the child's owned scope. */\n  responsibility: string;\n  /** Initial prompt delivered to the child session. */\n  prompt: string;\n}): Promise<{\n  child_session_id: string;\n  turn_id: string;\n  status: \"running\";\n  responsibility: string;\n}>;",
+      "type_deps": []
+    },
+    "subagent.list": {
+      "path": [
+        "subagent",
+        "list"
+      ],
+      "suite": "subagent",
+      "doc": "List all descendant child sessions of this session with current status and transcript metadata.",
+      "signature": "list(args?: NoArgs): Promise<{\n  count: Integer;\n  sessions: {\n    id: string;\n    agent: string;\n    responsibility: string;\n    state: string;\n    transcript: string;\n    transcript_lines?: Integer;\n    step?: Integer;\n    step_max?: Integer;\n    reason?: string;\n  }[];\n}>;",
+      "type_deps": [
+        "Integer",
+        "NoArgs"
+      ]
+    },
+    "subagent.send": {
+      "path": [
+        "subagent",
+        "send"
+      ],
+      "suite": "subagent",
+      "doc": "Queue, steer, or stop-and-send a follow-up message to a child subagent session.",
+      "signature": "send(args: {\n  id: string;\n  message: string;\n  mode?: \"queue\" | \"steer\" | \"stop_and_send\";\n}): Promise<{\n  child_session_id: string;\n  mode: string;\n  status: \"started\" | \"queued\" | \"steered\" | \"stopped_and_queued\";\n  turn_id?: string;\n  position?: Integer;\n  pending_id?: string;\n  message: string;\n}>;",
+      "type_deps": [
+        "Integer"
+      ]
+    },
+    "subagent.stop": {
+      "path": [
+        "subagent",
+        "stop"
+      ],
+      "suite": "subagent",
+      "doc": "Stop the active running turn of a child subagent session.",
+      "signature": "stop(args: {\n  id: string;\n}): Promise<{\n  child_session_id: string;\n  status: \"stopped\" | \"nothing_running\";\n  turn_id?: string;\n  reason?: string;\n  output?: string;\n  transcript?: string;\n  message: string;\n}>;",
+      "type_deps": []
+    },
+    "subagent.wait": {
+      "path": [
+        "subagent",
+        "wait"
+      ],
+      "suite": "subagent",
+      "doc": "Wait for selected running subagent turns (or snapshot active children) to settle.",
+      "signature": "wait(args?: {\n  /** Optional child_session_ids; omit to await/snapshot all currently running children. */\n  ids?: string[];\n  /** Number of selected turns to settle before returning. */\n  count?: Integer;\n}): Promise<{\n  status: \"settled\" | \"nothing_to_wait_for\";\n  settled: {\n    child_session_id: string;\n    turn_id: string;\n    reason: string;\n    agent?: string;\n    responsibility?: string;\n    output: string;\n    output_truncated?: boolean;\n    cancelled_by?: string;\n    transcript: string;\n    start_line?: Integer;\n    end_line?: Integer;\n  }[];\n  skipped: {\n    id: string;\n    reason: string;\n  }[];\n  summary: string;\n}>;",
+      "type_deps": [
+        "Integer"
+      ]
+    },
+    "bot.create": {
+      "path": [
+        "bot",
+        "create"
+      ],
+      "suite": "bot",
+      "doc": "Create a peer/owned bot with its own session in this workspace.",
+      "signature": "create(args: {\n  name: string;\n  description?: string;\n}): Promise<{\n  id: string;\n  name: string;\n  session_id: string;\n}>;",
+      "type_deps": []
+    },
+    "bot.list": {
+      "path": [
+        "bot",
+        "list"
+      ],
+      "suite": "bot",
+      "doc": "List visible bots in this org scope with live session status.",
+      "signature": "list(args?: NoArgs): Promise<{\n  caller_id: string;\n  bots: {\n    id: string;\n    name: string;\n    session_id: string;\n    status: string;\n    is_self: boolean;\n    description: string;\n  }[];\n}>;",
+      "type_deps": [
+        "NoArgs"
+      ]
+    },
+    "bot.send": {
+      "path": [
+        "bot",
+        "send"
+      ],
+      "suite": "bot",
+      "doc": "Queue a message for another bot's session without waiting.",
+      "signature": "send(args: {\n  bot: string;\n  message: string;\n}): Promise<{\n  id: string;\n  name: string;\n  session_id: string;\n  queued: boolean;\n}>;",
+      "type_deps": []
     }
   }
 }

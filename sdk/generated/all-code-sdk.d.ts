@@ -68,6 +68,282 @@ type NoArgs = {};
 /** Workspace-relative path, or an absolute path when explicitly allowed. */
 type Path = string;
 
+interface TodoTools {
+  /** Replace the current session task list; clearing occurs automatically when all items are completed. */
+  write(args: {
+    todos: {
+      /** Task description. */
+      content: string;
+      /** Task status. */
+      status: "pending" | "in_progress" | "completed";
+    }[];
+  }): Promise<{
+    total: Integer;
+    pending: Integer;
+    in_progress: Integer;
+    completed: Integer;
+    cleared: boolean;
+  }>;
+}
+
+interface PlanTools {
+  /** Propose creating a workspace plan file (opens user approval dialog). Write the plan file, then present it and ask the user to confirm before executing. */
+  create(args: {
+    /** Short summary shown to the user for approval (not the full plan body). */
+    summary: string;
+  }): Promise<{
+    approved: boolean;
+    plan_path?: string;
+    revision?: string;
+    opinion?: string;
+  }>;
+  /** Clear the active plan pointer on this session when finished. */
+  finish(args?: NoArgs): Promise<{
+    cleared: boolean;
+  }>;
+}
+
+type KnowledgeIssueRow = {
+  key: string;
+  folder: string;
+  path: string;
+  severity: "error" | "warning";
+  code: string;
+  ref_key: string | null;
+  message: string;
+};
+type KnowledgeNodeStatus = "enabled" | "disabled" | "pending" | "invalid";
+type KnowledgeScope = {
+  /** Restrict to these folders under the knowledge root. */
+  folders?: string[];
+  /** Restrict to these node keys. Union with folders when both are set. */
+  nodes?: string[];
+};
+
+interface KnowledgeTools {
+  /** Check workspace knowledge nodes for broken citations, duplicate keys, or invalid node headers (omit filters to check all). */
+  check(args?: KnowledgeScope): Promise<{
+    root: string | null;
+    checked: Integer;
+    issue_count: Integer;
+    issues: KnowledgeIssueRow[];
+  }>;
+  /** Create a new pending knowledge node markdown stub under `.litecode/knowledge/`. */
+  create(args: {
+    key: string;
+    folder?: string;
+  }): Promise<{
+    key: string;
+    path: string;
+    status: KnowledgeNodeStatus;
+  }>;
+  /** List workspace knowledge nodes as flat summary rows (omit filters to list all); nodes use a `node` fence and `[@ key="..."]` / `[@ file="..."]` citations. */
+  list(args?: KnowledgeScope): Promise<{
+    root: string | null;
+    total: Integer;
+    nodes: {
+      key: string;
+      folder: string;
+      path: string;
+      status: KnowledgeNodeStatus;
+      incoming_count: Integer;
+      issue_count: Integer;
+      summary: string;
+    }[];
+  }>;
+  /** Inspect one knowledge node's markdown body, incoming/outgoing citations, and issues. */
+  refs(args: {
+    key: string;
+  }): Promise<{
+    key: string;
+    folder: string;
+    path: string;
+    status: KnowledgeNodeStatus;
+    summary: string;
+    body: string;
+    incoming: {
+      key: string;
+      path: string;
+      status: KnowledgeNodeStatus;
+      summary: string;
+    }[];
+    outgoing: {
+      key: string;
+      path: string;
+      status: KnowledgeNodeStatus;
+      summary: string;
+    }[];
+    missing: string[];
+    issues: KnowledgeIssueRow[];
+  }>;
+}
+
+interface WorkspaceTools {
+  /** Read workspace setup or `.litecode/{excludes,mcp,custom_tools,apps}.json` configuration guides. */
+  help(args?: {
+    topic?: "overview" | "setup" | "excludes" | "mcp" | "custom_tools" | "apps";
+  }): Promise<{
+    topic: "overview" | "setup" | "excludes" | "mcp" | "custom_tools" | "apps";
+    content: string;
+  }>;
+  /** Validate `.litecode/{excludes,mcp,custom_tools,apps}.json` in one check. */
+  refresh(args?: NoArgs): Promise<{
+    ok: boolean;
+    summary: string;
+    excludes_ok: boolean;
+    mcp_ok: boolean;
+    custom_tools_ok: boolean;
+    apps_ok: boolean;
+    issues: string[];
+  }>;
+  /** Read live runtime workspace status: active excludes, loaded MCP servers, custom tools, and Apps. */
+  status(args?: NoArgs): Promise<{
+    summary: string;
+    excludes: string;
+    mcp: {
+      id: string;
+      enabled: boolean;
+      origin: string;
+      state: string;
+      command: string;
+    }[];
+    custom_tools: {
+      id: string;
+      suite: string | null;
+      enabled: boolean;
+      origin: string;
+      timeout_secs: Integer;
+      command: string;
+    }[];
+    apps: {
+      id: string;
+      kind: string;
+      status: string;
+      url: string | null;
+      error: string | null;
+    }[];
+  }>;
+}
+
+interface SubagentTools {
+  /** Launch a configured subagent child session asynchronously. */
+  launch(args: {
+    /** Subagent id from allowed_subagents. */
+    agent: string;
+    /** Brief statement of the child's owned scope. */
+    responsibility: string;
+    /** Initial prompt delivered to the child session. */
+    prompt: string;
+  }): Promise<{
+    child_session_id: string;
+    turn_id: string;
+    status: "running";
+    responsibility: string;
+  }>;
+  /** List all descendant child sessions of this session with current status and transcript metadata. */
+  list(args?: NoArgs): Promise<{
+    count: Integer;
+    sessions: {
+      id: string;
+      agent: string;
+      responsibility: string;
+      state: string;
+      transcript: string;
+      transcript_lines?: Integer;
+      step?: Integer;
+      step_max?: Integer;
+      reason?: string;
+    }[];
+  }>;
+  /** Queue, steer, or stop-and-send a follow-up message to a child subagent session. */
+  send(args: {
+    id: string;
+    message: string;
+    mode?: "queue" | "steer" | "stop_and_send";
+  }): Promise<{
+    child_session_id: string;
+    mode: string;
+    status: "started" | "queued" | "steered" | "stopped_and_queued";
+    turn_id?: string;
+    position?: Integer;
+    pending_id?: string;
+    message: string;
+  }>;
+  /** Stop the active running turn of a child subagent session. */
+  stop(args: {
+    id: string;
+  }): Promise<{
+    child_session_id: string;
+    status: "stopped" | "nothing_running";
+    turn_id?: string;
+    reason?: string;
+    output?: string;
+    transcript?: string;
+    message: string;
+  }>;
+  /** Wait for selected running subagent turns (or snapshot active children) to settle. */
+  wait(args?: {
+    /** Optional child_session_ids; omit to await/snapshot all currently running children. */
+    ids?: string[];
+    /** Number of selected turns to settle before returning. */
+    count?: Integer;
+  }): Promise<{
+    status: "settled" | "nothing_to_wait_for";
+    settled: {
+      child_session_id: string;
+      turn_id: string;
+      reason: string;
+      agent?: string;
+      responsibility?: string;
+      output: string;
+      output_truncated?: boolean;
+      cancelled_by?: string;
+      transcript: string;
+      start_line?: Integer;
+      end_line?: Integer;
+    }[];
+    skipped: {
+      id: string;
+      reason: string;
+    }[];
+    summary: string;
+  }>;
+}
+
+interface BotTools {
+  /** Create a peer/owned bot with its own session in this workspace. */
+  create(args: {
+    name: string;
+    description?: string;
+  }): Promise<{
+    id: string;
+    name: string;
+    session_id: string;
+  }>;
+  /** List visible bots in this org scope with live session status. */
+  list(args?: NoArgs): Promise<{
+    caller_id: string;
+    bots: {
+      id: string;
+      name: string;
+      session_id: string;
+      status: string;
+      is_self: boolean;
+      description: string;
+    }[];
+  }>;
+  /** Queue a message for another bot's session without waiting. */
+  send(args: {
+    bot: string;
+    message: string;
+  }): Promise<{
+    id: string;
+    name: string;
+    session_id: string;
+    queued: boolean;
+  }>;
+}
+
 type BrowserPage = {
   active: boolean;
   agentOwned: boolean;
@@ -413,6 +689,42 @@ interface Tools {
     total_chars: Integer; // Characters after the batch.
     updated: string[]; // Updated ids.
   }>;
+
+  /** Ask the user one or more structured questions via UI cards (free-text option included by system). */
+  ask_user(args: {
+    /** Optional card title shown above the questions. */
+    summary?: string;
+    questions: {
+      /** Stable id keyed in answers. */
+      id: string;
+      /** Question text shown to the user. */
+      prompt: string;
+      /** Two or more choices for this question. */
+      options: {
+        /** Stable id returned in answers. */
+        id: string;
+        /** Display label shown to the user. */
+        label: string;
+      }[];
+      /** When true, the user may select multiple choices. Default false. */
+      multi_select?: boolean;
+    }[];
+  }): Promise<{
+    outcome: "answered" | "skipped" | "no_foreground_session";
+    answers: {
+      id: string;
+      selected: string[];
+      free_text?: string;
+    }[];
+    text: string;
+  }>;
+
+  todo: TodoTools;
+  plan: PlanTools;
+  knowledge: KnowledgeTools;
+  workspace: WorkspaceTools;
+  subagent: SubagentTools;
+  bot: BotTools;
 }
 
 declare const tools: Tools;

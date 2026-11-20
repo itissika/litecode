@@ -13,15 +13,6 @@ export interface ToolGroup {
 const GROUP_ORDER: readonly AvailableKind[] = ["core", "engine", "custom", "mcp"];
 
 /**
- * Within a section, code-surface cards come before direct-only ones: the code
- * cards are what a model reaches through `run_code`, so they read first.
- * Cards without a declared surface count as direct.
- */
-function surfaceRank(tool: AvailableTool): number {
-  return tool.surface === "code" ? 0 : 1;
-}
-
-/**
  * Reading order inside the core section: file access → shell → web → session
  * and workspace context → planning → delegation. Ids absent here sort
  * alphabetically after the listed ones, so a new tool lands in a predictable
@@ -58,8 +49,6 @@ function cardLabel(tool: AvailableTool): string {
 }
 
 function compareCards(left: AvailableTool, right: AvailableTool): number {
-  const bySurface = surfaceRank(left) - surfaceRank(right);
-  if (bySurface !== 0) return bySurface;
   // Only core has a curated order; other sections read alphabetically.
   if (left.kind === "core") {
     const byRank = coreRank(left.id) - coreRank(right.id);
@@ -73,7 +62,7 @@ function compareCards(left: AvailableTool, right: AvailableTool): number {
 
 /**
  * Split the bindable cards into sections and order each one: core → engine →
- * custom → mcp, and inside a section code-surface cards before direct ones.
+ * custom → mcp.
  * Sections keep a fixed order regardless of bindings, so cards never jump
  * between groups when a toggle flips — only their own on/off state changes.
  */

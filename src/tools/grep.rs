@@ -83,9 +83,6 @@ impl Tool for GrepTool {
         "grep"
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn effects(
         &self,
@@ -1381,7 +1378,10 @@ mod tests {
         assert!(schema["properties"]["before"].get("maximum").is_none());
         assert!(schema["properties"]["after"].get("maximum").is_none());
         assert!(schema["properties"].get("context").is_none());
-        let data_schema = &surface.tools["grep"].output_schema;
+        let data_schema = surface.tools["grep"]
+            .output_schema
+            .as_ref()
+            .expect("grep output schema");
         let hit_props = &data_schema["properties"]["hits"]["items"]["properties"];
         assert!(hit_props.get("before").is_none(), "{hit_props}");
         assert!(hit_props.get("after").is_none(), "{hit_props}");

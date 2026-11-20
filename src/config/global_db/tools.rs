@@ -2,6 +2,16 @@
 
 /// Model-facing code members behind the `memory` capability card.
 pub const MEMORY_TOOL_IDS: &[&str] = &["memory.list", "memory.upsert", "memory.delete"];
+pub const TODO_TOOL_IDS: &[&str] = &["todo.write"];
+pub const PLAN_TOOL_IDS: &[&str] = &["plan.create", "plan.finish"];
+pub const KNOWLEDGE_TOOL_IDS: &[&str] = &[
+    "knowledge.list",
+    "knowledge.check",
+    "knowledge.refs",
+    "knowledge.create",
+];
+pub const WORKSPACE_TOOL_IDS: &[&str] = &["workspace.help", "workspace.refresh", "workspace.status"];
+pub const BOT_TOOL_IDS: &[&str] = &["bot.create", "bot.list", "bot.send"];
 
 pub fn core_configurable_tools() -> &'static [&'static str] {
     &[
@@ -47,6 +57,11 @@ pub fn is_core_tool(id: &str) -> bool {
         // Members are no longer cards, but their model names stay reserved.
         || crate::config::schema::SUBAGENT_MEMBER_TOOL_IDS.contains(&id)
         || MEMORY_TOOL_IDS.contains(&id)
+        || TODO_TOOL_IDS.contains(&id)
+        || PLAN_TOOL_IDS.contains(&id)
+        || KNOWLEDGE_TOOL_IDS.contains(&id)
+        || WORKSPACE_TOOL_IDS.contains(&id)
+        || BOT_TOOL_IDS.contains(&id)
 }
 
 pub fn optional_builtin_ids() -> &'static [&'static str] {

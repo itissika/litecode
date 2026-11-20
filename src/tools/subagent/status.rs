@@ -182,6 +182,103 @@ pub fn format_wait_outcome(
     out
 }
 
+pub fn format_wait_outcome_data(
+    service: &SessionService,
+    completions: &[CompletionRef],
+    skipped: &[(String, String)],
+    summary: &str,
+) -> serde_json::Value {
+    let settled: Vec<serde_json::Value> = completions
+        .iter()
+        .map(|completion| match service.turn_result(&completion.child_session_id, &completion.turn_id) {
+            Ok(result) => {
+                let (agent, responsibility) = session_labels(service, &completion.child_session_id);
+                let mut obj = serde_json::Map::new();
+                obj.insert(
+                    "child_session_id".into(),
+                    serde_json::Value::String(completion.child_session_id.clone()),
+                );
+                obj.insert("turn_id".into(), serde_json::Value::String(result.turn_id.clone()));
+                obj.insert("reason".into(), serde_json::Value::String(result.reason.clone()));
+                if let Some(agent) = agent.filter(|v| !v.is_empty()) {
+                    obj.insert("agent".into(), serde_json::Value::String(agent));
+                }
+                if let Some(resp) = responsibility.filter(|v| !v.is_empty()) {
+                    obj.insert("responsibility".into(), serde_json::Value::String(resp));
+                }
+                let (output, truncated) = bounded_output_excerpt(&result.output);
+                obj.insert("output".into(), serde_json::Value::String(output));
+                if truncated {
+                    obj.insert("output_truncated".into(), serde_json::Value::Bool(true));
+                }
+                if result.reason == "cancelled" || completion.cancelled {
+                    let by = completion
+                        .cancelled_by
+                        .map(|by| by.as_str())
+                        .unwrap_or("null");
+                    obj.insert(
+                        "cancelled_by".into(),
+                        serde_json::Value::String(by.to_string()),
+                    );
+                }
+                obj.insert(
+                    "transcript".into(),
+                    serde_json::Value::String(result.transcript_path.clone()),
+                );
+                if let Some(start) = result.start_line {
+                    obj.insert("start_line".into(), serde_json::json!(start));
+                }
+                if let Some(end) = result.end_line {
+                    obj.insert("end_line".into(), serde_json::json!(end));
+                }
+                serde_json::Value::Object(obj)
+            }
+            Err(error) => serde_json::json!({
+                "child_session_id": completion.child_session_id,
+                "turn_id": completion.turn_id,
+                "reason": "unknown",
+                "output": format!("result unavailable: {error}"),
+                "transcript": "",
+            }),
+        })
+        .collect();
+    let skipped_json: Vec<serde_json::Value> = skipped
+        .iter()
+        .map(|(id, reason)| {
+            serde_json::json!({
+                "id": id,
+                "reason": reason,
+            })
+        })
+        .collect();
+    let status = if completions.is_empty() {
+        "nothing_to_wait_for"
+    } else {
+        "settled"
+    };
+    serde_json::json!({
+        "status": status,
+        "settled": settled,
+        "skipped": skipped_json,
+        "summary": summary,
+    })
+}
+
+fn bounded_output_excerpt(output: &str) -> (String, bool) {
+    if output.len() <= REPORT_BUDGET {
+        return (output.to_string(), false);
+    }
+    let mut kept = String::new();
+    for line in output.lines() {
+        if kept.len() + line.len() + 1 > REPORT_BUDGET {
+            break;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    (kept, true)
+}
+
 fn append_skipped(out: &mut String, skipped: &[(String, String)]) {
     if skipped.is_empty() {
         return;

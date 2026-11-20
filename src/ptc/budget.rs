@@ -15,28 +15,48 @@ struct ClockInner {
     pause_count: u32,
     pause_started: Option<Instant>,
     paused: Duration,
+    human_pause_count: u32,
+    human_pause_started: Option<Instant>,
+    human_paused: Duration,
 }
 
 impl ClockInner {
-    fn active(&self, now: Instant) -> Duration {
+    fn paused_at(&self, now: Instant) -> Duration {
         let mut paused = self.paused;
         if let Some(started) = self.pause_started {
             paused = paused.saturating_add(now.saturating_duration_since(started));
         }
+        paused
+    }
+
+    fn human_paused_at(&self, now: Instant) -> Duration {
+        let mut paused = self.human_paused;
+        if let Some(started) = self.human_pause_started {
+            paused = paused.saturating_add(now.saturating_duration_since(started));
+        }
+        paused
+    }
+
+    fn active(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.origin)
-            .saturating_sub(paused)
+            .saturating_sub(self.paused_at(now))
+    }
+
+    fn wall_elapsed_at(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.origin)
+            .saturating_sub(self.human_paused_at(now))
     }
 
     fn wall_expired(&self, now: Instant) -> bool {
         self.wall_limit
-            .is_some_and(|wall| now.saturating_duration_since(self.origin) >= wall)
+            .is_some_and(|wall| self.wall_elapsed_at(now) >= wall)
     }
 
     fn remaining_at(&self, now: Instant) -> Duration {
         let active_rem = self.limit.saturating_sub(self.active(now));
         match self.wall_limit {
             Some(wall) => {
-                let wall_rem = wall.saturating_sub(now.saturating_duration_since(self.origin));
+                let wall_rem = wall.saturating_sub(self.wall_elapsed_at(now));
                 active_rem.min(wall_rem)
             }
             None => active_rem,
@@ -64,6 +84,9 @@ impl BudgetClock {
                 pause_count: 0,
                 pause_started: None,
                 paused: Duration::ZERO,
+                human_pause_count: 0,
+                human_pause_started: None,
+                human_paused: Duration::ZERO,
             }),
         }
     }
@@ -75,7 +98,7 @@ impl BudgetClock {
     }
 
     pub(crate) fn wall_elapsed(&self) -> Duration {
-        lock(&self.inner).origin.elapsed()
+        lock(&self.inner).wall_elapsed_at(Instant::now())
     }
 
     pub(crate) fn wall_exhausted(&self) -> bool {
@@ -107,14 +130,42 @@ impl BudgetClock {
 
     fn pause(&self) {
         let mut guard = lock(&self.inner);
+        Self::pause_active_inner(&mut guard);
+    }
+
+    fn resume(&self) {
+        let mut guard = lock(&self.inner);
+        Self::resume_active_inner(&mut guard);
+    }
+
+    fn pause_human(&self) {
+        let mut guard = lock(&self.inner);
+        Self::pause_active_inner(&mut guard);
+        if guard.human_pause_count == 0 {
+            guard.human_pause_started = Some(Instant::now());
+        }
+        guard.human_pause_count += 1;
+    }
+
+    fn resume_human(&self) {
+        let mut guard = lock(&self.inner);
+        guard.human_pause_count = guard.human_pause_count.saturating_sub(1);
+        if guard.human_pause_count == 0
+            && let Some(started) = guard.human_pause_started.take()
+        {
+            guard.human_paused = guard.human_paused.saturating_add(started.elapsed());
+        }
+        Self::resume_active_inner(&mut guard);
+    }
+
+    fn pause_active_inner(guard: &mut ClockInner) {
         if guard.pause_count == 0 {
             guard.pause_started = Some(Instant::now());
         }
         guard.pause_count += 1;
     }
 
-    fn resume(&self) {
-        let mut guard = lock(&self.inner);
+    fn resume_active_inner(guard: &mut ClockInner) {
         guard.pause_count = guard.pause_count.saturating_sub(1);
         if guard.pause_count == 0
             && let Some(started) = guard.pause_started.take()
@@ -135,19 +186,27 @@ pub struct BudgetPause {
 }
 
 impl BudgetPause {
-    /// Pause the program budget until the guard is dropped.
+    /// Pause the program active budget until the guard is dropped.
     ///
-    /// Nested pauses keep the clock stopped until the last guard drops.
-    /// Forgetting the guard leaves the budget paused.
+    /// Nested pauses keep the active clock stopped until the last guard drops
+    /// (while `wall_limit` keeps ticking unless [`Self::pause_human`] is held).
     pub fn pause(&self) -> BudgetPauseGuard {
         self.clock.pause();
         BudgetPauseGuard {
             clock: std::sync::Arc::clone(&self.clock),
         }
     }
+
+    /// Pause both active and wall budgets while waiting for human input.
+    pub fn pause_human(&self) -> HumanPauseGuard {
+        self.clock.pause_human();
+        HumanPauseGuard {
+            clock: std::sync::Arc::clone(&self.clock),
+        }
+    }
 }
 
-/// RAII pause of the program budget.
+/// RAII pause of the program active budget.
 #[must_use = "dropping the guard resumes the budget clock"]
 #[derive(Debug)]
 pub struct BudgetPauseGuard {
@@ -160,5 +219,36 @@ impl Drop for BudgetPauseGuard {
     }
 }
 
+/// RAII pause of both active and wall budgets across human confirmation/input.
+#[must_use = "dropping the guard resumes the budget clocks"]
+#[derive(Debug)]
+pub struct HumanPauseGuard {
+    clock: std::sync::Arc<BudgetClock>,
+}
+
+impl Drop for HumanPauseGuard {
+    fn drop(&mut self) {
+        self.clock.resume_human();
+    }
+}
+
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pause_human_freezes_both_active_and_wall_clocks_without_double_counting() {
+        let clock = std::sync::Arc::new(BudgetClock::with_wall_limit(
+            Duration::from_millis(80),
+            Some(Duration::from_millis(80)),
+        ));
+        let pause = BudgetClock::handle(&clock);
+        let _nested = pause.pause();
+        let human = pause.pause_human();
+        std::thread::sleep(Duration::from_millis(120));
+        assert!(!clock.wall_exhausted(), "wall clock must freeze across human wait");
+        assert!(!clock.exhausted(), "active clock must freeze too");
+        drop(human);
+        assert!(clock.wall_elapsed() < Duration::from_millis(60));
+    }
+}

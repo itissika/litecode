@@ -27,6 +27,7 @@ use litecode::tool::ToolPipeline;
 use litecode::tool::output::DEFAULT_SPILL_THRESHOLD;
 use litecode::tool::trait_::ToolExecutionContext;
 use litecode::tool::write_lock::process_write_lock;
+use litecode::tools::code::{CodeTool, CodeToolHost};
 use litecode::tools::subagent::{SubagentHub, SubagentLaunchTool, SubagentStopTool};
 use litecode::types::{
     FunctionToolCall, Item, Result, StreamEvents, ToolSignalLevel, item_text_preview,
@@ -36,7 +37,7 @@ use tokio_util::sync::CancellationToken;
 fn reviewer_resolved(cwd: &std::path::Path) -> litecode::config::ResolvedConfig {
     let workspace = test_workspace(cwd);
     set_runtime_paths(workspace.paths.clone());
-    let base = test_resolved("default", &["subagent_launch".into()]);
+    let base = test_resolved("default", &["subagent_tools".into()]);
     let mut global = base.global().clone();
     if let Some(default) = global.agents.get_mut("default") {
         default.allowed_subagents = vec!["reviewer".into()];
@@ -127,15 +128,16 @@ fn exec_ctx(call_id: &str, cancel: CancellationToken) -> ToolExecutionContext {
 }
 
 fn function_call(call_id: &str, prompt: &str) -> FunctionToolCall {
+    let args = serde_json::json!({
+        "agent": "reviewer",
+        "responsibility": "test",
+        "prompt": prompt
+    });
+    let code = format!("return await tools.subagent.launch({args});");
     FunctionToolCall {
-        arguments: serde_json::json!({
-            "agent": "reviewer",
-            "responsibility": "test",
-            "prompt": prompt
-        })
-        .to_string(),
+        arguments: serde_json::json!({ "code": code }).to_string(),
         call_id: call_id.into(),
-        name: "subagent_launch".into(),
+        name: "run_code".into(),
         namespace: None,
         id: Some(format!("fc_{call_id}")),
         status: None,
@@ -281,8 +283,18 @@ async fn pipeline_runs_two_launches_concurrently() {
         agents_md: None,
         claude_md: None,
     };
+    let host = Arc::new(CodeToolHost::new(
+        permission.clone(),
+        ctx.clone(),
+        "default",
+        deny_permission_sink(),
+        sessions.data_root_path(),
+        process_write_lock(),
+        Some(sessions.reader()),
+    ));
+    let code_tool = Arc::new(CodeTool::new(vec![tool as Arc<dyn Tool>], host));
     let runtime_ctx = Arc::new(litecode::runtime::RuntimeContext::new(
-        vec![tool.clone() as Arc<dyn Tool>],
+        vec![code_tool as Arc<dyn Tool>],
         permission,
         ctx,
         "default",

@@ -1028,6 +1028,9 @@ fn wrap_result_proxy<'js>(
                             if (typeof property === "symbol" || blocked.has(property)) {
                                 return Reflect.get(target, property, receiver);
                             }
+                            if (property === "media" && Object.prototype.hasOwnProperty.call(target, property)) {
+                                return Reflect.get(target, property, receiver);
+                            }
                             if (fields.indexOf(property) >= 0) {
                                 return Reflect.get(target, property, receiver);
                             }
@@ -1609,7 +1612,7 @@ fn accept_value(
         Err(BoundaryError::Thrown(thrown)) => {
             ProgramEnd::Failure(Failure::exception(thrown.message, thrown.stack))
         }
-        Ok(json) if value.is_undefined() => ProgramEnd::Success(None),
+        Ok(_json) if value.is_undefined() => ProgramEnd::Success(None),
         Ok(json) => ProgramEnd::Success(Some(json)),
     }
 }
@@ -1742,7 +1745,7 @@ fn classify_value<'js>(
 }
 
 fn tool_error_info<'js>(
-    ctx: &Ctx<'js>,
+    _ctx: &Ctx<'js>,
     value: &Value<'js>,
 ) -> Option<super::ToolErrorInfo> {
     let object = value.as_object()?;

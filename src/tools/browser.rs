@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::tool::outcome::{ToolOutcome, ok_data};
 use crate::tool::schema_validate::{require_nonempty_string_trimmed, require_string};
-use crate::tool::trait_::{Tool, ToolExecutionContext, ToolSurface};
+use crate::tool::trait_::{Tool, ToolExecutionContext};
 use crate::types::ToolCallResult;
 
 pub const BROWSER_CARD_ID: &str = "browser";
@@ -330,9 +330,6 @@ impl Tool for BrowserTool {
         self.op.name()
     }
 
-    fn surface(&self) -> ToolSurface {
-        ToolSurface::Code
-    }
 
     fn timeout(&self) -> Option<Duration> {
         Some(self.op.timeout())

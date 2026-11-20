@@ -180,7 +180,7 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
     let workspace_engines = WorkspaceEngines::new();
     let ide = IdeBaseHandle::open(ws.path(), Arc::new(workspace_engines.clone())).expect("ide");
     let runtime = RuntimeHandle::new(
-        resolved,
+        resolved.clone(),
         "default".into(),
         WorkspaceState::new(ws.path()),
         Arc::new(EngineManager::new()),
@@ -189,6 +189,25 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
         Arc::new(std::sync::atomic::AtomicU64::new(0)),
         ws.path().join("global.db"),
     );
+
+    let permission = litecode::permission::PermissionEngine::resolver(resolved, "default", 0);
+    let ctx = litecode::context_pipeline::Context {
+        cwd: ws.path().to_path_buf(),
+        workspace_paths: litecode::config::WorkspacePaths::for_legacy_root(ws.path()),
+        agents_md: None,
+        claude_md: None,
+    };
+    let host = Arc::new(litecode::tools::code::CodeToolHost::new(
+        permission,
+        ctx,
+        "default",
+        std::sync::Arc::new(litecode::permission::RecordingPermissionSink::from_reply(
+            true, false,
+        )),
+        ws.path().join(".litecode"),
+        litecode::tool::write_lock::process_write_lock(),
+        None,
+    ));
 
     let tools = build_tool_list(
         &runtime,
@@ -200,21 +219,28 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
             Arc::new(TurnGuard::new()),
             String::new(),
         )),
-        None,
+        Some(host),
     )
     .await
     .expect("build tool list");
-    let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+    assert_eq!(tools.len(), 1, "code-only mode exposes run_code only");
+    assert!(tools[0].is_code_transport());
+    let names: Vec<String> = tools[0]
+        .code_bindings()
+        .expect("run_code bindings")
+        .iter()
+        .cloned()
+        .collect();
     assert!(
-        names.contains(&"mcp_mock_echo".to_string()),
-        "LLM list must prefix the server id, got {names:?}"
+        names.contains(&"mcp_mock.echo".to_string()),
+        "LLM list must prefix the server namespace, got {names:?}"
     );
     assert!(
         !names.contains(&"echo".to_string()),
         "raw MCP name must not be advertised, got {names:?}"
     );
     assert!(
-        !names.contains(&"crash".to_string()) && !names.contains(&"mcp_mock_crash".to_string()),
+        !names.contains(&"crash".to_string()) && !names.contains(&"mcp_mock.crash".to_string()),
         "MCP allowlist must hide unselected tools, got {names:?}"
     );
     assert!(
@@ -222,11 +248,22 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
         "catalog id must not be advertised as a tool, got {names:?}"
     );
 
-    let echo = tools
-        .iter()
-        .find(|t| t.name() == "mcp_mock_echo")
-        .expect("echo");
-    let result = echo.call(serde_json::json!({"greeting": "from-list"}));
+    let result = tools[0]
+        .execute(
+            serde_json::json!({
+                "code": r#"return await tools.mcp_mock.echo({ greeting: "from-list" });"#
+            }),
+            litecode::tool::trait_::ToolExecutionContext {
+                path_mode: litecode::workspace::ToolPathMode::Safe,
+                workspace_root: ws.path().to_path_buf(),
+                call_id: "call_mcp_code".into(),
+                cancel: tokio_util::sync::CancellationToken::new(),
+                output_limit: 8000,
+                session_id: "test-parent-session".into(),
+                session: None,
+            },
+        )
+        .await;
     assert_eq!(
         result.level,
         ToolSignalLevel::Ok,
@@ -235,7 +272,7 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
     );
     assert!(
         result.content.contains("from-list"),
-        "got: {}",
+        "got content={}",
         result.content
     );
 }

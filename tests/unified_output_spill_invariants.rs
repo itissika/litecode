@@ -14,13 +14,13 @@ use litecode::ide_base::IdeBaseHandle;
 use litecode::permission::PermissionEngine;
 use litecode::ptc::Limits;
 use litecode::terminal::{AgentJobRegistry, shell_command};
-use litecode::tool::{DirectToolSpec, Tool};
+use litecode::tool::Tool;
 use litecode::tool::executor::run_tool;
 use litecode::tool::write_lock::process_write_lock;
 use litecode::tools::apply_edits::ApplyEditsTool;
 use litecode::tools::code::{CodeTool, CodeToolHost, MAX_CODE_OUTPUT_BYTES, RUN_CODE_VIEW_MAX_BYTES};
 use litecode::tools::exec_command::ExecCommandTool;
-use litecode::tools::knowledge::KnowledgeTool;
+use litecode::tools::knowledge::KnowledgeListTool;
 use litecode::tools::read::ReadTool;
 use litecode::types::{FunctionToolCall, ToolCallResult, ToolSignalLevel};
 use serde_json::{Value, json};
@@ -141,31 +141,6 @@ fn extract_full_output_path(text: &str) -> Option<String> {
         .next()?
         .trim_end_matches(&['.', ',', ';', ')', ']', '`', '\'', '"'][..]);
     Some(path.to_string())
-}
-
-struct OversizedDirectTool {
-    payload: String,
-}
-
-impl Tool for OversizedDirectTool {
-    fn name(&self) -> &str {
-        "oversized_probe"
-    }
-
-    fn direct_spec(&self, _ctx: &Context) -> Option<DirectToolSpec> {
-        Some(DirectToolSpec {
-            description: "probe".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-        })
-    }
-
-    fn call_inner(&self, _input: Value) -> ToolCallResult {
-        ToolCallResult::ok(self.payload.clone())
-    }
 }
 
 #[test]
@@ -407,63 +382,6 @@ return {{
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn direct_oversized_tool_spills_full_text_to_litecode_run_with_50_50_head_tail() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let data_root = root.join(".litecode");
-    fs::create_dir_all(&data_root).unwrap();
-
-    let payload = format!(
-        "HEAD_DIRECT\n{}MID_DIRECT\n{}TAIL_DIRECT",
-        "a".repeat(100_000),
-        "b".repeat(100_000)
-    );
-    let tool: Arc<dyn Tool> = Arc::new(OversizedDirectTool { payload });
-    let mut global = GlobalSettings::default();
-    global.agents.insert(
-        "default".into(),
-        litecode::config::schema::AgentProfile::default(),
-    );
-    let resolved = ConfigManager::resolve_without_catalog(global, WorkspaceState::new(root));
-    let permission = PermissionEngine::resolver(resolved, "default", 0);
-    let ctx = make_ctx(root);
-    let sink = test_auto_approve_sink();
-    let call = FunctionToolCall {
-        arguments: "{}".into(),
-        call_id: "direct_big_1".into(),
-        namespace: None,
-        name: "oversized_probe".into(),
-        id: None,
-        status: None,
-    };
-    let res = run_tool(
-        &call,
-        &[tool],
-        &permission,
-        &ctx,
-        "direct-s1",
-        "default",
-        sink.as_ref(),
-        CancellationToken::new(),
-        &data_root,
-        32_768,
-        None,
-        process_write_lock(),
-        None,
-    )
-    .await;
-    assert!(!res.content.starts_with("[blob:"), "{}", res.content);
-    assert!(!res.content.contains("<persisted-output>"), "{}", res.content);
-    assert!(res.content.contains("HEAD_DIRECT"), "{}", res.content);
-    assert!(res.content.contains("TAIL_DIRECT"), "{}", res.content);
-    let full_rel = extract_full_output_path(&res.content)
-        .unwrap_or_else(|| panic!("expected `full output:` in direct tool result:\n{}", res.content));
-    assert!(full_rel.starts_with(".litecode/run/"), "{full_rel}");
-    let disk = fs::read_to_string(root.join(&full_rel)).unwrap();
-    assert!(disk.contains("HEAD_DIRECT") && disk.contains("MID_DIRECT") && disk.contains("TAIL_DIRECT"));
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn knowledge_tool_never_spills_to_disk() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -478,38 +396,12 @@ async fn knowledge_tool_never_spills_to_disk() {
         fs::write(kdir.join(format!("{key}.md")), body).unwrap();
     }
 
-    let ide = IdeBaseHandle::open(root.to_path_buf(), Arc::new(WorkspaceEngines::new())).unwrap();
-    let tool: Arc<dyn Tool> = Arc::new(KnowledgeTool::new(ide));
-    let ctx = make_ctx(root);
-    let permission = make_permission(root);
-    let sink = test_auto_approve_sink();
-    let data_root = root.join(".litecode");
-    let call = FunctionToolCall {
-        arguments: json!({ "command": "list" }).to_string(),
-        call_id: "k_list_1".into(),
-        namespace: None,
-        name: "knowledge".into(),
-        id: None,
-        status: None,
-    };
-    let res = run_tool(
-        &call,
-        &[tool],
-        &permission,
-        &ctx,
-        "k-s1",
-        "default",
-        sink.as_ref(),
-        CancellationToken::new(),
-        &data_root,
-        65_536,
-        None,
-        process_write_lock(),
-        None,
-    )
-    .await;
+    let _ide = IdeBaseHandle::open(root.to_path_buf(), Arc::new(WorkspaceEngines::new())).unwrap();
+    let tool: Arc<dyn Tool> = Arc::new(KnowledgeListTool::new());
+    let script = "const r = await tools.knowledge.list(); return r.nodes.map(n => n.key);";
+    let res = run_code_with_bundle(root, vec![tool], script).await;
     assert!(res.error.is_none(), "{}", res.content);
-    assert!(res.content.contains("node_149"), "all nodes kept without spill");
+    assert!(res.content.contains("node_149"), "all nodes kept without spill: {}", res.content);
     assert!(!root.join(".litecode/bash").exists(), ".litecode/bash must not exist");
     if let Ok(entries) = fs::read_dir(root.join(".litecode/run")) {
         for entry in entries.flatten() {

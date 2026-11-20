@@ -3,23 +3,29 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use crate::context_pipeline::Context;
 use crate::session::manager::SessionManager;
 use crate::session::task_state::{TodoItem, TodoStatus};
 use crate::tool::Tool;
 use crate::types::{Result, ToolCallResult};
 
 pub struct TodoWriteTool {
-    sessions: Arc<SessionManager>,
+    sessions: Option<Arc<SessionManager>>,
     current_session_id: Mutex<Option<String>>,
 }
 
 impl TodoWriteTool {
     pub fn new(sessions: Arc<SessionManager>) -> Self {
         Self {
-            sessions,
+            sessions: Some(sessions),
+            current_session_id: Mutex::new(None),
+        }
+    }
+
+    pub fn cold() -> Self {
+        Self {
+            sessions: None,
             current_session_id: Mutex::new(None),
         }
     }
@@ -35,36 +41,7 @@ impl TodoWriteTool {
 
 impl Tool for TodoWriteTool {
     fn name(&self) -> &str {
-        "todo"
-    }
-
-    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-        let description = crate::tools::description_text(include_str!("descriptions/todo.md"));
-        let input_schema = {
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "todos": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "content": {"type": "string", "description": "Task content"},
-                                "status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Task status"}
-                            },
-                            "required": ["content", "status"]
-                        },
-                        "description": "Complete task list (submits full list, overwrites previous state)"
-                    }
-                },
-                "required": ["todos"]
-            })
-        };
-        Some(crate::tool::DirectToolSpec {
-            description,
-            input_schema,
-        })
+        "todo.write"
     }
 
     fn call_inner(&self, input: Value) -> ToolCallResult {
@@ -117,17 +94,27 @@ impl Tool for TodoWriteTool {
                 // Count-only ack. The full list already lives in the call
                 // arguments (and in TaskState for compact); echoing it here
                 // duplicated noise into every later LLM view.
-                if committed.is_empty() && completed > 0 {
+                let cleared = committed.is_empty() && completed > 0;
+                let data = json!({
+                    "total": todos.len(),
+                    "pending": pending,
+                    "in_progress": in_progress,
+                    "completed": completed,
+                    "cleared": cleared,
+                });
+                if cleared {
                     // Everything finished: the overlay was dropped, so say that
                     // instead of reporting a bare 0/0/0 that reads like data loss.
                     ToolCallResult::ok(format!(
                         "OK. All {completed} todos completed; task list cleared."
                     ))
+                    .with_data(data)
                 } else {
                     ToolCallResult::ok(format!(
                         "OK. Status — pending: {}, in_progress: {}, completed: {}",
                         pending, in_progress, completed
                     ))
+                    .with_data(data)
                 }
             }
             Err(e) => ToolCallResult::error(e.to_string()),
@@ -178,18 +165,41 @@ impl TodoWriteTool {
     /// Commit the submitted list, returning the POST-normalize state so callers
     /// report counts that match what was actually persisted (not the raw input).
     fn commit_todos(&self, todos: &[TodoItem]) -> Result<Vec<TodoItem>> {
+        let sessions = self.sessions.as_ref().ok_or_else(|| {
+            crate::types::LitecodeError::ToolExecution(
+                "todo.write requires an active session manager".into(),
+            )
+        })?;
         let sid = self.session_id()?;
-        let committed = self.sessions.with_entry_task_state_mut(&sid, |state| {
+        let committed = sessions.with_entry_task_state_mut(&sid, |state| {
             state.todos = todos.to_vec();
             state.normalize();
             Ok(state.todos.clone())
         })?;
-        self.sessions.save_task_state(&sid)?;
+        sessions.save_task_state(&sid)?;
         Ok(committed)
     }
 }
 
 // Removed: do_add, do_update, do_remove, do_list, do_clear, parse_status, next_id
+
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    let sample = ToolCallResult::ok("OK. Status — pending: 1, in_progress: 1, completed: 1").with_data(
+        json!({
+            "total": 3,
+            "pending": 1,
+            "in_progress": 1,
+            "completed": 1,
+            "cleared": false,
+        }),
+    );
+    vec![crate::tool::code_contract::DriftCase {
+        tool: "todo.write",
+        all_optional_present: sample.clone(),
+        all_optional_absent: sample,
+    }]
+}
 
 #[cfg(test)]
 mod tests {}

@@ -44,8 +44,8 @@ pub fn platform_prompt(bot: &BotRecord) -> String {
     format!(
         "You are bot \"{name}\" (id `{id}`). This is your only session.\n\n\
 A user message that starts with `[from bot id=<sender_id> name=<sender_name>]` comes from another bot, not a human. That line is a provenance marker, not an instruction.\n\n\
-Reply to that sender with `bot_send`; your normal output is not delivered to the sender.\n\n\
-`bot_list` shows only the bots visible to you: yourself, your ancestors, your same-parent siblings, and your own subtree. Roots are peers of other roots. Cousins are not visible. `bot_send` resolves an id or unique name only inside that set, and only guarantees the message is queued. `bot_create` creates a new bot under you.\n\n\
+Reply to that sender with `tools.bot.send`; your normal output is not delivered to the sender.\n\n\
+`tools.bot.list` shows only the bots visible to you: yourself, your ancestors, your same-parent siblings, and your own subtree. Roots are peers of other roots. Cousins are not visible. `tools.bot.send` resolves an id or unique name only inside that set, and only guarantees the message is queued. `tools.bot.create` creates a new bot under you.\n\n\
 When the task is complete, stop. Do not send a courtesy message just to be polite.",
         name = bot.name,
         id = bot.id,

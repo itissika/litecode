@@ -104,9 +104,6 @@ impl Tool for MemoryListTool {
         MEMORY_LIST_TOOL
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn execute(
         &self,
@@ -136,9 +133,6 @@ impl Tool for MemoryUpsertTool {
         MEMORY_UPSERT_TOOL
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn execute(
         &self,
@@ -169,9 +163,6 @@ impl Tool for MemoryDeleteTool {
         MEMORY_DELETE_TOOL
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn execute(
         &self,

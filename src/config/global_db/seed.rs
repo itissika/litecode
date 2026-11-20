@@ -1125,7 +1125,7 @@ mod tests {
         bind_none(&conn, "legacy_hidden", "read").unwrap();
         bind_none(&conn, "explore", "plan").unwrap();
         bind_none(&conn, "explore", "todo").unwrap();
-        bind_none(&conn, "explore", "subagent_wait").unwrap();
+        bind_none(&conn, "explore", "subagent.wait").unwrap();
         conn.execute(
             "UPDATE agents SET allowed_subagents_json = '[\"explore\"]' WHERE id = 'explore'",
             [],
@@ -1137,7 +1137,7 @@ mod tests {
         for (agent, tool) in [
             ("explore", "plan"),
             ("explore", "todo"),
-            ("explore", "subagent_wait"),
+            ("explore", "subagent.wait"),
             ("legacy_hidden", "read"),
         ] {
             let n: i64 = conn

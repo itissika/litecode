@@ -4,11 +4,11 @@ use crate::types::{LitecodeError, Result};
 
 const SCHEMA: &str = include_str!("schema.sql");
 
-/// Current schema epoch. v8→v9 drops per-agent temperature/max_steps.
-pub const CURRENT_USER_VERSION: i32 = 9;
+/// Current schema epoch. v9→v10 removes Direct mode (`tool_surface` / `surface` / `output_schema_json`).
+pub const CURRENT_USER_VERSION: i32 = 10;
 
 /// Epochs that `migrate()` can lift to current without archive-rebuild.
-pub const MIGRATABLE_FROM: &[i32] = &[5, 6, 7, 8];
+pub const MIGRATABLE_FROM: &[i32] = &[5, 6, 7, 8, 9];
 
 pub fn can_migrate_in_place(version: i32) -> bool {
     version == 0 || version == CURRENT_USER_VERSION || MIGRATABLE_FROM.contains(&version)
@@ -61,7 +61,7 @@ fn migrate_to_current(conn: &Connection, version: i32) -> Result<()> {
 fn ensure_current_columns(conn: &Connection) -> Result<()> {
     ensure_agent_tools_preset(conn)?;
     ensure_agent_tools_allowed_tools_column(conn)?;
-    ensure_agents_tool_surface_column(conn)?;
+    ensure_agents_drop_tool_surface(conn)?;
     ensure_mcp_timeout_column(conn)?;
     ensure_custom_tools_columns(conn)?;
     ensure_provider_credentials_table(conn)?;
@@ -70,20 +70,14 @@ fn ensure_current_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn ensure_agents_tool_surface_column(conn: &Connection) -> Result<()> {
+fn ensure_agents_drop_tool_surface(conn: &Connection) -> Result<()> {
     let table_exists: bool = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agents'",
         [],
         |row| row.get::<_, i64>(0),
     )? == 1;
-    if !table_exists {
-        return Ok(());
-    }
-    if !column_exists(conn, "agents", "tool_surface")? {
-        conn.execute(
-            "ALTER TABLE agents ADD COLUMN tool_surface TEXT NOT NULL DEFAULT 'code'",
-            [],
-        )?;
+    if table_exists && column_exists(conn, "agents", "tool_surface")? {
+        conn.execute("ALTER TABLE agents DROP COLUMN tool_surface", [])?;
     }
     Ok(())
 }
@@ -132,49 +126,39 @@ fn ensure_custom_tools_columns(conn: &Connection) -> Result<()> {
         [],
         |row| row.get::<_, i64>(0),
     )? == 1;
-    if !table_exists {
-        return Ok(());
-    }
-    if !column_exists(conn, "custom_tools", "rules_json")? {
-        conn.execute("ALTER TABLE custom_tools ADD COLUMN rules_json TEXT", [])?;
-    }
-    if !column_exists(conn, "custom_tools", "surface")? {
-        conn.execute(
-            "ALTER TABLE custom_tools ADD COLUMN surface TEXT NOT NULL DEFAULT 'direct'",
-            [],
-        )?;
-    }
-    if !column_exists(conn, "custom_tools", "data_schema_json")? {
-        conn.execute(
-            "ALTER TABLE custom_tools ADD COLUMN data_schema_json TEXT",
-            [],
-        )?;
-    }
-    if !column_exists(conn, "custom_tools", "suite_id")? {
-        conn.execute("ALTER TABLE custom_tools ADD COLUMN suite_id TEXT", [])?;
-    }
-    if !column_exists(conn, "custom_tools", "output_schema_json")? {
-        conn.execute(
-            "ALTER TABLE custom_tools ADD COLUMN output_schema_json TEXT",
-            [],
-        )?;
-    }
-    if !column_exists(conn, "custom_tools", "definition_version")? {
-        conn.execute(
-            "ALTER TABLE custom_tools ADD COLUMN definition_version INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
+    if table_exists {
+        if !column_exists(conn, "custom_tools", "rules_json")? {
+            conn.execute("ALTER TABLE custom_tools ADD COLUMN rules_json TEXT", [])?;
+        }
+        if !column_exists(conn, "custom_tools", "suite_id")? {
+            conn.execute("ALTER TABLE custom_tools ADD COLUMN suite_id TEXT", [])?;
+        }
+        if !column_exists(conn, "custom_tools", "definition_version")? {
+            conn.execute(
+                "ALTER TABLE custom_tools ADD COLUMN definition_version INTEGER NOT NULL DEFAULT 2",
+                [],
+            )?;
+        }
+        for obsolete in [
+            "surface",
+            "data_schema_json",
+            "output_schema_json",
+            "permission_json",
+        ] {
+            if column_exists(conn, "custom_tools", obsolete)? {
+                conn.execute(&format!("ALTER TABLE custom_tools DROP COLUMN {obsolete}"), [])?;
+            }
+        }
     }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS custom_suites (
              id TEXT PRIMARY KEY,
-             surface TEXT NOT NULL,
              label TEXT NOT NULL DEFAULT '',
              rules_json TEXT
          );",
     )?;
-    if column_exists(conn, "custom_tools", "permission_json")? {
-        conn.execute("ALTER TABLE custom_tools DROP COLUMN permission_json", [])?;
+    if column_exists(conn, "custom_suites", "surface")? {
+        conn.execute("ALTER TABLE custom_suites DROP COLUMN surface", [])?;
     }
     Ok(())
 }
@@ -374,11 +358,14 @@ mod tests {
     }
 
     #[test]
-    fn existing_v9_db_gets_agents_tool_surface_default_code() {
+    fn existing_v9_db_drops_obsolete_surface_and_output_schema_columns() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute_batch(
-            "ALTER TABLE agents DROP COLUMN tool_surface;
+            "ALTER TABLE agents ADD COLUMN tool_surface TEXT NOT NULL DEFAULT 'direct';
+             ALTER TABLE custom_tools ADD COLUMN surface TEXT;
+             ALTER TABLE custom_tools ADD COLUMN output_schema_json TEXT;
+             ALTER TABLE custom_suites ADD COLUMN surface TEXT NOT NULL DEFAULT 'direct';
              INSERT INTO agents (id, role, model_ref) VALUES ('default', 'primary', '');
              PRAGMA user_version = 9;",
         )
@@ -386,13 +373,10 @@ mod tests {
 
         migrate(&conn).unwrap();
 
-        let surface: String = conn
-            .query_row(
-                "SELECT tool_surface FROM agents WHERE id = 'default'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(surface, "code");
+        assert!(!column_exists(&conn, "agents", "tool_surface").unwrap());
+        assert!(!column_exists(&conn, "custom_tools", "surface").unwrap());
+        assert!(!column_exists(&conn, "custom_tools", "output_schema_json").unwrap());
+        assert!(!column_exists(&conn, "custom_suites", "surface").unwrap());
+        assert_eq!(user_version(&conn), CURRENT_USER_VERSION);
     }
 }

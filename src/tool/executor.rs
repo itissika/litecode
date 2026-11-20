@@ -21,7 +21,7 @@ use crate::tool::resource_gate::{ToolEffects, process_resource_gate};
 use crate::tool::schema_validate::{
     check_tool_input, invalid_input_for, parse_tool_arguments,
 };
-use crate::tool::trait_::{Tool, ToolExecutionContext, ToolSurface};
+use crate::tool::trait_::{Tool, ToolExecutionContext};
 use crate::tool::write_lock::{ResourceKey, WorkspaceWriteLock};
 use crate::types::{
     FunctionToolCall, Item, MediaArtifact, MediaKind, Result, ToolCallResult, ToolErrorKind,
@@ -398,7 +398,7 @@ fn audit_output_fields(data: Option<&serde_json::Value>) -> (Vec<String>, usize)
 
 fn audit_origin(origin: &ToolCallOrigin) -> (String, Option<String>) {
     match &origin.caller {
-        ToolCaller::Direct => ("direct".to_string(), None),
+        ToolCaller::Transport => ("transport".to_string(), None),
         ToolCaller::Code { parent_call_id } => ("code".to_string(), Some(parent_call_id.clone())),
     }
 }
@@ -428,7 +428,8 @@ fn emit_audit(
 /// Who is invoking the single-call pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCaller {
-    Direct,
+    /// Outer transport call (for example `run_code`).
+    Transport,
     /// Nested call inside `run_code`. `parent_call_id` is the outer call.
     Code {
         parent_call_id: String,
@@ -454,9 +455,9 @@ pub struct ToolCallOrigin {
 }
 
 impl ToolCallOrigin {
-    pub fn direct() -> Self {
+    pub fn transport() -> Self {
         Self {
-            caller: ToolCaller::Direct,
+            caller: ToolCaller::Transport,
             code_names: Arc::from([]),
             file_note: None,
             permission_sink: None,
@@ -496,7 +497,7 @@ pub async fn run_tool(
         turn_anchor_seq,
         write_lock,
         session,
-        ToolCallOrigin::direct(),
+        ToolCallOrigin::transport(),
     )
     .await
 }
@@ -850,7 +851,6 @@ pub async fn execute_tool_call(
         } else {
             None
         };
-        let output = crate::tools::code::render_direct_code_contract_result(&tu_name, output);
         let output = wire_result(output);
         let max_bytes = output::direct_output_max_bytes(tool.as_ref());
         match output::finalize_direct_tool_call_result(
@@ -936,8 +936,8 @@ fn callable_tool(
 
 fn surface_mismatch(tool: &dyn Tool, origin: &ToolCallOrigin) -> bool {
     match &origin.caller {
-        ToolCaller::Direct => tool.surface() == ToolSurface::Code,
-        ToolCaller::Code { .. } => tool.surface() != ToolSurface::Code,
+        ToolCaller::Transport => !tool.is_code_transport(),
+        ToolCaller::Code { .. } => tool.is_code_transport(),
     }
 }
 
@@ -948,17 +948,17 @@ fn surface_or_missing(
 ) -> ToolCallResult {
     let declared = tools.iter().find(|tool| tool.name() == name);
     let routed = match &origin.caller {
-        ToolCaller::Direct if origin.code_names.iter().any(|n| n == name) => {
+        ToolCaller::Transport if origin.code_names.iter().any(|n| n == name) => {
             Some(code_route_message(name))
         }
-        ToolCaller::Direct if declared.is_some_and(|tool| tool.surface() == ToolSurface::Code) => {
+        ToolCaller::Transport if declared.is_some_and(|tool| !tool.is_code_transport()) => {
             Some(code_route_message(name))
         }
         ToolCaller::Code { .. }
-            if declared.is_some_and(|tool| tool.surface() != ToolSurface::Code) =>
+            if declared.is_some_and(|tool| tool.is_code_transport()) =>
         {
             Some(format!(
-                "`{name}` is a direct tool and is not available inside run_code"
+                "`{name}` is the outer transport tool and is not available inside run_code"
             ))
         }
         _ => None,
@@ -1156,9 +1156,9 @@ mod tests {
     }
 
     #[test]
-    fn audit_origin_marks_direct_calls() {
-        let (caller, parent) = audit_origin(&ToolCallOrigin::direct());
-        assert_eq!(caller, "direct");
+    fn audit_origin_marks_transport_calls() {
+        let (caller, parent) = audit_origin(&ToolCallOrigin::transport());
+        assert_eq!(caller, "transport");
         assert_eq!(parent, None);
     }
 
@@ -1198,8 +1198,11 @@ mod tests {
             fn name(&self) -> &str {
                 "slow"
             }
-            fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-                Some(crate::tool::DirectToolSpec {
+            fn is_code_transport(&self) -> bool {
+                true
+            }
+            fn transport_spec(&self, _ctx: &Context) -> Option<crate::tool::TransportToolSpec> {
+                Some(crate::tool::TransportToolSpec {
                     description: "blocks for a while".into(),
                     input_schema: serde_json::json!({"type": "object", "properties": {}}),
                 })
@@ -1310,8 +1313,11 @@ mod tests {
             fn name(&self) -> &str {
                 "commit"
             }
-            fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-                Some(crate::tool::DirectToolSpec {
+            fn is_code_transport(&self) -> bool {
+                true
+            }
+            fn transport_spec(&self, _ctx: &Context) -> Option<crate::tool::TransportToolSpec> {
+                Some(crate::tool::TransportToolSpec {
                     description: "returns after the budget".into(),
                     input_schema: serde_json::json!({"type": "object", "properties": {}}),
                 })
@@ -1509,8 +1515,11 @@ mod tests {
         fn name(&self) -> &str {
             "command_shape"
         }
-        fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-            Some(crate::tool::DirectToolSpec {
+        fn is_code_transport(&self) -> bool {
+            true
+        }
+        fn transport_spec(&self, _ctx: &Context) -> Option<crate::tool::TransportToolSpec> {
+            Some(crate::tool::TransportToolSpec {
                 description: "schema probe".into(),
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -1531,8 +1540,11 @@ mod tests {
         fn name(&self) -> &str {
             "self_cancelling"
         }
-        fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-            Some(crate::tool::DirectToolSpec {
+        fn is_code_transport(&self) -> bool {
+            true
+        }
+        fn transport_spec(&self, _ctx: &Context) -> Option<crate::tool::TransportToolSpec> {
+            Some(crate::tool::TransportToolSpec {
                 description: "returns a truthful result after cancellation".into(),
                 input_schema: serde_json::json!({"type": "object", "properties": {}}),
             })
@@ -1707,8 +1719,11 @@ mod code_caller_contract_tests {
             fn name(&self) -> &str {
                 "lockonly"
             }
-            fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-                Some(crate::tool::DirectToolSpec {
+            fn is_code_transport(&self) -> bool {
+                true
+            }
+            fn transport_spec(&self, _ctx: &Context) -> Option<crate::tool::TransportToolSpec> {
+                Some(crate::tool::TransportToolSpec {
                     description: "declares a write".into(),
                     input_schema: serde_json::json!({"type": "object", "properties": {}}),
                 })

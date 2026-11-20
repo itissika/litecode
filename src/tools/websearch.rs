@@ -243,9 +243,6 @@ impl Tool for WebSearchTool {
         "websearch"
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn call_async(
         &self,
@@ -406,7 +403,10 @@ mod tests {
         let surface = crate::tool::code_contract::build_surface(&[tool])
             .expect("websearch JS contract surface");
         assert!(
-            surface.tools["websearch"].output_schema["properties"]
+            surface.tools["websearch"]
+                .output_schema
+                .as_ref()
+                .expect("websearch output schema")["properties"]
                 .get("text")
                 .is_none()
         );

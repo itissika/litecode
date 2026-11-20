@@ -23,6 +23,6 @@
 
 **怎么生效。** 下一个 turn 开始时读盘生效，进行中的 turn 不受影响。告诉人即可。已经给这个 agent 打开的服务器，会在那时按新定义重新拉起；人也可以在设置页启动。
 
-**怎么验证。** `litecode_workspace refresh mcp` 校验本文件（JSON 合法性、id 规则 `[a-z][a-z0-9_]*`、是否与内置工具撞名、`command` 是否为空），并标出还没生效的差异。它不拉起进程。
+**怎么验证。** 调用 `workspace.refresh()` 校验本文件（JSON 合法性、id 规则 `[a-z][a-z0-9_]*`、是否与内置工具撞名、`command` 是否为空）。它不拉起进程；启用后在 `run_code` 内通过 `tools.mcp_<id>.<tool>(args)` 调用。
 
-**下一步。** 写好定义还不够：需要人类在设置页 **Agents** 里打开 `mcp_<id>`（审阅开关，不要替人打开）。未打开时 `litecode_workspace status` 会把它列成 off for you，并补一句：只有你这次真的需要它，才去找人打开；否则不要提。
+**下一步。** 写好定义还不够：需要人类在设置页 **Agents** 里打开 `mcp_<id>`（审阅开关，不要替人打开）。未打开时 `workspace.status()` 会把它列成 off for you，并补一句：只有你这次真的需要它，才去找人打开；否则不要提。

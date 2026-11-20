@@ -190,9 +190,6 @@ impl Tool for WriteStdinTool {
         "write_stdin"
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn execute(
         &self,

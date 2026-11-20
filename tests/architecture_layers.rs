@@ -174,7 +174,6 @@ fn production_ui_and_subagent_entrypoints_use_the_service() {
         "tools/subagent/stop.rs",
         "runtime/subagent_auto_turn.rs",
         "runtime/bash_auto_turn.rs",
-        "runtime/custom_auto_turn.rs",
         "runtime/pending_auto_turn.rs",
     ] {
         let source = fs::read_to_string(src_root().join(path)).unwrap();

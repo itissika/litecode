@@ -6,7 +6,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { foldId, type RenderNode } from "../../lib/transcriptProjection";
-import { isInlineCall, processToolBucket } from "../../lib/toolCategory";
+import { processToolBucket } from "../../lib/toolCategory";
 import { useEditorStore } from "../../stores/editorStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useTurnStore } from "../../stores/turnStore";
@@ -15,7 +15,6 @@ import { AgentMarkdown } from "../AgentMarkdown";
 import { ImageThumb } from "../ImageThumb";
 import { CategoryCount } from "../CategoryCount";
 import { FoldCard } from "../FoldCard";
-import { InlineToolRow } from "../InlineToolRow";
 import { ToolCallCard } from "../ToolCallCard";
 import { TranscriptMark } from "../transcriptMarks";
 
@@ -104,16 +103,6 @@ export function NodeView({
         </div>
       );
     case "tool": {
-      if (isInlineCall(node.call.name)) {
-        return (
-          <InlineToolRow
-            call={node.call}
-            output={node.output}
-            streaming={node.live}
-            sessionId={sessionId}
-          />
-        );
-      }
       return (
         <ToolCallCard
           call={node.call}

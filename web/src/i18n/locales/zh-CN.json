@@ -60,8 +60,8 @@
     "details": "应用详情",
     "refresh": "刷新应用",
     "installableTitle": "能安装什么 apps",
-    "installableHint": "让 agent 用 litecode_workspace apps 查当前可安装项。",
-    "installablePrompt": "LiteCode 能安装什么 apps？用 litecode_workspace apps 查一下，再告诉我当前工作区适合装什么。",
+    "installableHint": "让 agent 用 workspace.status / workspace.help 查看当前工作区应用与状态。",
+    "installablePrompt": "用 workspace.status 查一下当前工作区的 apps 与状态，再告诉我适合配置什么。",
     "empty": "此工作区尚未注册应用。",
     "emptyInstalled": "还没有安装应用",
     "registryErrors": "注册表问题（{{count}}）",
@@ -221,7 +221,6 @@
       "selectSubagent": "请至少选择一个子智能体，否则启动会失败。",
       "noSubagentProfiles": "尚未定义子智能体配置。",
       "noBindableTools": "此工作区没有可绑定的工具。",
-      "codeMode": "代码模式",
       "loading": "正在加载智能体…",
       "newId": "新智能体 id",
       "idHint": "小写字母、数字和下划线。",
@@ -338,8 +337,7 @@
       "saveFailed": "保存失败",
       "invalidSuiteJson": "套件 JSON 无效",
       "suiteIdInvalid": "套件 id 须匹配 [a-z][a-z0-9_]*",
-      "jsonRequired": "需要包含 name、command 与 schema 的合法 JSON",
-      "suiteSurfaceRequired": "套件需要 surface: \"direct\" 或 \"code\""
+      "jsonRequired": "需要包含 name、command 与 schema 的合法 JSON"
     },
     "persist": {
       "saving": "正在保存…",

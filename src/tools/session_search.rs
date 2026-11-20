@@ -178,9 +178,6 @@ impl Tool for SessionSearchTool {
         "session_search"
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
         true

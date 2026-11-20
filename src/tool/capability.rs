@@ -5,12 +5,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::config::binding_scope::{BindingScope, scope_of};
 use crate::config::global_db::tools::{
-    MEMORY_TOOL_IDS, core_configurable_tools, core_none_tools, mcp_catalog_id, network_core_tools,
+    KNOWLEDGE_TOOL_IDS, MEMORY_TOOL_IDS, PLAN_TOOL_IDS, TODO_TOOL_IDS, WORKSPACE_TOOL_IDS,
+    core_configurable_tools, core_none_tools, mcp_catalog_id, network_core_tools,
     optional_builtin_ids,
 };
 use crate::config::resolved::ResolvedConfig;
 use crate::config::schema::{
-    AgentProfile, AvailableKind, CallSurface, CustomToolDefinition, PermissionSurface,
+    AgentProfile, AvailableKind, CustomToolDefinition, PermissionSurface,
     SUBAGENT_CAPABILITY_ID, SUBAGENT_MEMBER_TOOL_IDS, ToolOrigin,
 };
 use crate::permission::has_permission_preset;
@@ -62,7 +63,6 @@ pub struct Capability {
     pub origin: ToolOrigin,
     pub overridden: bool,
     pub permission_surface: PermissionSurface,
-    pub surface: CallSurface,
     /// Human label for a grouped custom suite. Other cards use their id.
     pub label: Option<String>,
 }
@@ -132,20 +132,6 @@ fn member(id: &str) -> MemberSpec {
 }
 
 /// Surface of a builtin card, derived from the generated contract the runtime
-/// tools are built against. A card id is either a tool name (`session_search`)
-/// or a suite that groups tool names (`memory`), so the members decide and no
-/// hand-written list can fall behind the tool set.
-fn builtin_surface(members: &[&str]) -> CallSurface {
-    let code = members
-        .iter()
-        .any(|member| crate::tool::code_contract::builtin_sdk_path(member).is_some());
-    if code {
-        CallSurface::Code
-    } else {
-        CallSurface::Direct
-    }
-}
-
 fn custom_overridden(resolved: &ResolvedConfig, name: &str) -> bool {
     resolved.workspace_custom_tools().contains_key(name)
         && resolved
@@ -212,7 +198,6 @@ fn push_builtin(
             } else {
                 PermissionSurface::Fixed
             },
-            surface: builtin_surface(members),
             label: None,
         },
     );
@@ -232,10 +217,6 @@ fn push_custom(
     let overridden = members
         .iter()
         .any(|tool| custom_overridden(resolved, &tool.name));
-    let surface = members
-        .first()
-        .map(CustomToolDefinition::effective_surface)
-        .unwrap_or(CallSurface::Direct);
     let scope = scope_of(&id);
     let member_ids: Vec<String> = members.iter().map(|tool| tool.name.clone()).collect();
     push_capability(
@@ -249,13 +230,10 @@ fn push_custom(
             origin,
             overridden,
             permission_surface: custom_permission_surface(&members),
-            surface,
             label,
         },
     );
-    if surface == CallSurface::Code
-        && let Some(suite) = id.strip_prefix("suite:")
-    {
+    if let Some(suite) = id.strip_prefix("suite:") {
         for member in member_ids {
             catalog
                 .member_owner
@@ -284,7 +262,6 @@ fn push_mcp(catalog: &mut CapabilityCatalog, resolved: &ResolvedConfig, server_i
             origin,
             overridden,
             permission_surface: PermissionSurface::Fixed,
-            surface: CallSurface::Direct,
             label: None,
         },
     );
@@ -364,6 +341,14 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
                 CapabilityKind::Core,
                 ToolOrigin::Builtin,
             ),
+            "litecode_workspace" => push_builtin(
+                &mut catalog,
+                resolved,
+                "litecode_workspace",
+                WORKSPACE_TOOL_IDS,
+                CapabilityKind::Core,
+                ToolOrigin::Builtin,
+            ),
             _ => push_builtin(
                 &mut catalog,
                 resolved,
@@ -376,8 +361,8 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
     }
 
     for id in core_none_tools() {
-        if *id == SUBAGENT_CAPABILITY_ID {
-            push_capability(
+        match *id {
+            SUBAGENT_CAPABILITY_ID => push_capability(
                 &mut catalog,
                 Capability {
                     id: (*id).to_string(),
@@ -391,28 +376,49 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
                     origin: ToolOrigin::Builtin,
                     overridden: false,
                     permission_surface: PermissionSurface::Fixed,
-                    surface: CallSurface::Direct,
                     label: None,
                 },
-            );
-        } else if *id == "memory" {
-            push_builtin(
+            ),
+            "memory" => push_builtin(
                 &mut catalog,
                 resolved,
                 "memory",
                 MEMORY_TOOL_IDS,
                 CapabilityKind::Core,
                 ToolOrigin::Builtin,
-            );
-        } else {
-            push_builtin(
+            ),
+            "todo" => push_builtin(
+                &mut catalog,
+                resolved,
+                "todo",
+                TODO_TOOL_IDS,
+                CapabilityKind::Core,
+                ToolOrigin::Builtin,
+            ),
+            "plan" => push_builtin(
+                &mut catalog,
+                resolved,
+                "plan",
+                PLAN_TOOL_IDS,
+                CapabilityKind::Core,
+                ToolOrigin::Builtin,
+            ),
+            "knowledge" => push_builtin(
+                &mut catalog,
+                resolved,
+                "knowledge",
+                KNOWLEDGE_TOOL_IDS,
+                CapabilityKind::Core,
+                ToolOrigin::Builtin,
+            ),
+            _ => push_builtin(
                 &mut catalog,
                 resolved,
                 id,
                 &[*id],
                 CapabilityKind::Core,
                 ToolOrigin::Builtin,
-            );
+            ),
         }
     }
 
@@ -443,7 +449,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
                     origin: ToolOrigin::Workspace,
                     overridden: false,
                     permission_surface: PermissionSurface::Fixed,
-                    surface: CallSurface::Code,
                     label: None,
                 },
             ),
@@ -461,7 +466,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
                     origin: ToolOrigin::Workspace,
                     overridden: false,
                     permission_surface: PermissionSurface::Fixed,
-                    surface: CallSurface::Code,
                     label: None,
                 },
             ),
@@ -530,37 +534,29 @@ mod tests {
             args: Vec::new(),
             timeout: 30,
             rules: Vec::new(),
-            surface: Some(CallSurface::Direct),
             suite: suite.map(str::to_string),
-            output_schema: None,
         }
     }
 
-    /// A card is a view over runtime tools, so its surface must be theirs. This
-    /// is the regression for a hand-written list that missed a tool.
+    /// Every runtime builtin code tool must belong to a capability card.
     #[test]
-    fn every_card_surface_matches_the_runtime_tools_it_covers() {
+    fn every_builtin_runtime_tool_belongs_to_a_card() {
         let catalog = capability_catalog(&resolved());
         let runtime = crate::tool::registry::builtin_code_surface_tools();
         let mut checked = 0;
-        for card in &catalog.capabilities {
-            for member in card.member_ids() {
-                let Some(tool) = runtime.iter().find(|tool| tool.name() == member) else {
-                    continue;
-                };
-                assert_eq!(
-                    tool.surface(),
-                    crate::tool::ToolSurface::Code,
-                    "{member} is a code tool"
-                );
-                assert_eq!(
-                    card.surface,
-                    CallSurface::Code,
-                    "card '{}' covers code tool '{member}'",
-                    card.id
-                );
-                checked += 1;
+        for tool in &runtime {
+            assert!(!tool.is_code_transport());
+            if tool.name().starts_with("bot.") {
+                // Bot tools are product-layer capabilities injected only for
+                // bot-owned sessions, not user-configurable Settings cards.
+                continue;
             }
+            assert!(
+                catalog.member_capability_id(tool.name()).is_some(),
+                "runtime builtin tool '{}' has no capability card",
+                tool.name()
+            );
+            checked += 1;
         }
         assert!(
             checked > 20,
@@ -576,6 +572,10 @@ mod tests {
             "edit",
             "read",
             "memory",
+            "todo",
+            "plan",
+            "knowledge",
+            "litecode_workspace",
             "subagent_tools",
             "lsp",
             "code_search",
@@ -596,11 +596,6 @@ mod tests {
             memory.member_ids().collect::<Vec<_>>(),
             ["memory.list", "memory.upsert", "memory.delete"]
         );
-        assert_eq!(memory.surface, CallSurface::Code);
-        assert_eq!(
-            catalog.get("code_search").expect("code_search").surface,
-            CallSurface::Code
-        );
         assert_eq!(
             catalog.member_capability_id("memory.upsert"),
             Some("memory")
@@ -611,8 +606,18 @@ mod tests {
             Some("browser")
         );
         assert_eq!(
-            catalog.member_capability_id("subagent_launch"),
+            catalog.member_capability_id("subagent.launch"),
             Some("subagent_tools")
+        );
+        assert_eq!(catalog.member_capability_id("todo.write"), Some("todo"));
+        assert_eq!(catalog.member_capability_id("plan.create"), Some("plan"));
+        assert_eq!(
+            catalog.member_capability_id("knowledge.check"),
+            Some("knowledge")
+        );
+        assert_eq!(
+            catalog.member_capability_id("workspace.refresh"),
+            Some("litecode_workspace")
         );
         assert!(catalog.get("wait").is_none());
         assert!(catalog.get("apply_edits").is_none());
@@ -634,7 +639,6 @@ mod tests {
         global.custom_suites.insert(
             "deck".into(),
             crate::config::schema::CustomSuiteDefinition {
-                surface: CallSurface::Direct,
                 label: "Deck".into(),
                 rules: Vec::new(),
             },
@@ -658,6 +662,10 @@ mod tests {
         );
         assert!(catalog.get("single").is_some());
         assert_eq!(catalog.member_capability_id("suite_a"), Some("suite:deck"));
+        assert_eq!(
+            catalog.member_capability_id("deck.suite_a"),
+            Some("suite:deck")
+        );
     }
 
     #[test]
@@ -666,7 +674,6 @@ mod tests {
         global.custom_suites.insert(
             "demo".into(),
             crate::config::schema::CustomSuiteDefinition {
-                surface: CallSurface::Direct,
                 label: "Demo".into(),
                 rules: Vec::new(),
             },

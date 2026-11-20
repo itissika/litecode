@@ -127,18 +127,13 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
                 action: PermissionAction::Allow,
             }],
         },
-        // Read actions stay open. `refresh` validates excludes / MCP / custom tools.
-        "litecode_workspace" => ToolPolicy {
-            default: PermissionAction::Allow,
+        // Read actions (`workspace.help`, `workspace.status`) stay open.
+        // `workspace.refresh` reloads workspace config and asks under SAFE.
+        "litecode_workspace" => ToolPolicy::allow_all(),
+        "workspace.refresh" => ToolPolicy {
+            default: PermissionAction::Ask,
             default_id: super::policy::DEFAULT_RULE_ID.into(),
-            rules: vec![PolicyRule {
-                id: "refresh".into(),
-                when: ArgMatcher::ArgGlob {
-                    name: "action".into(),
-                    pattern: "refresh*".into(),
-                },
-                action: PermissionAction::Ask,
-            }],
+            rules: vec![],
         },
         _ => ToolPolicy {
             default: PermissionAction::Ask,

@@ -483,8 +483,8 @@ async fn settings_provider_key_write_is_effective_next_turn() {
 }
 
 #[tokio::test]
-async fn available_tools_stamps_a_code_surface_custom_tool() {
-    use litecode::config::schema::{CallSurface, CustomToolDefinition, ToolSchema};
+async fn available_tools_includes_code_only_custom_tool() {
+    use litecode::config::schema::{CustomToolDefinition, ToolSchema};
 
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");
@@ -497,9 +497,6 @@ async fn available_tools_stamps_a_code_surface_custom_tool() {
             "code_probe",
             CustomToolDefinition {
                 name: "code_probe".into(),
-                output_schema: Some(serde_json::json!({
-                    "type": "object", "properties": {}, "required": []
-                })),
                 description: "code probe".into(),
                 schema: ToolSchema {
                     schema_type: "object".into(),
@@ -510,7 +507,6 @@ async fn available_tools_stamps_a_code_surface_custom_tool() {
                 args: Vec::new(),
                 timeout: 120,
                 rules: Vec::new(),
-                surface: Some(CallSurface::Code),
                 suite: None,
             },
         )
@@ -534,7 +530,7 @@ async fn available_tools_stamps_a_code_surface_custom_tool() {
         .iter()
         .find(|tool| tool["id"] == "code_probe")
         .expect("custom tool card");
-    assert_eq!(card["surface"], "code", "{payload}");
+    assert_eq!(card["kind"], "custom", "{payload}");
     assert!(
         payload["code_rejections"]
             .as_array()
@@ -545,7 +541,7 @@ async fn available_tools_stamps_a_code_surface_custom_tool() {
 
 #[tokio::test]
 async fn custom_tools_payload_accepts_names_that_map_to_the_same_pascal_case() {
-    use litecode::config::schema::{CallSurface, CustomToolDefinition, ToolSchema};
+    use litecode::config::schema::{CustomToolDefinition, ToolSchema};
 
     let ws = TempDir::new().expect("ws");
     let db_dir = TempDir::new().expect("db");
@@ -558,9 +554,6 @@ async fn custom_tools_payload_accepts_names_that_map_to_the_same_pascal_case() {
                 name,
                 CustomToolDefinition {
                     name: name.into(),
-                    output_schema: Some(serde_json::json!({
-                        "type": "object", "properties": {}, "required": []
-                    })),
                     description: "collision probe".into(),
                     schema: ToolSchema {
                         schema_type: "object".into(),
@@ -571,7 +564,6 @@ async fn custom_tools_payload_accepts_names_that_map_to_the_same_pascal_case() {
                     args: Vec::new(),
                     timeout: 120,
                     rules: Vec::new(),
-                    surface: Some(CallSurface::Code),
                     suite: None,
                 },
             )
@@ -620,7 +612,6 @@ async fn available_tools_lists_a_custom_tool_saved_through_settings_http() {
         "args": [],
         "timeout": 120,
         "rules": [],
-        "surface": "direct",
         "schema": {
             "type": "object",
             "properties": {},
@@ -660,7 +651,7 @@ async fn available_tools_lists_a_custom_tool_saved_through_settings_http() {
 
 #[tokio::test]
 async fn available_tools_reads_an_external_workspace_definition_without_a_settings_write() {
-    use litecode::config::schema::{CallSurface, CustomToolDefinition, ToolSchema};
+    use litecode::config::schema::{CustomToolDefinition, ToolSchema};
     use litecode::config::workspace::{WorkspaceCustomToolsFile, write_workspace_custom_tools};
 
     let ws = TempDir::new().expect("ws");
@@ -693,7 +684,6 @@ async fn available_tools_reads_an_external_workspace_definition_without_a_settin
         "disk_probe".into(),
         CustomToolDefinition {
             name: "disk_probe".into(),
-            output_schema: None,
             description: "external definition".into(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -704,7 +694,6 @@ async fn available_tools_reads_an_external_workspace_definition_without_a_settin
             args: Vec::new(),
             timeout: 120,
             rules: Vec::new(),
-            surface: Some(CallSurface::Direct),
             suite: None,
         },
     );

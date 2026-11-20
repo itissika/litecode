@@ -43,10 +43,6 @@ pub struct AgentToolBinding {
     pub allowed_tools: Option<Vec<String>>,
 }
 
-fn default_code_surface() -> CallSurface {
-    CallSurface::Code
-}
-
 /// Agent profile (global layer; uses `role` + `model_ref`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -59,12 +55,9 @@ pub struct AgentProfile {
     pub description: String,
     #[serde(default)]
     pub tools: HashMap<String, AgentToolBinding>,
-    /// Primary only: subagent ids this agent may launch (`subagent_launch`). Empty = none allowed.
+    /// Primary only: subagent ids this agent may launch (`subagent.launch`). Empty = none allowed.
     #[serde(default)]
     pub allowed_subagents: Vec<String>,
-    /// Model-facing tool call surface for builtin code tools (`code` bundles into `run_code`; `direct` exposes standalone tools).
-    #[serde(default = "default_code_surface")]
-    pub tool_surface: CallSurface,
 }
 
 impl Default for AgentProfile {
@@ -76,7 +69,6 @@ impl Default for AgentProfile {
             description: String::new(),
             tools: HashMap::new(),
             allowed_subagents: Vec::new(),
-            tool_surface: CallSurface::Code,
         }
     }
 }
@@ -84,18 +76,17 @@ impl Default for AgentProfile {
 /// Agent ids that cannot be deleted via settings API.
 pub const PROTECTED_AGENT_IDS: &[&str] = &["default"];
 
-/// One-card capability id for the six subagent orchestration members.
+/// One-card capability id for the five subagent orchestration members.
 pub const SUBAGENT_CAPABILITY_ID: &str = "subagent_tools";
 
 /// Concrete model functions behind [`SUBAGENT_CAPABILITY_ID`].
 /// These are members, not separate bindings / settings cards.
 pub const SUBAGENT_MEMBER_TOOL_IDS: &[&str] = &[
-    "subagent_launch",
-    "subagent_wait",
-    "subagent_stop",
-    "subagent_list",
-    "subagent_send",
-    "subagent_delete",
+    "subagent.launch",
+    "subagent.wait",
+    "subagent.stop",
+    "subagent.list",
+    "subagent.send",
 ];
 
 /// Task-board / memory / human-Ask tools. Subagent role does not bind these (tool-set gate).
@@ -130,15 +121,6 @@ pub enum PermissionSurface {
     Fixed,
 }
 
-/// Declared call surface copied from the tool. Not a user-selectable mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum CallSurface {
-    #[default]
-    Direct,
-    Code,
-}
-
 /// Runtime state of a capability, kept separate from its definition/binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -161,9 +143,6 @@ pub struct AvailableTool {
     /// Backend declaration of whether this tool has an ALL/SAFE dial.
     #[serde(default)]
     pub permission_surface: PermissionSurface,
-    /// `code` tools are reached through `run_code`. The Agents card badges this.
-    #[serde(default)]
-    pub surface: CallSurface,
     /// Concrete model functions behind this card. MCP members are filled after
     /// the handshake; every other capability declares them statically here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -199,20 +178,19 @@ pub struct ToolSchema {
 }
 
 /// A first-class custom-tool suite. Members reference it by name and inherit
-/// its surface and permission rules; the suite owns exactly one binding.
+/// its permission rules; the suite owns exactly one binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CustomSuiteDefinition {
-    pub surface: CallSurface,
     #[serde(default)]
     pub label: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<crate::permission::PolicyRule>,
 }
 
-/// One custom tool. A standalone tool writes `surface`; a suite member writes
-/// `suite` and inherits the suite surface/rules.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One custom tool invoked through `run_code` (`tools.<name>` or `tools.<suite>.<name>`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CustomToolDefinition {
     pub name: String,
     #[serde(default)]
@@ -227,90 +205,9 @@ pub struct CustomToolDefinition {
     /// must leave this empty; the suite owns the rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<crate::permission::PolicyRule>,
-    /// Standalone call surface. Exactly one of `surface` / `suite` is present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub surface: Option<CallSurface>,
-    /// Suite reference. When present, surface and rules are inherited.
+    /// Suite reference. When present, rules are inherited from `suites.<name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suite: Option<String>,
-    /// Code-surface result schema. Required on code, forbidden on direct.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_schema: Option<Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CustomToolDefinitionWire {
-    name: String,
-    #[serde(default)]
-    description: String,
-    schema: ToolSchema,
-    command: String,
-    #[serde(default)]
-    args: Vec<String>,
-    #[serde(default = "default_timeout")]
-    timeout: u64,
-    #[serde(default)]
-    rules: Vec<crate::permission::PolicyRule>,
-    #[serde(default)]
-    surface: Option<CallSurface>,
-    #[serde(default)]
-    suite: Option<String>,
-    #[serde(default)]
-    output_schema: Option<Value>,
-    /// Legacy fields are parsed only to produce an actionable rewrite error.
-    #[serde(default)]
-    data_schema: Option<Value>,
-    #[serde(default)]
-    suite_label: Option<String>,
-}
-
-impl<'de> Deserialize<'de> for CustomToolDefinition {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = CustomToolDefinitionWire::deserialize(deserializer)?;
-        if wire.data_schema.is_some() {
-            return Err(serde::de::Error::custom(
-                "`data_schema` was removed; code tools use `output_schema` (object schema, required on code)",
-            ));
-        }
-        if wire.suite_label.is_some() {
-            return Err(serde::de::Error::custom(
-                "`suite_label` was removed; declare the label once in the suite (`suites.<name>.label`)",
-            ));
-        }
-        let has_suite = wire
-            .suite
-            .as_deref()
-            .is_some_and(|suite| !suite.trim().is_empty());
-        match (wire.surface.is_some(), has_suite) {
-            (false, false) => {
-                return Err(serde::de::Error::custom(
-                    "custom tool needs exactly one of `surface` (standalone) or `suite` (member)",
-                ));
-            }
-            (true, true) => {
-                return Err(serde::de::Error::custom(
-                    "custom tool cannot set both `surface` and `suite`; suite members inherit surface",
-                ));
-            }
-            _ => {}
-        }
-        Ok(Self {
-            name: wire.name,
-            description: wire.description,
-            schema: wire.schema,
-            command: wire.command,
-            args: wire.args,
-            timeout: wire.timeout,
-            rules: wire.rules,
-            surface: wire.surface,
-            suite: wire.suite.filter(|suite| !suite.trim().is_empty()),
-            output_schema: wire.output_schema,
-        })
-    }
 }
 
 fn default_timeout() -> u64 {
@@ -318,18 +215,6 @@ fn default_timeout() -> u64 {
 }
 
 impl CustomToolDefinition {
-    /// Raw standalone surface; suite members return `None` until resolved.
-    pub fn declared_surface(&self) -> Option<CallSurface> {
-        self.surface
-    }
-
-    /// Surface used by runtime/schema code. Suite members are normally resolved
-    /// before they reach this point; `None` falls back to direct for legacy
-    /// in-memory callers/tests.
-    pub fn effective_surface(&self) -> CallSurface {
-        self.surface.unwrap_or(CallSurface::Direct)
-    }
-
     pub fn is_suite_member(&self) -> bool {
         self.suite
             .as_deref()
@@ -369,20 +254,17 @@ pub struct CustomToolDiagnostic {
 mod custom_tool_definition_tests {
     use super::*;
 
-    fn body(surface: Option<&str>) -> serde_json::Value {
-        let mut body = serde_json::json!({
+    #[test]
+    fn standalone_and_suite_members_parse_without_surface_or_output_schema() {
+        let standalone: CustomToolDefinition = serde_json::from_value(serde_json::json!({
             "name": "probe",
             "command": "echo",
             "schema": { "type": "object", "properties": {}, "required": [] }
-        });
-        if let Some(surface) = surface {
-            body["surface"] = serde_json::Value::String(surface.into());
-        }
-        body
-    }
+        }))
+        .expect("standalone tool");
+        assert_eq!(standalone.name, "probe");
+        assert!(!standalone.is_suite_member());
 
-    #[test]
-    fn suite_member_omits_surface_and_old_fields_are_rejected() {
         let member: CustomToolDefinition = serde_json::from_value(serde_json::json!({
             "name": "deck_a",
             "suite": "deck",
@@ -390,53 +272,28 @@ mod custom_tool_definition_tests {
             "schema": { "type": "object", "properties": {}, "required": [] }
         }))
         .expect("suite member");
-        assert_eq!(member.surface, None);
         assert_eq!(member.suite.as_deref(), Some("deck"));
+        assert!(member.is_suite_member());
 
-        let both = serde_json::from_value::<CustomToolDefinition>(serde_json::json!({
-            "name": "deck_a",
-            "surface": "code",
-            "suite": "deck",
-            "command": "echo",
-            "schema": { "type": "object", "properties": {}, "required": [] }
-        }))
-        .unwrap_err();
-        assert!(both.to_string().contains("both"), "{both}");
-
-        let old = serde_json::from_value::<CustomToolDefinition>(serde_json::json!({
-            "name": "old",
-            "surface": "code",
-            "data_schema": { "type": "object" },
-            "command": "echo",
-            "schema": { "type": "object", "properties": {}, "required": [] }
-        }))
-        .unwrap_err();
-        assert!(old.to_string().contains("output_schema"), "{old}");
-
-        let labelled = serde_json::from_value::<CustomToolDefinition>(serde_json::json!({
-            "name": "old",
-            "surface": "direct",
-            "suite_label": "Deck",
-            "command": "echo",
-            "schema": { "type": "object", "properties": {}, "required": [] }
-        }))
-        .unwrap_err();
-        assert!(labelled.to_string().contains("suites"), "{labelled}");
-    }
-
-    #[test]
-    fn custom_tool_surface_is_explicit_and_accepts_code() {
-        let missing: Result<CustomToolDefinition, _> = serde_json::from_value(body(None));
-        assert!(
-            missing.is_err(),
-            "surface must be explicit on a standalone tool"
-        );
-
-        let direct: CustomToolDefinition = serde_json::from_value(body(Some("direct"))).unwrap();
-        assert_eq!(direct.surface, Some(CallSurface::Direct));
-
-        let code: CustomToolDefinition = serde_json::from_value(body(Some("code"))).unwrap();
-        assert_eq!(code.surface, Some(CallSurface::Code));
+        for removed in [
+            serde_json::json!({
+                "name": "old",
+                "surface": "code",
+                "command": "echo",
+                "schema": { "type": "object", "properties": {}, "required": [] }
+            }),
+            serde_json::json!({
+                "name": "old",
+                "output_schema": { "type": "object" },
+                "command": "echo",
+                "schema": { "type": "object", "properties": {}, "required": [] }
+            }),
+        ] {
+            assert!(
+                serde_json::from_value::<CustomToolDefinition>(removed).is_err(),
+                "removed fields must be rejected"
+            );
+        }
     }
 }
 

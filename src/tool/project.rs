@@ -1,15 +1,13 @@
-//! One projection from a caller's visible tools to direct list and code surface.
+//! Build the `CodeSurface` and filter duplicate/unsafe code tool names.
 //!
-//! Code tool public types are owned by the JS/TS SDK. Projection only classifies
-//! tools, resolves the generated contract for the bound code set, and records
-//! duplicate/unsafe names.
+//! Built-in tool public types are owned by `sdk/src/api.d.ts`. Projection
+//! resolves contracts for all bound code tools and records any failures.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Serialize;
 
-use crate::tool::ToolSurface;
 use crate::tool::code_contract::{CodeSurface, build_surface};
 use crate::tool::trait_::Tool;
 
@@ -20,10 +18,9 @@ pub struct RejectedTool {
     pub reason: String,
 }
 
-/// Direct list, code surface, and admission failures for one caller.
+/// Admitted code tools, assembled JS SDK surface, and rejections for one caller.
 #[derive(Clone)]
 pub struct ToolProjection {
-    pub direct: Vec<Arc<dyn Tool>>,
     pub code_tools: Vec<Arc<dyn Tool>>,
     /// Present iff the code tool set is non-empty and its JS contract assembled.
     pub code_surface: Option<Arc<CodeSurface>>,
@@ -58,7 +55,6 @@ fn unsafe_name_reason(name: &str) -> Option<String> {
 
 /// Project `tools` after the caller has already applied its own visibility filter.
 pub fn project_tools(tools: Vec<Arc<dyn Tool>>) -> ToolProjection {
-    let mut direct = Vec::new();
     let mut code_candidates = Vec::new();
     let mut rejected = Vec::new();
     let mut name_counts: HashMap<String, usize> = HashMap::new();
@@ -79,13 +75,9 @@ pub fn project_tools(tools: Vec<Arc<dyn Tool>>) -> ToolProjection {
             rejected.push(RejectedTool { name, reason });
             continue;
         }
-        match tool.surface() {
-            ToolSurface::Direct => direct.push(tool),
-            ToolSurface::Code => code_candidates.push(tool),
-        }
+        code_candidates.push(tool);
     }
 
-    direct.sort_by(|left, right| left.name().cmp(right.name()));
     code_candidates.sort_by(|left, right| left.name().cmp(right.name()));
 
     // Admit code tools one at a time. A malformed dynamic tool or a duplicate
@@ -113,7 +105,6 @@ pub fn project_tools(tools: Vec<Arc<dyn Tool>>) -> ToolProjection {
 
     rejected.sort_by(|left, right| left.name.cmp(&right.name));
     ToolProjection {
-        direct,
         code_tools: admitted,
         code_surface,
         rejected,

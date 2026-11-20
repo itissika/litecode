@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::tool::code_contract::{SdkFragments, SdkToolFragment};
 
 const SUITE_ORDER: &[&str] = &[
-    "file", "search", "process", "web", "browser", "lsp", "memory",
+    "file", "search", "process", "web", "browser", "lsp", "memory", "todo", "plan", "ask_user",
+    "knowledge", "workspace", "subagent", "bot",
 ];
 
 fn sort_fragments<'a>(
@@ -67,12 +68,35 @@ fn render_tool(tool: &SdkToolFragment, indent: &str) -> String {
 }
 
 fn suite_interface_name(suite: &str) -> String {
-    let mut chars = suite.chars();
+    let clean: String = suite
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let mut chars = clean.chars();
     match chars.next() {
         Some(first) => {
             first.to_uppercase().collect::<String>() + chars.as_str() + "Tools"
         }
         None => "Tools".to_string(),
+    }
+}
+
+fn suite_property_key(suite: &str) -> String {
+    let valid = !suite.is_empty()
+        && suite.chars().enumerate().all(|(i, c)| {
+            (c.is_ascii_alphabetic() || c == '_' || c == '$')
+                || (i > 0 && (c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+        });
+    if valid {
+        suite.to_string()
+    } else {
+        serde_json::to_string(suite).unwrap_or_else(|_| "\"custom\"".to_string())
     }
 }
 
@@ -163,7 +187,7 @@ fn render_tools_interface(
     }
     for suite in &ordered_suites {
         out.push_str("  ");
-        out.push_str(suite);
+        out.push_str(&suite_property_key(suite));
         out.push_str(": ");
         out.push_str(&suite_interface_name(suite));
         out.push_str(";\n");

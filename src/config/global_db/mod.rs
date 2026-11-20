@@ -5,7 +5,7 @@ use std::sync::Arc;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::config::schema::{
-    AgentProfile, AgentRole, AgentToolBinding, AuthSettings, CallSurface, CustomSuiteDefinition,
+    AgentProfile, AgentRole, AgentToolBinding, AuthSettings, CustomSuiteDefinition,
     CustomToolDefinition, GlobalSettings, LogSettings, McpServerDefinition, McpTransport,
     ToolPreset, WebSearchSettings,
 };
@@ -281,7 +281,7 @@ pub fn repair_agent_models_on_boot(
         let Some(profile) = settings.agents.get(&id) else {
             continue;
         };
-        store::upsert_agent_with_surface(
+        store::upsert_agent(
             conn,
             &id,
             profile.role,
@@ -289,7 +289,6 @@ pub fn repair_agent_models_on_boot(
             &profile.system_prompt,
             &profile.description,
             &profile.allowed_subagents,
-            profile.tool_surface,
         )?;
     }
     Ok(())
@@ -332,7 +331,7 @@ pub mod store {
             )?;
         }
         for (id, profile) in &settings.agents {
-            upsert_agent_with_surface(
+            upsert_agent(
                 &tx,
                 id,
                 profile.role,
@@ -340,7 +339,6 @@ pub mod store {
                 &profile.system_prompt,
                 &profile.description,
                 &profile.allowed_subagents,
-                profile.tool_surface,
             )?;
             for (tool_id, binding) in &profile.tools {
                 upsert_agent_tool(&tx, id, tool_id, binding)?;
@@ -417,25 +415,9 @@ pub mod store {
         Ok(())
     }
 
-    fn parse_surface(s: String) -> Result<CallSurface> {
-        match s.as_str() {
-            "code" => Ok(CallSurface::Code),
-            "direct" => Ok(CallSurface::Direct),
-            _ => Err(LitecodeError::Config(format!("unknown agent tool_surface: {s}"))),
-        }
-    }
-
-    fn surface_to_str(surface: CallSurface) -> &'static str {
-        match surface {
-            CallSurface::Code => "code",
-            CallSurface::Direct => "direct",
-        }
-    }
-
     fn load_agents(conn: &Connection) -> Result<HashMap<String, AgentProfile>> {
         let mut stmt = conn.prepare(
-            "SELECT id, role, model_ref, system_prompt, description,
-                    allowed_subagents_json, tool_surface
+            "SELECT id, role, model_ref, system_prompt, description, allowed_subagents_json
              FROM agents",
         )?;
         let mut rows = stmt.query([])?;
@@ -449,7 +431,6 @@ pub mod store {
                         "invalid allowed_subagents_json for agent '{id}': {e}"
                     ))
                 })?;
-            let tool_surface = parse_surface(row.get(6)?)?;
             let mut profile = AgentProfile {
                 role: parse_role(row.get(1)?)?,
                 model_ref: row.get(2)?,
@@ -457,7 +438,6 @@ pub mod store {
                 description: row.get(4)?,
                 tools: HashMap::new(),
                 allowed_subagents,
-                tool_surface,
             };
             profile.tools = load_agent_tools(conn, &id)?;
             map.insert(id, profile);
@@ -526,40 +506,6 @@ pub mod store {
         Ok(())
     }
 
-    pub fn upsert_agent_with_surface(
-        conn: &Connection,
-        id: &str,
-        role: AgentRole,
-        model_ref: &str,
-        system_prompt: &str,
-        description: &str,
-        allowed_subagents: &[String],
-        tool_surface: CallSurface,
-    ) -> Result<()> {
-        let allowed_json = serde_json::to_string(allowed_subagents)?;
-        conn.execute(
-            "INSERT INTO agents (id, role, model_ref, system_prompt, description, allowed_subagents_json, tool_surface)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(id) DO UPDATE SET
-               role = excluded.role,
-               model_ref = excluded.model_ref,
-               system_prompt = excluded.system_prompt,
-               description = excluded.description,
-               allowed_subagents_json = excluded.allowed_subagents_json,
-               tool_surface = excluded.tool_surface",
-            params![
-                id,
-                role_to_str(role),
-                model_ref,
-                system_prompt,
-                description,
-                allowed_json,
-                surface_to_str(tool_surface),
-            ],
-        )?;
-        Ok(())
-    }
-
     pub fn upsert_agent_tool(
         conn: &Connection,
         agent_id: &str,
@@ -592,7 +538,7 @@ pub mod store {
 
     fn load_custom_tools(conn: &Connection) -> Result<Vec<CustomToolDefinition>> {
         let mut stmt = conn.prepare(
-            "SELECT id, schema_json, command, args_json, timeout, description, rules_json, surface, suite_id, output_schema_json, definition_version FROM custom_tools",
+            "SELECT id, schema_json, command, args_json, timeout, description, rules_json, suite_id, definition_version FROM custom_tools",
         )?;
         let rows = stmt.query_map([], |row| {
             let schema_json: String = row.get(1)?;
@@ -608,7 +554,7 @@ pub mod store {
                 })?,
                 None => Vec::new(),
             };
-            let version: i64 = row.get(10)?;
+            let version: i64 = row.get(8)?;
             Ok((
                 CustomToolDefinition {
                     name: row.get(0)?,
@@ -630,25 +576,7 @@ pub mod store {
                     timeout: row.get::<_, u64>(4)?,
                     description: row.get(5)?,
                     rules,
-                    suite: row.get::<_, Option<String>>(8)?,
-                    surface: if row.get::<_, Option<String>>(8)?.is_some() {
-                        None
-                    } else {
-                        Some(match row.get::<_, Option<String>>(7)?.as_deref() {
-                            Some("code") => crate::config::schema::CallSurface::Code,
-                            _ => crate::config::schema::CallSurface::Direct,
-                        })
-                    },
-                    output_schema: match row.get::<_, Option<String>>(9)? {
-                        Some(json) => Some(serde_json::from_str(&json).map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                9,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?),
-                        None => None,
-                    },
+                    suite: row.get::<_, Option<String>>(7)?,
                 },
                 version,
             ))
@@ -660,7 +588,7 @@ pub mod store {
                 tracing::warn!(
                     tool = %tool.name,
                     version,
-                    "skipping legacy global custom tool; rewrite it in the direct/code + suites format"
+                    "skipping legacy global custom tool; rewrite it in the code-only custom_tools + suites format"
                 );
                 continue;
             }
@@ -687,22 +615,9 @@ pub mod store {
         } else {
             Some(serde_json::to_string(&custom.rules)?)
         };
-        let output_schema_json = custom
-            .output_schema
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()?;
-        // The column is NOT NULL on old DBs; suite members ignore it on load.
-        let surface = match custom
-            .surface
-            .unwrap_or(crate::config::schema::CallSurface::Direct)
-        {
-            crate::config::schema::CallSurface::Code => "code",
-            crate::config::schema::CallSurface::Direct => "direct",
-        };
         conn.execute(
-            "INSERT INTO custom_tools (id, schema_json, command, args_json, timeout, description, rules_json, surface, suite_id, output_schema_json, data_schema_json, definition_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, 2)
+            "INSERT INTO custom_tools (id, schema_json, command, args_json, timeout, description, rules_json, suite_id, definition_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 2)
              ON CONFLICT(id) DO UPDATE SET
                schema_json = excluded.schema_json,
                command = excluded.command,
@@ -710,10 +625,7 @@ pub mod store {
                timeout = excluded.timeout,
                description = excluded.description,
                rules_json = excluded.rules_json,
-               surface = excluded.surface,
                suite_id = excluded.suite_id,
-               output_schema_json = excluded.output_schema_json,
-               data_schema_json = NULL,
                definition_version = 2",
             params![
                 custom.name,
@@ -723,25 +635,19 @@ pub mod store {
                 custom.timeout,
                 custom.description,
                 rules_json,
-                surface,
                 custom.suite,
-                output_schema_json
             ],
         )?;
         Ok(())
     }
 
     fn load_custom_suites(conn: &Connection) -> Result<HashMap<String, CustomSuiteDefinition>> {
-        let mut stmt = conn.prepare("SELECT id, surface, label, rules_json FROM custom_suites")?;
+        let mut stmt = conn.prepare("SELECT id, label, rules_json FROM custom_suites")?;
         let rows = stmt.query_map([], |row| {
-            let surface = match row.get::<_, String>(1)?.as_str() {
-                "code" => crate::config::schema::CallSurface::Code,
-                _ => crate::config::schema::CallSurface::Direct,
-            };
-            let rules = match row.get::<_, Option<String>>(3)? {
+            let rules = match row.get::<_, Option<String>>(2)? {
                 Some(json) => serde_json::from_str(&json).map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
-                        3,
+                        2,
                         rusqlite::types::Type::Text,
                         Box::new(e),
                     )
@@ -751,8 +657,7 @@ pub mod store {
             Ok((
                 row.get::<_, String>(0)?,
                 CustomSuiteDefinition {
-                    surface,
-                    label: row.get(2)?,
+                    label: row.get(1)?,
                     rules,
                 },
             ))
@@ -775,17 +680,12 @@ pub mod store {
         } else {
             Some(serde_json::to_string(&suite.rules)?)
         };
-        let surface = match suite.surface {
-            crate::config::schema::CallSurface::Code => "code",
-            crate::config::schema::CallSurface::Direct => "direct",
-        };
         conn.execute(
-            "INSERT INTO custom_suites (id, surface, label, rules_json) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO custom_suites (id, label, rules_json) VALUES (?1, ?2, ?3)
              ON CONFLICT(id) DO UPDATE SET
-               surface = excluded.surface,
                label = excluded.label,
                rules_json = excluded.rules_json",
-            params![id, surface, suite.label, rules_json],
+            params![id, suite.label, rules_json],
         )?;
         Ok(())
     }
@@ -966,7 +866,7 @@ pub mod store {
 #[cfg(test)]
 mod open_tests {
     use super::*;
-    use crate::config::schema::{CallSurface, ToolSchema};
+    use crate::config::schema::ToolSchema;
 
     #[test]
     fn every_migratable_epoch_is_backed_up_once_before_upgrading() {
@@ -1017,7 +917,7 @@ mod open_tests {
     }
 
     #[test]
-    fn custom_tool_surface_roundtrips_through_global_db() {
+    fn custom_tool_roundtrips_through_global_db() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("litecode.db");
         let conn = open(&path).unwrap();
@@ -1025,7 +925,6 @@ mod open_tests {
 
         let def = CustomToolDefinition {
             name: "code_probe".into(),
-            output_schema: None,
             description: "code probe".into(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -1036,7 +935,6 @@ mod open_tests {
             args: Vec::new(),
             timeout: 120,
             rules: Vec::new(),
-            surface: Some(CallSurface::Code),
             suite: None,
         };
         store::upsert_custom_tool(&conn, &def).unwrap();
@@ -1047,6 +945,6 @@ mod open_tests {
             .iter()
             .find(|tool| tool.name == "code_probe")
             .expect("custom tool loaded");
-        assert_eq!(custom.surface, Some(CallSurface::Code));
+        assert_eq!(custom.command, "echo");
     }
 }

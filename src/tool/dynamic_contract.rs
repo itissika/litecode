@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
-use crate::config::schema::{CallSurface, CustomToolDefinition};
+use crate::config::schema::CustomToolDefinition;
 use crate::tool::DynamicCodeSpec;
 use crate::tool::code_contract::SdkToolFragment;
 use crate::tool::custom_spec::custom_input_schema;
@@ -17,111 +17,47 @@ pub struct DynamicTool {
     pub fragment: SdkToolFragment,
     pub types: BTreeMap<String, String>,
     pub input_schema: Value,
-    pub output_schema: Value,
+    pub output_schema: Option<Value>,
 }
 
-const ALLOWED_SCHEMA_KEYS: &[&str] = &[
-    "type",
-    "description",
-    "title",
-    "default",
-    "minimum",
-    "maximum",
-    "exclusiveMinimum",
-    "exclusiveMaximum",
-    "multipleOf",
-    "minLength",
-    "maxLength",
-    "pattern",
-    "format",
-    "minItems",
-    "maxItems",
-    "uniqueItems",
-    "enum",
-    "const",
-    "properties",
-    "required",
-    "items",
-    "additionalProperties",
-    "oneOf",
-    "anyOf",
-];
+const MAX_SCHEMA_DEPTH: usize = 6;
+const MAX_SCHEMA_NODES: usize = 64;
 
-fn schema_type_names(schema: &Map<String, Value>) -> Result<Vec<String>, String> {
-    match schema.get("type") {
-        None => Ok(Vec::new()),
-        Some(Value::String(kind)) => Ok(vec![kind.clone()]),
-        Some(Value::Array(kinds)) => kinds
-            .iter()
-            .map(|kind| {
-                kind.as_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| "schema type array must contain only strings".to_string())
-            })
-            .collect(),
-        Some(_) => Err("schema type must be a string or string array".into()),
+struct LowerCtx<'a> {
+    root: &'a Value,
+    visiting: Vec<String>,
+    remaining_nodes: usize,
+}
+
+impl<'a> LowerCtx<'a> {
+    fn new(root: &'a Value) -> Self {
+        Self {
+            root,
+            visiting: Vec::new(),
+            remaining_nodes: MAX_SCHEMA_NODES,
+        }
+    }
+
+    fn take_budget(&mut self) -> bool {
+        if self.remaining_nodes == 0 {
+            return false;
+        }
+        self.remaining_nodes -= 1;
+        true
     }
 }
 
-fn validate_supported_schema(schema: &Value, path: &str) -> Result<(), String> {
-    let Some(object) = schema.as_object() else {
-        return Err(format!("{path}: schema must be an object"));
-    };
-    for key in object.keys() {
-        if !ALLOWED_SCHEMA_KEYS.contains(&key.as_str()) {
-            return Err(format!(
-                "{path}: unsupported schema keyword '{key}' (no $ref/allOf/not/if)"
-            ));
-        }
+fn resolve_local_ref<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
+    if reference == "#" {
+        return Some(root);
     }
-    for kind in schema_type_names(object)? {
-        if !matches!(
-            kind.as_str(),
-            "object" | "array" | "string" | "number" | "integer" | "boolean" | "null"
-        ) {
-            return Err(format!("{path}: unsupported schema type '{kind}'"));
-        }
+    let pointer = reference.strip_prefix("#/")?;
+    let mut current = root;
+    for raw_seg in pointer.split('/') {
+        let seg = raw_seg.replace("~1", "/").replace("~0", "~");
+        current = current.get(&seg)?;
     }
-    if let Some(required) = object.get("required") {
-        let Some(required) = required.as_array() else {
-            return Err(format!("{path}: required must be an array"));
-        };
-        if required.iter().any(|item| !item.is_string()) {
-            return Err(format!("{path}: required must contain only strings"));
-        }
-    }
-    if let Some(properties) = object.get("properties") {
-        let Some(properties) = properties.as_object() else {
-            return Err(format!("{path}: properties must be an object"));
-        };
-        for (name, child) in properties {
-            validate_supported_schema(child, &format!("{path}.{name}"))?;
-        }
-    }
-    if let Some(items) = object.get("items") {
-        validate_supported_schema(items, &format!("{path}[]"))?;
-    }
-    if let Some(additional) = object.get("additionalProperties")
-        && !additional.is_boolean()
-    {
-        return Err(format!(
-            "{path}: additionalProperties must be boolean in a custom code schema"
-        ));
-    }
-    for key in ["oneOf", "anyOf"] {
-        if let Some(variants) = object.get(key) {
-            let Some(variants) = variants.as_array() else {
-                return Err(format!("{path}: {key} must be an array"));
-            };
-            if variants.is_empty() {
-                return Err(format!("{path}: {key} must not be empty"));
-            }
-            for (index, variant) in variants.iter().enumerate() {
-                validate_supported_schema(variant, &format!("{path}.{key}[{index}]"))?;
-            }
-        }
-    }
-    Ok(())
+    Some(current)
 }
 
 fn root_is_object(schema: &Value) -> bool {
@@ -137,25 +73,10 @@ fn root_is_object(schema: &Value) -> bool {
 }
 
 /// Settings/admission-time validation for a custom code tool.
-pub fn validate_custom_code_contract(
-    def: &CustomToolDefinition,
-    surface: CallSurface,
-) -> Result<(), String> {
-    if surface != CallSurface::Code {
-        return Ok(());
-    }
+pub fn validate_custom_code_contract(def: &CustomToolDefinition) -> Result<(), String> {
     let input = custom_input_schema(def);
-    let output = def
-        .output_schema
-        .clone()
-        .ok_or_else(|| "code custom tool must declare output_schema".to_string())?;
-    validate_supported_schema(&input, "input")?;
-    validate_supported_schema(&output, "output")?;
     if !root_is_object(&input) {
-        return Err("custom code input schema must describe an object".into());
-    }
-    if !root_is_object(&output) {
-        return Err("custom code output schema must describe an object".into());
+        return Err("custom tool input schema must describe an object".into());
     }
     Ok(())
 }
@@ -179,10 +100,11 @@ fn pascal_case(name: &str) -> String {
 }
 
 fn property_key(name: &str) -> String {
-    let valid = name.chars().enumerate().all(|(index, ch)| {
-        (ch.is_ascii_alphabetic() || ch == '_' || ch == '$')
-            || (index > 0 && (ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'))
-    });
+    let valid = !name.is_empty()
+        && name.chars().enumerate().all(|(index, ch)| {
+            (ch.is_ascii_alphabetic() || ch == '_' || ch == '$')
+                || (index > 0 && (ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'))
+        });
     if valid {
         name.to_string()
     } else {
@@ -218,13 +140,42 @@ fn render_description(schema: &Map<String, Value>, indent: usize) -> String {
 }
 
 fn schema_to_ts(schema: &Value, indent: usize) -> String {
+    let mut ctx = LowerCtx::new(schema);
+    schema_to_ts_inner(schema, indent, 0, &mut ctx)
+}
+
+fn schema_to_ts_inner(
+    schema: &Value,
+    indent: usize,
+    depth: usize,
+    ctx: &mut LowerCtx<'_>,
+) -> String {
+    if depth >= MAX_SCHEMA_DEPTH || !ctx.take_budget() {
+        return "unknown".into();
+    }
     let Some(object) = schema.as_object() else {
         return "unknown".into();
     };
+    if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+        if ctx.visiting.iter().any(|seen| seen == reference) || ctx.visiting.len() >= MAX_SCHEMA_DEPTH
+        {
+            return "unknown".into();
+        }
+        let Some(target) = resolve_local_ref(ctx.root, reference) else {
+            return "unknown".into();
+        };
+        ctx.visiting.push(reference.to_string());
+        let lowered = schema_to_ts_inner(target, indent, depth + 1, ctx);
+        ctx.visiting.pop();
+        return lowered;
+    }
     if let Some(value) = object.get("const") {
         return literal_text(value);
     }
     if let Some(values) = object.get("enum").and_then(Value::as_array) {
+        if values.is_empty() {
+            return "unknown".into();
+        }
         return values
             .iter()
             .map(literal_text)
@@ -232,22 +183,39 @@ fn schema_to_ts(schema: &Value, indent: usize) -> String {
             .join(" | ");
     }
     for key in ["oneOf", "anyOf"] {
-        if let Some(variants) = object.get(key).and_then(Value::as_array) {
+        if let Some(variants) = object.get(key).and_then(Value::as_array)
+            && !variants.is_empty()
+        {
             let rendered = variants
                 .iter()
-                .map(|variant| schema_to_ts(variant, indent))
+                .map(|variant| schema_to_ts_inner(variant, indent, depth + 1, ctx))
                 .collect::<Vec<_>>()
                 .join(" | ");
             return format!("({rendered})");
         }
     }
+    if let Some(variants) = object.get("allOf").and_then(Value::as_array)
+        && !variants.is_empty()
+    {
+        let parts: Vec<String> = variants
+            .iter()
+            .map(|variant| schema_to_ts_inner(variant, indent, depth + 1, ctx))
+            .filter(|part| part != "unknown")
+            .collect();
+        return match parts.len() {
+            0 => "unknown".into(),
+            1 => parts.into_iter().next().unwrap(),
+            _ => format!("({})", parts.join(" & ")),
+        };
+    }
     let kinds: Vec<&str> = match object.get("type") {
         Some(Value::String(kind)) => vec![kind.as_str()],
         Some(Value::Array(kinds)) => kinds.iter().filter_map(Value::as_str).collect(),
-        None if object.contains_key("properties") => vec!["object"],
+        None if object.contains_key("properties") || object.contains_key("additionalProperties") => {
+            vec!["object"]
+        }
         None if object.contains_key("items") => vec!["array"],
-        None => vec!["unknown"],
-        Some(_) => vec!["unknown"],
+        None | Some(_) => vec!["unknown"],
     };
     let mut rendered = Vec::new();
     for kind in kinds {
@@ -257,27 +225,53 @@ fn schema_to_ts(schema: &Value, indent: usize) -> String {
             "boolean" => "boolean".to_string(),
             "null" => "null".to_string(),
             "array" => {
-                let item = schema_to_ts(object.get("items").unwrap_or(&Value::Null), indent);
+                let item = schema_to_ts_inner(
+                    object.get("items").unwrap_or(&Value::Null),
+                    indent,
+                    depth + 1,
+                    ctx,
+                );
                 format!("Array<{item}>")
             }
-            "object" => render_object_type(object, indent),
+            "object" => render_object_type(object, indent, depth, ctx),
             _ => "unknown".to_string(),
         };
         rendered.push(part);
     }
-    if rendered.len() == 1 {
+    if rendered.is_empty() {
+        "unknown".into()
+    } else if rendered.len() == 1 {
         rendered.remove(0)
     } else {
         format!("({})", rendered.join(" | "))
     }
 }
 
-fn render_object_type(object: &Map<String, Value>, indent: usize) -> String {
+fn render_object_type(
+    object: &Map<String, Value>,
+    indent: usize,
+    depth: usize,
+    ctx: &mut LowerCtx<'_>,
+) -> String {
     let properties = object
         .get("properties")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    let additional = object.get("additionalProperties");
+    if properties.is_empty() {
+        return match additional {
+            Some(Value::Bool(false)) => "Record<string, never>".to_string(),
+            Some(schema @ Value::Object(_)) => {
+                let val_ts = schema_to_ts_inner(schema, indent, depth + 1, ctx);
+                format!("Record<string, {val_ts}>")
+            }
+            _ => "Record<string, unknown>".to_string(),
+        };
+    }
+    if depth + 1 >= MAX_SCHEMA_DEPTH {
+        return "Record<string, unknown>".to_string();
+    }
     let required: BTreeSet<&str> = object
         .get("required")
         .and_then(Value::as_array)
@@ -290,7 +284,12 @@ fn render_object_type(object: &Map<String, Value>, indent: usize) -> String {
     let pad = " ".repeat(child_indent);
     let mut names: Vec<&String> = properties.keys().collect();
     names.sort();
+    let mut truncated = false;
     for name in names {
+        if ctx.remaining_nodes == 0 {
+            truncated = true;
+            break;
+        }
         let child = &properties[name];
         out.push_str(&render_description(
             child.as_object().unwrap_or(&Map::new()),
@@ -302,19 +301,19 @@ fn render_object_type(object: &Map<String, Value>, indent: usize) -> String {
             out.push('?');
         }
         out.push_str(": ");
-        out.push_str(&schema_to_ts(child, child_indent));
+        out.push_str(&schema_to_ts_inner(child, child_indent, depth + 1, ctx));
         out.push_str(";\n");
     }
-    if object.get("additionalProperties").and_then(Value::as_bool) == Some(true) {
+    if truncated || additional == Some(&Value::Bool(true)) {
         out.push_str(&pad);
         out.push_str("[key: string]: unknown;\n");
+    } else if let Some(schema @ Value::Object(_)) = additional {
+        let val_ts = schema_to_ts_inner(schema, child_indent, depth + 1, ctx);
+        out.push_str(&pad);
+        out.push_str(&format!("[key: string]: {val_ts};\n"));
     }
-    if out == "{\n" {
-        out.push('}');
-    } else {
-        out.push_str(&" ".repeat(indent));
-        out.push('}');
-    }
+    out.push_str(&" ".repeat(indent));
+    out.push('}');
     out
 }
 
@@ -338,60 +337,59 @@ fn select_type_names(name: &str, reserved: &BTreeSet<String>) -> (String, String
     )
 }
 
-/// Build the isolated JS fragment and schemas for one runtime custom tool.
+/// Build the isolated JS fragment and schemas for one runtime tool.
 pub fn build_dynamic_tool(
     name: &str,
     spec: DynamicCodeSpec,
     reserved_types: &BTreeSet<String>,
 ) -> Result<DynamicTool, String> {
-    validate_supported_schema(&spec.input_schema, "input")?;
-    validate_supported_schema(&spec.output_schema, "output")?;
-    if !root_is_object(&spec.input_schema) {
-        return Err(format!(
-            "custom code tool '{name}' input schema must describe an object"
-        ));
-    }
-    if !root_is_object(&spec.output_schema) {
-        return Err(format!(
-            "custom code tool '{name}' output schema must describe an object"
-        ));
-    }
-    let (input_type, data_type) = select_type_names(name, reserved_types);
-    let output_schema = spec.output_schema;
-    let mut types = BTreeMap::new();
-    types.insert(
-        input_type.clone(),
-        format!(
-            "type {input_type} = {};",
-            schema_to_ts(&spec.input_schema, 0)
-        ),
-    );
-    types.insert(
-        data_type.clone(),
-        format!("type {data_type} = {};", schema_to_ts(&output_schema, 0)),
-    );
     let path: Vec<String> = name.split('.').map(str::to_string).collect();
     let method = path
         .last()
         .cloned()
-        .ok_or_else(|| "custom code tool name is empty".to_string())?;
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "dynamic code tool name is empty".to_string())?;
     let suite = if path.len() > 1 {
         path[0].clone()
     } else {
         "custom".into()
     };
+
+    let (input_type, data_type) = select_type_names(name, reserved_types);
+    let mut types = BTreeMap::new();
+    let lowered_input = if root_is_object(&spec.input_schema) {
+        schema_to_ts(&spec.input_schema, 0)
+    } else {
+        "Record<string, unknown>".into()
+    };
+    types.insert(input_type.clone(), format!("type {input_type} = {lowered_input};"));
+
+    let mut type_deps = vec![input_type.clone()];
+    let return_type = if let Some(output_schema) = &spec.output_schema {
+        let lowered_output = schema_to_ts(output_schema, 0);
+        types.insert(
+            data_type.clone(),
+            format!("type {data_type} = {lowered_output};"),
+        );
+        type_deps.push(data_type.clone());
+        data_type
+    } else {
+        "unknown".to_string()
+    };
+
+    let member = property_key(&method);
     let fragment = SdkToolFragment {
         path,
         suite,
         doc: spec.description,
-        signature: format!("{method}(args: {input_type}): Promise<{data_type}>;"),
-        type_deps: vec![input_type, data_type],
+        signature: format!("{member}(args: {input_type}): Promise<{return_type}>;"),
+        type_deps,
     };
     Ok(DynamicTool {
         fragment,
         types,
         input_schema: spec.input_schema,
-        output_schema,
+        output_schema: spec.output_schema,
     })
 }
 
@@ -399,7 +397,7 @@ pub fn build_dynamic_tool(
 mod tests {
     use super::*;
 
-    fn spec(output_schema: Value) -> DynamicCodeSpec {
+    fn spec(output_schema: Option<Value>) -> DynamicCodeSpec {
         DynamicCodeSpec {
             description: "echo".into(),
             input_schema: serde_json::json!({
@@ -413,38 +411,61 @@ mod tests {
     }
 
     #[test]
-    fn custom_code_signature_is_plain_promise_and_keeps_its_schema() {
+    fn custom_code_signature_supports_unconstrained_and_typed_outputs() {
+        let untyped = build_dynamic_tool("echo", spec(None), &BTreeSet::new()).expect("untyped tool");
+        assert_eq!(
+            untyped.fragment.signature,
+            "echo(args: CustomEchoInput): Promise<unknown>;"
+        );
+        assert!(untyped.output_schema.is_none());
+
         let output = serde_json::json!({
             "type": "object",
             "properties": {"files": {"type": "integer"}},
             "required": ["files"],
             "additionalProperties": false
         });
-        let tool = build_dynamic_tool("echo", spec(output.clone()), &BTreeSet::new())
+        let tool = build_dynamic_tool("echo", spec(Some(output.clone())), &BTreeSet::new())
             .expect("dynamic tool");
         assert_eq!(
             tool.fragment.signature,
             "echo(args: CustomEchoInput): Promise<CustomEchoData>;"
         );
         assert!(!tool.fragment.signature.contains("ToolResult"));
-        assert_eq!(tool.output_schema, output);
+        assert_eq!(tool.output_schema, Some(output));
         assert!(tool.types["CustomEchoData"].contains("files"));
     }
 
     #[test]
-    fn a_custom_ok_field_is_business_data_not_an_envelope() {
-        let output = serde_json::json!({
+    fn schema_to_ts_tolerates_refs_allof_and_cycles() {
+        let mut s = spec(None);
+        s.input_schema = serde_json::json!({
+            "$defs": {
+                "Node": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "next": { "$ref": "#/$defs/Node" }
+                    },
+                    "required": ["id"]
+                }
+            },
             "type": "object",
             "properties": {
-                "ok": {"type": "boolean"},
-                "files": {"type": "integer"}
+                "root": { "$ref": "#/$defs/Node" },
+                "combined": {
+                    "allOf": [
+                        { "type": "object", "properties": { "a": { "type": "number" } }, "required": ["a"] },
+                        { "type": "object", "properties": { "b": { "type": "boolean" } } }
+                    ]
+                }
             },
-            "required": ["ok", "files"],
-            "additionalProperties": false
+            "required": ["root"]
         });
-        let tool = build_dynamic_tool("echo", spec(output.clone()), &BTreeSet::new())
-            .expect("dynamic tool");
-        assert_eq!(tool.output_schema, output);
-        assert!(tool.types["CustomEchoData"].contains("ok"));
+        let tool = build_dynamic_tool("mcp_graph.walk", s, &BTreeSet::new()).expect("tolerant");
+        let ts = &tool.types["CustomMcpGraphWalkInput"];
+        assert!(ts.contains("id: string;"), "{ts}");
+        assert!(ts.contains("a: number;"), "{ts}");
+        assert!(ts.contains("b?: boolean;"), "{ts}");
     }
 }

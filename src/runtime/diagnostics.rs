@@ -147,7 +147,7 @@ pub struct AuditEvent {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_outcome: Option<String>,
-    /// `direct` or `code`; absent on older audit rows.
+    /// `transport` or `code`; absent on older audit rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<String>,
     /// Outer `run_code` call id for a nested tool call.

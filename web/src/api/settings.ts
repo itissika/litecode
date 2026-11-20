@@ -147,9 +147,6 @@ export type PermissionSurface = "preset" | "fixed";
 /** Role/depth scope supplied by the backend. */
 export type BindingScope = "all" | "primary_root_only";
 
-/** Declared call surface. `code` is reached through `run_code`, not a user mode. */
-export type CallSurface = "direct" | "code";
-
 /** Code transport. It is not a settings tool switch. */
 export const CODE_TRANSPORT_TOOL_ID = "run_code";
 
@@ -160,8 +157,6 @@ export interface AvailableTool {
   overridden?: boolean;
   /** Backend declaration: `preset` shows ALL/SAFE; `fixed` is bind only. */
   permission_surface?: PermissionSurface;
-  /** Declared call surface from the available-tools payload. */
-  surface?: CallSurface;
   /** Concrete model functions behind this card. MCP members load after handshake. */
   members?: string[];
   /** Runtime projection; definitions without an engine omit it. */
@@ -173,10 +168,6 @@ export interface AvailableTool {
 }
 
 export type AvailableStatus = "ready" | "warming" | "disabled" | "failed" | "down";
-
-export function isCodeSurface(tool: { surface?: CallSurface | null }): boolean {
-  return tool.surface === "code";
-}
 
 /** Bind cards. The code transport is omitted even if a payload still lists it. */
 export function settingsToolSwitches(
@@ -202,22 +193,17 @@ export interface ToolPermissionRule {
 export interface CustomToolDefinition {
   name: string;
   description?: string;
-  /** Standalone tools only; suite members omit it and inherit from the suite. */
-  surface?: CallSurface;
   schema: ToolSchema;
-  /** Code-surface result schema; required on code, forbidden on direct. */
-  output_schema?: Record<string, unknown>;
   command: string;
   args?: string[];
   timeout?: number;
   /** Standalone only: Agents can switch ALL/SAFE. Suite members leave it empty. */
   rules?: ToolPermissionRule[];
-  /** Suite member reference; the suite owns surface and rules. */
+  /** Suite member reference; the suite owns rules. */
   suite?: string | null;
 }
 
 export interface CustomSuiteDefinition {
-  surface: CallSurface;
   label?: string;
   rules?: ToolPermissionRule[];
 }

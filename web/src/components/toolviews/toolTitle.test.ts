@@ -3,98 +3,19 @@ import { describe, expect, it } from "vitest";
 import { toolTitle } from "./toolTitle";
 
 describe("toolTitle", () => {
-  it("puts content search targets ahead of execution options", () => {
-    expect(
-      toolTitle("grep", {
-        pattern: "TODO",
-        path: "web/src",
-        glob: "**/*.tsx",
-        offset: 20,
-      }).summary,
-    ).toBe("/TODO/ · in web/src");
-    expect(toolTitle("glob", { pattern: "**/*.rs", path: "src" }).summary).toBe(
-      "**/*.rs · in src",
-    );
-    expect(
-      toolTitle("code_search", {
-        query: "terminal status indicator",
-        include_pattern: "**/*.tsx",
-      }).summary,
-    ).toBe("terminal status indicator · in **/*.tsx");
-    expect(
-      toolTitle("session_search", {
-        query: "auth middleware",
-        session_id: "01ABCDEF",
-      }).summary,
-    ).toBe("auth middleware · in 01ABCDEF");
-    expect(toolTitle("knowledge", {}).summary).toBe("board");
-    expect(toolTitle("knowledge", { command: "refs seq" }).summary).toBe(
-      "refs seq",
-    );
-    expect(toolTitle("litecode_workspace", {}).summary).toBe("panel");
-    expect(
-      toolTitle("litecode_workspace", { action: "refresh mcp" }).summary,
-    ).toBe("refresh mcp");
+  it("defers run_code header summary to RunCodeStatus", () => {
+    expect(toolTitle("run_code", { code: "return 1;" }).summary).toBe("");
   });
 
-  it("identifies both LSP action and target file", () => {
-    expect(
-      toolTitle("lsp", {
-        action: "goToDefinition",
-        file_path: "src/main.rs",
-        line: 42,
-        text: "run_server",
-      }).summary,
-    ).toBe("def · src/main.rs:42 run_server");
-    expect(
-      toolTitle("lsp", { action: "diagnostics", file_path: "web/src/App.tsx" })
-        .summary,
-    ).toBe("diag · web/src/App.tsx");
-  });
-
-  it("uses confirmed todo and plan results instead of verbose input", () => {
-    expect(
-      toolTitle(
-        "todo",
-        { todos: [{ content: "ship", status: "in_progress" }] },
-        "OK. Status — pending: 2, in_progress: 1, completed: 3",
-      ).summary,
-    ).toBe("1 active · 2 pending · 3 done");
-    expect(
-      toolTitle(
-        "plan",
-        { action: "create", content: "# Plan" },
-        "Created plan at .litecode/plan/calm-river.md\nPlan filename was auto-generated; content saved.",
-      ).summary,
-    ).toBe(".litecode/plan/calm-river.md");
-    expect(
-      toolTitle("plan", { action: "create" }, undefined, {
-        activePlanPath: ".litecode/plan/active.md",
-      }).summary,
-    ).toBe(".litecode/plan/active.md");
-  });
-
-  it("uses cmd as the exec_command title and session_id/chars for write_stdin", () => {
-    expect(
-      toolTitle("exec_command", { cmd: "cargo test --workspace" }).summary,
-    ).toBe("cargo test --workspace");
-    expect(
-      toolTitle("write_stdin", { session_id: "bg_1", chars: "yes\n" }).summary,
-    ).toContain("bg_1");
-  });
-
-  it("keeps a deterministic readable fallback", () => {
+  it("uses generic scalar-field fallback for legacy or unknown tool calls", () => {
     expect(toolTitle("custom", { offset: 0, query: "later" }).summary).toBe(
-      'query="later"',
+      "0",
     );
-  });
-
-  it("surfaces the MCP server id and first string arg", () => {
     expect(
       toolTitle("mcp_filesystem", { path: "/tmp", recursive: true }).summary,
-    ).toBe("filesystem · /tmp");
-    expect(
-      toolTitle("mcp_filesystem", { recursive: true, depth: 2 }).summary,
-    ).toBe("filesystem");
+    ).toBe("/tmp");
+    expect(toolTitle("edit", { file_path: "src/a.ts" }).summary).toBe(
+      "src/a.ts",
+    );
   });
 });

@@ -102,7 +102,12 @@ impl PermissionEngine {
         args: &Value,
         workspace_root: &std::path::Path,
     ) -> EvalResult {
-        if core_none_tools().contains(&tool_name) {
+        if core_none_tools().contains(&tool_name)
+            || self
+                .member_owner
+                .get(tool_name)
+                .is_some_and(|cap| core_none_tools().contains(&cap.as_str()))
+        {
             return EvalResult {
                 rule_id: super::policy::DEFAULT_RULE_ID.into(),
                 action: PermissionAction::Allow,
@@ -137,6 +142,11 @@ impl PermissionEngine {
     /// A catalog key owns these rules only when it is that tool's body name and
     /// not a builtin. Reserved names (`run`, `write`, …) always keep the binding.
     fn custom_tool_rules(&self, tool_name: &str) -> Option<Vec<crate::permission::PolicyRule>> {
+        if crate::config::global_db::tools::is_mcp_catalog_id(tool_name)
+            || crate::config::global_db::tools::is_core_tool(tool_name)
+        {
+            return None;
+        }
         // Code suites are called as `suite.member`; the actual Tool identity
         // (and the binding) stays the member name.
         let member = tool_name
@@ -170,6 +180,7 @@ impl PermissionEngine {
         match tool_name {
             "apply_edits" => "edit",
             "exec_command" | "write_stdin" => "exec",
+            "workspace.help" | "workspace.status" => "litecode_workspace",
             _ => tool_name,
         }
     }
@@ -185,6 +196,16 @@ impl PermissionEngine {
             let preset = self.binding(tool_name).and_then(|b| b.preset);
             if preset == Some(ToolPreset::Safe) && !rules.is_empty() {
                 return (ToolPolicy::from_rules(rules), BindingPathMode::Unrestricted);
+            }
+            return (ToolPolicy::allow_all(), BindingPathMode::Unrestricted);
+        }
+        if tool_name == "workspace.refresh" {
+            let preset = self.binding("litecode_workspace").and_then(|b| b.preset);
+            if preset == Some(ToolPreset::Safe) {
+                return crate::permission::presets::binding_for_tool(
+                    "workspace.refresh",
+                    ToolPreset::Safe,
+                );
             }
             return (ToolPolicy::allow_all(), BindingPathMode::Unrestricted);
         }
@@ -214,7 +235,6 @@ mod tests {
     fn tool(rules: Vec<PolicyRule>) -> CustomToolDefinition {
         CustomToolDefinition {
             name: "demo".into(),
-            output_schema: None,
             description: String::new(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -225,7 +245,6 @@ mod tests {
             args: Vec::new(),
             timeout: 120,
             rules,
-            surface: Some(crate::config::schema::CallSurface::Direct),
             suite: None,
         }
     }
@@ -277,7 +296,6 @@ mod tests {
         global.custom_suites.insert(
             "deck".into(),
             crate::config::schema::CustomSuiteDefinition {
-                surface: crate::config::schema::CallSurface::Code,
                 label: "Deck".into(),
                 rules: vec![PolicyRule {
                     id: "deny_all".into(),
@@ -290,11 +308,7 @@ mod tests {
             let mut def = tool(Vec::new());
             def.name = name.into();
             def.command = "echo".into();
-            def.surface = None;
             def.suite = Some("deck".into());
-            def.output_schema = Some(serde_json::json!({
-                "type": "object", "properties": {}, "required": []
-            }));
             global.custom_tools.push(def);
         }
         let resolved =
@@ -333,12 +347,12 @@ mod tests {
         let engine = PermissionEngine::resolver(resolved, "default", 0);
 
         let binding = engine
-            .binding("subagent_launch")
+            .binding("subagent.launch")
             .expect("capability binding");
         assert!(binding.enabled);
         assert_eq!(
             engine
-                .evaluate_tool("subagent_launch", &serde_json::json!({}), dir.path())
+                .evaluate_tool("subagent.launch", &serde_json::json!({}), dir.path())
                 .action,
             PermissionAction::Allow
         );

@@ -17,7 +17,6 @@ fn project_capability(capability: &Capability) -> AvailableTool {
         origin: capability.origin,
         overridden: capability.overridden,
         permission_surface: capability.permission_surface,
-        surface: capability.surface,
         scope: capability.scope,
         members: capability.member_ids().map(str::to_string).collect(),
         label: capability.label.clone(),
@@ -77,13 +76,7 @@ pub fn available_tools_payload(
 pub fn code_rejections_for(resolved: &ResolvedConfig) -> Vec<RejectedTool> {
     let mut rejected = Vec::new();
     for def in resolved.custom_tools() {
-        if def.effective_surface() != crate::config::schema::CallSurface::Code {
-            continue;
-        }
-        if let Err(reason) = crate::tool::dynamic_contract::validate_custom_code_contract(
-            &def,
-            crate::config::schema::CallSurface::Code,
-        ) {
+        if let Err(reason) = crate::tool::dynamic_contract::validate_custom_code_contract(&def) {
             rejected.push(RejectedTool {
                 name: custom_function_name(&def),
                 reason,
@@ -259,7 +252,6 @@ mod tests {
         let tools = available_tools(&resolved());
         let lsp = tools.iter().find(|tool| tool.id == "lsp").expect("lsp");
         assert_eq!(lsp.members.len(), 7);
-        assert_eq!(lsp.surface, crate::config::schema::CallSurface::Code);
     }
 
     #[test]

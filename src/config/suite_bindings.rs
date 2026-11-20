@@ -110,9 +110,7 @@ mod tests {
             args: Vec::new(),
             timeout: 30,
             rules: Vec::new(),
-            surface: Some(crate::config::schema::CallSurface::Direct),
             suite: suite.map(str::to_string),
-            output_schema: None,
         }
     }
 

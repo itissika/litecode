@@ -3,10 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use super::kinds::{
-    CustomToolSettledEntry, MemorySnap, PlanPointer, Reminder, ReminderKind, RunningBash,
-    SettledChild, TodoSnap,
-};
+use super::kinds::{MemorySnap, PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild, TodoSnap};
 use super::sources;
 
 /// Facts the seam already sensed. Sources do not reach back into the runtime.
@@ -97,7 +94,6 @@ pub struct Facts {
     pub settled: Vec<SettledChild>,
     /// Full batch text for the subagent reminder, without the reminder wrapper.
     pub settled_detail: String,
-    pub custom_tool_settled: Vec<CustomToolSettledEntry>,
     pub changed_paths: Vec<String>,
 }
 
@@ -123,9 +119,6 @@ pub fn sync(ctx: &SeamCtx, view: &SpineReminderView, facts: &Facts) -> Vec<Remin
         out.push(reminder);
     }
     if let Some(reminder) = sources::subagent_settled(&facts.settled, &facts.settled_detail) {
-        out.push(reminder);
-    }
-    if let Some(reminder) = sources::custom_tool_settled(&facts.custom_tool_settled) {
         out.push(reminder);
     }
     out

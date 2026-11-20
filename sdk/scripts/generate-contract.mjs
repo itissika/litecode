@@ -27,7 +27,7 @@ function readSdkSource(file) {
   return fs.readFileSync(file, "utf8").replace(EOL_RE, "\n");
 }
 
-const suiteOrder = ["file", "search", "process", "web", "browser", "lsp", "memory"];
+const suiteOrder = ["file", "search", "process", "web", "browser", "lsp", "memory", "todo", "plan", "ask_user", "knowledge", "workspace", "subagent", "bot"];
 const project = new Project({ tsConfigFilePath: tsconfigPath });
 const apiSource = project.getSourceFileOrThrow(apiPath);
 const apiText = readSdkSource(apiPath);

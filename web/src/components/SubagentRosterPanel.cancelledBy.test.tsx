@@ -8,7 +8,6 @@ import { resetListSessionsInFlight, useSessionStore } from "../stores/sessionSto
 import { useTurnStore } from "../stores/turnStore";
 import { SessionStatusLine } from "./SessionStatusLine";
 import { SubagentRosterPanel } from "./SubagentRosterPanel";
-import { SubagentLaunchToolView } from "./toolviews/SubagentLaunchToolView";
 
 vi.mock("../dockview/workbench/commands", async (orig) => ({
   ...(await orig<typeof import("../dockview/workbench/commands")>()),
@@ -139,19 +138,13 @@ describe("WP-097 Workers 名单 cancelled · by you", () => {
     expect(mark()).toBeNull();
   });
 
-  it("7 回归：tool card 文字不变；停止/删除/计数不变", () => {
+  it("7 回归：停止/删除/计数在 cancelled_by=user 时行为不变", () => {
     seed({ last_turn_reason: "cancelled", last_turn_cancelled_by: "user" });
     useMessageStore.getState().onSubagentBound(PARENT, {
       session_id: PARENT,
       call_id: "call_1",
       child_session_id: CHILD,
     });
-    render(
-      <SubagentLaunchToolView name="subagent_launch" input={{ agent: "worker" }} status="ok" call_id="call_1" sessionId={PARENT} />,
-    );
-    expect(screen.getByTestId("subagent-launch-line").textContent).toContain("cancelled");
-    expect(screen.getByTestId("subagent-launch-line").textContent).not.toContain("by you");
-    cleanup();
     render(<SubagentRosterPanel sessionId={PARENT} />);
     expect(screen.queryByTestId("subagent-roster-stop")).toBeNull();
     expect(screen.getByTestId("subagent-roster-delete")).toBeTruthy();

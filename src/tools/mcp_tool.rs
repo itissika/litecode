@@ -5,10 +5,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::context_pipeline::Context;
 use crate::mcp::McpConnectionPool;
 use crate::tool::Tool;
-use crate::types::ToolCallResult;
+use crate::types::{MediaSource, ToolCallResult, ToolOutputPart};
 
 /// Configuration for connecting to an MCP server.
 pub struct McpServerConnection {
@@ -36,9 +35,8 @@ impl McpTool {
         input_schema: Value,
         server_connection: McpServerConnection,
     ) -> Self {
-        // Agent-facing name. `server_connection.tool_name` stays the raw
-        // `tools/call` name.
-        let tool_name = format!("mcp_{server_id}_{}", server_connection.tool_name);
+        // Agent-facing dotted code-mode name: `tools.mcp_<server>.<inner>`.
+        let tool_name = format!("mcp_{server_id}.{}", server_connection.tool_name);
         Self {
             tool_name,
             tool_description: description,
@@ -53,12 +51,11 @@ impl Tool for McpTool {
         &self.tool_name
     }
 
-    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-        let description = self.tool_description.clone();
-        let input_schema = { self.input_schema.clone() };
-        Some(crate::tool::DirectToolSpec {
-            description,
-            input_schema,
+    fn dynamic_code_spec(&self) -> Option<crate::tool::DynamicCodeSpec> {
+        Some(crate::tool::DynamicCodeSpec {
+            description: self.tool_description.clone(),
+            input_schema: self.input_schema.clone(),
+            output_schema: None,
         })
     }
 
@@ -131,7 +128,7 @@ fn hub_call(
         )
         .await
         {
-            Ok(Ok(s)) => ToolCallResult::ok(s),
+            Ok(Ok(value)) => convert_mcp_result(value),
             Ok(Err(e)) => ToolCallResult::error(e.to_string()),
             Err(_) => {
                 pool.stop_on_hub(&timeout_key).await;
@@ -143,5 +140,179 @@ fn hub_call(
     }
 }
 
+fn convert_mcp_result(value: Value) -> ToolCallResult {
+    let is_error = value
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let structured = value
+        .get("structuredContent")
+        .filter(|v| !v.is_null())
+        .cloned();
+
+    let mut texts: Vec<String> = Vec::new();
+    let mut parts: Vec<ToolOutputPart> = Vec::new();
+    let mut non_text_items: Vec<Value> = Vec::new();
+
+    if let Some(items) = value.get("content").and_then(Value::as_array) {
+        for item in items {
+            let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
+            match kind {
+                "text" => {
+                    if let Some(text) = item.get("text").and_then(Value::as_str) {
+                        texts.push(text.to_string());
+                    }
+                }
+                "image" | "audio" => {
+                    if let Some(part) = parse_mcp_media_item(kind, item) {
+                        parts.push(part);
+                    } else {
+                        non_text_items.push(item.clone());
+                    }
+                }
+                _ => non_text_items.push(item.clone()),
+            }
+        }
+    } else if let Some(arr) = value.as_array() {
+        for item in arr {
+            if let Some(s) = item.as_str() {
+                texts.push(s.to_string());
+            } else if item.get("type").and_then(Value::as_str) == Some("text") {
+                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                    texts.push(text.to_string());
+                }
+            } else {
+                non_text_items.push(item.clone());
+            }
+        }
+    } else if let Some(s) = value.as_str() {
+        texts.push(s.to_string());
+    }
+
+    let joined_text = texts.join("\n");
+    if is_error {
+        let msg = if !joined_text.is_empty() {
+            joined_text
+        } else {
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| "MCP tool returned isError".into())
+        };
+        return ToolCallResult::error(msg);
+    }
+
+    let data = if let Some(structured) = structured {
+        structured
+    } else if non_text_items.is_empty()
+        && texts.len() == 1
+        && let Ok(parsed @ (Value::Object(_) | Value::Array(_))) =
+            serde_json::from_str::<Value>(&texts[0])
+    {
+        parsed
+    } else if non_text_items.is_empty() {
+        serde_json::json!({ "text": joined_text })
+    } else {
+        serde_json::json!({
+            "text": joined_text,
+            "items": non_text_items,
+        })
+    };
+
+    let content = if !joined_text.is_empty() {
+        joined_text
+    } else {
+        serde_json::to_string_pretty(&data).unwrap_or_default()
+    };
+
+    let mut result = if parts.is_empty() {
+        ToolCallResult::ok(content)
+    } else {
+        ToolCallResult::ok_with_parts(content, parts)
+    };
+    result.data = Some(data);
+    result
+}
+
+fn parse_mcp_media_item(kind: &str, item: &Value) -> Option<ToolOutputPart> {
+    let default_mime = if kind == "audio" { "audio/wav" } else { "image/png" };
+    let mime = item
+        .get("mimeType")
+        .or_else(|| item.get("mime_type"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(default_mime)
+        .to_string();
+    let source = if let Some(data) = item
+        .get("data")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        MediaSource::Url {
+            url: format!("data:{mime};base64,{data}"),
+        }
+    } else if let Some(url) = item
+        .get("url")
+        .or_else(|| item.get("uri"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        MediaSource::Url {
+            url: url.to_string(),
+        }
+    } else {
+        return None;
+    };
+    match kind {
+        "image" => Some(ToolOutputPart::image(source, mime)),
+        "audio" => Some(ToolOutputPart::audio(source, mime)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use crate::types::MediaKind;
+
+    #[test]
+    fn mcp_tool_extracts_structured_text_and_multimodal_parts() {
+        let raw = serde_json::json!({
+            "content": [
+                { "type": "text", "text": "screenshot captured" },
+                { "type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png" },
+                { "type": "audio", "data": "UklGRg==", "mimeType": "audio/wav" }
+            ],
+            "isError": false
+        });
+        let result = convert_mcp_result(raw);
+        assert!(result.error.is_none());
+        assert_eq!(result.data, Some(serde_json::json!({ "text": "screenshot captured" })));
+        assert_eq!(result.parts.len(), 2);
+        match &result.parts[0] {
+            ToolOutputPart::Media { artifact } => {
+                assert_eq!(artifact.kind, MediaKind::Image);
+                assert_eq!(artifact.mime_type, "image/png");
+            }
+            other => panic!("expected image media part, got {other:?}"),
+        }
+        match &result.parts[1] {
+            ToolOutputPart::Media { artifact } => {
+                assert_eq!(artifact.kind, MediaKind::Audio);
+                assert_eq!(artifact.mime_type, "audio/wav");
+            }
+            other => panic!("expected audio media part, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_is_error_produces_tool_error() {
+        let raw = serde_json::json!({
+            "content": [{ "type": "text", "text": "bad query" }],
+            "isError": true
+        });
+        let result = convert_mcp_result(raw);
+        assert!(result.error.is_some());
+        assert_eq!(result.content, "bad query");
+    }
+}

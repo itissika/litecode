@@ -7,7 +7,6 @@ pub mod code;
 pub mod code_search;
 pub mod command_job;
 pub mod custom;
-pub mod custom_hub;
 pub mod edit;
 pub mod exec_command;
 pub mod file_path;
@@ -31,15 +30,6 @@ pub mod write_stdin;
 
 #[cfg(test)]
 mod baseline;
-
-/// Model-facing description of a built-in tool.
-///
-/// Prose lives in `descriptions/<name>.md` and is embedded with `include_str!`.
-/// Trailing whitespace, including the file's final newline, is not part of the string sent to the model.
-/// `subagent_launch` appends the live agent catalog when one is configured.
-pub(crate) fn description_text(embedded: &str) -> String {
-    embedded.trim_end().to_string()
-}
 
 /// snake_case wire name of a progress enum (same as the engines detail JSON).
 fn wire_name<T: serde::Serialize>(value: &T) -> String {

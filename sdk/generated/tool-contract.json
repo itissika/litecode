@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "3cc388259d32b52e70d6e8408d27165a51a3ab4d534cf9ab02e34828fb9f0cae",
+  "sdk_hash": "dec4798a22b056ce7a08ef86cfc945a48159d6d69b1311c2b6403504ce1d6971",
   "tools": {
     "apply_edits": {
       "path": [
@@ -2049,6 +2049,1580 @@
           "rejected",
           "total_chars",
           "updated"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "todo.write": {
+      "path": [
+        "todo",
+        "write"
+      ],
+      "suite": "todo",
+      "tool": "todo.write",
+      "doc": "Replace the current session task list; clearing occurs automatically when all items are completed.",
+      "signature": "write(args: {\n  todos: {\n    /** Task description. */\n    content: string;\n    /** Task status. */\n    status: \"pending\" | \"in_progress\" | \"completed\";\n  }[];\n}): Promise<{\n  total: Integer;\n  pending: Integer;\n  in_progress: Integer;\n  completed: Integer;\n  cleared: boolean;\n}>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [
+        "Integer"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "todos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "content": {
+                  "type": "string",
+                  "description": "Task description."
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "completed"
+                  ],
+                  "description": "Task status."
+                }
+              },
+              "required": [
+                "content",
+                "status"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "todos"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "description": "Whole JSON number. The host rejects fractional values."
+          },
+          "pending": {
+            "type": "integer",
+            "description": "Whole JSON number. The host rejects fractional values."
+          },
+          "in_progress": {
+            "type": "integer",
+            "description": "Whole JSON number. The host rejects fractional values."
+          },
+          "completed": {
+            "type": "integer",
+            "description": "Whole JSON number. The host rejects fractional values."
+          },
+          "cleared": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "total",
+          "pending",
+          "in_progress",
+          "completed",
+          "cleared"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "plan.create": {
+      "path": [
+        "plan",
+        "create"
+      ],
+      "suite": "plan",
+      "tool": "plan.create",
+      "doc": "Propose creating a workspace plan file (opens user approval dialog). Write the plan file, then present it and ask the user to confirm before executing.",
+      "signature": "create(args: {\n  /** Short summary shown to the user for approval (not the full plan body). */\n  summary: string;\n}): Promise<{\n  approved: boolean;\n  plan_path?: string;\n  revision?: string;\n  opinion?: string;\n}>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "Short summary shown to the user for approval (not the full plan body)."
+          }
+        },
+        "required": [
+          "summary"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "approved": {
+            "type": "boolean"
+          },
+          "plan_path": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "opinion": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "approved"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "plan.finish": {
+      "path": [
+        "plan",
+        "finish"
+      ],
+      "suite": "plan",
+      "tool": "plan.finish",
+      "doc": "Clear the active plan pointer on this session when finished.",
+      "signature": "finish(args?: NoArgs): Promise<{\n  cleared: boolean;\n}>;",
+      "input_type": "NoArgs",
+      "output_type": "(inline)",
+      "type_deps": [
+        "NoArgs"
+      ],
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Empty input for tools that take no arguments."
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "cleared": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cleared"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "ask_user": {
+      "path": [
+        "ask_user"
+      ],
+      "suite": "ask_user",
+      "tool": "ask_user",
+      "doc": "Ask the user one or more structured questions via UI cards (free-text option included by system).",
+      "signature": "ask_user(args: {\n  /** Optional card title shown above the questions. */\n  summary?: string;\n  questions: {\n    /** Stable id keyed in answers. */\n    id: string;\n    /** Question text shown to the user. */\n    prompt: string;\n    /** Two or more choices for this question. */\n    options: {\n      /** Stable id returned in answers. */\n      id: string;\n      /** Display label shown to the user. */\n      label: string;\n    }[];\n    /** When true, the user may select multiple choices. Default false. */\n    multi_select?: boolean;\n  }[];\n}): Promise<{\n  outcome: \"answered\" | \"skipped\" | \"no_foreground_session\";\n  answers: {\n    id: string;\n    selected: string[];\n    free_text?: string;\n  }[];\n  text: string;\n}>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string",
+            "description": "Optional card title shown above the questions."
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Stable id keyed in answers."
+                },
+                "prompt": {
+                  "type": "string",
+                  "description": "Question text shown to the user."
+                },
+                "options": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Stable id returned in answers."
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "Display label shown to the user."
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "label"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "description": "Two or more choices for this question."
+                },
+                "multi_select": {
+                  "type": "boolean",
+                  "description": "When true, the user may select multiple choices. Default false."
+                }
+              },
+              "required": [
+                "id",
+                "prompt",
+                "options"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "questions"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "answered",
+              "skipped",
+              "no_foreground_session"
+            ]
+          },
+          "answers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "selected": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "free_text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "selected"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "answers",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "knowledge.check": {
+      "path": [
+        "knowledge",
+        "check"
+      ],
+      "suite": "knowledge",
+      "tool": "knowledge.check",
+      "doc": "Check workspace knowledge nodes for broken citations, duplicate keys, or invalid node headers (omit filters to check all).",
+      "signature": "check(args?: KnowledgeScope): Promise<{\n  root: string | null;\n  checked: Integer;\n  issue_count: Integer;\n  issues: KnowledgeIssueRow[];\n}>;",
+      "input_type": "KnowledgeScope",
+      "output_type": "(inline)",
+      "type_deps": [
+        "Integer",
+        "KnowledgeIssueRow",
+        "KnowledgeScope"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "folders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Restrict to these folders under the knowledge root."
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Restrict to these node keys. Union with folders when both are set."
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checked": {
+            "type": "integer",
+            "description": "Whole JSON number. The host rejects fractional values."
+          },
+          "issue_count": {
+            "type": "integer",
+            "description": "Whole JSON number. The host rejects fractional values."
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "folder": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warning"
+                  ]
+                },
+                "code": {
+                  "type": "string"
+                },
+                "ref_key": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "folder",
+                "path",
+                "severity",
+                "code",
+                "ref_key",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "root",
+          "checked",
+          "issue_count",
+          "issues"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "knowledge.create": {
+      "path": [
+        "knowledge",
+        "create"
+      ],
+      "suite": "knowledge",
+      "tool": "knowledge.create",
+      "doc": "Create a new pending knowledge node markdown stub under `.litecode/knowledge/`.",
+      "signature": "create(args: {\n  key: string;\n  folder?: string;\n}): Promise<{\n  key: string;\n  path: string;\n  status: KnowledgeNodeStatus;\n}>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [
+        "KnowledgeNodeStatus"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "enabled",
+              "disabled",
+              "pending",
+              "invalid"
+            ]
+          }
+        },
+        "required": [
+          "key",
+          "path",
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "knowledge.list": {
+      "path": [
+        "knowledge",
+        "list"
+      ],
+      "suite": "knowledge",
+      "tool": "knowledge.list",
+      "doc": "List workspace knowledge nodes as flat summary rows (omit filters to list all); nodes use a `node` fence and `[@ key=\"...\"]` / `[@ file=\"...\"]` citations.",
+      "signature": "list(args?: KnowledgeScope): Promise<{\n  root: string | null;\n  total: Integer;\n  nodes: {\n    key: string;\n    folder: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    incoming_count: Integer;\n    issue_count: Integer;\n    summary: string;\n  }[];\n}>;",
+      "input_type": "KnowledgeScope",
+      "output_type": "(inline)",
+      "type_deps": [
+        "Integer",
+        "KnowledgeNodeStatus",
+        "KnowledgeScope"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "folders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Restrict to these folders under the knowledge root."
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Restrict to these node keys. Union with folders when both are set."
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer",
+            "description": "Whole JSON number. The host rejects fractional values."
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "folder": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "enabled",
+                    "disabled",
+                    "pending",
+                    "invalid"
+                  ]
+                },
+                "incoming_count": {
+                  "type": "integer",
+                  "description": "Whole JSON number. The host rejects fractional values."
+                },
+                "issue_count": {
+                  "type": "integer",
+                  "description": "Whole JSON number. The host rejects fractional values."
+                },
+                "summary": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "folder",
+                "path",
+                "status",
+                "incoming_count",
+                "issue_count",
+                "summary"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "root",
+          "total",
+          "nodes"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "knowledge.refs": {
+      "path": [
+        "knowledge",
+        "refs"
+      ],
+      "suite": "knowledge",
+      "tool": "knowledge.refs",
+      "doc": "Inspect one knowledge node's markdown body, incoming/outgoing citations, and issues.",
+      "signature": "refs(args: {\n  key: string;\n}): Promise<{\n  key: string;\n  folder: string;\n  path: string;\n  status: KnowledgeNodeStatus;\n  summary: string;\n  body: string;\n  incoming: {\n    key: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    summary: string;\n  }[];\n  outgoing: {\n    key: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    summary: string;\n  }[];\n  missing: string[];\n  issues: KnowledgeIssueRow[];\n}>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [
+        "KnowledgeIssueRow",
+        "KnowledgeNodeStatus"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "enabled",
+              "disabled",
+              "pending",
+              "invalid"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "incoming": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "enabled",
+                    "disabled",
+                    "pending",
+                    "invalid"
+                  ]
+                },
+                "summary": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "path",
+                "status",
+                "summary"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "outgoing": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "enabled",
+                    "disabled",
+                    "pending",
+                    "invalid"
+                  ]
+                },
+                "summary": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "path",
+                "status",
+                "summary"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "folder": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warning"
+                  ]
+                },
+                "code": {
+                  "type": "string"
+                },
+                "ref_key": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "folder",
+                "path",
+                "severity",
+                "code",
+                "ref_key",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "key",
+          "folder",
+          "path",
+          "status",
+          "summary",
+          "body",
+          "incoming",
+          "outgoing",
+          "missing",
+          "issues"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "workspace.help": {
+      "path": [
+        "workspace",
+        "help"
+      ],
+      "suite": "workspace",
+      "tool": "workspace.help",
+      "doc": "Read workspace setup or `.litecode/{excludes,mcp,custom_tools,apps}.json` configuration guides.",
+      "signature": "help(args?: {\n  topic?: \"overview\" | \"setup\" | \"excludes\" | \"mcp\" | \"custom_tools\" | \"apps\";\n}): Promise<{\n  topic: \"overview\" | \"setup\" | \"excludes\" | \"mcp\" | \"custom_tools\" | \"apps\";\n  content: string;\n}>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "enum": [
+              "overview",
+              "setup",
+              "excludes",
+              "mcp",
+              "custom_tools",
+              "apps"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "enum": [
+              "overview",
+              "setup",
+              "excludes",
+              "mcp",
+              "custom_tools",
+              "apps"
+            ]
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic",
+          "content"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "workspace.refresh": {
+      "path": [
+        "workspace",
+        "refresh"
+      ],
+      "suite": "workspace",
+      "tool": "workspace.refresh",
+      "doc": "Validate `.litecode/{excludes,mcp,custom_tools,apps}.json` in one check.",
+      "signature": "refresh(args?: NoArgs): Promise<{\n  ok: boolean;\n  summary: string;\n  excludes_ok: boolean;\n  mcp_ok: boolean;\n  custom_tools_ok: boolean;\n  apps_ok: boolean;\n  issues: string[];\n}>;",
+      "input_type": "NoArgs",
+      "output_type": "(inline)",
+      "type_deps": [
+        "NoArgs"
+      ],
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Empty input for tools that take no arguments."
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "excludes_ok": {
+            "type": "boolean"
+          },
+          "mcp_ok": {
+            "type": "boolean"
+          },
+          "custom_tools_ok": {
+            "type": "boolean"
+          },
+          "apps_ok": {
+            "type": "boolean"
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "summary",
+          "excludes_ok",
+          "mcp_ok",
+          "custom_tools_ok",
+          "apps_ok",
+          "issues"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "workspace.status": {
+      "path": [
+        "workspace",
+        "status"
+      ],
+      "suite": "workspace",
+      "tool": "workspace.status",
+      "doc": "Read live runtime workspace status: active excludes, loaded MCP servers, custom tools, and Apps.",
+      "signature": "status(args?: NoArgs): Promise<{\n  summary: string;\n  excludes: string;\n  mcp: {\n    id: string;\n    enabled: boolean;\n    origin: string;\n    state: string;\n    command: string;\n  }[];\n  custom_tools: {\n    id: string;\n    suite: string | null;\n    enabled: boolean;\n    origin: string;\n    timeout_secs: Integer;\n    command: string;\n  }[];\n  apps: {\n    id: string;\n    kind: string;\n    status: string;\n    url: string | null;\n    error: string | null;\n  }[];\n}>;",
+      "input_type": "NoArgs",
+      "output_type": "(inline)",
+      "type_deps": [
+        "Integer",
+        "NoArgs"
+      ],
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Empty input for tools that take no arguments."
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "string"
+          },
+          "excludes": {
+            "type": "string"
+          },
+          "mcp": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "origin": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "command": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "enabled",
+                "origin",
+                "state",
+                "command"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "custom_tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "suite": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "origin": {
+                  "type": "string"
+                },
+                "timeout_secs": {
+                  "type": "integer",
+                  "description": "Whole JSON number. The host rejects fractional values."
+                },
+                "command": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "suite",
+                "enabled",
+                "origin",
+                "timeout_secs",
+                "command"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "status",
+                "url",
+                "error"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "summary",
+          "excludes",
+          "mcp",
+          "custom_tools",
+          "apps"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "subagent.launch": {
+      "path": [
+        "subagent",
+        "launch"
+      ],
+      "suite": "subagent",
+      "tool": "subagent.launch",
+      "doc": "Launch a configured subagent child session asynchronously.",
+      "signature": "launch(args: {\n  /** Subagent id from allowed_subagents. */\n  agent: string;\n  /** Brief statement of the child's owned scope. */\n  responsibility: string;\n  /** Initial prompt delivered to the child session. */\n  prompt: string;\n}): Promise<{\n  child_session_id: string;\n  turn_id: string;\n  status: \"running\";\n  responsibility: string;\n}>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "Subagent id from allowed_subagents."
+          },
+          "responsibility": {
+            "type": "string",
+            "description": "Brief statement of the child's owned scope."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Initial prompt delivered to the child session."
+          }
+        },
+        "required": [
+          "agent",
+          "responsibility",
+          "prompt"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "child_session_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "const": "running"
+          },
+          "responsibility": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "child_session_id",
+          "turn_id",
+          "status",
+          "responsibility"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "subagent.list": {
+      "path": [
+        "subagent",
+        "list"
+      ],
+      "suite": "subagent",
+      "tool": "subagent.list",
+      "doc": "List all descendant child sessions of this session with current status and transcript metadata.",
+      "signature": "list(args?: NoArgs): Promise<{\n  count: Integer;\n  sessions: {\n    id: string;\n    agent: string;\n    responsibility: string;\n    state: string;\n    transcript: string;\n    transcript_lines?: Integer;\n    step?: Integer;\n    step_max?: Integer;\n    reason?: string;\n  }[];\n}>;",
+      "input_type": "NoArgs",
+      "output_type": "(inline)",
+      "type_deps": [
+        "Integer",
+        "NoArgs"
+      ],
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Empty input for tools that take no arguments."
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "Whole JSON number. The host rejects fractional values."
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "agent": {
+                  "type": "string"
+                },
+                "responsibility": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "transcript": {
+                  "type": "string"
+                },
+                "transcript_lines": {
+                  "type": "integer",
+                  "description": "Whole JSON number. The host rejects fractional values."
+                },
+                "step": {
+                  "type": "integer",
+                  "description": "Whole JSON number. The host rejects fractional values."
+                },
+                "step_max": {
+                  "type": "integer",
+                  "description": "Whole JSON number. The host rejects fractional values."
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "agent",
+                "responsibility",
+                "state",
+                "transcript"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "count",
+          "sessions"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "subagent.send": {
+      "path": [
+        "subagent",
+        "send"
+      ],
+      "suite": "subagent",
+      "tool": "subagent.send",
+      "doc": "Queue, steer, or stop-and-send a follow-up message to a child subagent session.",
+      "signature": "send(args: {\n  id: string;\n  message: string;\n  mode?: \"queue\" | \"steer\" | \"stop_and_send\";\n}): Promise<{\n  child_session_id: string;\n  mode: string;\n  status: \"started\" | \"queued\" | \"steered\" | \"stopped_and_queued\";\n  turn_id?: string;\n  position?: Integer;\n  pending_id?: string;\n  message: string;\n}>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [
+        "Integer"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "queue",
+              "steer",
+              "stop_and_send"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "child_session_id": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "started",
+              "queued",
+              "steered",
+              "stopped_and_queued"
+            ]
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer",
+            "description": "Whole JSON number. The host rejects fractional values."
+          },
+          "pending_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "child_session_id",
+          "mode",
+          "status",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "subagent.stop": {
+      "path": [
+        "subagent",
+        "stop"
+      ],
+      "suite": "subagent",
+      "tool": "subagent.stop",
+      "doc": "Stop the active running turn of a child subagent session.",
+      "signature": "stop(args: {\n  id: string;\n}): Promise<{\n  child_session_id: string;\n  status: \"stopped\" | \"nothing_running\";\n  turn_id?: string;\n  reason?: string;\n  output?: string;\n  transcript?: string;\n  message: string;\n}>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "child_session_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "stopped",
+              "nothing_running"
+            ]
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string"
+          },
+          "transcript": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "child_session_id",
+          "status",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "subagent.wait": {
+      "path": [
+        "subagent",
+        "wait"
+      ],
+      "suite": "subagent",
+      "tool": "subagent.wait",
+      "doc": "Wait for selected running subagent turns (or snapshot active children) to settle.",
+      "signature": "wait(args?: {\n  /** Optional child_session_ids; omit to await/snapshot all currently running children. */\n  ids?: string[];\n  /** Number of selected turns to settle before returning. */\n  count?: Integer;\n}): Promise<{\n  status: \"settled\" | \"nothing_to_wait_for\";\n  settled: {\n    child_session_id: string;\n    turn_id: string;\n    reason: string;\n    agent?: string;\n    responsibility?: string;\n    output: string;\n    output_truncated?: boolean;\n    cancelled_by?: string;\n    transcript: string;\n    start_line?: Integer;\n    end_line?: Integer;\n  }[];\n  skipped: {\n    id: string;\n    reason: string;\n  }[];\n  summary: string;\n}>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [
+        "Integer"
+      ],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional child_session_ids; omit to await/snapshot all currently running children."
+          },
+          "count": {
+            "type": "integer",
+            "description": "Number of selected turns to settle before returning."
+          }
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "settled",
+              "nothing_to_wait_for"
+            ]
+          },
+          "settled": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "child_session_id": {
+                  "type": "string"
+                },
+                "turn_id": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "agent": {
+                  "type": "string"
+                },
+                "responsibility": {
+                  "type": "string"
+                },
+                "output": {
+                  "type": "string"
+                },
+                "output_truncated": {
+                  "type": "boolean"
+                },
+                "cancelled_by": {
+                  "type": "string"
+                },
+                "transcript": {
+                  "type": "string"
+                },
+                "start_line": {
+                  "type": "integer",
+                  "description": "Whole JSON number. The host rejects fractional values."
+                },
+                "end_line": {
+                  "type": "integer",
+                  "description": "Whole JSON number. The host rejects fractional values."
+                }
+              },
+              "required": [
+                "child_session_id",
+                "turn_id",
+                "reason",
+                "output",
+                "transcript"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "settled",
+          "skipped",
+          "summary"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "bot.create": {
+      "path": [
+        "bot",
+        "create"
+      ],
+      "suite": "bot",
+      "tool": "bot.create",
+      "doc": "Create a peer/owned bot with its own session in this workspace.",
+      "signature": "create(args: {\n  name: string;\n  description?: string;\n}): Promise<{\n  id: string;\n  name: string;\n  session_id: string;\n}>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "session_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "bot.list": {
+      "path": [
+        "bot",
+        "list"
+      ],
+      "suite": "bot",
+      "tool": "bot.list",
+      "doc": "List visible bots in this org scope with live session status.",
+      "signature": "list(args?: NoArgs): Promise<{\n  caller_id: string;\n  bots: {\n    id: string;\n    name: string;\n    session_id: string;\n    status: string;\n    is_self: boolean;\n    description: string;\n  }[];\n}>;",
+      "input_type": "NoArgs",
+      "output_type": "(inline)",
+      "type_deps": [
+        "NoArgs"
+      ],
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Empty input for tools that take no arguments."
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "caller_id": {
+            "type": "string"
+          },
+          "bots": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "is_self": {
+                  "type": "boolean"
+                },
+                "description": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "session_id",
+                "status",
+                "is_self",
+                "description"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "caller_id",
+          "bots"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "bot.send": {
+      "path": [
+        "bot",
+        "send"
+      ],
+      "suite": "bot",
+      "tool": "bot.send",
+      "doc": "Queue a message for another bot's session without waiting.",
+      "signature": "send(args: {\n  bot: string;\n  message: string;\n}): Promise<{\n  id: string;\n  name: string;\n  session_id: string;\n  queued: boolean;\n}>;",
+      "input_type": "(inline)",
+      "output_type": "(inline)",
+      "type_deps": [],
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "bot": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bot",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "queued": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "session_id",
+          "queued"
         ],
         "additionalProperties": false
       }

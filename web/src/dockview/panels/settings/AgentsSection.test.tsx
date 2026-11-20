@@ -306,61 +306,54 @@ describe("AgentsSection tool binding sections", () => {
   });
 });
 
-describe("AgentsSection code-mode badge", () => {
+describe("AgentsSection hides run_code transport switch", () => {
   beforeEach(() => {
     useSettingsStore.setState({
       llm: llmDoc,
       availableTools: [
-        { ...readTool, surface: "code" },
+        readTool,
         {
           id: "glob",
           kind: "core",
           origin: "builtin",
           permission_surface: "preset",
-          surface: "code",
         },
         {
           id: "grep",
           kind: "core",
           origin: "builtin",
           permission_surface: "preset",
-          surface: "code",
         },
         {
           id: "edit",
           kind: "core",
           origin: "builtin",
           permission_surface: "preset",
-          surface: "code",
         },
         {
           id: "write",
           kind: "core",
           origin: "builtin",
           permission_surface: "preset",
-          surface: "code",
         },
         {
           id: "bash",
           kind: "core",
           origin: "builtin",
           permission_surface: "preset",
-          surface: "direct",
         },
         {
           id: "demo",
           kind: "custom",
           origin: "global",
           permission_surface: "fixed",
-          surface: "direct",
         },
-        { ...mcpDemoTool, surface: "direct" },
+        mcpDemoTool,
         {
           id: "run_code",
           kind: "core",
           origin: "builtin",
           permission_surface: "fixed",
-          surface: "direct",
         },
       ],
       mcpDefs: { global: [], workspace: [] },
@@ -380,17 +373,9 @@ describe("AgentsSection code-mode badge", () => {
     cleanup();
   });
 
-  it("badges code-surface tools and hides the run_code switch", () => {
+  it("renders tool cards without code-mode badges and hides run_code", () => {
     render(<AgentsSection />);
-    for (const id of ["read", "glob", "grep", "edit", "write"]) {
-      const toggle = screen.getByRole("button", {
-        name: new RegExp(`^${id} tool binding`, "i"),
-      });
-      const card = toggle.closest(".tool-binding-card");
-      expect(card).toBeTruthy();
-      expect(within(card as HTMLElement).getByText("code mode")).toBeTruthy();
-    }
-    for (const id of ["bash", "demo", "mcp_demo"]) {
+    for (const id of ["read", "glob", "grep", "edit", "write", "bash", "demo", "mcp_demo"]) {
       const toggle = screen.getByRole("button", {
         name: new RegExp(`^${id} tool binding`, "i"),
       });
@@ -401,7 +386,6 @@ describe("AgentsSection code-mode badge", () => {
     expect(
       screen.queryByRole("button", { name: /run_code tool binding/i }),
     ).toBeNull();
-    expect(screen.getAllByText("code mode")).toHaveLength(5);
   });
 });
 

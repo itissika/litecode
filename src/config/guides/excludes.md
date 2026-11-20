@@ -29,6 +29,6 @@
 
 **怎么生效。** 监视器放行本文件，重载进程内列表（JSON 无效则保持上一份）。文本索引按 `search_exclude` 调和。已打开代码语义检索时，改 `code_index_extensions` 会按新名单调和：多出来的旧块删掉，新后缀的文件入队，不必整库重建。对齐完成前 `code_search` 可能提示稍后再试。改 `search_exclude` 不会改变代码语义索引。改仓库里的 `.gitignore` 同样会调和索引，不经本文件。
 
-**怎么验证。** `litecode_workspace refresh excludes` 报告已经生效的计数，其中 `code_index_extensions` 是后缀个数。文件坏了会让你去修。语义语料只随收录后缀和 `git_ignore` 变。
+**怎么验证。** 调用 `workspace.refresh()` 校验本文件；排除改对了会在本次调用报告生效状态，文件坏了会给出具体错误让你去修。语义语料只随收录后缀和 `git_ignore` 变。
 
-**下一步。** 不需要找人：本文件立即生效（监视器也会自动重载）。语义检索 / LSP 是重型引擎，归人类在设置页 **Engines** 开关，本文件与 `litecode_workspace` 都不碰。
+**下一步。** 不需要找人：本文件立即生效（监视器也会自动重载）。语义检索 / LSP 是重型引擎，归人类在设置页 **Engines** 开关，本文件与 `workspace.*` 都不碰。

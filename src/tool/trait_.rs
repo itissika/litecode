@@ -10,10 +10,6 @@ use crate::context_pipeline::Context;
 use crate::tool::write_lock::ResourceKey;
 use crate::types::ToolCallResult;
 
-/// Where a tool may be called. The declaration lives on the tool and is the
-/// same enum the settings/catalog layers persist as `CallSurface`.
-pub use crate::config::schema::CallSurface as ToolSurface;
-
 /// Cross-cutting execution facts prepared once by the executor. These values
 /// are deliberately separate from model-controlled tool JSON.
 #[derive(Clone)]
@@ -27,23 +23,23 @@ pub struct ToolExecutionContext {
     pub session: Option<crate::session::SessionDataReader>,
 }
 
-/// Provider-facing description and input schema for a direct function call.
+/// Provider-facing description and input schema for the outer `run_code` transport.
 #[derive(Debug, Clone, PartialEq)]
-pub struct DirectToolSpec {
+pub struct TransportToolSpec {
     pub description: String,
     pub input_schema: Value,
 }
 
-/// Contract supplied by a runtime-defined custom code tool.
+/// Contract supplied by a runtime-defined custom or MCP code tool.
 ///
-/// Built-in code tools never use this: their public contract lives in the
-/// JS/TS SDK and generated contract. This type is only for custom/MCP tools
-/// that cannot have compile-time TypeScript declarations.
+/// Built-in code tools declare their TypeScript contract in `sdk/src/api.d.ts`.
+/// When `output_schema` is `None`, the SDK defaults to open `unknown` and skips
+/// strict output-shape enforcement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DynamicCodeSpec {
     pub description: String,
     pub input_schema: Value,
-    pub output_schema: Value,
+    pub output_schema: Option<Value>,
 }
 
 impl ToolExecutionContext {
@@ -57,29 +53,29 @@ impl ToolExecutionContext {
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
 
-    /// Call surface declared by this tool. Custom tools follow their stored
-    /// surface; MCP tools are direct by default.
-    fn surface(&self) -> ToolSurface {
-        ToolSurface::Direct
-    }
-
     /// Code-surface names bound by a transport such as `run_code`.
     fn code_bindings(&self) -> Option<Arc<[String]>> {
         None
     }
 
-    /// The code transport itself. Permission allow follows this identity, not the name.
+    /// The outer `run_code` transport itself. Only this returns `true`.
     fn is_code_transport(&self) -> bool {
         false
     }
 
-    /// Provider-facing direct tool contract. Code-surface tools return None.
-    fn direct_spec(&self, _ctx: &Context) -> Option<DirectToolSpec> {
+    /// Provider-facing transport spec (implemented only by `run_code`).
+    fn transport_spec(&self, _ctx: &Context) -> Option<TransportToolSpec> {
         None
     }
 
-    /// Runtime-defined code tool contract. Built-in code tools return None.
+    /// Runtime-defined code tool contract (custom & MCP tools).
     fn dynamic_code_spec(&self) -> Option<DynamicCodeSpec> {
+        None
+    }
+
+    /// Optional runtime JSDoc note appended to a built-in fragment (e.g.
+    /// `subagent.launch`'s dynamic `allowed_subagents` allowlist).
+    fn dynamic_sdk_note(&self) -> Option<String> {
         None
     }
 

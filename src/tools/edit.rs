@@ -109,9 +109,6 @@ impl Tool for EditTool {
         "edit"
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn timeout(&self) -> Option<std::time::Duration> {
         Some(std::time::Duration::from_secs(30))

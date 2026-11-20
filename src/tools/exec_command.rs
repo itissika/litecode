@@ -302,9 +302,6 @@ impl Tool for ExecCommandTool {
         "exec_command"
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn execute(
         &self,

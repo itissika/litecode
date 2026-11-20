@@ -107,8 +107,8 @@ fn config_global_db_migration_and_seed() {
         "subagent members are not separate bindings"
     );
     assert!(
-        default_tools.contains_key("run"),
-        "default seed must bind run"
+        default_tools.contains_key("exec"),
+        "default seed must bind exec"
     );
     assert!(
         default_tools.contains_key("memory"),

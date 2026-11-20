@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 mod render;
-pub use render::{RUN_CODE_VIEW_MAX_BYTES, render_direct_code_contract_result};
+pub use render::RUN_CODE_VIEW_MAX_BYTES;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -155,8 +155,86 @@ struct PausingSink {
 
 impl PermissionSink for PausingSink {
     fn ask(&self, prompt: &AskPrompt<'_>, cancel: &CancellationToken) -> AskReply {
-        let _guard = self.pause.pause();
+        let _guard = self.pause.pause_human();
         self.inner.ask(prompt, cancel)
+    }
+}
+
+#[derive(Default)]
+struct MediaRegistry {
+    next_id: u64,
+    items: HashMap<String, crate::types::MediaArtifact>,
+}
+
+impl MediaRegistry {
+    fn register(&mut self, artifact: crate::types::MediaArtifact) -> Value {
+        self.next_id += 1;
+        let id = format!("media_{}", self.next_id);
+        let kind = match artifact.kind {
+            crate::types::MediaKind::Image => "image",
+            crate::types::MediaKind::Video => "video",
+            crate::types::MediaKind::Audio => "audio",
+        };
+        let mut obj = serde_json::Map::new();
+        obj.insert("__litecode_media".into(), Value::String(id.clone()));
+        obj.insert("kind".into(), Value::String(kind.to_string()));
+        obj.insert("mime_type".into(), Value::String(artifact.mime_type.clone()));
+        if let Some(w) = artifact.width {
+            obj.insert("width".into(), Value::from(w));
+        }
+        if let Some(h) = artifact.height {
+            obj.insert("height".into(), Value::from(h));
+        }
+        self.items.insert(id, artifact);
+        Value::Object(obj)
+    }
+
+    fn collect_returned_parts(
+        &self,
+        entries: &[crate::ptc::Entry],
+    ) -> Vec<crate::types::ToolOutputPart> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for entry in entries {
+            if let crate::ptc::EntryBody::Value(json) = &entry.body {
+                collect_media_handles_iterative(json.as_value(), &self.items, &mut seen, &mut out);
+            }
+        }
+        out
+    }
+}
+
+fn collect_media_handles_iterative(
+    root: &Value,
+    items: &HashMap<String, crate::types::MediaArtifact>,
+    seen: &mut std::collections::HashSet<String>,
+    out: &mut Vec<crate::types::ToolOutputPart>,
+) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        match node {
+            Value::Array(arr) => {
+                for item in arr.iter().rev() {
+                    stack.push(item);
+                }
+            }
+            Value::Object(map) => {
+                if let Some(id) = map.get("__litecode_media").and_then(Value::as_str)
+                    && let Some(artifact) = items.get(id)
+                {
+                    if seen.insert(id.to_string()) {
+                        out.push(crate::types::ToolOutputPart::Media {
+                            artifact: artifact.clone(),
+                        });
+                    }
+                    continue;
+                }
+                let mut values: Vec<&Value> = map.values().collect();
+                values.reverse();
+                stack.extend(values);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -561,6 +639,7 @@ impl CodeTool {
         &self,
         ledger: Arc<CallLedger>,
         reminders: Arc<std::sync::Mutex<Vec<render::CallReminder>>>,
+        media: Arc<Mutex<MediaRegistry>>,
         execution: &ToolExecutionContext,
     ) -> Vec<HostBinding> {
         self.surface
@@ -577,19 +656,27 @@ impl CodeTool {
                 let sdk_path = sdk_path.clone();
                 let runtime_name = runtime_name.clone();
                 let reminders = Arc::clone(&reminders);
+                let media = Arc::clone(&media);
                 // Result fields come from this tool's output schema, and the
                 // failure fields from the envelope the program is handed.
-                let contract = self.surface.tools.get(runtime_name.as_str()).map(|spec| {
-                    let mut fields: Vec<String> = spec
-                        .output_schema
+                let contract = self.surface.tools.get(runtime_name.as_str()).and_then(|spec| {
+                    let output_schema = spec.output_schema.as_ref()?;
+                    let properties = output_schema
                         .get("properties")
-                        .and_then(serde_json::Value::as_object)
-                        .map(|properties| properties.keys().cloned().collect())
-                        .unwrap_or_default();
+                        .and_then(serde_json::Value::as_object)?;
+                    if properties.is_empty()
+                        && output_schema
+                            .get("additionalProperties")
+                            .and_then(serde_json::Value::as_bool)
+                            != Some(false)
+                    {
+                        return None;
+                    }
+                    let mut fields: Vec<String> = properties.keys().cloned().collect();
                     fields.sort();
-                    std::sync::Arc::new(crate::ptc::BindingContract {
+                    Some(std::sync::Arc::new(crate::ptc::BindingContract {
                         fields: fields.into(),
-                    })
+                    }))
                 });
                 let bundle = Arc::clone(&self.bundle);
                 let host = Arc::clone(&self.host);
@@ -608,6 +695,7 @@ impl CodeTool {
                         let surface = Arc::clone(&surface);
                         let ledger = Arc::clone(&ledger);
                         let reminders = Arc::clone(&reminders);
+                        let media = Arc::clone(&media);
                         let session_id = session_id.clone();
                         let parent_call_id = parent_call_id.clone();
                         let seq = info.seq;
@@ -616,6 +704,7 @@ impl CodeTool {
                                 runtime_name,
                                 sdk_path,
                                 reminders,
+                                media,
                                 seq,
                                 args,
                                 cancel,
@@ -659,11 +748,17 @@ impl CodeTool {
         let ledger = Arc::new(CallLedger::new());
         let reminders: Arc<std::sync::Mutex<Vec<render::CallReminder>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
+        let media = Arc::new(Mutex::new(MediaRegistry::default()));
         let request = ExecuteRequest {
             source: code.clone(),
             namespaces: vec![Namespace {
                 name: "tools".to_string(),
-                functions: self.binding(Arc::clone(&ledger), Arc::clone(&reminders), &execution),
+                functions: self.binding(
+                    Arc::clone(&ledger),
+                    Arc::clone(&reminders),
+                    Arc::clone(&media),
+                    &execution,
+                ),
             }],
             limits: Limits {
                 output_bytes: MAX_CODE_OUTPUT_BYTES,
@@ -689,6 +784,10 @@ impl CodeTool {
         }
         let mut collected = reminders.lock().expect("reminder buffer").split_off(0);
         collected.sort_by_key(|reminder| reminder.seq);
+        let returned_parts = media
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .collect_returned_parts(&outcome.entries);
         render_run_output_in(
             &ledger,
             &outcome,
@@ -696,6 +795,7 @@ impl CodeTool {
             wall_timeout_ms,
             &code,
             collected,
+            returned_parts,
             Some(&execution.workspace_root),
         )
     }
@@ -706,6 +806,7 @@ async fn invoke_binding(
     tool_name: String,
     sdk_name: String,
     reminders: Arc<std::sync::Mutex<Vec<render::CallReminder>>>,
+    media: Arc<Mutex<MediaRegistry>>,
     seq: u64,
     args: Json,
     cancel: CancellationToken,
@@ -796,7 +897,7 @@ async fn invoke_binding(
     // tool runs on its own timeout / yield budget (still bounded by the outer
     // wall-clock cap via `cancel`).
     let _nested_pause = pause.pause();
-    let result = host
+    let mut result = host
         .run_nested(
             bundle.as_slice(),
             &call,
@@ -819,8 +920,45 @@ async fn invoke_binding(
             format!("tool '{sdk_name}' returned data that does not match its JS contract: {error}"),
         ));
     }
+    let media_parts = if result.error.is_none() && result.level != ToolSignalLevel::Error {
+        std::mem::take(&mut result.parts)
+    } else {
+        Vec::new()
+    };
+    let media_handles: Vec<Value> = if media_parts.is_empty() {
+        Vec::new()
+    } else {
+        match crate::tool::output::materialize_media_parts(media_parts, &host.data_root) {
+            Ok(materialized) => {
+                let mut reg = media.lock().unwrap_or_else(|poison| poison.into_inner());
+                materialized
+                    .into_iter()
+                    .filter_map(|part| match part {
+                        crate::types::ToolOutputPart::Media { artifact } => {
+                            Some(reg.register(artifact))
+                        }
+                        crate::types::ToolOutputPart::Text { .. } => None,
+                    })
+                    .collect()
+            }
+            Err(error) => {
+                let failed = ToolCallResult::error_with_kind(
+                    ToolErrorKind::InvalidOutput,
+                    format!("failed to materialize media output: {error}"),
+                    false,
+                );
+                ledger.record(index, &failed);
+                return Err(crate::ptc::HostError::tool(
+                    "invalid_output",
+                    format!("failed to materialize media output: {error}"),
+                    None,
+                    false,
+                ));
+            }
+        }
+    };
     ledger.record(index, &result);
-    let value = match outcome::program_result(&result) {
+    let mut value = match outcome::program_result(&result) {
         Ok(value) => value,
         Err(error) => {
             let code = call_error_code(&result).unwrap_or_else(|| "error".to_string());
@@ -835,6 +973,21 @@ async fn invoke_binding(
             return Err(error);
         }
     };
+    if !media_handles.is_empty() {
+        let handles = Value::Array(media_handles);
+        match &mut value {
+            Value::Object(map) => {
+                map.insert("media".to_string(), handles);
+            }
+            Value::Null => {
+                value = json!({ "media": handles });
+            }
+            other => {
+                let inner = std::mem::take(other);
+                *other = json!({ "value": inner, "media": handles });
+            }
+        }
+    }
     // Facts are anchored to the call, not to a line of output: the program may
     // return only a slice of this value, or none of it. A failure envelope is
     // one of those facts — the program may read it and carry on, and the view
@@ -1080,10 +1233,12 @@ fn render_run_output(
         MAX_RUN_WALL_TIMEOUT_MS,
         source,
         reminders,
+        Vec::new(),
         None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_run_output_in(
     ledger: &CallLedger,
     outcome: &crate::ptc::Outcome,
@@ -1091,6 +1246,7 @@ fn render_run_output_in(
     wall_timeout_ms: u64,
     source: &str,
     reminders: Vec<render::CallReminder>,
+    media_parts: Vec<crate::types::ToolOutputPart>,
     workspace_root: Option<&std::path::Path>,
 ) -> ToolCallResult {
     let effective_timeout_ms = outcome
@@ -1143,6 +1299,7 @@ fn render_run_output_in(
         return finish_run_result(
             &report,
             Some((ToolErrorKind::InvalidOutput, false, None)),
+            Vec::new(),
             workspace_root,
         );
     }
@@ -1171,13 +1328,19 @@ fn render_run_output_in(
             }
         }
     });
-    finish_run_result(&report, error, workspace_root)
+    let attach_parts = if error.is_none() {
+        media_parts
+    } else {
+        Vec::new()
+    };
+    finish_run_result(&report, error, attach_parts, workspace_root)
 }
 
 /// Compose model `content` + human/FE `data` aggregate (WP-201).
 fn finish_run_result(
     report: &render::RunReport,
     error: Option<(ToolErrorKind, bool, Option<String>)>,
+    parts: Vec<crate::types::ToolOutputPart>,
     workspace_root: Option<&std::path::Path>,
 ) -> ToolCallResult {
     let content = render::render_model_view_in(report, workspace_root);
@@ -1189,6 +1352,7 @@ fn finish_run_result(
     } else {
         ToolCallResult::ok(content)
     };
+    result.parts = parts;
     if let Some(data) = data {
         result.data = Some(data);
     }
@@ -1370,7 +1534,7 @@ impl Tool for CodeTool {
         CODE_TOOL_NAME
     }
 
-    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
+    fn transport_spec(&self, _ctx: &Context) -> Option<crate::tool::TransportToolSpec> {
         let description = {
             if self.surface.sdk.is_empty() {
                 "run_code is unavailable because its code surface failed admission".to_string()
@@ -1384,14 +1548,14 @@ impl Tool for CodeTool {
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "Async JavaScript function body for the SDK below. Active JS execution has a 600000 ms cap (paused during tool calls), with a 1800000 ms hard wall-clock cap."
+                        "description": "Async JavaScript function body for the SDK below. Active JS execution has a 600000 ms cap (paused during tool calls), with a 1800000 ms wall-clock cap (paused during human prompts)."
                     }
                 },
                 "required": ["code"],
                 "additionalProperties": false
             })
         };
-        Some(crate::tool::DirectToolSpec {
+        Some(crate::tool::TransportToolSpec {
             description,
             input_schema,
         })
@@ -1456,7 +1620,7 @@ mod outcome_tests {
     use crate::types::{ToolCallResult, ToolErrorKind};
 
     use super::{
-        CallLedger, DecodeFail, call_brief, call_outcome_label, decode_invocation,
+        CallLedger, DecodeFail, MediaRegistry, call_brief, call_outcome_label, decode_invocation,
         merge_call_outcome, render_run_output,
     };
 
@@ -1660,5 +1824,52 @@ mod outcome_tests {
             result.content
         );
         assert!(result.content.contains("[warn] internal notice"), "{}", result.content);
+    }
+
+    #[test]
+    fn media_registry_attaches_only_handles_present_in_return_value() {
+        let mut reg = MediaRegistry::default();
+        let h1 = reg.register(crate::types::MediaArtifact::image(
+            crate::types::MediaSource::Url {
+                url: "https://example.com/a.png".into(),
+            },
+            "image/png",
+        ));
+        let h2 = reg.register(crate::types::MediaArtifact::image(
+            crate::types::MediaSource::Url {
+                url: "https://example.com/b.png".into(),
+            },
+            "image/png",
+        ));
+        // Only h2 is returned (twice); h1 is NOT returned -> 不 return 不给
+        let entries = vec![
+            crate::ptc::Entry {
+                order: 1,
+                body: crate::ptc::EntryBody::Text {
+                    level: crate::ptc::LogLevel::Log,
+                    text: h1.to_string(),
+                },
+            },
+            crate::ptc::Entry {
+                order: 2,
+                body: crate::ptc::EntryBody::Value(Json::new(json!({
+                    "kept": h2.clone(),
+                    "dup": h2
+                }))),
+            },
+        ];
+        let parts = reg.collect_returned_parts(&entries);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            crate::types::ToolOutputPart::Media { artifact } => {
+                assert_eq!(
+                    artifact.source,
+                    crate::types::MediaSource::Url {
+                        url: "https://example.com/b.png".into()
+                    }
+                );
+            }
+            other => panic!("expected media part, got {other:?}"),
+        }
     }
 }

@@ -79,33 +79,26 @@ pub fn require_nonempty_string_trimmed<'a>(
 }
 
 /// Contract shape check, then the tool's semantic `validate_input`.
-///
-/// Code tools are validated by the generated JS contract at the run_code
-/// bridge; this helper only runs their semantic checks. Direct tools still use
-/// their provider schema.
 pub fn check_tool_input(
     tool: &dyn Tool,
     ctx: &crate::context_pipeline::Context,
     input: &Value,
 ) -> Result<(), String> {
-    if tool.surface() == crate::tool::ToolSurface::Code {
-        let schema = if let Some(spec) = tool.dynamic_code_spec() {
-            spec.input_schema
-        } else {
-            crate::tool::code_contract::builtin_input_schema(tool.name()).ok_or_else(|| {
-                format!(
-                    "code tool '{}' has no generated input contract",
-                    tool.name()
-                )
-            })?
-        };
-        schema_validate(&schema, input)?;
+    let schema = if tool.is_code_transport() {
+        tool.transport_spec(ctx)
+            .ok_or_else(|| format!("code transport '{}' has no spec", tool.name()))?
+            .input_schema
+    } else if let Some(spec) = tool.dynamic_code_spec() {
+        spec.input_schema
     } else {
-        let spec = tool
-            .direct_spec(ctx)
-            .ok_or_else(|| format!("direct tool '{}' has no direct spec", tool.name()))?;
-        schema_validate(&spec.input_schema, input)?;
-    }
+        crate::tool::code_contract::builtin_input_schema(tool.name()).ok_or_else(|| {
+            format!(
+                "code tool '{}' has no generated input contract",
+                tool.name()
+            )
+        })?
+    };
+    schema_validate(&schema, input)?;
     tool.validate_input(input)
 }
 

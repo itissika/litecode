@@ -284,11 +284,11 @@ mod tests {
             AgentProfile {
                 role: AgentRole::Subagent,
                 model_ref: "main/default".into(),
-                tools: HashMap::from([("subagent_launch".into(), binding())]),
+                tools: HashMap::from([("subagent.launch".into(), binding())]),
                 ..Default::default()
             },
         );
         let err = ConfigManager::validate(&global).unwrap_err();
-        assert!(err.to_string().contains("subagent_launch"));
+        assert!(err.to_string().contains("subagent.launch"));
     }
 }

@@ -58,7 +58,7 @@ mod tests {
                 ("read".to_string(), binding()),
                 ("plan".to_string(), binding()),
                 ("subagent_tools".to_string(), binding()),
-                ("subagent_launch".to_string(), binding()),
+                ("subagent.launch".to_string(), binding()),
                 ("subagent_foo".to_string(), binding()),
             ]),
             allowed_subagents: vec!["explore".into()],
@@ -71,7 +71,7 @@ mod tests {
         assert!(profile.tools.contains_key("subagent_foo"));
         assert!(!profile.tools.contains_key("plan"));
         assert!(!profile.tools.contains_key("subagent_tools"));
-        assert!(!profile.tools.contains_key("subagent_launch"));
+        assert!(!profile.tools.contains_key("subagent.launch"));
         assert!(profile.allowed_subagents.is_empty());
     }
 }

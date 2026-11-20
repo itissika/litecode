@@ -17,7 +17,7 @@ use crate::config::schema::GlobalSettings;
 use crate::context_pipeline::Context;
 use crate::permission::{PermissionEngine, deny_permission_sink};
 use crate::tool::Tool;
-use crate::tool::trait_::{ToolExecutionContext, ToolSurface};
+use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::WorkspaceWriteLock;
 use crate::tools::code::{CodeTool, CodeToolHost};
 use crate::tools::apply_edits::ApplyEditsTool;
@@ -66,7 +66,7 @@ fn run_code_schema_has_no_timeout_knob() {
         vec![Arc::new(crate::tools::read::ReadTool::default())],
         host,
     );
-    let spec = tool.direct_spec(&context(root)).expect("run_code spec");
+    let spec = tool.transport_spec(&context(root)).expect("run_code spec");
     let properties = spec.input_schema["properties"]
         .as_object()
         .expect("properties");
@@ -104,9 +104,6 @@ impl Tool for CountingRead {
         "read"
     }
 
-    fn surface(&self) -> ToolSurface {
-        ToolSurface::Code
-    }
 
     fn execute(
         &self,
@@ -136,9 +133,6 @@ impl Tool for BadRead {
         "read"
     }
 
-    fn surface(&self) -> ToolSurface {
-        ToolSurface::Code
-    }
 
     fn execute(
         &self,
@@ -373,9 +367,6 @@ impl Tool for GrepLike {
         "grep"
     }
 
-    fn surface(&self) -> ToolSurface {
-        ToolSurface::Code
-    }
 
     fn execute(
         &self,
@@ -402,9 +393,6 @@ impl Tool for FailingRead {
         "read"
     }
 
-    fn surface(&self) -> ToolSurface {
-        ToolSurface::Code
-    }
 
     fn execute(
         &self,
@@ -613,9 +601,6 @@ async fn lsp_state_reaches_the_model_as_a_reminder_line() {
         fn name(&self) -> &str {
             "diagnostics"
         }
-        fn surface(&self) -> ToolSurface {
-            ToolSurface::Code
-        }
         fn execute(
             &self,
             input: Value,
@@ -721,9 +706,6 @@ impl Tool for UnavailableSymbols {
         "workspace_symbol"
     }
 
-    fn surface(&self) -> ToolSurface {
-        ToolSurface::Code
-    }
 
     fn execute(
         &self,
@@ -1058,9 +1040,6 @@ async fn a_hits_shape_from_another_tool_produces_no_grep_line() {
         fn name(&self) -> &str {
             "code_search"
         }
-        fn surface(&self) -> ToolSurface {
-            ToolSurface::Code
-        }
         fn execute(
             &self,
             _input: Value,
@@ -1261,9 +1240,6 @@ impl Tool for SlowRead {
         "read"
     }
 
-    fn surface(&self) -> ToolSurface {
-        ToolSurface::Code
-    }
 
     fn execute(
         &self,

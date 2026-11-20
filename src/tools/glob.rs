@@ -21,9 +21,6 @@ impl Tool for GlobTool {
         "glob"
     }
 
-    fn surface(&self) -> crate::tool::ToolSurface {
-        crate::tool::ToolSurface::Code
-    }
 
     fn effects(
         &self,

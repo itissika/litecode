@@ -187,7 +187,7 @@ pub fn read_workspace_custom_tools(workspace_root: &Path) -> Result<WorkspaceCus
     if file.version != WORKSPACE_CUSTOM_TOOLS_VERSION {
         return Err(LitecodeError::Config(format!(
             "custom_tools.json: unsupported version {}; this build requires version {}. \
-             Rewrite the file in the direct/code + suites format (see the custom_tools guide).",
+             Rewrite the file using the code-only custom_tools + suites format (see workspace help custom_tools).",
             file.version, WORKSPACE_CUSTOM_TOOLS_VERSION
         )));
     }
@@ -691,30 +691,20 @@ mod tests {
     }
 
     #[test]
-    fn custom_tools_old_fields_are_rejected_not_ignored() {
+    fn custom_tools_legacy_surface_and_output_schema_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let path = workspace_custom_tools_path(dir.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            r#"{
-              "version": 2,
-              "tools": {
-                "probe": {
-                  "name": "probe",
-                  "surface": "code",
-                  "command": "echo",
-                  "data_schema": { "type": "object" },
-                  "schema": { "type": "object", "properties": {}, "required": [] }
-                }
-              }
-            }"#,
-        )
-        .unwrap();
-        let error = read_workspace_custom_tools(dir.path())
-            .expect_err("old data_schema must not load")
-            .to_string();
-        assert!(error.contains("output_schema"), "{error}");
+        for body in [
+            r#"{"version":2,"tools":{"probe":{"name":"probe","surface":"code","command":"echo","schema":{"type":"object","properties":{},"required":[]}}}}"#,
+            r#"{"version":2,"tools":{"probe":{"name":"probe","output_schema":{"type":"object"},"command":"echo","schema":{"type":"object","properties":{},"required":[]}}}}"#,
+        ] {
+            std::fs::write(&path, body).unwrap();
+            assert!(
+                read_workspace_custom_tools(dir.path()).is_err(),
+                "removed fields must not load: {body}"
+            );
+        }
     }
 
     #[test]
@@ -727,15 +717,14 @@ mod tests {
             r#"{
               "version": 2,
               "suites": {
-                "deck": { "surface": "code", "label": "Deck", "rules": [] }
+                "deck": { "label": "Deck", "rules": [] }
               },
               "tools": {
                 "stats": {
                   "name": "stats",
                   "suite": "deck",
                   "command": "echo",
-                  "schema": { "type": "object", "properties": {}, "required": [] },
-                  "output_schema": { "type": "object", "properties": {}, "required": [] }
+                  "schema": { "type": "object", "properties": {}, "required": [] }
                 }
               }
             }"#,
@@ -744,7 +733,7 @@ mod tests {
         let file = read_workspace_custom_tools(dir.path()).unwrap();
         assert_eq!(file.suites["deck"].label, "Deck");
         assert_eq!(file.tools["stats"].suite.as_deref(), Some("deck"));
-        assert!(file.tools["stats"].surface.is_none());
+        assert!(file.tools["stats"].is_suite_member());
     }
 
     /// WP-166 T2-5: serve's deferred load does not touch the shadow repo; the

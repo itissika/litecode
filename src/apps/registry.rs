@@ -232,6 +232,23 @@ impl AppRegistry {
         }
     }
 
+    /// Validate `.litecode/apps.json` in `workspace_root` without loading the full catalog.
+    pub fn validate_workspace_file(workspace_root: &Path) -> Vec<RegistryError> {
+        let registry = Self::new(
+            workspace_root.to_path_buf(),
+            workspace_root.join(".litecode"),
+        );
+        let mut apps = BTreeMap::new();
+        let mut errors = Vec::new();
+        registry.load_file(
+            registry.workspace_file(),
+            AppSource::Workspace,
+            &mut apps,
+            &mut errors,
+        );
+        errors
+    }
+
     fn load_file(
         &self,
         path: PathBuf,

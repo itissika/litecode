@@ -4,8 +4,6 @@ type ProcessToolBucket = "bash" | "edit" | "tool";
 export function processToolBucket(name: string): ProcessToolBucket | null {
   if (name === "exec_command" || name === "write_stdin") return "bash";
   if (name === "edit") return "edit";
-  // Session-mount capsules: a single-line row carries no card, so it must not
-  // inflate the process-group header either.
   if (name === "todo" || name === "plan") return null;
   if (
     name === "subagent_launch" ||
@@ -16,23 +14,4 @@ export function processToolBucket(name: string): ProcessToolBucket | null {
   )
     return null;
   return "tool";
-}
-
-export function isInlineTool(name: string): boolean {
-  return (
-    name === "subagent_launch" ||
-    name === "subagent_wait" ||
-    name === "subagent_stop" ||
-    name === "subagent_send" ||
-    name === "subagent_list" ||
-    name === "todo" ||
-    name === "plan"
-  );
-}
-
-/**
- * Inline-row routing for a tool node.
- */
-export function isInlineCall(name: string): boolean {
-  return isInlineTool(name);
 }

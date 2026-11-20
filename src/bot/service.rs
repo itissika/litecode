@@ -1729,7 +1729,7 @@ mod tests {
         assert!(segment.contains("\"Platform bot\""));
         assert!(segment.contains(&bot.id));
         assert!(segment.contains("[from bot id=<sender_id> name=<sender_name>]"));
-        assert!(segment.contains("bot_send"));
+        assert!(segment.contains("tools.bot.send"));
         assert!(segment.contains("Cousins are not visible"));
         assert!(segment.contains("same-parent siblings"));
         assert!(segment.contains("Do not send a courtesy message"));

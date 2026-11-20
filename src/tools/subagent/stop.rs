@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::context_pipeline::Context;
 use crate::session::SessionService;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
@@ -13,14 +12,21 @@ use crate::types::ToolCallResult;
 use super::status;
 
 pub struct SubagentStopTool {
-    service: Arc<SessionService>,
+    service: Option<Arc<SessionService>>,
     session_id: Mutex<String>,
 }
 
 impl SubagentStopTool {
     pub fn new(service: Arc<SessionService>) -> Self {
         Self {
-            service,
+            service: Some(service),
+            session_id: Mutex::new(String::new()),
+        }
+    }
+
+    pub fn cold() -> Self {
+        Self {
+            service: None,
             session_id: Mutex::new(String::new()),
         }
     }
@@ -30,13 +36,15 @@ impl SubagentStopTool {
     }
 
     fn call_stop(&self, input: Value) -> ToolCallResult {
+        let Some(service) = self.service.as_ref() else {
+            return ToolCallResult::error("subagent.stop requires an active session service");
+        };
         let child_id = match crate::tool::require_nonempty_string(&input, "id") {
             Ok(id) => id,
             Err(error) => return ToolCallResult::error(error),
         };
         let parent = self.session_id();
-        if !self
-            .service
+        if !service
             .descendant_session_ids(&parent)
             .iter()
             .any(|id| id == child_id)
@@ -46,19 +54,23 @@ impl SubagentStopTool {
 
         // K3: check and cancel happen under one records lock (WP-090
         // CancelOutcome). Cancel never touches the child's pending queue.
-        if self
-            .service
+        if service
             .cancel_turn(child_id, crate::types::StopOrigin::Parent)
             .cancelled()
         {
             // WP-094 L5: the parent stopped it itself — no ChildStopped to self.
-            return ToolCallResult::ok(status::format_stopped(child_id));
+            let msg = status::format_stopped(child_id);
+            return ToolCallResult::ok(msg.clone()).with_data(serde_json::json!({
+                "child_session_id": child_id,
+                "status": "stopped",
+                "message": msg,
+            }));
         }
 
-        match self.service.latest_turn_result(child_id) {
+        match service.latest_turn_result(child_id) {
             Ok(Some(result)) => {
-                let (agent, responsibility) = status::session_labels(&self.service, child_id);
-                ToolCallResult::ok(format!(
+                let (agent, responsibility) = status::session_labels(service, child_id);
+                let msg = format!(
                     "status: nothing running\n{}",
                     status::format_turn_result(
                         child_id,
@@ -66,11 +78,31 @@ impl SubagentStopTool {
                         responsibility.as_deref(),
                         &result,
                     )
-                ))
+                );
+                let mut data = serde_json::Map::new();
+                data.insert("child_session_id".into(), Value::String(child_id.to_string()));
+                data.insert("status".into(), Value::String("nothing_running".into()));
+                data.insert("turn_id".into(), Value::String(result.turn_id.clone()));
+                data.insert("reason".into(), Value::String(result.reason.clone()));
+                data.insert("output".into(), Value::String(result.output.clone()));
+                data.insert(
+                    "transcript".into(),
+                    Value::String(result.transcript_path.clone()),
+                );
+                data.insert("message".into(), Value::String(msg.clone()));
+                ToolCallResult::ok(msg).with_data(Value::Object(data))
             }
-            Ok(None) => ToolCallResult::ok(format!(
-                "status: nothing running\nchild_session_id: {child_id}\nreason: no completed turn\n"
-            )),
+            Ok(None) => {
+                let msg = format!(
+                    "status: nothing running\nchild_session_id: {child_id}\nreason: no completed turn\n"
+                );
+                ToolCallResult::ok(msg.clone()).with_data(serde_json::json!({
+                    "child_session_id": child_id,
+                    "status": "nothing_running",
+                    "reason": "no completed turn",
+                    "message": msg,
+                }))
+            }
             Err(error) => ToolCallResult::error(format!(
                 "subagent '{child_id}' result is unavailable: {error}"
             )),
@@ -80,29 +112,7 @@ impl SubagentStopTool {
 
 impl Tool for SubagentStopTool {
     fn name(&self) -> &str {
-        "subagent_stop"
-    }
-
-    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-        let description =
-            crate::tools::description_text(include_str!("../descriptions/subagent_stop.md"));
-        let input_schema = {
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "description": "child_session_id"
-                    }
-                },
-                "required": ["id"]
-            })
-        };
-        Some(crate::tool::DirectToolSpec {
-            description,
-            input_schema,
-        })
+        "subagent.stop"
     }
 
     fn execute(
@@ -111,7 +121,7 @@ impl Tool for SubagentStopTool {
         execution: ToolExecutionContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let tool = SubagentStopTool {
-            service: Arc::clone(&self.service),
+            service: self.service.clone(),
             session_id: Mutex::new(execution.session_id),
         };
         Box::pin(async move { tool.call_stop(input) })

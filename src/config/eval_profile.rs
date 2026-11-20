@@ -15,7 +15,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::config::resolved::ResolvedConfig;
-use crate::config::schema::{AgentToolBinding, CallSurface, ToolPreset};
+use crate::config::schema::{AgentToolBinding, ToolPreset};
 use crate::config::settings_writer::SettingsWriter;
 use crate::permission::has_permission_preset;
 use crate::tool::capability::capability_catalog;
@@ -90,26 +90,13 @@ pub struct ToolLists {
     pub network: Vec<String>,
 }
 
-fn default_code_surface() -> CallSurface {
-    CallSurface::Code
-}
-
-fn surface_str(surface: CallSurface) -> &'static str {
-    match surface {
-        CallSurface::Code => "code",
-        CallSurface::Direct => "direct",
-    }
-}
-
-/// A parsed \`eval/profile.toml\`.
+/// A parsed `eval/profile.toml`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EvalProfile {
     pub name: String,
     #[serde(default = "WebMode::auto")]
     pub web: WebMode,
-    #[serde(default = "default_code_surface")]
-    pub surface: CallSurface,
     pub tools: ToolLists,
     #[serde(default)]
     pub permissions: BTreeMap<String, Tier>,
@@ -128,7 +115,6 @@ impl WebMode {
 pub struct Applied {
     pub name: String,
     pub web: WebMode,
-    pub surface: CallSurface,
     /// Bound capability cards, sorted.
     pub cards: Vec<String>,
     /// Model-visible tool ids, sorted.
@@ -145,7 +131,6 @@ pub struct AppliedDocument {
     pub name: String,
     pub source: String,
     pub web: String,
-    pub surface: String,
     pub cards: Vec<String>,
     pub tools: Vec<String>,
     pub permissions: BTreeMap<String, String>,
@@ -158,7 +143,6 @@ impl Applied {
             name: self.name.clone(),
             source: source.display().to_string(),
             web: self.web.as_str().to_string(),
-            surface: surface_str(self.surface).to_string(),
             cards: self.cards.clone(),
             tools: self.tools.clone(),
             permissions: self.permissions.clone(),
@@ -210,25 +194,14 @@ impl EvalProfile {
                 }
             }
         }
-        match self.surface {
-            CallSurface::Code => {
-                for (list, ids) in [
-                    ("tools.off", &self.tools.off),
-                    ("tools.network", &self.tools.network),
-                ] {
-                    if ids.iter().any(|id| id == RUN_CODE_ID) {
-                        return Err(LitecodeError::Config(format!(
-                            "eval profile: '{RUN_CODE_ID}' is the code transport (in {list}); it cannot be switched off"
-                        )));
-                    }
-                }
-            }
-            CallSurface::Direct => {
-                if self.tools.on.iter().any(|id| id == RUN_CODE_ID) {
-                    return Err(LitecodeError::Config(format!(
-                        "eval profile: surface = \"direct\" does not use '{RUN_CODE_ID}'; move '{RUN_CODE_ID}' to tools.off"
-                    )));
-                }
+        for (list, ids) in [
+            ("tools.off", &self.tools.off),
+            ("tools.network", &self.tools.network),
+        ] {
+            if ids.iter().any(|id| id == RUN_CODE_ID) {
+                return Err(LitecodeError::Config(format!(
+                    "eval profile: '{RUN_CODE_ID}' is the code transport (in {list}); it cannot be switched off"
+                )));
             }
         }
         if let Some(thinking) = self.knobs.get("thinking")
@@ -331,19 +304,9 @@ pub fn apply(
         }
     }
 
-    let binds_code = cards.iter().any(|card_id| {
-        catalog
-            .get(card_id)
-            .is_some_and(|card| card.surface == CallSurface::Code)
-    });
-    if profile.surface == CallSurface::Code && binds_code && !wanted.contains(RUN_CODE_ID) {
+    if !cards.is_empty() && !wanted.contains(RUN_CODE_ID) {
         return Err(LitecodeError::Config(format!(
             "eval profile: '{RUN_CODE_ID}' is missing from tools.on; the code tools are called through it"
-        )));
-    }
-    if profile.surface == CallSurface::Direct && wanted.contains(RUN_CODE_ID) {
-        return Err(LitecodeError::Config(format!(
-            "eval profile: surface = \"direct\" does not use '{RUN_CODE_ID}'; move '{RUN_CODE_ID}' to tools.off"
         )));
     }
 
@@ -409,7 +372,6 @@ pub fn apply(
         );
     }
     next.tools = tools;
-    next.tool_surface = profile.surface;
     writer.write_agent(AGENT_ID, next)?;
 
     let permissions: BTreeMap<String, String> = cards
@@ -425,7 +387,6 @@ pub fn apply(
     Ok(Applied {
         name: profile.name.clone(),
         web,
-        surface: profile.surface,
         cards: cards.into_iter().collect(),
         tools: wanted.into_iter().collect(),
         permissions,
@@ -478,7 +439,6 @@ mod tests {
         let applied = Applied {
             name: "t".to_string(),
             web: WebMode::On,
-            surface: CallSurface::Code,
             cards: vec!["read".to_string(), "webfetch".to_string()],
             tools: vec![
                 "read".to_string(),
@@ -519,22 +479,15 @@ mod tests {
         // Pure shape: the applier refuses before it touches a database.
         let parsed = EvalProfile::parse(&profile("")).expect("parses");
         assert_eq!(parsed.web, WebMode::Auto);
-        assert_eq!(parsed.surface, CallSurface::Code);
         assert_eq!(parsed.wanted(WebMode::Off).len(), 1);
     }
 
     #[test]
-    fn direct_surface_profile_parses_and_rejects_run_code_in_on() {
-        let parsed = EvalProfile::parse(
-            "name = \"direct\"\nsurface = \"direct\"\n[tools]\non = [\"read\"]\noff = [\"run_code\"]\n",
-        )
-        .expect("direct profile parses without requiring run_code");
-        assert_eq!(parsed.surface, CallSurface::Direct);
-
+    fn legacy_direct_surface_field_is_rejected() {
         let err = EvalProfile::parse(
-            "name = \"bad\"\nsurface = \"direct\"\n[tools]\non = [\"read\", \"run_code\"]\n",
+            "name = \"direct\"\nsurface = \"direct\"\n[tools]\non = [\"read\"]\n",
         )
-        .expect_err("direct surface must reject run_code in tools.on");
-        assert!(err.to_string().contains("direct"), "{err}");
+        .expect_err("unknown `surface` field must be rejected");
+        assert!(err.to_string().contains("surface"), "{err}");
     }
 }

@@ -1,325 +1,331 @@
-//! One knowledge tool. The command string is the whole interface.
-//! Reads rebuild the corpus from disk. Writes go through the workspace
-//! service so the editor and the knowledge panel see the change.
+//! Workspace knowledge tools (`knowledge.list`, `knowledge.check`, `knowledge.refs`, `knowledge.create`).
+//!
+//! Reads rebuild the corpus from disk. Writes go through the workspace service
+//! so the editor and knowledge panel observe changes immediately.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::SystemTime;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use crate::context_pipeline::Context;
-use crate::knowledge::corpus::Corpus;
+use crate::knowledge::corpus::{Corpus, Node};
 use crate::knowledge::document::{self, Status};
-use crate::knowledge::mentions::{self, is_knowledge_key, normalize_key};
+use crate::knowledge::mentions::{is_knowledge_key, normalize_key};
 use crate::knowledge::root::{self, KnowledgeRoot};
 use crate::knowledge::validate::Issue;
-use crate::knowledge::view;
 use crate::tool::trait_::{Tool, ToolExecutionContext};
 use crate::tool::write_lock::ResourceKey;
 use crate::types::ToolCallResult;
 
-pub struct KnowledgeTool {
-    ide: Arc<crate::ide_base::IdeBaseHandle>,
+pub struct KnowledgeListTool;
+
+impl KnowledgeListTool {
+    pub fn new() -> Self {
+        Self
+    }
 }
 
-impl KnowledgeTool {
+impl Default for KnowledgeListTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Tool for KnowledgeListTool {
+    fn name(&self) -> &str {
+        "knowledge.list"
+    }
+
+    fn is_concurrency_safe(&self, _input: &Value) -> bool {
+        true
+    }
+
+    fn execute(
+        &self,
+        input: Value,
+        execution: ToolExecutionContext,
+    ) -> Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        Box::pin(std::future::ready(run_list(&input, &execution.workspace_root)))
+    }
+
+    fn call_inner(&self, _input: Value) -> ToolCallResult {
+        ToolCallResult::error("knowledge.list requires an active workspace execution context")
+    }
+}
+
+pub struct KnowledgeCheckTool;
+
+impl KnowledgeCheckTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for KnowledgeCheckTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Tool for KnowledgeCheckTool {
+    fn name(&self) -> &str {
+        "knowledge.check"
+    }
+
+    fn is_concurrency_safe(&self, _input: &Value) -> bool {
+        true
+    }
+
+    fn execute(
+        &self,
+        input: Value,
+        execution: ToolExecutionContext,
+    ) -> Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        Box::pin(std::future::ready(run_check(&input, &execution.workspace_root)))
+    }
+
+    fn call_inner(&self, _input: Value) -> ToolCallResult {
+        ToolCallResult::error("knowledge.check requires an active workspace execution context")
+    }
+}
+
+pub struct KnowledgeRefsTool;
+
+impl KnowledgeRefsTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for KnowledgeRefsTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Tool for KnowledgeRefsTool {
+    fn name(&self) -> &str {
+        "knowledge.refs"
+    }
+
+    fn is_concurrency_safe(&self, _input: &Value) -> bool {
+        true
+    }
+
+    fn execute(
+        &self,
+        input: Value,
+        execution: ToolExecutionContext,
+    ) -> Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        Box::pin(std::future::ready(run_refs(&input, &execution.workspace_root)))
+    }
+
+    fn call_inner(&self, _input: Value) -> ToolCallResult {
+        ToolCallResult::error("knowledge.refs requires an active workspace execution context")
+    }
+}
+
+pub struct KnowledgeCreateTool {
+    ide: Option<Arc<crate::ide_base::IdeBaseHandle>>,
+}
+
+impl KnowledgeCreateTool {
     pub fn new(ide: Arc<crate::ide_base::IdeBaseHandle>) -> Self {
-        Self { ide }
+        Self { ide: Some(ide) }
     }
 
-    fn run(&self, input: &Value, workspace: &Path) -> ToolCallResult {
-        let command = match input.get("command") {
-            None => String::new(),
-            Some(value) => match value.as_str() {
-                Some(text) => text.to_string(),
-                None => {
-                    return usage("command must be a string", "list [folder]", "list notes");
-                }
-            },
-        };
-        let mut tokens = match tokenize(&command) {
-            Ok(tokens) => tokens,
-            Err(problem) => return usage(&problem, "refs <key>", "refs \"old key\""),
-        };
-        if tokens.first().map(String::as_str) == Some("knowledge") {
-            tokens.remove(0);
-        }
-        let verb = tokens.first().map(String::as_str).unwrap_or("");
-        let args = if tokens.is_empty() {
-            &[][..]
-        } else {
-            &tokens[1..]
-        };
-        match verb {
-            "" => self.board(workspace),
-            "guide" => guide(args),
-            "list" => self.list(workspace, args),
-            "refs" => self.refs(workspace, args),
-            "check" => self.check(workspace, args),
-            "create" => self.create(workspace, args),
-            "rename" => self.rename(workspace, args),
-            other => unknown_command(other),
-        }
+    pub fn cold() -> Self {
+        Self { ide: None }
+    }
+}
+
+impl Tool for KnowledgeCreateTool {
+    fn name(&self) -> &str {
+        "knowledge.create"
     }
 
-    fn board(&self, workspace: &Path) -> ToolCallResult {
-        let corpus = Corpus::load(workspace);
-        if corpus.root.is_none() || corpus.nodes.is_empty() {
-            return ToolCallResult::ok(view::missing_board());
-        }
-        let issues = issues_of(workspace, &corpus);
-        let now = SystemTime::now();
-        ToolCallResult::ok(view::dashboard(
-            &corpus.nodes,
-            &issues,
-            |key| corpus.incoming(key).len(),
-            now,
-            corpus.root.as_deref(),
-            &corpus.unknown,
-        ))
+    fn is_concurrency_safe(&self, _input: &Value) -> bool {
+        false
     }
 
-    fn list(&self, workspace: &Path, args: &[String]) -> ToolCallResult {
-        if args.len() > 1 {
-            return too_many("list [folder]", "list \"my folder\"");
-        }
-        let corpus = Corpus::load(workspace);
-        let Some(root) = corpus.root.clone() else {
-            return ToolCallResult::ok(view::missing_board());
+    fn resource_keys(
+        &self,
+        _input: &Value,
+        _path_mode: crate::workspace::ToolPathMode,
+        workspace_root: &Path,
+    ) -> Vec<ResourceKey> {
+        let root = match root::locate(workspace_root) {
+            KnowledgeRoot::Present(root) => root,
+            KnowledgeRoot::Missing => root::PRIVATE_ROOT.to_string(),
         };
-        let folder = args.first().map(String::as_str);
-        let nodes = if let Some(folder) = folder {
-            if !folder_ok(folder) {
-                return usage(
-                    "A folder cannot contain . or ..",
-                    "list [folder]",
-                    "list notes",
-                );
-            }
-            if !workspace.join(&root).join(folder).is_dir() {
-                return usage(
-                    &format!("There is no folder `{folder}`"),
-                    "list [folder]",
-                    "list notes",
-                );
-            }
-            corpus.in_folder(folder)
-        } else {
-            corpus.nodes.iter().collect()
-        };
-        if nodes.is_empty() {
-            let title = match folder {
-                Some(folder) => format!("# List · {folder}"),
-                None => "# List".into(),
-            };
-            let body = if corpus.nodes.is_empty() {
-                let named = match folder {
-                    Some(folder) => format!("`{folder}` has no nodes. "),
-                    None => String::new(),
-                };
-                format!(
-                    "{named}There are no nodes yet. Create the first with `knowledge create \"<key>\" [folder]`."
-                )
-            } else {
-                format!("`{}` has no nodes.", folder.unwrap_or(""))
-            };
-            return ToolCallResult::ok(format!("{title}\n\n{body}"));
-        }
-        let issues = issues_of(workspace, &corpus);
-        let now = SystemTime::now();
-        let body = view::folder_tree(
-            nodes,
-            folder,
-            |node| node_issues(&issues, &node.id),
-            |key| corpus.incoming(key).len(),
-            now,
-            &root,
-        );
-        let title = match folder {
-            Some(folder) => format!("# List · {folder}"),
-            None => "# List".into(),
-        };
-        ToolCallResult::ok(format!("{title}\n\n{body}"))
+        vec![ResourceKey::File(root)]
     }
 
-    fn refs(&self, workspace: &Path, args: &[String]) -> ToolCallResult {
-        if args.is_empty() {
-            return usage("refs needs one key", "refs <key>", "refs seq");
-        }
-        if args.len() > 1 {
-            return too_many("refs <key>", "refs \"old key\"");
-        }
-        let corpus = Corpus::load(workspace);
-        let Some(root) = corpus.root.clone() else {
-            return ToolCallResult::ok(view::missing_board());
-        };
-        let key = normalize_key(&args[0]);
-        let Some(node) = corpus.by_key(&key) else {
-            return usage(
-                &format!("There is no node `{key}`"),
-                "refs <key>",
-                "refs seq",
-            );
-        };
-        let issues = issues_of(workspace, &corpus);
-        let now = SystemTime::now();
-        let card_issues = node_issues(&issues, &node.id);
-        let markdown = read_node_file(workspace, &root, node);
-        let document = view::node_file(&root, &node.path, &card_issues, &markdown);
-        let incoming = corpus.incoming(&node.key);
-        let incoming_body = view::flat_rows(
-            incoming.iter().copied(),
-            |item| node_issues(&issues, &item.id),
-            |item| corpus.incoming(item).len(),
-            now,
-            &root,
-        );
-        let mut outgoing = Vec::new();
-        let mut missing = Vec::new();
-        for rel in &node.relations {
-            match corpus.by_key(rel) {
-                Some(target) => outgoing.push(target),
-                None => missing.push(rel.clone()),
-            }
-        }
-        let outgoing_body = view::flat_rows(
-            outgoing,
-            |item| node_issues(&issues, &item.id),
-            |item| corpus.incoming(item).len(),
-            now,
-            &root,
-        );
-        let missing_body = missing
-            .iter()
-            .filter(|rel| {
-                !card_issues.iter().any(|issue| {
-                    issue.code == "dangling_relation"
-                        && issue.reference.as_deref() == Some(rel.as_str())
-                })
+    fn execute(
+        &self,
+        input: Value,
+        execution: ToolExecutionContext,
+    ) -> Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        Box::pin(std::future::ready(self.run_create(&input, &execution.workspace_root)))
+    }
+
+    fn call_inner(&self, _input: Value) -> ToolCallResult {
+        ToolCallResult::error("knowledge.create requires an active workspace execution context")
+    }
+}
+
+fn run_list(input: &Value, workspace: &Path) -> ToolCallResult {
+    let scope = match parse_scope(input) {
+        Ok(scope) => scope,
+        Err(err) => return ToolCallResult::error(err),
+    };
+    let corpus = Corpus::load(workspace);
+    let Some(root) = corpus.root.clone() else {
+        return ToolCallResult::ok("No knowledge directory in this workspace.").with_data(json!({
+            "root": null,
+            "total": 0,
+            "nodes": [],
+        }));
+    };
+    let selected = match select_nodes(&corpus, workspace, &root, &scope) {
+        Ok(selected) => selected,
+        Err(err) => return err,
+    };
+    let issues = issues_of(workspace, &corpus);
+    let rows: Vec<Value> = selected
+        .iter()
+        .map(|node| {
+            let issue_count = node_issues(&issues, &node.id).len();
+            let incoming_count = corpus.incoming(&node.key).len();
+            json!({
+                "key": node.key,
+                "folder": folder_of(&node.path),
+                "path": node.path,
+                "status": status_label(node),
+                "incoming_count": incoming_count,
+                "issue_count": issue_count,
+                "summary": node.summary,
             })
-            .map(|rel| format!("- `{rel}` does not exist"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let outgoing_body = [outgoing_body, missing_body]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let follow = if card_issues.is_empty() {
-            String::new()
-        } else {
-            "Edit the body. Rename with `knowledge rename`.".into()
-        };
-        ToolCallResult::ok(join_blocks(&[
-            format!("# {key}\n\n{document}"),
-            view::section("## Cited by", &incoming_body),
-            view::section("## Cites", &outgoing_body),
-            follow,
-        ]))
-    }
+        })
+        .collect();
+    let total = rows.len();
+    ToolCallResult::ok(format!("Listed {total} knowledge node(s) in `{root}`.")).with_data(json!({
+        "root": root,
+        "total": total,
+        "nodes": rows,
+    }))
+}
 
-    fn check(&self, workspace: &Path, args: &[String]) -> ToolCallResult {
-        if args.len() > 1 {
-            return too_many("check [key or folder]", "check \"old key\"");
+fn run_check(input: &Value, workspace: &Path) -> ToolCallResult {
+    let scope = match parse_scope(input) {
+        Ok(scope) => scope,
+        Err(err) => return ToolCallResult::error(err),
+    };
+    let corpus = Corpus::load(workspace);
+    let Some(root) = corpus.root.clone() else {
+        return ToolCallResult::ok("No knowledge directory in this workspace.").with_data(json!({
+            "root": null,
+            "checked": 0,
+            "issue_count": 0,
+            "issues": [],
+        }));
+    };
+    let selected = match select_nodes(&corpus, workspace, &root, &scope) {
+        Ok(selected) => selected,
+        Err(err) => return err,
+    };
+    let checked = selected.len();
+    let issues = issues_of(workspace, &corpus);
+    let mut rows: Vec<Value> = Vec::new();
+    for node in selected {
+        for issue in node_issues(&issues, &node.id) {
+            rows.push(issue_row(node, &issue));
         }
-        let corpus = Corpus::load(workspace);
-        let Some(root) = corpus.root.clone() else {
-            return ToolCallResult::ok(view::missing_board());
-        };
-        let issues = issues_of(workspace, &corpus);
-        let now = SystemTime::now();
-        let mut tree_scope: Option<&str> = None;
-        let selected: Vec<&crate::knowledge::Node> = if let Some(scope) = args.first() {
-            if !folder_ok(scope) {
-                return usage(
-                    "A scope cannot contain . or ..",
-                    "check [key or folder]",
-                    "check notes",
-                );
-            }
-            if let Some(node) = corpus.by_key(scope) {
-                vec![node]
-            } else if workspace.join(&root).join(scope).is_dir() {
-                tree_scope = Some(scope.as_str());
-                corpus.in_folder(scope)
-            } else {
-                return usage(
-                    &format!("There is no node or folder `{scope}`"),
-                    "check [key or folder]",
-                    "check notes",
-                );
-            }
-        } else {
-            corpus.nodes.iter().collect()
-        };
-        let checked = selected.len();
-        let bad: Vec<_> = selected
-            .into_iter()
-            .filter(|node| !node_issues(&issues, &node.id).is_empty())
-            .collect();
-        let summary = check_summary(checked, args.first().map(String::as_str), bad.len());
-        if bad.is_empty() {
-            return ToolCallResult::ok(format!("# Check\n\n{summary}"));
-        }
-        let body = view::folder_tree(
-            bad,
-            tree_scope,
-            |node| node_issues(&issues, &node.id),
-            |key| corpus.incoming(key).len(),
-            now,
-            &root,
-        );
-        ToolCallResult::ok(format!("# Check\n\n{summary}\n\n{body}"))
     }
+    let issue_count = rows.len();
+    ToolCallResult::ok(format!(
+        "Checked {checked} knowledge node(s); {issue_count} issue(s)."
+    ))
+    .with_data(json!({
+        "root": root,
+        "checked": checked,
+        "issue_count": issue_count,
+        "issues": rows,
+    }))
+}
 
-    fn create(&self, workspace: &Path, args: &[String]) -> ToolCallResult {
-        if args.is_empty() {
-            return usage(
-                "create needs a key. The folder is optional.",
-                "create <key> [folder]",
-                "create seq notes",
-            );
+fn run_refs(input: &Value, workspace: &Path) -> ToolCallResult {
+    let raw_key = match crate::tool::require_nonempty_string(input, "key") {
+        Ok(key) => key,
+        Err(err) => return ToolCallResult::error(err),
+    };
+    let corpus = Corpus::load(workspace);
+    let Some(root) = corpus.root.clone() else {
+        return ToolCallResult::error("No knowledge directory in this workspace.");
+    };
+    let key = normalize_key(raw_key);
+    let Some(node) = corpus.by_key(&key) else {
+        return ToolCallResult::error(format!("There is no knowledge node `{key}`."));
+    };
+    let issues = issues_of(workspace, &corpus);
+    let card_issues: Vec<Value> = node_issues(&issues, &node.id)
+        .into_iter()
+        .map(|issue| issue_row(node, &issue))
+        .collect();
+    let body = read_node_file(workspace, &root, node);
+    let incoming: Vec<Value> = corpus
+        .incoming(&node.key)
+        .into_iter()
+        .map(ref_edge)
+        .collect();
+    let mut outgoing: Vec<Value> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for rel in &node.relations {
+        match corpus.by_key(rel) {
+            Some(target) => outgoing.push(ref_edge(target)),
+            None => missing.push(rel.clone()),
         }
-        if args.len() > 2 {
-            return too_many("create <key> [folder]", "create \"my key\" notes");
+    }
+    let data = json!({
+        "key": node.key,
+        "folder": folder_of(&node.path),
+        "path": node.path,
+        "status": status_label(node),
+        "summary": node.summary,
+        "body": body,
+        "incoming": incoming,
+        "outgoing": outgoing,
+        "missing": missing,
+        "issues": card_issues,
+    });
+    ToolCallResult::ok(format!("Node `{}` ({})", node.key, node.path)).with_data(data)
+}
+
+impl KnowledgeCreateTool {
+    fn run_create(&self, input: &Value, workspace: &Path) -> ToolCallResult {
+        let raw_key = match crate::tool::require_nonempty_string(input, "key") {
+            Ok(key) => key,
+            Err(err) => return ToolCallResult::error(err),
+        };
+        let key = normalize_key(raw_key);
+        if key.is_empty() || !is_knowledge_key(&key) {
+            return ToolCallResult::error(format!("`{key}` is not a valid knowledge node key"));
         }
-        let key = normalize_key(&args[0]);
-        if key.is_empty() {
-            return usage(
-                "A key is required.",
-                "create <key> [folder]",
-                "create seq notes",
-            );
-        }
-        if !is_knowledge_key(&key) {
-            return usage(
-                &format!("`{key}` is not a valid node key"),
-                "create <key> [folder]",
-                "create seq notes",
-            );
-        }
-        let folder = args
-            .get(1)
-            .map(String::as_str)
+        let folder = input
+            .get("folder")
+            .and_then(Value::as_str)
+            .map(str::trim)
             .filter(|folder| !folder.is_empty());
-        if let Some(folder) = folder {
-            if !folder_ok(folder) {
-                return usage(
-                    "A folder cannot contain . or ..",
-                    "create <key> [folder]",
-                    "create seq notes",
-                );
-            }
+        if let Some(folder) = folder
+            && !folder_ok(folder)
+        {
+            return ToolCallResult::error("A folder cannot contain `.`, `..`, or `\\`.");
         }
         let corpus = Corpus::load(workspace);
         if corpus.by_key(&key).is_some() {
-            return usage(
-                &format!("`{key}` already exists"),
-                "create <key> [folder]",
-                "create seq notes",
-            );
+            return ToolCallResult::error(format!("knowledge node `{key}` already exists"));
         }
         let root = match root::locate(workspace) {
             KnowledgeRoot::Present(root) => root,
@@ -331,11 +337,7 @@ impl KnowledgeTool {
         };
         let full = root::join(&root, &rel);
         if workspace.join(&full).exists() {
-            return usage(
-                &format!("`{full}` already exists"),
-                "create <key> [folder]",
-                "create seq notes",
-            );
+            return ToolCallResult::error(format!("`{full}` already exists"));
         }
         let markdown = document::render_knowledge_markdown(document::RenderDoc {
             key: &key,
@@ -349,255 +351,154 @@ impl KnowledgeTool {
             h: None,
             extras: &[],
         });
-        if let Err(error) = self.ide.workspace.write_file(&full, &markdown) {
-            return ToolCallResult::error(format!("# Could not write\n\n{error}"));
-        }
-        let next = format!(
-            "Status is pending. The user enables it in the knowledge panel. Next, add a summary and a body on `{full}`, then run `knowledge check {}`.",
-            quote_key(&key)
-        );
-        let corpus = Corpus::load(workspace);
-        let issues = issues_of(workspace, &corpus);
-        let now = SystemTime::now();
-        let Some(node) = corpus.by_key(&key) else {
-            return ToolCallResult::ok(format!("# Created\n\nWrote `{full}`.\n\n{next}"));
+        let Some(ide) = &self.ide else {
+            return ToolCallResult::error("knowledge.create requires an active runtime");
         };
-        let card = view::node_row(
-            node,
-            &node_issues(&issues, &node.id),
-            corpus.incoming(&node.key).len(),
-            now,
-            &root,
-        );
-        ToolCallResult::ok(format!("# Created\n\n{card}\n\n{next}"))
-    }
-
-    fn rename(&self, workspace: &Path, args: &[String]) -> ToolCallResult {
-        if args.len() < 2 {
-            return usage(
-                "rename needs the old key and the new key",
-                "rename <old key> <new key>",
-                "rename seq order",
-            );
+        if let Err(error) = ide.workspace.write_file(&full, &markdown) {
+            return ToolCallResult::error(format!("could not write `{full}`: {error}"));
         }
-        if args.len() > 2 {
-            return too_many(
-                "rename <old key> <new key>",
-                "rename \"old key\" \"new key\"",
-            );
-        }
-        let from = normalize_key(&args[0]);
-        let to = normalize_key(&args[1]);
-        if !is_knowledge_key(&from) || !is_knowledge_key(&to) {
-            return usage(
-                "Both keys must be valid",
-                "rename <old key> <new key>",
-                "rename seq order",
-            );
-        }
-        let corpus = Corpus::load(workspace);
-        let Some(root) = corpus.root.clone() else {
-            return ToolCallResult::ok(view::missing_board());
-        };
-        let Some(current) = corpus.by_key(&from) else {
-            return usage(
-                &format!("There is no node `{from}`"),
-                "rename <old key> <new key>",
-                "rename seq order",
-            );
-        };
-        let current_id = current.id.clone();
-        let current_path = current.path.clone();
-        if from == to {
-            let issues = issues_of(workspace, &corpus);
-            let card = view::node_row(
-                current,
-                &node_issues(&issues, &current.id),
-                corpus.incoming(&current.key).len(),
-                SystemTime::now(),
-                &root,
-            );
-            return ToolCallResult::ok(format!("# Unchanged\n\n{card}"));
-        }
-        if corpus.by_key(&to).is_some() {
-            return usage(
-                &format!("`{to}` already exists"),
-                "rename <old key> <new key>",
-                "rename seq order",
-            );
-        }
-        let new_rel = renamed_rel(&current_path, &to);
-        if new_rel != current_path && workspace.join(root::join(&root, &new_rel)).exists() {
-            return usage(
-                &format!("`{new_rel}` already exists"),
-                "rename <old key> <new key>",
-                "rename seq order",
-            );
-        }
-        let mut writes: Vec<(String, String)> = Vec::new();
-        for node in &corpus.nodes {
-            let body = mentions::replace_mention_key(&node.value, &from, &to);
-            if node.id == current_id {
-                writes.push((
-                    new_rel.clone(),
-                    document::render_knowledge_markdown(document::RenderDoc {
-                        key: &to,
-                        status: node.status,
-                        invalid_status: node.invalid_status.as_deref(),
-                        body: &body,
-                        summary: &node.summary,
-                        x: node.x,
-                        y: node.y,
-                        w: node.w,
-                        h: node.h,
-                        extras: &node.extras,
-                    }),
-                ));
-            } else if body != node.value {
-                writes.push((
-                    node.path.clone(),
-                    document::render_knowledge_markdown(document::RenderDoc {
-                        key: &node.key,
-                        status: node.status,
-                        invalid_status: node.invalid_status.as_deref(),
-                        body: &body,
-                        summary: &node.summary,
-                        x: node.x,
-                        y: node.y,
-                        w: node.w,
-                        h: node.h,
-                        extras: &node.extras,
-                    }),
-                ));
-            }
-        }
-        let mut wrote = Vec::new();
-        for (rel, content) in &writes {
-            let full = root::join(&root, rel);
-            if let Err(error) = self.ide.workspace.write_file(&full, content) {
-                return ToolCallResult::error(format!(
-                    "# Stopped partway\n\n{error}{}",
-                    already_wrote(&wrote)
-                ));
-            }
-            wrote.push(full);
-        }
-        let mut deleted = Vec::new();
-        if new_rel != current_path {
-            let old = root::join(&root, &current_path);
-            if let Err(error) = self.ide.workspace.delete_path(&old, false) {
-                return ToolCallResult::error(format!(
-                    "# The new file is written and the old file is still there\n\nCould not delete `{old}`: {error}{}",
-                    already_wrote(&wrote)
-                ));
-            }
-            deleted.push(old);
-        }
-        let corpus = Corpus::load(workspace);
-        let issues = issues_of(workspace, &corpus);
-        let now = SystemTime::now();
-        let incoming = corpus.incoming(&to).len();
-        let card = corpus.by_key(&to).map(|node| {
-            view::node_row(node, &node_issues(&issues, &node.id), incoming, now, &root)
-        });
-        let mut parts = vec!["# Renamed".to_string()];
-        if !wrote.is_empty() {
-            parts.push(format!("## Wrote\n{}", bullet_list(&wrote)));
-        }
-        if !deleted.is_empty() {
-            parts.push(format!("## Deleted\n{}", bullet_list(&deleted)));
-        }
-        if let Some(card) = card {
-            parts.push(card);
-        }
-        parts.push(format!(
-            "Next, run `knowledge check {}` to confirm citations still resolve.",
-            quote_key(&to)
-        ));
-        ToolCallResult::ok(parts.join("\n\n"))
+        let _ = Corpus::load(workspace);
+        ToolCallResult::ok(format!(
+            "Created pending knowledge node `{full}`. Add summary/body and verify with `tools.knowledge.check`."
+        ))
+        .with_data(json!({
+            "key": key,
+            "path": full,
+            "status": "pending",
+        }))
     }
 }
 
-impl Tool for KnowledgeTool {
-    fn name(&self) -> &str {
-        "knowledge"
-    }
-
-    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-        let description = crate::tools::description_text(include_str!("descriptions/knowledge.md"));
-        let input_schema = {
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "Empty opens the board. Otherwise one command: list, refs, check, create, or rename. Quote a key or folder that contains spaces."
-                    }
-                }
-            })
-        };
-        Some(crate::tool::DirectToolSpec {
-            description,
-            input_schema,
-        })
-    }
-
-    fn is_concurrency_safe(&self, input: &Value) -> bool {
-        !is_write(input)
-    }
-
-    fn resource_keys(
-        &self,
-        input: &Value,
-        _path_mode: crate::workspace::ToolPathMode,
-        workspace_root: &Path,
-    ) -> Vec<ResourceKey> {
-        if !is_write(input) {
-            return Vec::new();
-        }
-        let root = match root::locate(workspace_root) {
-            KnowledgeRoot::Present(root) => root,
-            KnowledgeRoot::Missing => root::PRIVATE_ROOT.to_string(),
-        };
-        vec![ResourceKey::File(root)]
-    }
-
-    fn execute(
-        &self,
-        input: Value,
-        execution: ToolExecutionContext,
-    ) -> Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
-        let result = self.run(&input, &execution.workspace_root);
-        Box::pin(std::future::ready(result))
-    }
+struct ScopeFilter {
+    folders: Option<Vec<String>>,
+    nodes: Option<Vec<String>>,
 }
 
-fn is_write(input: &Value) -> bool {
-    let Some(command) = input.get("command").and_then(Value::as_str) else {
-        return false;
+fn parse_scope(input: &Value) -> Result<ScopeFilter, String> {
+    let folders = parse_string_list(input.get("folders"), "folders")?;
+    if let Some(list) = &folders {
+        for folder in list {
+            if !folder_ok(folder) {
+                return Err(format!("invalid folder `{folder}` (cannot contain . or ..)"));
+            }
+        }
+    }
+    let nodes = parse_string_list(input.get("nodes"), "nodes")?.map(|items| {
+        items
+            .into_iter()
+            .map(|item| normalize_key(&item))
+            .filter(|k| !k.is_empty())
+            .collect::<Vec<_>>()
+    });
+    Ok(ScopeFilter {
+        folders: folders.filter(|v| !v.is_empty()),
+        nodes: nodes.filter(|v| !v.is_empty()),
+    })
+}
+
+fn parse_string_list(value: Option<&Value>, field: &str) -> Result<Option<Vec<String>>, String> {
+    let Some(value) = value else {
+        return Ok(None);
     };
-    let Ok(mut tokens) = tokenize(command) else {
-        return false;
-    };
-    if tokens.first().map(String::as_str) == Some("knowledge") {
-        tokens.remove(0);
+    if value.is_null() {
+        return Ok(None);
     }
-    matches!(
-        tokens.first().map(String::as_str),
-        Some("create" | "rename")
-    )
+    let arr = value
+        .as_array()
+        .ok_or_else(|| crate::tool::expected_type(field, "array", value))?;
+    let mut out = Vec::with_capacity(arr.len());
+    for (idx, item) in arr.iter().enumerate() {
+        let s = item
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("{field}[{idx}] must be a non-empty string"))?;
+        out.push(s.to_string());
+    }
+    Ok(Some(out))
 }
 
-/// Issues from the knowledge index (same rules and caches as the turn note
-/// and the knowledge API), refreshed now so the tool sees its own writes.
+fn select_nodes<'a>(
+    corpus: &'a Corpus,
+    workspace: &Path,
+    root: &str,
+    scope: &ScopeFilter,
+) -> Result<Vec<&'a Node>, ToolCallResult> {
+    if scope.folders.is_none() && scope.nodes.is_none() {
+        return Ok(corpus.nodes.iter().collect());
+    }
+    let mut matched_paths = HashSet::<String>::new();
+    if let Some(folders) = &scope.folders {
+        for folder in folders {
+            if !workspace.join(root).join(folder).is_dir() {
+                return Err(ToolCallResult::error(format!(
+                    "There is no knowledge folder `{folder}`."
+                )));
+            }
+            for node in corpus.in_folder(folder) {
+                matched_paths.insert(node.path.clone());
+            }
+        }
+    }
+    if let Some(nodes) = &scope.nodes {
+        for key in nodes {
+            let Some(node) = corpus.by_key(key) else {
+                return Err(ToolCallResult::error(format!(
+                    "There is no knowledge node `{key}`."
+                )));
+            };
+            matched_paths.insert(node.path.clone());
+        }
+    }
+    Ok(corpus
+        .nodes
+        .iter()
+        .filter(|node| matched_paths.contains(&node.path))
+        .collect())
+}
+
+fn status_label(node: &Node) -> &'static str {
+    if node.invalid_status.is_some() {
+        "invalid"
+    } else {
+        node.status.as_str()
+    }
+}
+
+fn folder_of(path: &str) -> String {
+    path.rsplit_once('/')
+        .map(|(dir, _)| dir.to_string())
+        .unwrap_or_default()
+}
+
+fn issue_row(node: &Node, issue: &Issue) -> Value {
+    json!({
+        "key": node.key,
+        "folder": folder_of(&node.path),
+        "path": node.path,
+        "severity": issue.severity.as_str(),
+        "code": issue.code,
+        "ref_key": issue.ref_key,
+        "message": issue.message,
+    })
+}
+
+fn ref_edge(node: &Node) -> Value {
+    json!({
+        "key": node.key,
+        "path": node.path,
+        "status": status_label(node),
+        "summary": node.summary,
+    })
+}
+
 fn issues_of(workspace: &Path, _corpus: &Corpus) -> Vec<Issue> {
     crate::knowledge::index::fresh_content(workspace)
         .issues
         .clone()
 }
 
-fn read_node_file(workspace: &Path, root: &str, node: &crate::knowledge::Node) -> String {
+fn read_node_file(workspace: &Path, root: &str, node: &Node) -> String {
     let path = workspace.join(root).join(&node.path);
     if let Ok(text) = std::fs::read_to_string(&path) {
         return text;
@@ -632,132 +533,128 @@ fn folder_ok(folder: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-fn renamed_rel(path: &str, to: &str) -> String {
-    match path.rfind('/') {
-        Some(slash) => format!("{}/{to}.md", &path[..slash]),
-        None => format!("{to}.md"),
-    }
-}
-
-fn quote_key(key: &str) -> String {
-    if key.is_empty() || key.chars().any(char::is_whitespace) {
-        format!("\"{key}\"")
-    } else {
-        key.to_string()
-    }
-}
-
-fn too_many(syntax: &str, example: &str) -> ToolCallResult {
-    usage(
-        "The name was split into several words. Quote a key or folder that contains spaces.",
-        syntax,
-        example,
-    )
-}
-
-fn guide(args: &[String]) -> ToolCallResult {
-    if !args.is_empty() {
-        return usage("guide takes no arguments", "guide", "guide");
-    }
-    ToolCallResult::ok(view::guide().to_string())
-}
-
-fn unknown_command(other: &str) -> ToolCallResult {
-    ToolCallResult::error(format!(
-        "# `{other}` is not a knowledge command\n\n\
-- `knowledge`\n\
-- `knowledge guide`\n\
-- `knowledge list [folder]`\n\
-- `knowledge refs <key>`\n\
-- `knowledge check [key or folder]`\n\
-- `knowledge create <key> [folder]`\n\
-- `knowledge rename <old key> <new key>`\n\n\
-Quote a key or folder that contains spaces."
-    ))
-}
-
-fn bullet_list(paths: &[String]) -> String {
-    paths
-        .iter()
-        .map(|path| format!("- `{path}`"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn already_wrote(paths: &[String]) -> String {
-    if paths.is_empty() {
-        return String::new();
-    }
-    format!("\n\nAlready wrote:\n{}", bullet_list(paths))
-}
-
-fn tokenize(input: &str) -> Result<Vec<String>, String> {
-    let mut out = Vec::new();
-    let mut chars = input.chars().peekable();
-    while let Some(&ch) = chars.peek() {
-        if ch.is_whitespace() {
-            chars.next();
-            continue;
-        }
-        if ch == '"' {
-            chars.next();
-            let mut buf = String::new();
-            let mut closed = false;
-            for next in chars.by_ref() {
-                if next == '"' {
-                    closed = true;
-                    break;
-                }
-                buf.push(next);
-            }
-            if !closed {
-                return Err("A quote was not closed".into());
-            }
-            out.push(buf);
-            continue;
-        }
-        let mut buf = String::new();
-        while let Some(&next) = chars.peek() {
-            if next.is_whitespace() {
-                break;
-            }
-            buf.push(next);
-            chars.next();
-        }
-        out.push(buf);
-    }
-    Ok(out)
-}
-
-fn check_summary(checked: usize, scope: Option<&str>, bad: usize) -> String {
-    let noun = if checked == 1 { "node" } else { "nodes" };
-    let where_scope = match scope {
-        Some(scope) => format!(" in `{scope}`"),
-        None => String::new(),
-    };
-    if bad == 0 {
-        format!("Checked {checked} {noun}{where_scope}. No issues.")
-    } else if bad == 1 {
-        format!("Checked {checked} {noun}{where_scope}. 1 node has an issue.")
-    } else {
-        format!("Checked {checked} {noun}{where_scope}. {bad} nodes have issues.")
-    }
-}
-
-fn usage(problem: &str, syntax: &str, example: &str) -> ToolCallResult {
-    ToolCallResult::error(format!(
-        "# {problem}\n\n`knowledge {syntax}`\n\nExample: `knowledge {example}`"
-    ))
-}
-
-fn join_blocks(parts: &[String]) -> String {
-    parts
-        .iter()
-        .filter(|part| !part.trim().is_empty())
-        .map(|part| part.trim_end().to_string())
-        .collect::<Vec<_>>()
-        .join("\n\n")
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    use crate::tool::code_contract::DriftCase;
+    let list_sample = ToolCallResult::ok("ok").with_data(json!({
+        "root": ".litecode/knowledge",
+        "total": 1,
+        "nodes": [{
+            "key": "seq",
+            "folder": "arch",
+            "path": "arch/seq.md",
+            "status": "enabled",
+            "incoming_count": 2,
+            "issue_count": 0,
+            "summary": "Sequence contract",
+        }],
+    }));
+    let check_sample = ToolCallResult::ok("ok").with_data(json!({
+        "root": ".litecode/knowledge",
+        "checked": 1,
+        "issue_count": 1,
+        "issues": [{
+            "key": "seq",
+            "folder": "arch",
+            "path": "arch/seq.md",
+            "severity": "warning",
+            "code": "dangling_relation",
+            "ref_key": "missing",
+            "message": "missing target",
+        }],
+    }));
+    let refs_sample = ToolCallResult::ok("ok").with_data(json!({
+        "key": "seq",
+        "folder": "arch",
+        "path": "arch/seq.md",
+        "status": "enabled",
+        "summary": "Sequence contract",
+        "body": "# Seq\n",
+        "incoming": [{
+            "key": "other",
+            "path": "other.md",
+            "status": "enabled",
+            "summary": "Other",
+        }],
+        "outgoing": [{
+            "key": "target",
+            "path": "target.md",
+            "status": "enabled",
+            "summary": "Target",
+        }],
+        "missing": ["ghost"],
+        "issues": [{
+            "key": "seq",
+            "folder": "arch",
+            "path": "arch/seq.md",
+            "severity": "warning",
+            "code": "dangling_relation",
+            "ref_key": "ghost",
+            "message": "missing target",
+        }],
+    }));
+    let create_sample = ToolCallResult::ok("created").with_data(json!({
+        "key": "seq",
+        "path": ".litecode/knowledge/arch/seq.md",
+        "status": "pending",
+    }));
+    vec![
+        DriftCase {
+            tool: "knowledge.list",
+            all_optional_present: list_sample.clone(),
+            all_optional_absent: list_sample,
+        },
+        DriftCase {
+            tool: "knowledge.check",
+            all_optional_present: check_sample.clone(),
+            all_optional_absent: check_sample,
+        },
+        DriftCase {
+            tool: "knowledge.refs",
+            all_optional_present: refs_sample.clone(),
+            all_optional_absent: refs_sample,
+        },
+        DriftCase {
+            tool: "knowledge.create",
+            all_optional_present: create_sample.clone(),
+            all_optional_absent: create_sample,
+        },
+    ]
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_and_check_scope_supports_folders_and_nodes_union() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".litecode").join("knowledge");
+        std::fs::create_dir_all(root.join("alpha")).unwrap();
+        std::fs::create_dir_all(root.join("beta")).unwrap();
+        std::fs::write(
+            root.join("alpha/a.md"),
+            "```node\nnode : a\nstatus : enabled\nsummary : Alpha A\n```\n\nSee [@ key=\"missing_ref\"].\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("beta/b.md"),
+            "```node\nnode : b\nstatus : pending\nsummary : Beta B\n```\n\nLinks [@ key=\"a\"].\n",
+        )
+        .unwrap();
+
+        let list_res = run_list(&json!({ "folders": ["alpha"], "nodes": ["b"] }), dir.path());
+        let data = list_res.data.expect(&list_res.content);
+        assert_eq!(data["total"], 2);
+        let nodes = data["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2);
+
+        let check_res = run_check(&json!({ "folders": ["alpha"] }), dir.path());
+        let cdata = check_res.data.expect("check data");
+        assert_eq!(cdata["checked"], 1);
+        assert!(cdata["issue_count"].as_u64().unwrap() >= 1);
+        let first_issue = &cdata["issues"][0];
+        assert!(first_issue["severity"].is_string());
+        assert!(!first_issue.as_object().unwrap().values().any(|v| v.is_object() || v.is_array()));
+    }
+}

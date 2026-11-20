@@ -26,8 +26,7 @@ CREATE TABLE IF NOT EXISTS agents (
     model_ref               TEXT NOT NULL,
     system_prompt           TEXT NOT NULL DEFAULT '',
     description             TEXT NOT NULL DEFAULT '',
-    allowed_subagents_json  TEXT NOT NULL DEFAULT '[]',
-    tool_surface            TEXT NOT NULL DEFAULT 'code'
+    allowed_subagents_json  TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS agent_tools (
@@ -41,7 +40,6 @@ CREATE TABLE IF NOT EXISTS agent_tools (
 
 CREATE TABLE IF NOT EXISTS custom_suites (
     id              TEXT PRIMARY KEY,
-    surface         TEXT NOT NULL,
     label           TEXT NOT NULL DEFAULT '',
     rules_json      TEXT
 );
@@ -54,10 +52,7 @@ CREATE TABLE IF NOT EXISTS custom_tools (
     timeout         INTEGER NOT NULL DEFAULT 120,
     description     TEXT NOT NULL DEFAULT '',
     rules_json      TEXT,
-    surface         TEXT,
     suite_id        TEXT,
-    output_schema_json TEXT,
-    data_schema_json TEXT,
     definition_version INTEGER NOT NULL DEFAULT 2
 );
 

@@ -55,7 +55,7 @@ pub enum EntryBody {
     /// The program's return value. Always the last entry when present.
     Value(Json),
 }
-pub use budget::{BudgetPause, BudgetPauseGuard};
+pub use budget::{BudgetPause, BudgetPauseGuard, HumanPauseGuard};
 pub use json::Json;
 
 /// Largest integer that is exact in an IEEE-754 number (`2^53 - 1`).

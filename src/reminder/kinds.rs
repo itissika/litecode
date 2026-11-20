@@ -21,7 +21,6 @@ pub enum ReminderKind {
     FilesChanged,
     BashExit,
     SubagentSettled,
-    CustomToolSettled,
     /// One-shot attachment after a user message. Not restored after compaction.
     Mentions,
     /// Knowledge-base class, attached after a human message. Hidden.
@@ -39,7 +38,6 @@ impl ReminderKind {
             Self::FilesChanged => "files_changed",
             Self::BashExit => "bash_exit",
             Self::SubagentSettled => "subagent_settled",
-            Self::CustomToolSettled => "custom_tool_settled",
             Self::Mentions => "mentions",
             Self::KnowledgeStatus => "knowledge_status",
         }
@@ -55,7 +53,6 @@ impl ReminderKind {
             Self::FilesChanged => "reminder/files_changed",
             Self::BashExit => "reminder/bash_exit",
             Self::SubagentSettled => "reminder/subagent_settled",
-            Self::CustomToolSettled => "reminder/custom_tool_settled",
             Self::Mentions => "reminder/mentions",
             Self::KnowledgeStatus => "reminder/knowledge_status",
         }
@@ -71,7 +68,6 @@ impl ReminderKind {
             "reminder/files_changed" => Self::FilesChanged,
             "reminder/bash_exit" => Self::BashExit,
             "reminder/subagent_settled" => Self::SubagentSettled,
-            "reminder/custom_tool_settled" => Self::CustomToolSettled,
             "reminder/mentions" => Self::Mentions,
             "reminder/knowledge_status" => Self::KnowledgeStatus,
             _ => return None,
@@ -84,7 +80,7 @@ impl ReminderKind {
 
     pub fn visibility(self) -> Visibility {
         match self {
-            Self::BashExit | Self::SubagentSettled | Self::CustomToolSettled => Visibility::Visible,
+            Self::BashExit | Self::SubagentSettled => Visibility::Visible,
             Self::Env
             | Self::Tasks
             | Self::Memory
@@ -209,22 +205,6 @@ pub struct SubagentSettledBody {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CustomToolSettledEntry {
-    pub job_id: String,
-    pub call_id: String,
-    pub tool_name: String,
-    /// `ok` | `error` | `cancelled`
-    pub status: String,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CustomToolSettledBody {
-    pub settled: Vec<CustomToolSettledEntry>,
-    pub text: String,
-}
-
 /// One citation expanded into the frozen mentions attachment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MentionRef {
@@ -260,7 +240,6 @@ pub enum Reminder {
     FilesChanged(FilesChangedBody),
     BashExit(BashExitBody),
     SubagentSettled(SubagentSettledBody),
-    CustomToolSettled(CustomToolSettledBody),
     Mentions(MentionsBody),
     KnowledgeStatus(KnowledgeStatusBody),
 }
@@ -276,7 +255,6 @@ impl Reminder {
             Self::FilesChanged(_) => ReminderKind::FilesChanged,
             Self::BashExit(_) => ReminderKind::BashExit,
             Self::SubagentSettled(_) => ReminderKind::SubagentSettled,
-            Self::CustomToolSettled(_) => ReminderKind::CustomToolSettled,
             Self::Mentions(_) => ReminderKind::Mentions,
             Self::KnowledgeStatus(_) => ReminderKind::KnowledgeStatus,
         }
@@ -292,7 +270,6 @@ impl Reminder {
             Self::FilesChanged(body) => &body.text,
             Self::BashExit(body) => &body.text,
             Self::SubagentSettled(body) => &body.text,
-            Self::CustomToolSettled(body) => &body.text,
             Self::Mentions(body) => &body.text,
             Self::KnowledgeStatus(body) => &body.text,
         }

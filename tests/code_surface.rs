@@ -14,7 +14,7 @@ mod projection {
     };
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
     use litecode::tool::write_lock::process_write_lock;
-    use litecode::tool::{Tool, ToolSurface, project_tools};
+    use litecode::tool::{Tool, project_tools};
 
     use litecode::tools::read::ReadTool;
 
@@ -56,9 +56,7 @@ mod projection {
                         when: ArgMatcher::Any,
                         action: policy.default,
                     }],
-                    surface: Some(litecode::config::schema::CallSurface::Direct),
                     suite: None,
-                    output_schema: None,
                 });
         }
         global.agents.insert(
@@ -93,7 +91,6 @@ mod projection {
 
     struct CountTool {
         name: &'static str,
-        surface: ToolSurface,
         hits: Arc<AtomicUsize>,
         with_data: bool,
         dynamic_contract: bool,
@@ -103,7 +100,6 @@ mod projection {
         fn code(name: &'static str, hits: Arc<AtomicUsize>) -> Self {
             Self {
                 name,
-                surface: ToolSurface::Code,
                 hits,
                 with_data: true,
                 dynamic_contract: true,
@@ -116,27 +112,16 @@ mod projection {
             self.name
         }
 
-        fn surface(&self) -> ToolSurface {
-            self.surface
-        }
-
-        fn direct_spec(&self, _ctx: &Context) -> Option<litecode::tool::DirectToolSpec> {
-            (self.surface == ToolSurface::Direct).then(|| litecode::tool::DirectToolSpec {
-                description: format!("count tool {}", self.name),
-                input_schema: json!({"type": "object", "properties": {}}),
-            })
-        }
-
         fn dynamic_code_spec(&self) -> Option<litecode::tool::DynamicCodeSpec> {
-            (self.surface == ToolSurface::Code && self.dynamic_contract).then(|| {
+            self.dynamic_contract.then(|| {
                 litecode::tool::DynamicCodeSpec {
                     description: format!("count tool {}", self.name),
                     input_schema: json!({"type": "object", "properties": {}}),
-                    output_schema: json!({
+                    output_schema: Some(json!({
                         "type": "object",
                         "properties": {"n": {"type": "integer"}},
                         "required": ["n"]
-                    }),
+                    })),
                 }
             })
         }
@@ -166,44 +151,20 @@ mod projection {
         }
     }
 
-    struct BrokenCode;
-
-    impl Tool for BrokenCode {
-        fn name(&self) -> &str {
-            "broken"
-        }
-
-        fn surface(&self) -> ToolSurface {
-            ToolSurface::Code
-        }
-
-        fn dynamic_code_spec(&self) -> Option<litecode::tool::DynamicCodeSpec> {
-            Some(litecode::tool::DynamicCodeSpec {
-                description: "Broken code tool.".into(),
-                input_schema: json!({"type": "object", "properties": {"item": {"$ref": "#/Item"}}}),
-                output_schema: json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}),
-            })
-        }
-    }
-
-    struct Colliding {
+    struct BadNameTool {
         name: &'static str,
     }
 
-    impl Tool for Colliding {
+    impl Tool for BadNameTool {
         fn name(&self) -> &str {
             self.name
         }
 
-        fn surface(&self) -> ToolSurface {
-            ToolSurface::Code
-        }
-
         fn dynamic_code_spec(&self) -> Option<litecode::tool::DynamicCodeSpec> {
             Some(litecode::tool::DynamicCodeSpec {
-                description: format!("colliding {}", self.name),
-                input_schema: json!({"type": "object", "properties": {"item": {"$ref": "#/Item"}}}),
-                output_schema: json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}),
+                description: format!("tool {}", self.name),
+                input_schema: json!({"type": "object", "properties": {}}),
+                output_schema: Some(json!({"type": "object", "properties": {"ok": {"type": "boolean"}}})),
             })
         }
     }
@@ -213,16 +174,16 @@ mod projection {
     }
 
     #[test]
-    fn missing_or_unrenderable_code_tool_leaves_both_surfaces() {
+    fn missing_or_invalid_code_tool_is_rejected_independently() {
         let hits = Arc::new(AtomicUsize::new(0));
         let mut stripped = CountTool::code("stripped", hits);
         stripped.dynamic_contract = false;
         let projected = project_tools(vec![
             Arc::new(stripped),
-            Arc::new(BrokenCode),
+            Arc::new(BadNameTool { name: "bad..name" }),
             Arc::new(ReadTool::default()),
-            Arc::new(Colliding { name: "foo-bar" }),
-            Arc::new(Colliding { name: "foo_bar" }),
+            Arc::new(BadNameTool { name: "dup" }),
+            Arc::new(BadNameTool { name: "dup" }),
         ]);
         let rejected: Vec<&str> = projected
             .rejected
@@ -230,9 +191,8 @@ mod projection {
             .map(|item| item.name.as_str())
             .collect();
         assert!(rejected.contains(&"stripped"), "{rejected:?}");
-        assert!(rejected.contains(&"broken"), "{rejected:?}");
-        assert!(rejected.contains(&"foo-bar"), "{rejected:?}");
-        assert!(rejected.contains(&"foo_bar"), "{rejected:?}");
+        assert!(rejected.contains(&"bad..name"), "{rejected:?}");
+        assert!(rejected.contains(&"dup"), "{rejected:?}");
         assert!(
             projected
                 .rejected
@@ -243,17 +203,15 @@ mod projection {
             projected
                 .rejected
                 .iter()
-                .any(|item| item.name == "broken" && item.reason.contains("$ref"))
+                .any(|item| item.name == "bad..name" && item.reason.contains("empty suite segment"))
         );
         assert_eq!(projected.whitelist(), vec!["read"]);
-        assert!(
-            !names(&projected.direct).iter().any(|name| {
-                ["stripped", "broken", "foo-bar", "foo_bar", "read"].contains(name)
-            })
-        );
+        assert!(!names(&projected.code_tools).iter().any(|name| {
+            ["stripped", "bad..name", "dup"].contains(name)
+        }));
         assert!(!projected.sdk().contains("stripped"));
-        assert!(!projected.sdk().contains("broken"));
-        assert!(!projected.sdk().contains("foo-bar"));
+        assert!(!projected.sdk().contains("bad..name"));
+        assert!(!projected.sdk().contains("dup"));
         assert!(projected.sdk().contains("read(args:"));
     }
 
@@ -369,7 +327,6 @@ mod projection {
         global.agents.insert("default".into(), profile);
         global.custom_tools.push(CustomToolDefinition {
             name: "run_code".into(),
-            output_schema: None,
             description: String::new(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -384,7 +341,6 @@ mod projection {
                 when: ArgMatcher::Any,
                 action: PermissionAction::Deny,
             }],
-            surface: Default::default(),
             suite: None,
         });
         let resolved =
@@ -424,8 +380,7 @@ mod projection {
         .await;
         assert!(matches!(allowed, AuthResult::Proceed { .. }));
 
-        let mut impostor = CountTool::code("run_code", Arc::new(AtomicUsize::new(0)));
-        impostor.surface = ToolSurface::Direct;
+        let impostor = CountTool::code("run_code", Arc::new(AtomicUsize::new(0)));
         let denied_call = authorize(
             &call("run_code", json!({})),
             &impostor,
@@ -445,10 +400,9 @@ mod projection {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn custom_tool_on_code_surface_uses_the_shared_pipeline_and_output_schema() {
-        use litecode::config::schema::{CallSurface, CustomToolDefinition, ToolSchema};
+    async fn custom_tool_on_code_surface_uses_the_shared_pipeline() {
+        use litecode::config::schema::{CustomToolDefinition, ToolSchema};
         use litecode::tools::custom::CustomTool;
-        use litecode::tools::custom_hub::CustomToolHub;
 
         let marker = "custom-code-marker";
         let output = std::env::temp_dir().join(format!("lc-custom-{}.json", ulid::Ulid::new()));
@@ -462,11 +416,6 @@ mod projection {
         let (command, args) = ("cat", vec![output.display().to_string()]);
         let def = CustomToolDefinition {
             name: "custom_code".into(),
-            output_schema: Some(json!({
-                "type": "object",
-                "properties": { "text": { "type": "string" } },
-                "required": ["text"]
-            })),
             description: "custom code probe".into(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -477,10 +426,9 @@ mod projection {
             args,
             timeout: 10,
             rules: Vec::new(),
-            surface: Some(CallSurface::Code),
             suite: None,
         };
-        let tool: Arc<dyn Tool> = Arc::new(CustomTool::new(def, Arc::new(CustomToolHub::new())));
+        let tool: Arc<dyn Tool> = Arc::new(CustomTool::new(def));
         let dir = tempfile::tempdir().unwrap();
         let permission = engine(dir.path(), "custom_code", ToolPolicy::allow_all());
         let sink = RecordingPermissionSink::from_reply(true, false);
@@ -537,7 +485,7 @@ mod run_code_only {
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
     use litecode::tool::trait_::ToolExecutionContext;
     use litecode::tool::write_lock::process_write_lock;
-    use litecode::tool::{Tool, ToolSurface};
+    use litecode::tool::Tool;
     use litecode::tools::code::{CodeTool, CodeToolHost};
     use litecode::tools::glob::GlobTool;
     use litecode::tools::grep::GrepTool;
@@ -608,7 +556,7 @@ mod run_code_only {
 
     fn origin(code_names: Arc<[String]>) -> ToolCallOrigin {
         ToolCallOrigin {
-            caller: ToolCaller::Direct,
+            caller: ToolCaller::Transport,
             code_names,
             file_note: None,
             permission_sink: None,
@@ -677,7 +625,7 @@ mod run_code_only {
         ));
         let code = CodeTool::new(bundle, host);
         let code = match run_timeout {
-            Some(timeout) => code.with_run_timeout(timeout),
+            Some(timeout) => code.with_run_timeout(timeout).with_wall_timeout(timeout),
             None => code,
         };
         let code = Arc::new(code);
@@ -766,15 +714,11 @@ mod run_code_only {
             self.name
         }
 
-        fn surface(&self) -> ToolSurface {
-            ToolSurface::Code
-        }
-
         fn dynamic_code_spec(&self) -> Option<litecode::tool::DynamicCodeSpec> {
             Some(litecode::tool::DynamicCodeSpec {
                 description: "phase 2b gate tool".into(),
                 input_schema: object_schema(),
-                output_schema: flag_schema(),
+                output_schema: Some(flag_schema()),
             })
         }
 
@@ -810,15 +754,11 @@ mod run_code_only {
             "late"
         }
 
-        fn surface(&self) -> ToolSurface {
-            ToolSurface::Code
-        }
-
         fn dynamic_code_spec(&self) -> Option<litecode::tool::DynamicCodeSpec> {
             Some(litecode::tool::DynamicCodeSpec {
                 description: "finishes after the cancel grace".into(),
                 input_schema: object_schema(),
-                output_schema: flag_schema(),
+                output_schema: Some(flag_schema()),
             })
         }
 
@@ -846,15 +786,11 @@ mod run_code_only {
             "fast"
         }
 
-        fn surface(&self) -> ToolSurface {
-            ToolSurface::Code
-        }
-
         fn dynamic_code_spec(&self) -> Option<litecode::tool::DynamicCodeSpec> {
             Some(litecode::tool::DynamicCodeSpec {
                 description: "returns no data".into(),
                 input_schema: object_schema(),
-                output_schema: flag_schema(),
+                output_schema: Some(flag_schema()),
             })
         }
 
@@ -1212,8 +1148,8 @@ mod run_code_only {
             hosted.code_names
         );
         let description = hosted.tools[0]
-            .direct_spec(&hosted.ctx)
-            .expect("run_code direct spec")
+            .transport_spec(&hosted.ctx)
+            .expect("run_code transport spec")
             .description;
         assert!(description.contains("interface DeckTools"), "{description}");
         assert!(description.contains("only(args:"), "{description}");
@@ -1256,9 +1192,8 @@ mod run_code_only {
 
     #[tokio::test(flavor = "current_thread")]
     async fn custom_tool_code_surface_round_trips_through_run_code_sdk() {
-        use litecode::config::schema::{CallSurface, CustomToolDefinition, ToolSchema};
+        use litecode::config::schema::{CustomToolDefinition, ToolSchema};
         use litecode::tools::custom::CustomTool;
-        use litecode::tools::custom_hub::CustomToolHub;
 
         let marker = "custom-sdk-marker";
         let output = std::env::temp_dir().join(format!("lc-custom-{}.json", ulid::Ulid::new()));
@@ -1272,11 +1207,6 @@ mod run_code_only {
         let (command, args) = ("cat", vec![output.display().to_string()]);
         let def = CustomToolDefinition {
             name: "custom_code".into(),
-            output_schema: Some(json!({
-                "type": "object",
-                "properties": { "text": { "type": "string" } },
-                "required": ["text"]
-            })),
             description: "custom code sdk probe".into(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -1287,10 +1217,9 @@ mod run_code_only {
             args,
             timeout: 10,
             rules: Vec::new(),
-            surface: Some(CallSurface::Code),
             suite: None,
         };
-        let custom = Arc::new(CustomTool::new(def, Arc::new(CustomToolHub::new())));
+        let custom = Arc::new(CustomTool::new(def));
         let root = tempfile::tempdir().unwrap();
         let sink = litecode::permission::deny_permission_sink();
         let hosted = hosted(
@@ -1481,7 +1410,7 @@ mod edit_write {
             process_write_lock(),
             None,
             ToolCallOrigin {
-                caller: ToolCaller::Direct,
+                caller: ToolCaller::Transport,
                 code_names: Arc::clone(&hosted.code_names),
                 file_note: None,
                 permission_sink: None,
@@ -2265,7 +2194,7 @@ mod approval_locks {
             process_write_lock(),
             None,
             ToolCallOrigin {
-                caller: ToolCaller::Direct,
+                caller: ToolCaller::Transport,
                 code_names: Arc::from([]),
                 file_note: None,
                 permission_sink: None,
@@ -2676,7 +2605,7 @@ mod approval_concurrency {
             process_write_lock(),
             None,
             ToolCallOrigin {
-                caller: ToolCaller::Direct,
+                caller: ToolCaller::Transport,
                 code_names: Arc::from([]),
                 file_note: None,
                 permission_sink: None,

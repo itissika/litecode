@@ -30,7 +30,7 @@ pub struct ToolSchemaContract {
     pub output_type: String,
     pub type_deps: Vec<String>,
     pub input_schema: Value,
-    pub output_schema: Value,
+    pub output_schema: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -67,7 +67,7 @@ pub struct SdkFragments {
 #[derive(Debug, Clone)]
 pub struct CodeToolContract {
     pub input_schema: Value,
-    pub output_schema: Value,
+    pub output_schema: Option<Value>,
 }
 
 /// One concrete code surface: assembled SDK text plus per-tool schema checks.
@@ -95,7 +95,10 @@ impl CodeSurface {
             .tools
             .get(tool)
             .ok_or_else(|| format!("tool '{tool}' has no code contract"))?;
-        schema_validate(&contract.output_schema, output)
+        let Some(output_schema) = &contract.output_schema else {
+            return Ok(());
+        };
+        schema_validate(output_schema, output)
     }
 
     /// The run_code output gate for one nested tool result. Returns the
@@ -173,7 +176,7 @@ fn validate_builtins(contract: &ToolContract, fragments: &SdkFragments) -> Resul
                 return Err(format!("tool '{name}' references missing SDK type '{dep}'"));
             }
         }
-        if tool.input_schema.is_null() || tool.output_schema.is_null() {
+        if tool.input_schema.is_null() {
             return Err(format!("tool '{name}' has an empty input/output schema"));
         }
     }
@@ -210,19 +213,6 @@ pub fn builtin_input_schema(name: &str) -> Option<Value> {
         .map(|tool| tool.input_schema.clone())
 }
 
-/// Direct-surface contract for one built-in code tool, reusing the same JSDoc
-/// summary and JSON input schema from `sdk/generated/tool-contract.json`.
-pub fn builtin_direct_spec(name: &str) -> Option<crate::tool::DirectToolSpec> {
-    builtins()
-        .contract
-        .tools
-        .get(name)
-        .map(|tool| crate::tool::DirectToolSpec {
-            description: tool.doc.clone(),
-            input_schema: tool.input_schema.clone(),
-        })
-}
-
 /// Build the concrete contract for the tools bound into one `run_code` call.
 pub fn build_surface(tools: &[Arc<dyn Tool>]) -> Result<CodeSurface, String> {
     let builtins = builtins();
@@ -235,8 +225,14 @@ pub fn build_surface(tools: &[Arc<dyn Tool>]) -> Result<CodeSurface, String> {
     for tool in tools {
         let name = tool.name().to_string();
         if let Some(spec) = tool.dynamic_code_spec() {
-            let dynamic: DynamicTool =
+            let mut dynamic: DynamicTool =
                 dynamic_contract::build_dynamic_tool(&name, spec, &reserved_types)?;
+            if let Some(note) = tool.dynamic_sdk_note() {
+                if !dynamic.fragment.doc.is_empty() {
+                    dynamic.fragment.doc.push('\n');
+                }
+                dynamic.fragment.doc.push_str(&note);
+            }
             for (type_name, text) in dynamic.types {
                 if fragments.types.insert(type_name.clone(), text).is_some() {
                     return Err(format!(
@@ -266,16 +262,23 @@ pub fn build_surface(tools: &[Arc<dyn Tool>]) -> Result<CodeSurface, String> {
             .tools
             .get(&name)
             .ok_or_else(|| format!("code tool '{name}' has no built-in JS SDK contract"))?;
-        let fragment = builtins
+        let mut fragment = builtins
             .fragments
             .tools
             .get(&name)
-            .ok_or_else(|| format!("code tool '{name}' has no built-in SDK fragment"))?;
+            .ok_or_else(|| format!("code tool '{name}' has no built-in SDK fragment"))?
+            .clone();
+        if let Some(note) = tool.dynamic_sdk_note() {
+            if !fragment.doc.is_empty() {
+                fragment.doc.push('\n');
+            }
+            fragment.doc.push_str(&note);
+        }
         let sdk_path = fragment.path.join(".");
         if bindings.insert(sdk_path.clone(), name.clone()).is_some() {
             return Err(format!("duplicate SDK binding path '{sdk_path}'"));
         }
-        fragments.tools.insert(name.clone(), fragment.clone());
+        fragments.tools.insert(name.clone(), fragment);
         contracts.insert(
             name.clone(),
             CodeToolContract {
@@ -331,12 +334,16 @@ mod tests {
             let tool = &surface.tools[surface.bindings[path].as_str()];
             assert_eq!(tool.input_schema["type"], "object", "{path}");
             assert_eq!(tool.input_schema["additionalProperties"], false, "{path}");
+            let output_schema = tool
+                .output_schema
+                .as_ref()
+                .expect("builtin output schema");
             assert!(
-                tool.output_schema["properties"].get("ok").is_none(),
+                output_schema["properties"].get("ok").is_none(),
                 "{path}: the host must not inject ok"
             );
             assert!(
-                tool.output_schema["required"]
+                output_schema["required"]
                     .as_array()
                     .is_some_and(|required| !required.iter().any(|item| item == "ok")),
                 "{path}: required must not contain ok"
@@ -365,7 +372,9 @@ mod tests {
         let builtins = builtins();
         for (name, tool) in &builtins.contract.tools {
             check(&tool.input_schema, &format!("{name}.input"));
-            check(&tool.output_schema, &format!("{name}.output"));
+            if let Some(output_schema) = &tool.output_schema {
+                check(output_schema, &format!("{name}.output"));
+            }
         }
     }
 
@@ -405,10 +414,6 @@ mod tests {
             self.name
         }
 
-        fn surface(&self) -> crate::tool::ToolSurface {
-            crate::tool::ToolSurface::Code
-        }
-
         fn dynamic_code_spec(&self) -> Option<crate::tool::DynamicCodeSpec> {
             Some(crate::tool::DynamicCodeSpec {
                 description: format!("dynamic {}", self.name),
@@ -417,11 +422,11 @@ mod tests {
                     "properties": {},
                     "required": []
                 }),
-                output_schema: serde_json::json!({
+                output_schema: Some(serde_json::json!({
                     "type": "object",
                     "properties": {"value": {"type": "string"}},
                     "required": ["value"]
-                }),
+                })),
             })
         }
     }
@@ -591,6 +596,13 @@ mod tests {
         cases.extend(crate::tools::session_search::drift_cases());
         cases.extend(crate::tools::memory::drift_cases());
         cases.extend(crate::tools::lsp::drift_cases());
+        cases.extend(crate::tools::todo::drift_cases());
+        cases.extend(crate::tools::plan::drift_cases());
+        cases.extend(crate::tools::ask_user::drift_cases());
+        cases.extend(crate::tools::knowledge::drift_cases());
+        cases.extend(crate::tools::litecode_workspace::drift_cases());
+        cases.extend(crate::tools::subagent::drift_cases());
+        cases.extend(crate::tools::bot::drift_cases());
         cases
     }
 
@@ -663,13 +675,15 @@ mod tests {
                     failures.push(format!("{tool} {state:?}: output gate rejects it: {error}"));
                 }
                 let mut drift = Vec::new();
-                shape_drift(
-                    &contract[tool].output_schema,
-                    &value,
-                    state,
-                    "$",
-                    &mut drift,
-                );
+                if let Some(output_schema) = &contract[tool].output_schema {
+                    shape_drift(
+                        output_schema,
+                        &value,
+                        state,
+                        "$",
+                        &mut drift,
+                    );
+                }
                 failures.extend(drift.into_iter().map(|line| format!("{tool} {line}")));
             }
         }

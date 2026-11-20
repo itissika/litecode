@@ -4,7 +4,6 @@ import { ListChecks } from "@phosphor-icons/react";
 import { useTranslation } from "react-i18next";
 
 import {
-  isCodeSurface,
   isConfigurableTool,
   type AgentProfile,
   type AgentToolBinding,
@@ -297,11 +296,6 @@ export function AgentToolsGrid({
                       <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">
                         {entry.label || entry.id}
                       </p>
-                      {isCodeSurface(entry) ? (
-                        <span className="tag tag-neutral tag-xs tag-outline shrink-0">
-                          code mode
-                        </span>
-                      ) : null}
                     </div>
                     <p
                       className="mt-0.5 truncate text-dk-xs text-(--_dk-text-disabled)"

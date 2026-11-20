@@ -278,7 +278,7 @@ impl McpConnectionPool {
         tool_name: &str,
         input: serde_json::Value,
         timeout_secs: u64,
-    ) -> Result<String> {
+    ) -> Result<serde_json::Value> {
         let timeout_secs = if timeout_secs == 0 {
             crate::config::schema::DEFAULT_MCP_TOOL_TIMEOUT_SECS
         } else {
@@ -301,7 +301,7 @@ impl McpConnectionPool {
             (result, dirty)
         };
         match result {
-            Ok(value) => Ok(format_mcp_result(value)),
+            Ok(value) => Ok(value),
             Err(e) => {
                 // Timeout/cancel/protocol failure may leave a stale BufReader.
                 // Prefer kill+drop rebuild over blind drain (ISSUE-034).
@@ -537,26 +537,4 @@ async fn call_initialized(
         guard.initialize().await?;
     }
     guard.call_tool(tool_name, input).await
-}
-
-fn format_mcp_result(result: serde_json::Value) -> String {
-    match result {
-        serde_json::Value::String(s) => s,
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .filter_map(|v| {
-                if v.is_string() {
-                    Some(v.as_str().unwrap_or("").to_string())
-                } else if v.get("type").and_then(|t| t.as_str()) == Some("text") {
-                    v.get("text")
-                        .and_then(|t| t.as_str())
-                        .map(|s| s.to_string())
-                } else {
-                    Some(serde_json::to_string_pretty(v).unwrap_or_default())
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        other => serde_json::to_string_pretty(&other).unwrap_or_default(),
-    }
 }

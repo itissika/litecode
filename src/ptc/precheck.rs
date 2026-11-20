@@ -156,14 +156,21 @@ fn check_arguments(
         };
         keys.push(key);
     }
-    let mut known: Vec<&str> = properties.keys().map(String::as_str).collect();
-    known.sort();
-    for key in &keys {
-        if !properties.contains_key(key) {
-            out.push(format!(
-                "invalid input for '{sdk_path}': unknown parameter '{key}'. parameters: {}",
-                known.join(", ")
-            ));
+    let allows_extra = matches!(
+        contract.input_schema.get("additionalProperties"),
+        Some(Value::Bool(true) | Value::Object(_))
+    ) || (properties.is_empty()
+        && contract.input_schema.get("additionalProperties") != Some(&Value::Bool(false)));
+    if !allows_extra {
+        let mut known: Vec<&str> = properties.keys().map(String::as_str).collect();
+        known.sort();
+        for key in &keys {
+            if !properties.contains_key(key) {
+                out.push(format!(
+                    "invalid input for '{sdk_path}': unknown parameter '{key}'. parameters: {}",
+                    known.join(", ")
+                ));
+            }
         }
     }
     missing_required(contract, sdk_path, &keys, out);
@@ -234,10 +241,20 @@ fn check_declarator(node: Node<'_>, src: &[u8], surface: &CodeSurface, out: &mut
     else {
         return;
     };
-    let Some(properties) = contract.output_schema.get("properties").and_then(Value::as_object)
-    else {
+    let Some(output_schema) = contract.output_schema.as_ref() else {
         return;
     };
+    let Some(properties) = output_schema.get("properties").and_then(Value::as_object) else {
+        return;
+    };
+    if properties.is_empty()
+        && output_schema
+            .get("additionalProperties")
+            .and_then(Value::as_bool)
+            != Some(false)
+    {
+        return;
+    }
     let variable = node_text(name, src);
     let Some(block) = enclosing_block(node) else {
         return;
@@ -385,7 +402,7 @@ mod tests {
                 "read".to_string(),
                 CodeToolContract {
                     input_schema: input,
-                    output_schema: output,
+                    output_schema: Some(output),
                 },
             ),
             (
@@ -395,7 +412,7 @@ mod tests {
                         "type": "object",
                         "additionalProperties": false
                     }),
-                    output_schema: json!({"type": "object", "properties": {}}),
+                    output_schema: Some(json!({"type": "object", "properties": {}})),
                 },
             ),
             (
@@ -407,7 +424,7 @@ mod tests {
                         "required": ["item"],
                         "additionalProperties": false
                     }),
-                    output_schema: json!({"type": "object", "properties": {"value": {"type": "string"}}}),
+                    output_schema: Some(json!({"type": "object", "properties": {"value": {"type": "string"}}})),
                 },
             )]
             .into(),

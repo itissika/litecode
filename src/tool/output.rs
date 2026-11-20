@@ -145,7 +145,7 @@ pub fn finalize_direct_tool_call_result(
     Ok(result)
 }
 
-fn materialize_media_parts(
+pub fn materialize_media_parts(
     parts: Vec<ToolOutputPart>,
     data_root: &Path,
 ) -> Result<Vec<ToolOutputPart>> {
@@ -155,7 +155,27 @@ fn materialize_media_parts(
             let ToolOutputPart::Media { mut artifact } = part else {
                 return Ok(part);
             };
-            if let MediaSource::LocalFile { path } = &artifact.source {
+            if let MediaSource::Url { url } = &artifact.source
+                && let Some(rest) = url.strip_prefix("data:")
+                && let Some((meta, b64)) = rest.split_once(";base64,")
+            {
+                let mime = meta.split(';').next().unwrap_or("").trim();
+                if !mime.is_empty() {
+                    artifact.mime_type = mime.to_string();
+                }
+                let decoded = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    b64.trim(),
+                )
+                .map_err(|e| crate::types::LitecodeError::ToolExecution(format!("invalid base64 media data URL: {e}")))?;
+                if decoded.len() as u64 > MAX_MEDIA_BLOB_SIZE {
+                    return Err(crate::types::LitecodeError::ToolExecution(format!(
+                        "media payload exceeds max size of {MAX_MEDIA_BLOB_SIZE} bytes"
+                    )));
+                }
+                let blob_id = write_media_blob(data_root, &decoded)?;
+                artifact.source = MediaSource::BlobRef { blob_id };
+            } else if let MediaSource::LocalFile { path } = &artifact.source {
                 let meta = fs::metadata(path).map_err(|e| {
                     crate::types::LitecodeError::ToolExecution(format!(
                         "failed to stat tool media '{path}': {e}"

@@ -38,5 +38,5 @@ pub use schema_validate::{
     require_nonempty_string_trimmed, require_string, require_string_value, schema_validate,
 };
 pub use snippet::{SnippetSection, format_snippet_sections};
-pub use trait_::{DirectToolSpec, DynamicCodeSpec, Tool, ToolSurface};
+pub use trait_::{DynamicCodeSpec, Tool, TransportToolSpec};
 pub use write_lock::{ResourceKey, WorkspaceWriteLock};

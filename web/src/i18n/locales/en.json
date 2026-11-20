@@ -60,8 +60,8 @@
     "details": "App details",
     "refresh": "Refresh apps",
     "installableTitle": "Installable apps",
-    "installableHint": "Have the agent check installable apps with litecode_workspace apps.",
-    "installablePrompt": "What apps can LiteCode install? Check with litecode_workspace apps, then tell me what fits this workspace.",
+    "installableHint": "Have the agent check workspace status and help with workspace.status / workspace.help.",
+    "installablePrompt": "Check workspace.status and help me inspect what apps are configured or fit this workspace.",
     "empty": "No apps registered in this workspace.",
     "emptyInstalled": "No apps installed yet.",
     "registryErrors": "Registry issues ({{count}})",
@@ -221,7 +221,6 @@
       "selectSubagent": "Select at least one subagent, or launches will fail.",
       "noSubagentProfiles": "No subagent profiles defined yet.",
       "noBindableTools": "No bindable tools in this workspace.",
-      "codeMode": "code mode",
       "loading": "Loading agents…",
       "newId": "New agent id",
       "idHint": "Lowercase letters, digits, and underscores.",
@@ -338,8 +337,7 @@
       "saveFailed": "Save failed",
       "invalidSuiteJson": "Invalid suite JSON",
       "suiteIdInvalid": "Suite id must match [a-z][a-z0-9_]*",
-      "jsonRequired": "Valid JSON with name, command, and schema is required",
-      "suiteSurfaceRequired": "suite needs surface: \"direct\" or \"code\""
+      "jsonRequired": "Valid JSON with name, command, and schema is required"
     },
     "persist": {
       "saving": "Saving…",

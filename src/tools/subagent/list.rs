@@ -1,8 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use crate::context_pipeline::Context;
 use crate::session::SessionService;
 use crate::session::manager::SessionStatus;
 use crate::tool::Tool;
@@ -13,14 +12,21 @@ use crate::types::ToolCallResult;
 /// No subagent-specific status translation: the values are the session's own
 /// `idle` / `running` / `stopping` / `running_with_subagent` status.
 pub struct SubagentListTool {
-    service: Arc<SessionService>,
+    service: Option<Arc<SessionService>>,
     session_id: Mutex<String>,
 }
 
 impl SubagentListTool {
     pub fn new(service: Arc<SessionService>) -> Self {
         Self {
-            service,
+            service: Some(service),
+            session_id: Mutex::new(String::new()),
+        }
+    }
+
+    pub fn cold() -> Self {
+        Self {
+            service: None,
             session_id: Mutex::new(String::new()),
         }
     }
@@ -30,17 +36,21 @@ impl SubagentListTool {
     }
 
     fn call_list(&self) -> ToolCallResult {
+        let Some(service) = self.service.as_ref() else {
+            return ToolCallResult::error("subagent.list requires an active session service");
+        };
         let sid = self.session_id();
         if sid.is_empty() {
             return ToolCallResult::error(
                 "subagent_list requires an active session execution context",
             );
         }
-        let ids = self.service.descendant_session_ids(&sid);
+        let ids = service.descendant_session_ids(&sid);
         let mut out = format!("sessions: {}\n", ids.len());
+        let mut rows: Vec<Value> = Vec::new();
         for id in ids {
-            let status = self.service.status(&id).unwrap_or(SessionStatus::Idle);
-            let Ok(meta) = self.service.meta(&id) else {
+            let status = service.status(&id).unwrap_or(SessionStatus::Idle);
+            let Ok(meta) = service.meta(&id) else {
                 continue;
             };
             out.push_str(&format!("- id: {id}\n"));
@@ -59,31 +69,50 @@ impl SubagentListTool {
                 out.push_str(&format!("  last_send: {last_send}\n"));
             }
             out.push_str(&format!("  state: {}\n", status.as_str()));
+            let mut row = serde_json::Map::new();
+            row.insert("id".into(), Value::String(id.clone()));
+            row.insert("agent".into(), Value::String(meta.agent_id.clone()));
+            row.insert(
+                "responsibility".into(),
+                Value::String(meta.responsibility.clone()),
+            );
+            row.insert("state".into(), Value::String(status.as_str().to_string()));
             // Live from session data (same reader status.rs/turn_result uses), not
             // from the search index: the parent can `read` by these line numbers.
-            match self.service.transcript_file(&id) {
+            match service.transcript_file(&id) {
                 Ok(file) => {
                     out.push_str(&format!("  transcript: {}\n", file.virtual_path));
                     out.push_str(&format!("  transcript_lines: {}\n", file.lines.len()));
+                    row.insert("transcript".into(), Value::String(file.virtual_path));
+                    row.insert("transcript_lines".into(), json!(file.lines.len()));
                 }
                 Err(error) => {
                     out.push_str(&format!("  transcript: unavailable ({error})\n"));
+                    row.insert("transcript".into(), Value::String(String::new()));
                 }
             }
-            if let Some(progress) = self.service.cached_progress(&id) {
+            if let Some(progress) = service.cached_progress(&id) {
                 out.push_str(&format!(
                     "  turn_age: {}\n  step: {}/{}\n",
                     relative_time(progress.started_at_ms),
                     progress.step,
                     progress.step_max
                 ));
+                row.insert("step".into(), json!(progress.step));
+                row.insert("step_max".into(), json!(progress.step_max));
             } else if status == SessionStatus::Idle {
-                if let Ok(Some((_, reason))) = self.service.latest_turn_end_reason(&id) {
+                if let Ok(Some((_, reason))) = service.latest_turn_end_reason(&id) {
                     out.push_str(&format!("  reason: {reason}\n"));
+                    row.insert("reason".into(), Value::String(reason));
                 }
             }
+            rows.push(Value::Object(row));
         }
-        ToolCallResult::ok(out)
+        let count = rows.len();
+        ToolCallResult::ok(out).with_data(json!({
+            "count": count,
+            "sessions": rows,
+        }))
     }
 }
 
@@ -102,23 +131,7 @@ fn relative_time(timestamp_ms: i64) -> String {
 
 impl Tool for SubagentListTool {
     fn name(&self) -> &str {
-        "subagent_list"
-    }
-
-    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-        let description =
-            crate::tools::description_text(include_str!("../descriptions/subagent_list.md"));
-        let input_schema = {
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {},
-            })
-        };
-        Some(crate::tool::DirectToolSpec {
-            description,
-            input_schema,
-        })
+        "subagent.list"
     }
 
     fn execute(
@@ -127,7 +140,7 @@ impl Tool for SubagentListTool {
         execution: ToolExecutionContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let tool = SubagentListTool {
-            service: Arc::clone(&self.service),
+            service: self.service.clone(),
             session_id: Mutex::new(execution.session_id.clone()),
         };
         Box::pin(async move { tool.call_list() })

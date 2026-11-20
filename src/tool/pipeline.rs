@@ -54,7 +54,7 @@ impl ToolPipeline {
             .find_map(|tool| tool.code_bindings())
             .unwrap_or_else(|| Arc::from([]));
         ToolCallOrigin {
-            caller: ToolCaller::Direct,
+            caller: ToolCaller::Transport,
             code_names,
             file_note: self.file_note.clone(),
             permission_sink: Some(Arc::clone(&self.runtime.permission_sink)),

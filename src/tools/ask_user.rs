@@ -5,10 +5,9 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::context_pipeline::Context;
 use crate::permission::{
     AskAnswer, AskOption, AskOutcome, AskPrompt, AskQuestion, AskReply, PermissionSink,
 };
@@ -43,83 +42,6 @@ impl Tool for AskUserTool {
         "ask_user"
     }
 
-    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-        let description = crate::tools::description_text(include_str!("descriptions/ask_user.md"));
-        let input_schema = {
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "summary": {
-                        "type": "string",
-                        "description": "Optional card title shown above the questions."
-                    },
-                    "questions": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": {
-                                    "type": "string",
-                                    "description": "Stable id keyed in the answers map."
-                                },
-                                "prompt": {
-                                    "type": "string",
-                                    "description": "Question text shown to the user."
-                                },
-                                "options": {
-                                    "type": "array",
-                                    "minItems": 2,
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "id": { "type": "string" },
-                                            "label": { "type": "string" }
-                                        },
-                                        "required": ["id", "label"]
-                                    },
-                                    "description": "Two or more choices for this question."
-                                },
-                                "multi_select": {
-                                    "type": "boolean",
-                                    "description": "When true, the user may pick multiple options. Default false."
-                                }
-                            },
-                            "required": ["id", "prompt", "options"]
-                        },
-                        "description": "One or more questions. Prefer this over legacy top-level question/options."
-                    },
-                    "question": {
-                        "type": "string",
-                        "description": "Legacy single-question text (compat → questions[0] with id q0)."
-                    },
-                    "options": {
-                        "type": "array",
-                        "minItems": 2,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": { "type": "string" },
-                                "label": { "type": "string" }
-                            },
-                            "required": ["id", "label"]
-                        },
-                        "description": "Legacy flat options (compat with top-level question)."
-                    },
-                    "multi_select": {
-                        "type": "boolean",
-                        "description": "Legacy: multi_select for the single top-level question."
-                    }
-                }
-            })
-        };
-        Some(crate::tool::DirectToolSpec {
-            description,
-            input_schema,
-        })
-    }
-
     /// Direct call path: there is no turn token to cancel, so only an answer or
     /// a dead bridge ends the wait. The runtime path goes through `execute`.
     fn call_inner(&self, input: Value) -> ToolCallResult {
@@ -139,7 +61,7 @@ impl Tool for AskUserTool {
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
         let questions = parse_questions(input)?;
         if questions.is_empty() {
-            return Err("ask_user requires questions (>=1) or legacy question+options".into());
+            return Err("ask_user requires questions (>=1)".into());
         }
         Ok(())
     }
@@ -232,31 +154,7 @@ fn parse_questions(input: &Value) -> Result<Vec<AskQuestion>, String> {
         return Ok(out);
     }
 
-    // Compat: top-level question + options → single question id q0.
-    let question = input
-        .get("question")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let options = input.get("options").and_then(|v| v.as_array());
-    match (question, options) {
-        (Some(prompt), Some(opts)) => {
-            let options = parse_options_array(opts, "options")?;
-            let multi_select = input
-                .get("multi_select")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let free_text = true; // WP-080: legacy flag ignored.
-            Ok(vec![AskQuestion {
-                id: "q0".into(),
-                prompt: prompt.to_string(),
-                options,
-                multi_select,
-                free_text,
-            }])
-        }
-        _ => Ok(Vec::new()),
-    }
+    Err("questions is required and must be a non-empty array".into())
 }
 
 impl AskUserTool {
@@ -269,9 +167,7 @@ impl AskUserTool {
         let questions = match parse_questions(input) {
             Ok(q) if !q.is_empty() => q,
             Ok(_) => {
-                return ToolCallResult::error(
-                    "ask_user requires questions (>=1) or legacy question+options",
-                );
+                return ToolCallResult::error("ask_user requires questions (>=1)");
             }
             Err(e) => return ToolCallResult::error(e),
         };
@@ -297,16 +193,80 @@ impl AskUserTool {
         match reply.outcome {
             // A stale/dead UI route is no foreground human, not a tool failure.
             AskOutcome::Aborted => {
-                ToolCallResult::ok("User did not answer (no foreground session).".to_string())
+                let text = "User did not answer (no foreground session).".to_string();
+                ToolCallResult::ok(text.clone()).with_data(json!({
+                    "outcome": "no_foreground_session",
+                    "answers": [],
+                    "text": text,
+                }))
             }
             AskOutcome::Deny => {
-                ToolCallResult::ok("User skipped the question(s) (no answer).".to_string())
+                let text = "User skipped the question(s) (no answer).".to_string();
+                ToolCallResult::ok(text.clone()).with_data(json!({
+                    "outcome": "skipped",
+                    "answers": [],
+                    "text": text,
+                }))
             }
             AskOutcome::Allow { .. } => {
-                ToolCallResult::ok(format_answers(&questions, &reply.answers))
+                let text = format_answers(&questions, &reply.answers);
+                let answers: Vec<Value> = questions
+                    .iter()
+                    .map(|q| {
+                        let ans = reply.answers.get(&q.id);
+                        let mut entry = serde_json::Map::new();
+                        entry.insert("id".into(), Value::String(q.id.clone()));
+                        entry.insert(
+                            "selected".into(),
+                            Value::Array(
+                                ans.map(|a| {
+                                    a.selected
+                                        .iter()
+                                        .map(|s| Value::String(s.clone()))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                            ),
+                        );
+                        if let Some(ft) = ans.and_then(|a| a.free_text.as_deref()) {
+                            entry.insert("free_text".into(), Value::String(ft.to_string()));
+                        }
+                        Value::Object(entry)
+                    })
+                    .collect();
+                ToolCallResult::ok(text.clone()).with_data(json!({
+                    "outcome": "answered",
+                    "answers": answers,
+                    "text": text,
+                }))
             }
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
+    vec![crate::tool::code_contract::DriftCase {
+        tool: "ask_user",
+        all_optional_present: ToolCallResult::ok("[q] selected: A (a)\n[q] free_text: hi")
+            .with_data(json!({
+                "outcome": "answered",
+                "answers": [{
+                    "id": "q",
+                    "selected": ["a"],
+                    "free_text": "hi",
+                }],
+                "text": "[q] selected: A (a)\n[q] free_text: hi",
+            })),
+        all_optional_absent: ToolCallResult::ok("[q] selected: A (a)").with_data(json!({
+            "outcome": "answered",
+            "answers": [{
+                "id": "q",
+                "selected": ["a"],
+            }],
+            "text": "[q] selected: A (a)",
+        })),
+    }]
 }
 
 /// No answer reached the tool: the bridge thread could not start, or its

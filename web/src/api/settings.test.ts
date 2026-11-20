@@ -2,7 +2,6 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 
 import {
   SettingsApiError,
-  isCodeSurface,
   isConfigurableTool,
   putLog,
   settingsToolSwitches,
@@ -27,13 +26,10 @@ function catalogModel(patch: Partial<CatalogModelDto> = {}): CatalogModelDto {
 }
 
 describe("settings helpers", () => {
-  it("badges only a declared code surface and drops the transport switch", () => {
-    expect(isCodeSurface({ surface: "code" })).toBe(true);
-    expect(isCodeSurface({ surface: "direct" })).toBe(false);
-    expect(isCodeSurface({})).toBe(false);
+  it("drops the run_code transport switch", () => {
     const tools = settingsToolSwitches([
-      { id: "read", kind: "core", origin: "builtin", surface: "code" },
-      { id: "bash", kind: "core", origin: "builtin", surface: "direct" },
+      { id: "read", kind: "core", origin: "builtin" },
+      { id: "bash", kind: "core", origin: "builtin" },
       { id: "run_code", kind: "core", origin: "builtin" },
     ]);
     expect(tools.map((tool) => tool.id)).toEqual(["read", "bash"]);

@@ -1,1 +1,0 @@
-Workspace knowledge base: human-owned notes of durable ideas — architecture, principles, workflows, goals. Call with an empty command first; the board shows state and what to do next. Navigate by key and run check after changes. Rename and create through this tool so citations keep resolving. Record invariants, not details.

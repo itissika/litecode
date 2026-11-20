@@ -6,7 +6,6 @@ use tokio_util::sync::CancellationToken;
 use crate::config::ResolvedConfig;
 use crate::config::schema::{AgentProfile, AgentRole};
 use crate::config::workspace::workspace_root_from_paths;
-use crate::context_pipeline::Context;
 use crate::runtime::{RuntimeHandle, TurnOptions};
 use crate::session::SessionService;
 use crate::tool::Tool;
@@ -122,14 +121,14 @@ pub async fn spawn_child_job(
 }
 
 pub struct SubagentLaunchTool {
-    runtime: RuntimeHandle,
+    runtime: Option<RuntimeHandle>,
     parent_agent_id: String,
     depth: u32,
     /// Retained for constructor/pipeline compatibility only. Parent turn
     /// cancellation is deliberately not propagated into a child turn;
     /// `subagent_stop` is the explicit session-level cancel path.
     parent_cancel: CancellationToken,
-    service: Arc<SessionService>,
+    service: Option<Arc<SessionService>>,
     parent_session_id: String,
     parent_call_id: String,
     /// Turn-start body snapshot. None only for direct test/tool construction;
@@ -148,12 +147,25 @@ impl SubagentLaunchTool {
         parent_session_id: impl Into<String>,
     ) -> Self {
         Self {
-            runtime,
+            runtime: Some(runtime),
             parent_agent_id: parent_agent_id.into(),
             depth,
             parent_cancel,
-            service,
+            service: Some(service),
             parent_session_id: parent_session_id.into(),
+            parent_call_id: String::new(),
+            parent_profile: None,
+        }
+    }
+
+    pub fn cold() -> Self {
+        Self {
+            runtime: None,
+            parent_agent_id: String::new(),
+            depth: 0,
+            parent_cancel: CancellationToken::new(),
+            service: None,
+            parent_session_id: String::new(),
             parent_call_id: String::new(),
             parent_profile: None,
         }
@@ -172,7 +184,7 @@ impl SubagentLaunchTool {
             parent_agent_id: self.parent_agent_id.clone(),
             depth: self.depth,
             parent_cancel: self.parent_cancel.clone(),
-            service: Arc::clone(&self.service),
+            service: self.service.clone(),
             parent_session_id: self.parent_session_id.clone(),
             parent_call_id: self.parent_call_id.clone(),
             parent_profile: self.parent_profile.clone(),
@@ -185,9 +197,10 @@ impl SubagentLaunchTool {
         if let Some(profile) = &self.parent_profile {
             return Some(profile.clone());
         }
+        let runtime = self.runtime.as_ref()?;
         crate::bot::resolve_agent_for_session(
-            &self.runtime.resolved,
-            self.runtime.bots().map(Arc::as_ref),
+            &runtime.resolved,
+            runtime.bots().map(Arc::as_ref),
             &self.parent_session_id,
             &self.parent_agent_id,
         )
@@ -201,7 +214,8 @@ impl SubagentLaunchTool {
     }
 
     fn format_available_subagents(&self) -> Option<String> {
-        format_available_subagents(&self.runtime.resolved, &self.allowed_subagent_ids())
+        let runtime = self.runtime.as_ref()?;
+        format_available_subagents(&runtime.resolved, &self.allowed_subagent_ids())
     }
 
     fn parse_launch(&self, input: &Value) -> std::result::Result<LaunchSpec, ToolCallResult> {
@@ -215,7 +229,11 @@ impl SubagentLaunchTool {
             .map_err(ToolCallResult::error)?
             .to_string();
 
-        let resolved = &self.runtime.resolved;
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| ToolCallResult::error("subagent.launch requires an active runtime"))?;
+        let resolved = &runtime.resolved;
         let parent = self.parent_profile().ok_or_else(|| {
             ToolCallResult::error(format!(
                 "parent primary agent '{}' not found in configuration",
@@ -272,10 +290,13 @@ impl SubagentLaunchTool {
             Ok(spec) => spec,
             Err(e) => return e,
         };
+        let (Some(runtime), Some(service)) = (self.runtime.clone(), self.service.clone()) else {
+            return ToolCallResult::error("subagent.launch requires an active runtime");
+        };
         let deps = SpawnDeps {
-            runtime: self.runtime.clone(),
+            runtime,
             depth: self.depth,
-            service: Arc::clone(&self.service),
+            service,
         };
 
         let responsibility = spec.responsibility.clone();
@@ -286,12 +307,14 @@ impl SubagentLaunchTool {
                 Err(e) => return ToolCallResult::error(e),
             };
 
+        let text = status::format_started(&child_id, &turn_id, Some(&responsibility));
         with_child_meta(
-            ToolCallResult::ok(status::format_started(
-                &child_id,
-                &turn_id,
-                Some(&responsibility),
-            )),
+            ToolCallResult::ok(text).with_data(serde_json::json!({
+                "child_session_id": child_id,
+                "turn_id": turn_id,
+                "status": "running",
+                "responsibility": responsibility,
+            })),
             &child_id,
             &turn_id,
         )
@@ -326,7 +349,15 @@ pub(crate) fn format_available_subagents(
 
 impl Tool for SubagentLaunchTool {
     fn name(&self) -> &str {
-        "subagent_launch"
+        "subagent.launch"
+    }
+
+    fn dynamic_sdk_note(&self) -> Option<String> {
+        self.runtime.as_ref()?;
+        Some(match self.format_available_subagents() {
+            None => "No subagents are configured in allowed_subagents.".to_string(),
+            Some(catalog) => format!("Available subagents for allowed_subagents: {catalog}"),
+        })
     }
 
     fn execute(
@@ -343,56 +374,11 @@ impl Tool for SubagentLaunchTool {
         Box::pin(async move { tool.launch(input).await.finalize_signals() })
     }
 
-    fn direct_spec(&self, _ctx: &Context) -> Option<crate::tool::DirectToolSpec> {
-        let description = {
-            let base =
-                crate::tools::description_text(include_str!("../descriptions/subagent_launch.md"));
-            match self.format_available_subagents() {
-                None => base,
-                Some(catalog) => format!("{base} Available agents: {catalog}."),
-            }
-        };
-        let input_schema = {
-            let agent_desc = match self.format_available_subagents() {
-                Some(catalog) => {
-                    format!(
-                        "Subagent id from the parent primary agent allowlist. Available: {catalog}"
-                    )
-                }
-                None => "No subagents configured for this primary agent".to_string(),
-            };
-
-            serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "agent": {
-                        "type": "string",
-                        "description": agent_desc
-                    },
-                    "responsibility": {
-                        "type": "string",
-                        "description": "Stable team responsibility for this child session"
-                    },
-                    "prompt": {
-                        "type": "string",
-                        "description": "Self-contained first assignment: goal, relevant context, constraints, and expected result"
-                    },
-                },
-                "required": ["agent", "responsibility", "prompt"]
-            })
-        };
-        Some(crate::tool::DirectToolSpec {
-            description,
-            input_schema,
-        })
-    }
-
     fn call_inner(&self, input: Value) -> ToolCallResult {
         match self.parse_launch(&input) {
             Err(e) => e,
             Ok(_) => ToolCallResult::error(
-                "subagent_launch must be invoked via execute (async tool path)",
+                "subagent.launch must be invoked via execute (async tool path)",
             ),
         }
     }
