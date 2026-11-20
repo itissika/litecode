@@ -292,6 +292,7 @@ pub(super) fn reminders_for_call_with_metadata(
         "read" => read_reminders(object, &mut out),
         "glob" => glob_reminders(object, &mut out),
         "grep" => grep_reminders(object, &mut out),
+        "knowledge.list" | "knowledge.check" => knowledge_reminders(tool, object, &mut out),
         tool if is_lsp_tool(tool) => lsp_reminders(tool, object, &mut out),
         "exec_command" | "write_stdin" => unified_exec_reminders(tool, object, false, &mut out),
         "write" => write_reminders(object, &mut out),
@@ -465,11 +466,18 @@ fn lsp_reminders(
         (true, "partial") => format!(
             "no {subject} reported; the index is still building, so this is not a confirmed miss"
         ),
+        (true, "degraded") => format!(
+            "no {subject} reported; the language server reported a problem loading this project, so this is not a confirmed miss"
+        ),
         (true, _) => format!(
             "no {subject} reported; the index state is unknown, so this is not a confirmed miss"
         ),
         (false, "partial") => "results may be incomplete; the index is still building".to_string(),
         (false, "unknown") => "results may be incomplete; the index state is unknown".to_string(),
+        (false, "degraded") => {
+            "results may be incomplete; the language server reported a problem loading this project"
+                .to_string()
+        }
         (false, _) => return,
     };
     out.push(line);
@@ -517,6 +525,32 @@ fn read_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
         ));
     }
     out.extend(clamp_reminders(object));
+}
+
+/// Knowledge results keep their scope facts (root, counts) in metadata, so the
+/// model still gets one line about the corpus it just queried.
+fn knowledge_reminders(
+    tool: &str,
+    object: &serde_json::Map<String, Value>,
+    out: &mut Vec<String>,
+) {
+    let Some(root) = object.get("root").and_then(Value::as_str) else {
+        out.push("no knowledge directory in this workspace".to_string());
+        return;
+    };
+    if tool == "knowledge.list" {
+        let total = object.get("total").and_then(Value::as_u64).unwrap_or(0);
+        out.push(format!("{total} node(s) under `{root}`"));
+    } else {
+        let checked = object.get("checked").and_then(Value::as_u64).unwrap_or(0);
+        let issues = object
+            .get("issue_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        out.push(format!(
+            "checked {checked} node(s) under `{root}`; {issues} issue(s)"
+        ));
+    }
 }
 
 fn grep_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
@@ -834,6 +868,23 @@ fn render_line_text_array(items: &[Value]) -> Option<String> {
     Some(out.join("\n"))
 }
 
+/// All-string array, one value per line. Fewer than three entries stay inline
+/// JSON: a pair of strings is not a list.
+fn render_string_array(items: &[Value]) -> Option<String> {
+    if items.len() < 3 {
+        return None;
+    }
+    let mut out = String::new();
+    for (idx, item) in items.iter().enumerate() {
+        let text = item.as_str()?;
+        if idx > 0 {
+            out.push('\n');
+        }
+        out.push_str(text);
+    }
+    Some(out)
+}
+
 fn render_read_lines_object(map: &serde_json::Map<String, Value>) -> Option<String> {
     if map.len() != 1 {
         return None;
@@ -925,9 +976,17 @@ fn render_result_body(value: &Value) -> String {
             if let Some(rendered) = render_line_text_array(items) {
                 return rendered;
             }
-            if items
-                .iter()
-                .any(|item| is_structured_value(item) || is_multiline_plain_string(item))
+            // Three or more plain strings are a list, not one JSON line: paths
+            // and missing citations read one per line.
+            if let Some(rendered) = render_string_array(items) {
+                return rendered;
+            }
+            // An array of arrays is a batch (Promise.all): each element gets its
+            // own block so its tables survive instead of collapsing to JSON.
+            if items.iter().any(Value::is_array)
+                || items
+                    .iter()
+                    .any(|item| is_structured_value(item) || is_multiline_plain_string(item))
             {
                 let blocks: Vec<String> = items
                     .iter()
@@ -963,17 +1022,36 @@ fn render_result_body(value: &Value) -> String {
                     ));
                     continue;
                 }
-                match v
-                    .as_array()
-                    .and_then(|items| table_columns(items).map(|columns| (items, columns)))
-                {
-                    Some((items, columns)) => {
-                        tables.push(render_table(&table_key(key), items, &columns))
+                if let Some(items) = v.as_array() {
+                    if let Some(lines) = render_string_array(items) {
+                        tables.push(format!(
+                            "{}[{}]:\n{}",
+                            table_key(key),
+                            items.len(),
+                            lines
+                        ));
+                        continue;
                     }
-                    None => {
-                        rest.insert(key.clone(), v.clone());
+                    if let Some(columns) = table_columns(items) {
+                        tables.push(render_table(&table_key(key), items, &columns));
+                        continue;
                     }
                 }
+                // A nested object that renders to a block of its own (its own
+                // table, or a shaped result) keeps that block instead of one
+                // JSON line. This is what makes {list, check} readable.
+                if v.is_object() {
+                    let body = render_result_body(v);
+                    if body.contains('\n') {
+                        tables.push(format!(
+                            "{}:\n{}",
+                            table_key(key),
+                            body.trim_end_matches('\n')
+                        ));
+                        continue;
+                    }
+                }
+                rest.insert(key.clone(), v.clone());
             }
             // No table-shaped member: the JSON line is the whole object.
             if tables.is_empty() {
@@ -3322,5 +3400,37 @@ mod metadata_reminder_tests {
         assert!(rendered.contains("build:\nexit_code: 0\ncompiled"), "{rendered}");
         assert!(rendered.contains("file:\nlines:\n1: alpha\n2: beta"), "{rendered}");
         assert!(rendered.contains("raw_log:\nfirst line\nsecond line"), "{rendered}");
+    }
+
+    #[test]
+    fn render_result_body_keeps_tables_inside_named_results() {
+        let nodes = json!([
+            {"key":"a","path":"arch/a.md","status":"enabled"},
+            {"key":"b","path":"arch/b.md","status":"enabled"},
+            {"key":"c","path":"arch/c.md","status":"pending"}
+        ]);
+        let rendered = render_result_body(&json!({ "list": { "nodes": nodes } }));
+        assert!(rendered.contains("list:"), "{rendered}");
+        assert!(rendered.contains("nodes[3]{key,path,status}"), "{rendered}");
+        assert!(!rendered.contains("\"nodes\""), "{rendered}");
+    }
+
+    #[test]
+    fn render_result_body_renders_string_arrays_one_per_line() {
+        let rendered = render_result_body(&json!({ "paths": ["a.rs", "b.rs", "c.rs"] }));
+        assert_eq!(rendered, "paths[3]:\na.rs\nb.rs\nc.rs");
+        // Two entries are not a list: they stay one compact JSON line.
+        assert_eq!(
+            render_result_body(&json!({ "paths": ["a.rs", "b.rs"] })),
+            "{\"paths\":[\"a.rs\",\"b.rs\"]}"
+        );
+    }
+
+    #[test]
+    fn render_result_body_keeps_tables_in_a_batch_array() {
+        let rows = json!([{"a": 1}, {"a": 2}, {"a": 3}]);
+        let rendered = render_result_body(&json!([rows.clone(), rows]));
+        assert!(rendered.starts_with("[0]\n"), "{rendered}");
+        assert!(rendered.contains("[3]{a}:"), "{rendered}");
     }
 }
