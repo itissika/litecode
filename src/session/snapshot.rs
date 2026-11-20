@@ -366,6 +366,7 @@ fn git_config_set(git_dir: &Path, key: &str, value: &str) -> Result<()> {
         .arg("--git-dir")
         .arg(git_dir)
         .args(["config", key, value])
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
@@ -386,6 +387,7 @@ fn seed_from_project_git(workspace: &Path, snapshots_dir: &Path) {
     let discover = Command::new(&git)
         .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
         .current_dir(workspace)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output();

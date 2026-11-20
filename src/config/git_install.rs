@@ -40,8 +40,12 @@ pub fn find_git_root() -> Option<PathBuf> {
 
 /// Resolve a usable `git` executable for snapshot CLI (PATH, then Git for Windows).
 pub fn find_git_exe() -> Option<PathBuf> {
+    // Null stdin: a host that runs with an inherited keepalive pipe (serve
+    // --shutdown-on-stdin-eof) leaves a pending read on that handle, and a child
+    // that probes stdin blocks behind it forever.
     if Command::new("git")
         .arg("--version")
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
