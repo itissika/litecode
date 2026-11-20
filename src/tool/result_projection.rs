@@ -1,4 +1,4 @@
-﻿//! Code-surface result projection.
+//! Code-surface result projection.
 //!
 //! Tools may carry richer data for direct/UI callers. A nested `run_code`
 //! call receives only the agent-facing `data`; reminder-only values move to
@@ -18,6 +18,24 @@ fn move_keys(data: &mut Map<String, Value>, metadata: &mut Map<String, Value>, k
 
 fn object(value: Option<&Value>) -> Option<Map<String, Value>> {
     value.and_then(Value::as_object).cloned()
+}
+
+/// Rows minus the keys the view derives anyway (`folder` is the directory part
+/// of `path`), so the JS payload carries one spelling of each fact.
+fn strip_row_keys(value: Option<&Value>, keys: &[&str]) -> Value {
+    let items = value.and_then(Value::as_array).cloned().unwrap_or_default();
+    Value::Array(
+        items
+            .iter()
+            .map(|item| {
+                let mut row = object(Some(item)).unwrap_or_default();
+                for key in keys {
+                    row.remove(*key);
+                }
+                Value::Object(row)
+            })
+            .collect(),
+    )
 }
 
 pub fn project_code_result(tool: &str, mut result: ToolCallResult) -> ToolCallResult {
@@ -124,6 +142,23 @@ pub fn project_code_result(tool: &str, mut result: ToolCallResult) -> ToolCallRe
         | "go_to_implementation"
         | "hover" => {
             move_keys(&mut data, &mut metadata, &["state", "truncated"]);
+        }
+        "knowledge.list" => {
+            let nodes = strip_row_keys(data.get("nodes"), &["folder"]);
+            move_keys(&mut data, &mut metadata, &["root", "total"]);
+            data = Map::from_iter([("nodes".into(), nodes)]);
+        }
+        "knowledge.check" => {
+            let issues = strip_row_keys(data.get("issues"), &["folder"]);
+            move_keys(&mut data, &mut metadata, &["root", "checked", "issue_count"]);
+            data = Map::from_iter([("issues".into(), issues)]);
+        }
+        "knowledge.refs" => {
+            // Same issue rows as check: one spelling of the path, no folder.
+            if data.contains_key("issues") {
+                let issues = strip_row_keys(data.get("issues"), &["folder"]);
+                data.insert("issues".into(), issues);
+            }
         }
         "websearch" => {
             data.remove("query");
@@ -272,6 +307,63 @@ mod more_tests {
                 "total_bytes": 12000,
                 "clamped": [{"parameter": "yield_time_ms", "requested": 60000, "applied": 30000}]
             }))
+        );
+    }
+
+    #[test]
+    fn knowledge_list_keeps_rows_and_moves_scope_facts() {
+        let result = project_code_result(
+            "knowledge.list",
+            crate::tool::outcome::ok_data(json!({
+                "root": ".litecode/knowledge",
+                "total": 2,
+                "nodes": [
+                    {"key":"a","folder":"arch","path":"arch/a.md","status":"enabled","incoming_count":1,"issue_count":0,"summary":"A"},
+                    {"key":"b","folder":"arch","path":"arch/b.md","status":"enabled","incoming_count":0,"issue_count":0,"summary":"B"}
+                ]
+            })),
+        );
+        assert_eq!(
+            result.data,
+            Some(json!({
+                "nodes": [
+                    {"key":"a","path":"arch/a.md","status":"enabled","incoming_count":1,"issue_count":0,"summary":"A"},
+                    {"key":"b","path":"arch/b.md","status":"enabled","incoming_count":0,"issue_count":0,"summary":"B"}
+                ]
+            }))
+        );
+        assert_eq!(
+            result.metadata,
+            Some(json!({"root": ".litecode/knowledge", "total": 2}))
+        );
+    }
+
+    #[test]
+    fn knowledge_check_keeps_issues_and_moves_counts() {
+        let result = project_code_result(
+            "knowledge.check",
+            crate::tool::outcome::ok_data(json!({
+                "root": ".litecode/knowledge",
+                "checked": 9,
+                "issue_count": 1,
+                "issues": [{
+                    "key":"a","folder":"arch","path":"arch/a.md",
+                    "severity":"warning","code":"dangling_relation","ref_key":"ghost","message":"missing target"
+                }]
+            })),
+        );
+        assert_eq!(
+            result.data,
+            Some(json!({
+                "issues": [{
+                    "key":"a","path":"arch/a.md",
+                    "severity":"warning","code":"dangling_relation","ref_key":"ghost","message":"missing target"
+                }]
+            }))
+        );
+        assert_eq!(
+            result.metadata,
+            Some(json!({"root": ".litecode/knowledge", "checked": 9, "issue_count": 1}))
         );
     }
 }

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "dec4798a22b056ce7a08ef86cfc945a48159d6d69b1311c2b6403504ce1d6971",
+  "sdk_hash": "dabff73cbdb295bc75e6fcf95255786ac0732759c8d59445fe08ce79691979f1",
   "tools": {
     "apply_edits": {
       "path": [
@@ -2341,12 +2341,11 @@
       ],
       "suite": "knowledge",
       "tool": "knowledge.check",
-      "doc": "Check workspace knowledge nodes for broken citations, duplicate keys, or invalid node headers (omit filters to check all).",
-      "signature": "check(args?: KnowledgeScope): Promise<{\n  root: string | null;\n  checked: Integer;\n  issue_count: Integer;\n  issues: KnowledgeIssueRow[];\n}>;",
+      "doc": "Check workspace knowledge nodes for broken citations, duplicate keys, or invalid node headers (omit filters to check all). The checked-node and issue counts are shown in the run view, not returned here.",
+      "signature": "check(args?: KnowledgeScope): Promise<{\n  issues: KnowledgeIssueRow[];\n}>;",
       "input_type": "KnowledgeScope",
       "output_type": "(inline)",
       "type_deps": [
-        "Integer",
         "KnowledgeIssueRow",
         "KnowledgeScope"
       ],
@@ -2373,29 +2372,12 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "root": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "checked": {
-            "type": "integer",
-            "description": "Whole JSON number. The host rejects fractional values."
-          },
-          "issue_count": {
-            "type": "integer",
-            "description": "Whole JSON number. The host rejects fractional values."
-          },
           "issues": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "key": {
-                  "type": "string"
-                },
-                "folder": {
                   "type": "string"
                 },
                 "path": {
@@ -2423,7 +2405,6 @@
               },
               "required": [
                 "key",
-                "folder",
                 "path",
                 "severity",
                 "code",
@@ -2435,9 +2416,6 @@
           }
         },
         "required": [
-          "root",
-          "checked",
-          "issue_count",
           "issues"
         ],
         "additionalProperties": false
@@ -2506,8 +2484,8 @@
       ],
       "suite": "knowledge",
       "tool": "knowledge.list",
-      "doc": "List workspace knowledge nodes as flat summary rows (omit filters to list all); nodes use a `node` fence and `[@ key=\"...\"]` / `[@ file=\"...\"]` citations.",
-      "signature": "list(args?: KnowledgeScope): Promise<{\n  root: string | null;\n  total: Integer;\n  nodes: {\n    key: string;\n    folder: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    incoming_count: Integer;\n    issue_count: Integer;\n    summary: string;\n  }[];\n}>;",
+      "doc": "List workspace knowledge nodes as flat summary rows (omit filters to list all); nodes use a `node` fence and `[@ key=\"...\"]` / `[@ file=\"...\"]` citations. The corpus root and node count are shown in the run view, not returned here.",
+      "signature": "list(args?: KnowledgeScope): Promise<{\n  nodes: {\n    key: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    incoming_count: Integer;\n    issue_count: Integer;\n    summary: string;\n  }[];\n}>;",
       "input_type": "KnowledgeScope",
       "output_type": "(inline)",
       "type_deps": [
@@ -2538,25 +2516,12 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "root": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "total": {
-            "type": "integer",
-            "description": "Whole JSON number. The host rejects fractional values."
-          },
           "nodes": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "key": {
-                  "type": "string"
-                },
-                "folder": {
                   "type": "string"
                 },
                 "path": {
@@ -2585,7 +2550,6 @@
               },
               "required": [
                 "key",
-                "folder",
                 "path",
                 "status",
                 "incoming_count",
@@ -2597,8 +2561,6 @@
           }
         },
         "required": [
-          "root",
-          "total",
           "nodes"
         ],
         "additionalProperties": false
@@ -2738,9 +2700,6 @@
                 "key": {
                   "type": "string"
                 },
-                "folder": {
-                  "type": "string"
-                },
                 "path": {
                   "type": "string"
                 },
@@ -2766,7 +2725,6 @@
               },
               "required": [
                 "key",
-                "folder",
                 "path",
                 "severity",
                 "code",

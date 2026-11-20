@@ -100,7 +100,6 @@ type KnowledgeNodeStatus = "enabled" | "disabled" | "pending" | "invalid";
 
 type KnowledgeIssueRow = {
   key: string;
-  folder: string;
   path: string;
   severity: "error" | "warning";
   code: string;
@@ -144,13 +143,10 @@ interface PlanTools {
 }
 
 interface KnowledgeTools {
-  /** List workspace knowledge nodes as flat summary rows (omit filters to list all); nodes use a `node` fence and `[@ key="..."]` / `[@ file="..."]` citations. @tool knowledge.list @suite knowledge */
+  /** List workspace knowledge nodes as flat summary rows (omit filters to list all); nodes use a `node` fence and `[@ key="..."]` / `[@ file="..."]` citations. The corpus root and node count are shown in the run view, not returned here. @tool knowledge.list @suite knowledge */
   list(args?: KnowledgeScope): Promise<{
-    root: string | null;
-    total: Integer;
     nodes: {
       key: string;
-      folder: string;
       path: string;
       status: KnowledgeNodeStatus;
       incoming_count: Integer;
@@ -158,11 +154,8 @@ interface KnowledgeTools {
       summary: string;
     }[];
   }>;
-  /** Check workspace knowledge nodes for broken citations, duplicate keys, or invalid node headers (omit filters to check all). @tool knowledge.check @suite knowledge */
+  /** Check workspace knowledge nodes for broken citations, duplicate keys, or invalid node headers (omit filters to check all). The checked-node and issue counts are shown in the run view, not returned here. @tool knowledge.check @suite knowledge */
   check(args?: KnowledgeScope): Promise<{
-    root: string | null;
-    checked: Integer;
-    issue_count: Integer;
     issues: KnowledgeIssueRow[];
   }>;
   /** Inspect one knowledge node's markdown body, incoming/outgoing citations, and issues. @tool knowledge.refs @suite knowledge */

@@ -105,7 +105,6 @@ interface PlanTools {
 
 type KnowledgeIssueRow = {
   key: string;
-  folder: string;
   path: string;
   severity: "error" | "warning";
   code: string;
@@ -121,11 +120,8 @@ type KnowledgeScope = {
 };
 
 interface KnowledgeTools {
-  /** Check workspace knowledge nodes for broken citations, duplicate keys, or invalid node headers (omit filters to check all). */
+  /** Check workspace knowledge nodes for broken citations, duplicate keys, or invalid node headers (omit filters to check all). The checked-node and issue counts are shown in the run view, not returned here. */
   check(args?: KnowledgeScope): Promise<{
-    root: string | null;
-    checked: Integer;
-    issue_count: Integer;
     issues: KnowledgeIssueRow[];
   }>;
   /** Create a new pending knowledge node markdown stub under `.litecode/knowledge/`. */
@@ -137,13 +133,10 @@ interface KnowledgeTools {
     path: string;
     status: KnowledgeNodeStatus;
   }>;
-  /** List workspace knowledge nodes as flat summary rows (omit filters to list all); nodes use a `node` fence and `[@ key="..."]` / `[@ file="..."]` citations. */
+  /** List workspace knowledge nodes as flat summary rows (omit filters to list all); nodes use a `node` fence and `[@ key="..."]` / `[@ file="..."]` citations. The corpus root and node count are shown in the run view, not returned here. */
   list(args?: KnowledgeScope): Promise<{
-    root: string | null;
-    total: Integer;
     nodes: {
       key: string;
-      folder: string;
       path: string;
       status: KnowledgeNodeStatus;
       incoming_count: Integer;
