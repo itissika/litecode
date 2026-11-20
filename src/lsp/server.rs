@@ -121,6 +121,10 @@ pub(crate) enum IndexReadiness {
     Ready,
     Indexing,
     Unknown,
+    /// The server reported that its own load failed (a cargo workspace
+    /// conflict, a missing component, ...). Empty semantic results are not
+    /// evidence of absence in this state.
+    Degraded,
 }
 
 impl IndexReadiness {
@@ -129,6 +133,7 @@ impl IndexReadiness {
             Self::Ready => "ok",
             Self::Indexing => "partial",
             Self::Unknown => "unknown",
+            Self::Degraded => "degraded",
         }
     }
 }
@@ -382,8 +387,15 @@ impl LspServer {
         self.index_grace_spent.store(false, Ordering::SeqCst);
     }
 
+    /// The server's own words for a load failure, if it reported one.
+    pub(crate) fn index_health_message(&self) -> Option<String> {
+        self.io.index_health_message()
+    }
+
     pub(crate) fn index_readiness(&self) -> IndexReadiness {
-        if self.io.index_settled.load(Ordering::SeqCst) {
+        if self.io.index_degraded.load(Ordering::SeqCst) {
+            IndexReadiness::Degraded
+        } else if self.io.index_settled.load(Ordering::SeqCst) {
             IndexReadiness::Ready
         } else if self.io.index_status_seen.load(Ordering::SeqCst) {
             IndexReadiness::Indexing
@@ -409,6 +421,11 @@ impl LspServer {
         }
         let diags = self.io.wait_diagnostics(uri, budget).await;
         let fresh = self.io.diagnostics_are_current(uri);
+        if !fresh && self.index_readiness() == IndexReadiness::Degraded {
+            return Err(index_degraded_error(
+                self.io.index_health_message().as_deref(),
+            ));
+        }
         match diagnostics_gate(self.is_running(), fresh, self.index_readiness()) {
             DiagnosticsGate::Fresh => Ok(diags),
             DiagnosticsGate::SettledEmpty => Ok(Value::Array(vec![])),
@@ -443,6 +460,10 @@ impl LspServer {
             return Ok((LspReply::Value(result), self.index_readiness()));
         }
         let mut readiness = self.index_readiness();
+        if readiness == IndexReadiness::Degraded {
+            // Nothing to retry against: the server already said its load failed.
+            return Ok((LspReply::Value(result), IndexReadiness::Degraded));
+        }
         if readiness == IndexReadiness::Ready {
             self.clear_index_grace();
             return Ok((LspReply::Value(result), IndexReadiness::Ready));
@@ -1078,6 +1099,27 @@ fn eof_position(text: &str) -> (u32, u32) {
     (line, last.encode_utf16().count() as u32)
 }
 
+/// One sentence for a server that reported its own load failure. The reason is
+/// the server's own words, so the model sees the real cause instead of
+/// "no results".
+pub(crate) fn index_degraded_message(reason: Option<&str>) -> String {
+    let reason = reason
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| format!(" ({})", text.chars().take(240).collect::<String>()))
+        .unwrap_or_default();
+    format!(
+        "language server reported a problem loading this project{reason}, so it has no semantic \
+         results for it: an empty answer is not evidence that the code lacks it. Fix the reported \
+         problem (or point the language server at the right project root) and retry."
+    )
+}
+
+/// Shared degraded error; `tools/lsp.rs` maps the text to `unavailable`.
+pub(crate) fn index_degraded_error(reason: Option<&str>) -> LitecodeError {
+    LitecodeError::ToolExecution(index_degraded_message(reason))
+}
+
 /// Shared "index not ready" error; `tools/lsp.rs` maps the text to `unavailable`.
 pub(crate) fn index_not_ready_error(method: &str) -> LitecodeError {
     LitecodeError::ToolExecution(format!(
@@ -1138,7 +1180,10 @@ pub(crate) fn diagnostics_gate(
         DiagnosticsGate::NotReady
     } else if fresh {
         DiagnosticsGate::Fresh
-    } else if readiness == IndexReadiness::Indexing {
+    } else if matches!(
+        readiness,
+        IndexReadiness::Indexing | IndexReadiness::Degraded
+    ) {
         DiagnosticsGate::NotReady
     } else {
         DiagnosticsGate::SettledEmpty

@@ -443,14 +443,60 @@ fn run_version_probe(binary: &LanguageServerBinary, cwd: Option<&Path>) -> Resul
         .spawn()
         .map_err(|e| format!("failed to run '{display}': {e}"))?;
 
-    let status = wait_with_timeout(&mut child, Duration::from_secs(5))
-        .map_err(|e| format!("'{display}' version probe: {e}"))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("'{display}' --version exited with {status}"))
+    // Read stderr while waiting. A proxy explains the real reason here (a
+    // missing rustup component, a toolchain mismatch), and an unread pipe would
+    // also block the child once its buffer fills.
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Some(mut pipe) = child.stderr.take() {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = std::io::Read::read_to_string(&mut pipe, &mut text);
+            let _ = tx.send(text);
+        });
     }
+    let outcome = wait_with_timeout(&mut child, Duration::from_secs(5));
+    let stderr = rx.recv_timeout(Duration::from_millis(300)).unwrap_or_default();
+    let detail = probe_detail(&stderr);
+
+    match outcome {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(with_probe_detail(
+            format!("'{display}' --version exited with {status}"),
+            &detail,
+        )),
+        Err(error) => Err(with_probe_detail(
+            format!("'{display}' version probe: {error}"),
+            &detail,
+        )),
+    }
+}
+
+/// The child's own words, flattened to one capped line: that sentence is the
+/// actionable part of the error.
+fn probe_detail(stderr: &str) -> String {
+    stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(300)
+        .collect()
+}
+
+fn with_probe_detail(mut message: String, detail: &str) -> String {
+    if detail.is_empty() {
+        return message;
+    }
+    message.push_str(": ");
+    message.push_str(detail);
+    if detail.contains("not installed for the toolchain")
+        && detail.to_ascii_lowercase().contains("rust-analyzer")
+    {
+        message.push_str("; install it with `rustup component add rust-analyzer`");
+    }
+    message
 }
 
 fn wait_with_timeout(
@@ -820,6 +866,12 @@ mod tests {
         };
         let err = retry_txt_busy(|| run_version_probe(&binary, Some(dir.path()))).unwrap_err();
         assert!(err.contains("--version exited"), "{err}");
+        // The proxy's own sentence is the actionable part, not just the status.
+        assert!(err.contains("not installed for the toolchain"), "{err}");
+        assert!(
+            err.contains("rustup component add rust-analyzer"),
+            "{err}"
+        );
     }
 
     #[cfg(unix)]

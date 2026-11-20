@@ -84,9 +84,17 @@ pub struct LspToolOutput {
     pub content_modified: bool,
     /// What the server last told us about its index; never inferred from time.
     pub(crate) readiness: IndexReadiness,
+    /// The server's own words when it reported a load failure (degraded).
+    pub(crate) degraded_reason: Option<String>,
 }
 
 impl LspToolOutput {
+    /// Attach the server's own words when it reported a load failure.
+    pub(crate) fn with_degraded(mut self, reason: Option<String>) -> Self {
+        self.degraded_reason = reason;
+        self
+    }
+
     pub(crate) fn new(
         text: String,
         raw: Value,
@@ -97,6 +105,7 @@ impl LspToolOutput {
             text,
             raw,
             content_modified,
+            degraded_reason: None,
             readiness,
         }
     }
@@ -984,7 +993,8 @@ impl LspHub {
             result,
             modified,
             readiness,
-        ))
+        )
+        .with_degraded(server.index_health_message()))
     }
 
     /// Post-write/edit feedback: **only** file-local Error diagnostics, and only when
@@ -1296,7 +1306,8 @@ impl LspHub {
             result,
             modified,
             readiness,
-        ))
+        )
+        .with_degraded(server.index_health_message()))
     }
 }
 

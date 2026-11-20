@@ -235,6 +235,11 @@ pub(crate) struct LspIo {
     /// The server actually reported index status at least once. Without this,
     /// silence is not evidence that indexing finished.
     pub(crate) index_status_seen: AtomicBool,
+    /// The server reported that its own load failed (`params.health`).
+    /// `quiescent` alone only says it stopped working, not that it succeeded.
+    pub(crate) index_degraded: AtomicBool,
+    /// The server's own words for that failure, when it sent any.
+    pub(crate) index_health: Mutex<Option<String>>,
     pub(crate) io_failed: AtomicBool,
     pub(crate) watchdog_kill: AtomicBool,
     pub(crate) lifecycle: Mutex<LspLifecycle>,
@@ -261,6 +266,8 @@ impl LspIo {
             diag_waiters: Mutex::new(Vec::new()),
             index_settled: AtomicBool::new(false),
             index_status_seen: AtomicBool::new(false),
+            index_degraded: AtomicBool::new(false),
+            index_health: Mutex::new(None),
             io_failed: AtomicBool::new(false),
             watchdog_kill: AtomicBool::new(false),
             lifecycle: Mutex::new(LspLifecycle::Starting),
@@ -350,12 +357,38 @@ impl LspIo {
                 self.wake_diag_waiters(&uri);
             }
         }
-        if is_index_status(msg) {
-            self.index_status_seen.store(true, Ordering::SeqCst);
+        self.note_index_status(msg);
+    }
+
+    /// One place that reads an index-status message: the flags the readiness
+    /// state machine uses, plus the server's own health verdict. A server can be
+    /// quiescent and broken at the same time (a failed cargo workspace load).
+    pub(crate) fn note_index_status(&self, msg: &Value) {
+        if !is_index_status(msg) {
+            return;
         }
+        self.index_status_seen.store(true, Ordering::SeqCst);
         if is_quiescent_status(msg) {
             self.index_settled.store(true, Ordering::SeqCst);
         }
+        let Some(health) = msg.pointer("/params/health").and_then(Value::as_str) else {
+            return;
+        };
+        let degraded = !health.eq_ignore_ascii_case("ok");
+        self.index_degraded.store(degraded, Ordering::SeqCst);
+        let message = msg
+            .pointer("/params/message")
+            .and_then(Value::as_str)
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
+        if let Ok(mut guard) = self.index_health.lock() {
+            *guard = if degraded { message } else { None };
+        }
+    }
+
+    /// The server's own words for a load failure, if it sent any.
+    pub(crate) fn index_health_message(&self) -> Option<String> {
+        self.index_health.lock().ok().and_then(|guard| guard.clone())
     }
 
     pub(crate) fn note_doc_synced(&self, uri: &str, version: i32) {
@@ -571,12 +604,7 @@ impl LspIo {
 /// Apply one inbound JSON-RPC message. Returns an optional stdin ack.
 pub(crate) fn dispatch_message(io: &LspIo, msg: &Value) -> Option<Value> {
     if is_server_request(msg) {
-        if is_index_status(msg) {
-            io.index_status_seen.store(true, Ordering::SeqCst);
-        }
-        if is_quiescent_status(msg) {
-            io.index_settled.store(true, Ordering::SeqCst);
-        }
+        io.note_index_status(msg);
         return ack_server_request(msg);
     }
     if msg.get("id").is_none() {
@@ -700,6 +728,8 @@ mod tests {
             diag_waiters: Mutex::new(Vec::new()),
             index_settled: AtomicBool::new(false),
             index_status_seen: AtomicBool::new(false),
+            index_degraded: AtomicBool::new(false),
+            index_health: Mutex::new(None),
             io_failed: AtomicBool::new(false),
             watchdog_kill: AtomicBool::new(false),
             lifecycle: Mutex::new(LspLifecycle::Running),
@@ -721,6 +751,8 @@ mod tests {
             diag_waiters: Mutex::new(Vec::new()),
             index_settled: AtomicBool::new(false),
             index_status_seen: AtomicBool::new(false),
+            index_degraded: AtomicBool::new(false),
+            index_health: Mutex::new(None),
             io_failed: AtomicBool::new(false),
             watchdog_kill: AtomicBool::new(false),
             lifecycle: Mutex::new(LspLifecycle::Running),
@@ -782,6 +814,42 @@ mod tests {
         }));
         assert!(!io.index_status_seen.load(Ordering::SeqCst));
         assert!(!io.index_settled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn quiescent_with_a_bad_health_verdict_is_degraded() {
+        let io = test_io();
+        io.note_index_status(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "$/rust-analyzer/status",
+            "params": {
+                "quiescent": true,
+                "health": "error",
+                "message": "Failed to load Cargo.toml: workspace conflict"
+            }
+        }));
+        assert!(io.index_settled.load(Ordering::SeqCst));
+        assert!(io.index_degraded.load(Ordering::SeqCst));
+        assert_eq!(
+            io.index_health_message().as_deref(),
+            Some("Failed to load Cargo.toml: workspace conflict")
+        );
+    }
+
+    #[test]
+    fn a_healthy_status_clears_degraded() {
+        let io = test_io();
+        io.note_index_status(&serde_json::json!({
+            "method": "$/rust-analyzer/status",
+            "params": { "quiescent": true, "health": "error", "message": "boom" }
+        }));
+        assert!(io.index_degraded.load(Ordering::SeqCst));
+        io.note_index_status(&serde_json::json!({
+            "method": "$/rust-analyzer/status",
+            "params": { "quiescent": true, "health": "ok" }
+        }));
+        assert!(!io.index_degraded.load(Ordering::SeqCst));
+        assert_eq!(io.index_health_message(), None);
     }
 
     /// Mock LSP server: answers the first `fail_first` requests with -32801,

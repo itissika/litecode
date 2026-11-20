@@ -528,6 +528,9 @@ fn finish_with_state(
         IndexReadiness::Unknown => result.with_warning(
             "language server has not reported its index state; result may be incomplete",
         ),
+        IndexReadiness::Degraded => result.with_warning(
+            "the language server reported a problem loading this project; result may be incomplete",
+        ),
     };
     with_content_modified(result, content_modified)
 }
@@ -567,17 +570,43 @@ struct SymbolsData {
     truncated: bool,
 }
 
+/// Empty semantic output is only a miss when the server could answer at all.
+/// A server that is still indexing, or that reported its own load failure, says
+/// so instead of handing back a confident empty result.
+fn empty_result_unavailable(
+    readiness: IndexReadiness,
+    degraded_reason: Option<&str>,
+    subject: &str,
+) -> Option<ToolCallResult> {
+    match readiness {
+        IndexReadiness::Indexing => Some(coded(
+            "unavailable",
+            format!(
+                "language server index is still building; {subject} would be inconclusive. Retry when indexing finishes."
+            ),
+        )),
+        IndexReadiness::Degraded => Some(coded(
+            "unavailable",
+            crate::lsp::server::index_degraded_message(degraded_reason),
+        )),
+        _ => None,
+    }
+}
+
 fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCallResult {
     let mut locations = extract_location_items(&out.raw, roots);
     let truncated = locations.len() > MAX_LOCATIONS;
     if truncated {
         locations.truncate(MAX_LOCATIONS);
     }
-    if locations.is_empty() && out.readiness == IndexReadiness::Indexing {
-        return coded(
-            "unavailable",
-            "language server index is still building; no locations would be inconclusive. Retry when indexing finishes.",
-        );
+    if locations.is_empty()
+        && let Some(result) = empty_result_unavailable(
+            out.readiness,
+            out.degraded_reason.as_deref(),
+            "no locations",
+        )
+    {
+        return result;
     }
     finish_with_state(
         crate::tool::outcome::ok_data(LocationsData {
@@ -593,11 +622,14 @@ fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCall
 fn finish_hover(out: crate::lsp::LspToolOutput) -> ToolCallResult {
     let markdown = extract_hover_markdown(&out.raw);
     let empty = markdown.trim().is_empty() || markdown == "No hover information available";
-    if empty && out.readiness == IndexReadiness::Indexing {
-        return coded(
-            "unavailable",
-            "language server index is still building; an empty hover would be inconclusive. Retry when indexing finishes.",
-        );
+    if empty
+        && let Some(result) = empty_result_unavailable(
+            out.readiness,
+            out.degraded_reason.as_deref(),
+            "an empty hover",
+        )
+    {
+        return result;
     }
     let markdown = if empty { String::new() } else { markdown };
     finish_with_state(
@@ -616,11 +648,14 @@ fn finish_diagnostics(out: crate::lsp::LspToolOutput, file_path: &str) -> ToolCa
     if truncated {
         items.truncate(MAX_DIAGNOSTIC_ITEMS);
     }
-    if items.is_empty() && out.readiness == IndexReadiness::Indexing {
-        return coded(
-            "unavailable",
-            "language server index is still building; no diagnostics would be inconclusive. Retry when indexing finishes.",
-        );
+    if items.is_empty()
+        && let Some(result) = empty_result_unavailable(
+            out.readiness,
+            out.degraded_reason.as_deref(),
+            "no diagnostics",
+        )
+    {
+        return result;
     }
     finish_with_state(
         crate::tool::outcome::ok_data(DiagnosticsData {
@@ -643,11 +678,14 @@ fn finish_symbols(
     if truncated {
         symbols.truncate(MAX_SYMBOLS);
     }
-    if symbols.is_empty() && out.readiness == IndexReadiness::Indexing {
-        return coded(
-            "unavailable",
-            "language server index is still building; no symbols would be inconclusive. Retry when indexing finishes.",
-        );
+    if symbols.is_empty()
+        && let Some(result) = empty_result_unavailable(
+            out.readiness,
+            out.degraded_reason.as_deref(),
+            "no symbols",
+        )
+    {
+        return result;
     }
     finish_with_state(
         crate::tool::outcome::ok_data(SymbolsData {
@@ -1079,6 +1117,47 @@ mod tests {
         assert_eq!(data["state"], "unknown");
         assert_eq!(data["items"], serde_json::json!([]));
         assert!(data.get("message").is_none(), "{data}");
+    }
+
+    #[test]
+    fn diagnostics_degraded_empty_is_unavailable_with_the_servers_reason() {
+        let out = crate::lsp::LspToolOutput::new(
+            String::new(),
+            Value::Array(vec![]),
+            false,
+            IndexReadiness::Degraded,
+        )
+        .with_degraded(Some("failed to load Cargo.toml".into()));
+        let result = finish_diagnostics(out, "src/a.rs");
+        assert_eq!(result.error_code.as_deref(), Some("unavailable"));
+        assert!(result.data.is_none());
+        assert!(
+            result.content.contains("failed to load Cargo.toml"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("not evidence"),
+            "{}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn a_degraded_non_empty_result_warns_instead_of_failing() {
+        let raw = serde_json::json!([{ "name": "f", "kind": 12, "location": {
+            "uri": "file:///tmp/m.rs",
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } } } }]);
+        let out = crate::lsp::LspToolOutput::new(
+            String::new(),
+            raw,
+            false,
+            IndexReadiness::Degraded,
+        );
+        let result = finish_symbols(out, true, &[]);
+        assert!(result.error.is_none(), "{}", result.content);
+        assert!(result.data.is_some());
+        assert!(result.warning_status.is_some(), "degraded results warn");
     }
 
     #[test]
