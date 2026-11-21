@@ -280,11 +280,24 @@ pub fn apply_prompt_overhead(
     });
 }
 
-/// Soft-window ceiling used as one input to `ContextMeter::compact_at` and to
-/// the existing keep-recent sizing. The actual auto trigger is the unified
-/// meter's strict `used_tokens > compact_at` decision.
+/// Every compaction keeps its input inside this share of the physical limit:
+/// the session prepare line, the post-compact history budget, and the summary
+/// request's own input cap. One constant on purpose — three call sites, one
+/// policy.
+pub const COMPACTION_BUDGET_PERCENT: usize = 80;
+
+/// `tokens` at the compaction budget line, floored. Integer math on purpose:
+/// a float copy of `0.8` would be a second origin for the same number.
+pub fn compaction_budget(tokens: usize) -> usize {
+    tokens.saturating_mul(COMPACTION_BUDGET_PERCENT) / 100
+}
+
+/// The 80% prepare line for a session window. `ContextMeter::compact_at` caps
+/// it at `prompt_limit`; keep-recent sizing reads it as the post-compact
+/// history ceiling. The auto trigger is the meter's strict
+/// `used_tokens > compact_at` decision.
 pub fn autocompact_threshold(context_window: usize) -> usize {
-    (context_window as f64 * 0.8) as usize
+    compaction_budget(context_window)
 }
 
 #[cfg(test)]

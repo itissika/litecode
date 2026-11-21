@@ -2208,7 +2208,7 @@ fn build_compaction_input(
         .context_window_max
         .saturating_sub(output_cap)
         .max(1);
-    let target = (physical.saturating_mul(4) / 5).max(1);
+    let target = crate::session::estimate::compaction_budget(physical).max(1);
     let mut omitted = false;
     if fixed.saturating_add(crate::session::estimate::compute_token_estimate(&input)) > target {
         let starts = std::iter::once(0).chain(

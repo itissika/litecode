@@ -127,8 +127,9 @@ pub struct ContextMeter {
 }
 
 impl ContextMeter {
-    /// Build the policy side of a meter. Only this constructor contains the
-    /// pressure formula; all callers answer their question from this result.
+    /// Build the policy side of a meter. The 80% line comes from
+    /// `session::estimate::autocompact_threshold`; only the `prompt_limit` cap
+    /// is applied here, and all callers read the result instead of recomputing.
     pub fn new(
         context_window: usize,
         model_context_window: usize,
@@ -137,7 +138,8 @@ impl ContextMeter {
         source: ContextMeterSource,
     ) -> Self {
         let prompt_limit = model_context_window.saturating_sub(output_reserve);
-        let compact_at = (context_window.saturating_mul(4) / 5).min(prompt_limit);
+        let compact_at = crate::session::estimate::autocompact_threshold(context_window)
+            .min(prompt_limit);
         Self {
             context_window,
             output_reserve,
