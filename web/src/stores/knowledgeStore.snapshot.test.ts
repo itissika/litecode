@@ -228,3 +228,49 @@ describe("knowledgeStore backend snapshot", () => {
     expect(useKnowledgeStore.getState().byId.get("seq")?.summary).toBe("外部改了");
   });
 });
+
+describe("knowledgeStore panel history", () => {
+  it("records each node the panel shows and cuts forward steps on a new jump", async () => {
+    fetchSnapshot.mockResolvedValue(
+      snapshot(1, [
+        seq,
+        wireNode({ path: "order.md", key: "order" }),
+        wireNode({ path: "third.md", key: "third" }),
+        wireNode({ path: "alt.md", key: "alt" }),
+      ]),
+    );
+    await useKnowledgeStore.getState().load();
+    const store = () => useKnowledgeStore.getState();
+
+    store().focusCanvas("seq");
+    store().focusCanvas("order");
+    store().focusCanvas("third");
+    expect(store().history).toEqual(["seq", "order", "third"]);
+    expect(store().historyIndex).toBe(2);
+
+    store().goBack();
+    store().goBack();
+    expect(store().focusedId).toBe("seq");
+
+    // Stepping somewhere new drops the two entries the reader stepped past.
+    store().focusCanvas("alt");
+    expect(store().history).toEqual(["seq", "alt"]);
+    expect(store().historyIndex).toBe(1);
+  });
+
+  it("drops nodes that leave the corpus from the history", async () => {
+    fetchSnapshot.mockResolvedValue(
+      snapshot(1, [seq, wireNode({ path: "order.md", key: "order" })]),
+    );
+    await useKnowledgeStore.getState().load();
+    const store = () => useKnowledgeStore.getState();
+    store().focusCanvas("seq");
+    store().focusCanvas("order");
+
+    fetchSnapshot.mockResolvedValue(snapshot(2, [seq]));
+    await store().refreshFromDisk();
+
+    expect(store().history).toEqual(["seq"]);
+    expect(store().historyIndex).toBe(0);
+  });
+});

@@ -667,6 +667,8 @@
       "canvas": "Canvas"
     },
     "modeAria": "Knowledge panel view",
+    "back": "Back",
+    "forward": "Forward",
     "editBody": "Edit body",
     "previewBody": "Preview body",
     "summaryPlaceholder": "Write a short summary…",

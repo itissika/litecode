@@ -7,7 +7,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { Eye, FileText, PencilSimple } from "@phosphor-icons/react";
+import { ArrowLeft, ArrowRight, Eye, FileText, PencilSimple } from "@phosphor-icons/react";
 
 import { mentionKeysOf } from "../../lib/knowledge/flowProjection";
 import { extractMarkers, normalizeKey } from "../../lib/knowledge/markers";
@@ -28,6 +28,7 @@ const NO_ISSUES: KnowledgeIssue[] = [];
  * app, so a node chip changes this document instead of opening another panel.
  * The summary is always editable; the body uses the canvas card's edit toggle.
  * Saves run on blur, on Cmd/Ctrl+S, on leaving edit mode, and on unmount.
+ * Back/forward (Alt+←/→) walk the panel's node history.
  */
 export function KnowledgeDocument() {
   const focusedId = useKnowledgeStore((s) => s.focusedId);
@@ -43,6 +44,10 @@ export function KnowledgeDocument() {
   const focusCanvas = useKnowledgeStore((s) => s.focusCanvas);
   const clearCanvasFocus = useKnowledgeStore((s) => s.clearCanvasFocus);
   const revealInList = useKnowledgeStore((s) => s.revealInList);
+  const goBack = useKnowledgeStore((s) => s.goBack);
+  const goForward = useKnowledgeStore((s) => s.goForward);
+  const canGoBack = useKnowledgeStore((s) => s.historyIndex > 0);
+  const canGoForward = useKnowledgeStore((s) => s.historyIndex < s.history.length - 1);
 
   const summaryId = useId();
   const nodeId = node?.id ?? null;
@@ -238,6 +243,15 @@ export function KnowledgeDocument() {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
       void commitDrafts();
+      return;
+    }
+    if (!event.altKey) return;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      goBack();
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      goForward();
     }
   }
 
@@ -263,6 +277,28 @@ export function KnowledgeDocument() {
       <article className="knowledge-document-article" onKeyDown={onDocumentKeyDown}>
         <header>
           <div className="knowledge-document-title-row">
+            <div className="flex shrink-0 items-center gap-0.5">
+              <button
+                type="button"
+                aria-label={i18n.t("knowledge.back")}
+                title={`${i18n.t("knowledge.back")} (Alt+←)`}
+                disabled={!canGoBack}
+                onClick={goBack}
+                className="flex h-6 w-6 items-center justify-center rounded text-(--_dk-text-muted) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary) disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ArrowLeft size={14} aria-hidden />
+              </button>
+              <button
+                type="button"
+                aria-label={i18n.t("knowledge.forward")}
+                title={`${i18n.t("knowledge.forward")} (Alt+→)`}
+                disabled={!canGoForward}
+                onClick={goForward}
+                className="flex h-6 w-6 items-center justify-center rounded text-(--_dk-text-muted) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary) disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ArrowRight size={14} aria-hidden />
+              </button>
+            </div>
             <h1
               className={`knowledge-node-title knowledge-document-title ${
                 titleTone ? `is-${titleTone}` : ""

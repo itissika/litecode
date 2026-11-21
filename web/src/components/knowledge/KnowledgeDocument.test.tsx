@@ -27,6 +27,8 @@ function seed(overrides: Record<string, unknown> = {}) {
     graphExpanded: new Set(),
     focusedId: "session",
     focusNonce: 0,
+    history: ["session"],
+    historyIndex: 0,
     flashId: null,
     flashNonce: 0,
     loading: false,
@@ -69,6 +71,25 @@ describe("KnowledgeDocument", () => {
     expect(screen.getByRole("heading", { name: "seq" })).toBeTruthy();
     const nextBody = document.querySelector(".knowledge-document-body");
     expect(within(nextBody as HTMLElement).getByText(/会话日志的序号/)).toBeTruthy();
+  });
+
+  it("walks the panel history back and forward", () => {
+    render(<KeyedDocument />);
+    const body = document.querySelector(".knowledge-document-body");
+    fireEvent.click(within(body as HTMLElement).getByRole("button", { name: "seq" }));
+    expect(screen.getByRole("heading", { name: "seq" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("heading", { name: "session" })).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Back" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Forward" }));
+    expect(screen.getByRole("heading", { name: "seq" })).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Forward" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 
   it("locates the node in the side list, expanding its ancestors", () => {

@@ -667,6 +667,8 @@
       "canvas": "画布"
     },
     "modeAria": "知识面板视图",
+    "back": "后退",
+    "forward": "前进",
     "editBody": "编辑正文",
     "previewBody": "预览正文",
     "summaryPlaceholder": "写一句摘要…",

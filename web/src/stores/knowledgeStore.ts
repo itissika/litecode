@@ -185,6 +185,10 @@ interface KnowledgeStore {
   focusedId: string | null;
   /** Bumps when the canvas should pan to `focusedId` (side body / ref jump). */
   focusNonce: number;
+  /** Node ids the panel has shown, oldest first; back/forward walk it. */
+  history: string[];
+  /** Position in `history`; -1 before the first node. */
+  historyIndex: number;
   /** Side-list flash target when a graph card is clicked. */
   flashId: string | null;
   flashNonce: number;
@@ -258,6 +262,10 @@ interface KnowledgeStore {
   setVisibility: (next: KnowledgeVisibility) => Promise<void>;
   /** Pan the graph to this node; does not expand the side row. */
   focusCanvas: (id: string) => void;
+  /** Step back to the previous node in the panel history. */
+  goBack: () => void;
+  /** Step forward again after `goBack`. */
+  goForward: () => void;
   /**
    * Locate a node in the side list: expand its ancestor folders and flash the
    * row. Document mode calls this as the reader moves between nodes.
@@ -529,6 +537,7 @@ function applyView(set: SetState, get: GetState, view: KnowledgeView): boolean {
     focusedId:
       state.focusedId != null && nodeIds.has(state.focusedId) ? state.focusedId : null,
     flashId: state.flashId != null && nodeIds.has(state.flashId) ? state.flashId : null,
+    ...pruneHistory(state.history, state.historyIndex, nodeIds),
     structureNonce: moved ? state.structureNonce + 1 : state.structureNonce,
     loading: false,
     error: null,
@@ -595,6 +604,41 @@ function setLocalNodes(
   set({ ...projectListedNodes(state, listed, edited), error: message });
 }
 
+/** Cap so a long reading session cannot grow the stack without bound. */
+const HISTORY_LIMIT = 100;
+
+/**
+ * Record one node as the node on screen. Staying on the same node is not a
+ * step, and jumping after going back drops the entries the reader stepped past.
+ */
+function historyAt(
+  state: Pick<KnowledgeStore, "history" | "historyIndex">,
+  id: string,
+): Partial<KnowledgeStore> {
+  if (state.history[state.historyIndex] === id) return {};
+  const grown = [...state.history.slice(0, state.historyIndex + 1), id];
+  const history =
+    grown.length > HISTORY_LIMIT ? grown.slice(grown.length - HISTORY_LIMIT) : grown;
+  return { history, historyIndex: history.length - 1 };
+}
+
+/** Drop nodes that no longer exist, keeping the reader where they were. */
+function pruneHistory(
+  history: string[],
+  index: number,
+  alive: Set<string>,
+): { history: string[]; historyIndex: number } {
+  if (history.every((id) => alive.has(id))) return { history, historyIndex: index };
+  const kept: string[] = [];
+  let next = -1;
+  history.forEach((id, at) => {
+    if (!alive.has(id)) return;
+    kept.push(id);
+    if (at <= index) next = kept.length - 1;
+  });
+  return { history: kept, historyIndex: next >= 0 ? next : kept.length - 1 };
+}
+
 export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
   ...empty,
   ready: false,
@@ -608,6 +652,8 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
   structureNonce: 0,
   focusedId: null,
   focusNonce: 0,
+  history: [],
+  historyIndex: -1,
   flashId: null,
   flashNonce: 0,
   loading: false,
@@ -744,6 +790,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       graphExpanded: new Set([...state.graphExpanded].map(remap)),
       focusedId: state.focusedId == null ? null : remap(state.focusedId),
       flashId: state.flashId == null ? null : remap(state.flashId),
+      history: state.history.map(remap),
       error: null,
     });
     try {
@@ -800,6 +847,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
         expandedFolders,
         focusedId,
         focusNonce: focusedId ? latest.focusNonce + 1 : latest.focusNonce,
+        ...(created ? historyAt(latest, created.id) : {}),
         flashId: focusedId,
         flashNonce: latest.flashNonce + 1,
       });
@@ -900,6 +948,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
         graphExpanded: aliveIds([...state.graphExpanded].map(remap), nodeIds),
         focusedId: focusedId != null && nodeIds.has(focusedId) ? focusedId : null,
         flashId: flashId != null && nodeIds.has(flashId) ? flashId : null,
+        history: state.history.map(remap),
       });
       return "ok";
     } catch (err) {
@@ -939,6 +988,27 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       return {
         focusedId: id,
         focusNonce: state.focusNonce + 1,
+        ...historyAt(state, id),
+      };
+    }),
+  goBack: () =>
+    set((state) => {
+      const id = state.history[state.historyIndex - 1];
+      if (!id || !state.byId.has(id)) return state;
+      return {
+        focusedId: id,
+        historyIndex: state.historyIndex - 1,
+        focusNonce: state.focusNonce + 1,
+      };
+    }),
+  goForward: () =>
+    set((state) => {
+      const id = state.history[state.historyIndex + 1];
+      if (!id || !state.byId.has(id)) return state;
+      return {
+        focusedId: id,
+        historyIndex: state.historyIndex + 1,
+        focusNonce: state.focusNonce + 1,
       };
     }),
   revealInList: (id) =>
@@ -966,6 +1036,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
         focusedId: id,
         flashId: id,
         flashNonce: state.flashNonce + 1,
+        ...historyAt(state, id),
       };
     }),
   clearCanvasFocus: () =>
