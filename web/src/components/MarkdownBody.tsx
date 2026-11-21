@@ -221,12 +221,12 @@ export const MarkdownBody = memo(function MarkdownBody({
           if (isMermaidLang(lang)) {
             return <MermaidBlock code={raw} streaming={streaming} />;
           }
-          return <CodeBlock code={raw} lang={lang} />;
+          return <CodeBlock code={raw} lang={lang} streaming={streaming} />;
         }
 
         // Fenced code block without language → render as block
         if (raw.includes("\n")) {
-          return <CodeBlock code={raw} lang="" />;
+          return <CodeBlock code={raw} lang="" streaming={streaming} />;
         }
 
         // Inline code

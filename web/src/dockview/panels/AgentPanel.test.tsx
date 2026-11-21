@@ -133,7 +133,9 @@ function panelProps(
     params: { sessionId, ...extraParams },
     api: {
       isActive: true,
+      isVisible: true,
       onDidActiveChange: () => ({ dispose: () => {} }),
+      onDidVisibilityChange: () => ({ dispose: () => {} }),
       setActive: vi.fn(),
       close: vi.fn(),
       setTitle: vi.fn(),
@@ -171,10 +173,12 @@ describe("AgentPanel — unread marker", () => {
       params: { sessionId: ID },
       api: {
         isActive: false,
+        isVisible: true,
         onDidActiveChange: (cb: (event: { isActive: boolean }) => void) => {
           activate = cb;
           return { dispose: () => {} };
         },
+        onDidVisibilityChange: () => ({ dispose: () => {} }),
         close: vi.fn(),
         setTitle: vi.fn(),
       },
@@ -205,12 +209,14 @@ describe("AgentPanel — unread marker", () => {
       params: { sessionId: ID },
       api: {
         isActive: false,
+        isVisible: true,
         onDidActiveChange: (
           cb: (event: { isActive: boolean }) => void,
         ) => {
           activate = cb;
           return { dispose: () => {} };
         },
+        onDidVisibilityChange: () => ({ dispose: () => {} }),
         close: vi.fn(),
         setTitle: vi.fn(),
       },
@@ -222,6 +228,29 @@ describe("AgentPanel — unread marker", () => {
 
     act(() => activate?.({ isActive: true }));
     expect(useUnreadStore.getState().unread[ID]).toBeUndefined();
+  });
+});
+
+describe("AgentPanel — panel visibility", () => {
+  it("subscribes to the panel's visibility so a hidden transcript stops animating", () => {
+    seedSession(null);
+    const onDidVisibilityChange = vi.fn(() => ({ dispose: () => {} }));
+    const props = {
+      params: { sessionId: ID },
+      api: {
+        isActive: true,
+        isVisible: true,
+        onDidActiveChange: () => ({ dispose: () => {} }),
+        onDidVisibilityChange,
+        setActive: vi.fn(),
+        close: vi.fn(),
+        setTitle: vi.fn(),
+      },
+    } as unknown as IDockviewPanelProps;
+
+    render(<AgentPanel {...props} />);
+
+    expect(onDidVisibilityChange).toHaveBeenCalledTimes(1);
   });
 });
 

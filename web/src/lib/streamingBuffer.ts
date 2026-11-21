@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+import { usePanelVisible } from "./panelVisibility";
+
 const CHARACTER_DELAY_MS = 28;
 const MIN_CHARACTERS_PER_TICK = 1;
 const MAX_CHARACTERS_PER_TICK = 16;
@@ -54,9 +56,15 @@ export function useStreamingBuffer(text: string, streaming: boolean): string {
   const streamingRef = useRef(streaming);
   const displayRef = useRef(text);
   const timerRef = useRef<number | null>(null);
+  // An inactive panel is not on screen: the smoothing animation is pure cost
+  // there (it re-parses markdown and re-highlights code every tick while
+  // nobody can see it), so the panel shows the authoritative text instead.
+  const visible = usePanelVisible();
+  const visibleRef = useRef(visible);
 
   sourceRef.current = text;
   streamingRef.current = streaming;
+  visibleRef.current = visible;
 
   useEffect(() => {
     const flush = (value: string) => {
@@ -64,6 +72,17 @@ export function useStreamingBuffer(text: string, streaming: boolean): string {
       displayRef.current = value;
       setDisplayText(value);
     };
+
+    // Hidden panel: drop any running animation and show the truth. Resuming is
+    // just the next text change — the buffer never animates backwards.
+    if (!visible) {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      flush(text);
+      return;
+    }
 
     // A buffer/item seal can replace a partial stream value. It is not safe to
     // animate across a divergence, so immediately show the authoritative text.
@@ -88,6 +107,10 @@ export function useStreamingBuffer(text: string, streaming: boolean): string {
           flush(source);
           return;
         }
+        if (!visibleRef.current) {
+          flush(source);
+          return;
+        }
         if (displayed.length >= source.length) return;
 
         const end = advanceCharacters(
@@ -101,7 +124,7 @@ export function useStreamingBuffer(text: string, streaming: boolean): string {
     };
 
     if (displayRef.current.length < text.length) schedule();
-  }, [text, streaming]);
+  }, [text, streaming, visible]);
 
   useEffect(
     () => () => {

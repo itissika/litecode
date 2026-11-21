@@ -12,7 +12,18 @@ import {
 const GENERIC_LANGS = new Set(["", "text", "txt", "plain", "plaintext"]);
 
 /** Syntax-highlighted, copyable code block shared by chat and tool cards. */
-export function CodeBlock({ code, lang }: { code: string; lang: string }) {
+export function CodeBlock({
+  code,
+  lang,
+  streaming = false,
+}: {
+  code: string;
+  lang: string;
+  /** The fence is still being written. Highlighting is deferred to the seal:
+   *  a streaming reply re-renders its tail every animation tick, and a full
+   *  shiki pass per tick costs tens of milliseconds on a long block. */
+  streaming?: boolean;
+}) {
   const [html, setHtml] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const normalizedLang = useMemo(() => normalizeLang(lang), [lang]);
@@ -22,8 +33,10 @@ export function CodeBlock({ code, lang }: { code: string; lang: string }) {
     !isSupportedHighlightLang(normalizedLang);
 
   useEffect(() => {
-    if (skipHighlight) {
-      setHtml(null);
+    if (skipHighlight || streaming) {
+      // Functional write: the streaming tail re-renders on every tick and an
+      // identical `setHtml(null)` would re-render this block for nothing.
+      setHtml((prev) => (prev === null ? prev : null));
       return;
     }
 
@@ -45,7 +58,7 @@ export function CodeBlock({ code, lang }: { code: string; lang: string }) {
     return () => {
       cancelled = true;
     };
-  }, [code, normalizedLang, skipHighlight]);
+  }, [code, normalizedLang, skipHighlight, streaming]);
 
   const copyCode = async () => {
     try {

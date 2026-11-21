@@ -2,7 +2,9 @@ import { useEffect } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 
 import { SubagentReadOnlyContent } from "../../components/SubagentReadOnlyContent";
+import { PanelVisibilityProvider } from "../../lib/panelVisibility";
 import { openSessionPanel } from "../../lib/sessionPanelNav";
+import { usePanelVisible } from "../hooks/usePanelVisible";
 import { useSessionPanelBootstrap } from "./useSessionPanelBootstrap";
 
 /**
@@ -18,6 +20,8 @@ export function SubagentReadOnlyPanel(props: IDockviewPanelProps) {
     props.api,
     sessionId,
   );
+  // Same gate as AgentPanel: a hidden child transcript must not animate.
+  const panelVisible = usePanelVisible(props.api);
   // If the id was opened before the session list classified it and the list
   // later proves it is a ROOT, do not silently trap it in a read-only panel.
   // We stay fail-closed (read-only) and offer an explicit escape hatch instead
@@ -57,7 +61,9 @@ export function SubagentReadOnlyPanel(props: IDockviewPanelProps) {
           </button>
         </div>
       )}
-      <SubagentReadOnlyContent sessionId={sessionId} isActive={isActive} />
+      <PanelVisibilityProvider active={panelVisible}>
+        <SubagentReadOnlyContent sessionId={sessionId} isActive={isActive} />
+      </PanelVisibilityProvider>
     </div>
   );
 }

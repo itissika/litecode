@@ -23,6 +23,8 @@ import { LlmReconnectBubble } from "../../components/LlmReconnectBubble";
 import { PermissionCard } from "../../components/PermissionModal";
 import { SessionStatusLine } from "../../components/SessionStatusLine";
 import { hostElementFromTarget, viewOf } from "../../lib/domView";
+import { PanelVisibilityProvider } from "../../lib/panelVisibility";
+import { usePanelVisible } from "../hooks/usePanelVisible";
 import { SubagentReadOnlyContent } from "../../components/SubagentReadOnlyContent";
 import { useSessionPanelBootstrap } from "./useSessionPanelBootstrap";
 import { composerCardClass } from "../../components/composerCard";
@@ -101,6 +103,10 @@ export function AgentPanel(props: IDockviewPanelProps) {
     props.api,
     sessionId,
   );
+  // Hidden = dockview `display: none` (another tab in this group, or a hidden
+  // group). A hidden transcript must not animate: the streaming clock re-parses
+  // markdown for a panel nobody can see.
+  const panelVisible = usePanelVisible(props.api);
 
   // Identity classification against the known session list. This is the SAFETY
   // boundary: a legacy/restored `agent-*` panel can carry a CHILD session id
@@ -141,11 +147,13 @@ export function AgentPanel(props: IDockviewPanelProps) {
         className="flex h-full min-h-0 flex-col"
         onPointerDownCapture={() => props.api.setActive()}
       >
-        {writable ? (
-          <AgentChatShell sessionId={sessionId} isActive={isActive} />
-        ) : (
-          <SubagentReadOnlyContent sessionId={sessionId} isActive={isActive} />
-        )}
+        <PanelVisibilityProvider active={panelVisible}>
+          {writable ? (
+            <AgentChatShell sessionId={sessionId} isActive={isActive} />
+          ) : (
+            <SubagentReadOnlyContent sessionId={sessionId} isActive={isActive} />
+          )}
+        </PanelVisibilityProvider>
       </div>
     </AgentErrorBoundary>
   );
@@ -241,20 +249,20 @@ export function AgentChatShell({
   return (
     <div ref={shellRef} className="relative flex h-full flex-col">
       <MessageListRegion
-        sessionId={sessionId}
-        isActive={isActive}
-        editingAnchor={editingAnchor}
-        onEditAnchor={openMini}
-        onDismissEdit={dismiss}
-        miniPhase={miniPhase}
-        onMiniAnimationEnd={() => {
-          if (miniPhase === "entering") setMiniPhase("visible");
-          if (miniPhase === "exiting") finishDismiss();
-        }}
-        onStickChange={setStickToEnd}
-        jumpToEndRef={jumpToEndRef}
-        revealBashRef={revealBashRef}
-        revealSeqRef={revealSeqRef}
+          sessionId={sessionId}
+          isActive={isActive}
+          editingAnchor={editingAnchor}
+          onEditAnchor={openMini}
+          onDismissEdit={dismiss}
+          miniPhase={miniPhase}
+          onMiniAnimationEnd={() => {
+            if (miniPhase === "entering") setMiniPhase("visible");
+            if (miniPhase === "exiting") finishDismiss();
+          }}
+          onStickChange={setStickToEnd}
+          jumpToEndRef={jumpToEndRef}
+          revealBashRef={revealBashRef}
+          revealSeqRef={revealSeqRef}
         composerCollapsed={composerCollapsed}
       />
       <ComposerDock

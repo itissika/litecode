@@ -132,7 +132,9 @@ function seedSession(parentSessionId: string | null): void {
 
 interface PanelApiStub {
   isActive: boolean;
+  isVisible: boolean;
   onDidActiveChange: () => { dispose: () => void };
+  onDidVisibilityChange: () => { dispose: () => void };
   close: ReturnType<typeof vi.fn>;
   setTitle: ReturnType<typeof vi.fn>;
 }
@@ -145,7 +147,9 @@ function panelProps(sessionId: string): {
     params: { sessionId },
     api: {
       isActive: true,
+      isVisible: true,
       onDidActiveChange: () => ({ dispose: () => {} }),
+      onDidVisibilityChange: () => ({ dispose: () => {} }),
       close: vi.fn(),
       setTitle: vi.fn(),
     },
