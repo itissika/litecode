@@ -21,6 +21,7 @@ LiteCode 把 Tool 和 Context 做到极致。本文件只放：底线、怎么�
 - 提交前 `git status` 复查：调试残留、`.tmp/`、`.litecode/`、日志不带进去。
 - 不进：密钥、真实邮箱、内部地址、大文件、编译产物。
 - 探针、复现脚本、截图放 `.tmp/`，不散在源码目录。
+- 动了 tool 或 ctx（`src/tool/`、`src/tools/`、`src/ptc/`、`sdk/`、`src/config/global_db/prompts/`、`src/reminder/`）的提交，必须带 `Eval: <run 目录>` 指向那次评测；指不到证据，提交不成立。硬要跳用 `--no-verify`，那是故意的，不是默认。
 
 ## 日常
 
@@ -44,6 +45,7 @@ LiteCode 把 Tool 和 Context 做到极致。本文件只放：底线、怎么�
 | 发版 | `docs/agents/release.md` | 版本号、CHANGELOG、tag、Publish |
 | 打包 / 跑起来 | `docs/agents/build.md` | dev、nightly、official、安装包 |
 | 为什么这么设计 / 不变量 | `knowledge/`（先空调用 `knowledge` 看 board） | 契约、为什么、术语 |
+| 要加工具卡 / 改工具面 / 动 code 模式 | `knowledge/native-code-mode` | 工具卡、schema、token 开销、code 模式 |
 
 ## 边界
 

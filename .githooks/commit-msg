@@ -1,0 +1,39 @@
+#!/bin/sh
+# Evidence gate: a commit that touches the tool or context surface must name
+# the eval run that proved it. Deliberate bypass: git commit --no-verify
+msg_file=$1
+[ -n "$msg_file" ] || exit 0
+
+changed=$(git diff --cached --name-only)
+if [ -n "${EVAL_GATE_CHANGED+x}" ]; then changed=$EVAL_GATE_CHANGED; fi
+
+touched=$(printf '%s\n' "$changed" | grep -E '^(src/tool/|src/tools/|src/ptc/|sdk/|src/config/global_db/prompts/|src/config/global_db/builtin_prompts\.rs|src/reminder/)' || true)
+[ -n "$touched" ] || exit 0
+
+eval_line=$(grep -E '^Eval: .+' "$msg_file" | head -1 || true)
+if [ -z "$eval_line" ]; then
+	echo "commit-msg: this change touches the tool/context surface, so it needs evidence." >&2
+	echo "commit-msg: add a trailer naming the eval run that proved it:" >&2
+	echo "             Eval: <run dir>, with the tracing conclusion written beside the data" >&2
+	echo "commit-msg: touched: $(printf '%s' "$touched" | tr '\n' ' ')" >&2
+	exit 1
+fi
+
+target=$(printf '%s' "${eval_line#Eval: }" | sed 's/[[:space:]]*$//')
+case "$target" in
+	"~/"*) target="$HOME/${target#\~/}" ;;
+esac
+if [ -e "$target" ]; then exit 0; fi
+case "$target" in
+	*"'"*) echo "commit-msg: Eval target must not contain a single quote." >&2; exit 1 ;;
+esac
+case "$target" in
+	/home/*)
+		if command -v wsl.exe >/dev/null 2>&1 && wsl.exe -e sh -c "test -e '$target'" 2>/dev/null; then
+			exit 0
+		fi
+		;;
+esac
+echo "commit-msg: Eval target '$target' does not resolve from here." >&2
+echo "commit-msg: point at a run directory that exists, or bypass with --no-verify." >&2
+exit 1

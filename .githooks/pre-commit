@@ -1,0 +1,15 @@
+#!/bin/sh
+# Layer guard: tests/architecture_layers.rs (0.6s warm).
+# Fails closed: a missing toolchain blocks the commit instead of skipping the check.
+# Deliberate bypass: git commit --no-verify
+if ! command -v cargo >/dev/null 2>&1; then
+	echo "pre-commit: cargo not on PATH; the layer guard cannot run." >&2
+	echo "pre-commit: install the pinned toolchain (rust-toolchain.toml), or bypass with --no-verify." >&2
+	exit 1
+fi
+cargo test --test architecture_layers --quiet || {
+	echo "" >&2
+	echo "pre-commit: a layer boundary from tests/architecture_layers.rs is violated." >&2
+	echo "pre-commit: fix the dependency the failure names, or change the rule deliberately in that file." >&2
+	exit 1
+}
