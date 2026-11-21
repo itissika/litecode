@@ -9,7 +9,7 @@ h : 449
 domain : model-config
 ```
 
-**准入：** A3+A7。运行时只解析进程内嵌 `default_catalog.toml`，不读盘上的 catalog 文件；新增同协议厂商改种子即可。Rust 只拥有目录契约与每种 `EndpointKind` 一个 codec——按 provider id 分支或另拉厂商目录都算第二真源。设置提交不能改目录事实（需重启）。
+运行时只解析进程内嵌 `default_catalog.toml`，不读盘上的 catalog 文件；新增同协议厂商改种子即可。Rust 只拥有目录契约与每种 `EndpointKind` 一个 codec——按 provider id 分支或另拉厂商目录都算第二真源。用户想要什么provider和模型联系我，我再加，不给用户自由度，为啥：我加上会全测一遍，确保对话时能随便切，一点毛病都不会有
 
 依据：[@ file="src/provider_catalog/store.rs" symbol="fn embedded"]、[@ file="src/provider_catalog/schema.rs" symbol="enum EndpointKind"]、[@ file="src/types/death_list_gate.rs"]、[@ file="src/llm/mod.rs" symbol="fn provider_from_model"]。
 上层：[@ key="config"]。
