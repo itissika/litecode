@@ -1,25 +1,23 @@
 //! Model-facing text for one `run_code` execution.
 //!
-//! The view is a header, one **upfloat block**, then **one ordered stream**:
-//! console lines and the program's return value in the order they happened, the
-//! value last. There is no `logs:` half and no `result:` half, and one single
-//! byte budget ([`RUN_CODE_VIEW_MAX_BYTES`]) covers everything. On failure the
-//! header is followed by a brief of the calls that already settled, then the
-//! block, then the same stream.
+//! The view is a header, one **upfloat block**, then **one ordered stream** of
+//! `inspect(...)` entries. One single byte budget ([`RUN_CODE_VIEW_MAX_BYTES`])
+//! covers everything. On failure the header is followed by a brief of the calls
+//! that already settled, then the block, then the same stream.
 //!
 //! The block sits **above** the stream because its facts are what the stream
 //! cannot say: a cut, a path outside the workspace, a clamped argument, a
-//! failure the program swallowed. Nothing this module generates follows the
-//! stream.
+//! failure the program swallowed, or a runtime warning. Nothing this module
+//! generates follows the stream.
 //!
 //! Uniformly shaped object arrays render as `[N]{a,b}:` tables (columns in
 //! first-seen key order, a key a row omits renders as an empty cell); other
-//! values render as compact JSON. A log line or value string that is itself one
-//! JSON value is lexically compacted; other strings stay verbatim. When the
-//! stream exceeds [`RUN_CODE_VIEW_MAX_BYTES`], the complete unclipped stream is
-//! spilled to `.litecode/run/` and the view keeps a simple 50/50 head+tail cut
-//! with `… N bytes total; full output: <path>`. This module does not emit a
-//! JSON copy of the run.
+//! values render as compact JSON. A string that is itself one JSON value is
+//! lexically compacted; other strings stay verbatim. When the stream exceeds
+//! [`RUN_CODE_VIEW_MAX_BYTES`], the complete unclipped stream is spilled to
+//! `.litecode/run/` and the view keeps a simple 50/50 head+tail cut with
+//! `… N bytes total; full output: <path>`. This module does not emit a JSON
+//! copy of the run.
 
 use std::collections::BTreeMap;
 
@@ -100,23 +98,20 @@ const WARNING_MAX_CHARS: usize = 400;
 /// the program printing a bare string, or like a returned value.
 const REMINDER_MARK: &str = "↳ ";
 
-/// One entry of the stream as the renderer sees it.
-pub(super) enum EntryView {
-    Text { level: String, text: String },
-    Value(Value),
+/// One `inspect(...values)` entry of the stream as the renderer sees it.
+pub(super) struct EntryView {
+    pub values: Vec<Value>,
 }
 
 /// Facts the renderer needs. Built from the in-memory execution report.
 pub(super) struct RunReport {
-    /// Console text and, last, the return value — in the order they happened.
+    /// `inspect(...)` entries in call order.
     pub entries: Vec<EntryView>,
     /// One-line summaries, one per call that has facts; see [`CallReminder`].
     /// Sorted by call sequence when the run report is built.
     pub reminders: Vec<CallReminder>,
-    /// Contract violations the run survived, in first-seen order: source
-    /// precheck findings and fields read that the contract does not declare.
-    /// Rendered with the same `↳` shape as reminders, without a call
-    /// prefix (they name the tool and the field, not one call of it).
+    /// Contract and runtime warnings the run survived, in first-seen order.
+    /// Rendered with the same `↳` shape as reminders, without a call prefix.
     pub warnings: Vec<String>,
     pub failure_text: Option<String>,
     pub failure_kind: Option<FailureKind>,
@@ -139,8 +134,6 @@ pub(super) struct RunReport {
     pub uncaught_type_error: bool,
     /// `dropped undefined at …` head line (WP-206 #7).
     pub dropped_undefined: Option<String>,
-    /// `coerced non-finite number at ... to null` head line.
-    pub coerced_non_finite: Option<String>,
 }
 
 #[cfg(test)]
@@ -170,11 +163,11 @@ pub(super) fn render_model_view_in(
     if report.entries.is_empty() {
         return prefix;
     }
-    let mut lines: Vec<String> = report.entries.iter().map(entry_line).collect();
-    if output_limited && let Some(last) = lines.last_mut() {
+    let mut blocks: Vec<String> = report.entries.iter().map(render_entry).collect();
+    if output_limited && let Some(last) = blocks.last_mut() {
         last.push_str(OUTPUT_LIMIT_MARK);
     }
-    let full_stream = lines.join("\n");
+    let full_stream = join_stream_blocks(&blocks);
     let stream_budget = RUN_CODE_VIEW_MAX_BYTES.saturating_sub(prefix.len() + 2);
     let shown_stream = crate::tool::output::cut_and_spill_full(
         &full_stream,
@@ -647,11 +640,96 @@ fn compact_number(value: &Value) -> String {
     }
 }
 
-/// Render one entry as it appears in the stream.
-fn entry_line(entry: &EntryView) -> String {
-    match entry {
-        EntryView::Text { level, text } => log_line(level, text),
-        EntryView::Value(value) => render_result_body(value),
+/// Join adjacent single-line blocks with `\n`, and separate any multi-line
+/// block with a blank line (`\n\n`).
+fn join_stream_blocks(blocks: &[String]) -> String {
+    let mut out = String::new();
+    let mut prev_multiline = false;
+    for (index, block) in blocks.iter().enumerate() {
+        let multiline = block.contains('\n');
+        if index > 0 {
+            if prev_multiline || multiline {
+                out.push_str("\n\n");
+            } else {
+                out.push('\n');
+            }
+        }
+        out.push_str(block);
+        prev_multiline = multiline;
+    }
+    out
+}
+
+fn inspect_label(value: &Value) -> Option<&str> {
+    let Value::String(text) = value else {
+        return None;
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() || text.len() > 120 || text.contains('\n') || text.contains('\r') {
+        return None;
+    }
+    // Keep JSON object/array strings as values rather than section labels.
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return None;
+    }
+    let clean = text.trim_end().trim_end_matches(':').trim_end();
+    (!clean.is_empty()).then_some(clean)
+}
+
+fn is_inline_scalar(value: &Value) -> bool {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => true,
+        Value::String(s) => !s.contains('\n') && !s.contains('\r'),
+        Value::Array(_) | Value::Object(_) => false,
+    }
+}
+
+fn format_inline_scalar(value: &Value) -> String {
+    match value {
+        Value::String(text) => compact_json_text(text).unwrap_or_else(|| text.clone()),
+        other => compact_json(other),
+    }
+}
+
+/// Render one `inspect(...values)` entry as it appears in the stream.
+fn render_entry(entry: &EntryView) -> String {
+    match entry.values.as_slice() {
+        [] => String::new(),
+        [only] => render_result_body(only),
+        [first, second] => {
+            if let Some(label) = inspect_label(first) {
+                let body = render_result_body(second);
+                if body.contains('\n') {
+                    format!("{label}:\n{body}")
+                } else {
+                    format!("{label}: {body}")
+                }
+            } else if is_inline_scalar(first) && is_inline_scalar(second) {
+                format!(
+                    "{} {}",
+                    format_inline_scalar(first),
+                    format_inline_scalar(second)
+                )
+            } else {
+                let parts = [render_result_body(first), render_result_body(second)];
+                join_stream_blocks(&parts)
+            }
+        }
+        many => {
+            if many.iter().all(is_inline_scalar) {
+                many.iter()
+                    .map(format_inline_scalar)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            } else if let Some(label) = inspect_label(&many[0]) {
+                let rest: Vec<String> = many[1..].iter().map(render_result_body).collect();
+                let body = join_stream_blocks(&rest);
+                format!("{label}:\n{body}")
+            } else {
+                let parts: Vec<String> = many.iter().map(render_result_body).collect();
+                join_stream_blocks(&parts)
+            }
+        }
     }
 }
 
@@ -844,11 +922,6 @@ fn warning_line(text: &str) -> String {
 
 fn reminder_line(text: &str) -> String {
     marker_line(text, REMINDER_MAX_CHARS)
-}
-
-fn log_line(level: &str, message: &str) -> String {
-    let message = compact_json_text(message).unwrap_or_else(|| message.to_string());
-    format!("[{level}] {message}")
 }
 
 fn render_line_text_array(items: &[Value]) -> Option<String> {
@@ -1278,9 +1351,6 @@ fn failure_kind_slug(kind: FailureKind) -> &'static str {
 
 fn render_header_block(report: &RunReport) -> String {
     let mut parts = vec![header_line(report)];
-    if let Some(line) = &report.coerced_non_finite {
-        parts.push(line.clone());
-    }
     if report.failure_kind == Some(FailureKind::Exception)
         && let Some(stack) = short_stack(report.failure_stack.as_deref())
     {
@@ -1527,11 +1597,6 @@ fn session_read_mark(report: &RunReport) -> bool {
 fn failure_label(kind: FailureKind, report: &RunReport) -> String {
     match kind {
         FailureKind::Timeout => format!("timeout after {}ms", report.timeout_ms),
-        FailureKind::Cancelled
-            if matches!(report.entries.last(), Some(EntryView::Value(_))) =>
-        {
-            "cancelled after the program returned".to_string()
-        }
         FailureKind::Cancelled => "cancelled".to_string(),
         FailureKind::OutputLimit => "output limit".to_string(),
         FailureKind::ResourceLimit => match report.resource {
@@ -1637,39 +1702,21 @@ mod tests {
             tool_error: None,
             uncaught_type_error: false,
             dropped_undefined: None,
-            coerced_non_finite: None,
         }
     }
 
-    fn text(level: &str, body: &str) -> EntryView {
-        EntryView::Text {
-            level: level.to_string(),
-            text: body.to_string(),
+    fn inspect_one(value: Value) -> EntryView {
+        EntryView {
+            values: vec![value],
         }
     }
 
-    /// Put console entries before the value, the way the ledger does.
-    fn set_logs(report: &mut RunReport, logs: Vec<(&str, String)>) {
-        report
-            .entries
-            .retain(|entry| matches!(entry, EntryView::Value(_)));
-        let mut views: Vec<EntryView> = logs
-            .into_iter()
-            .map(|(level, text)| EntryView::Text {
-                level: level.to_string(),
-                text,
-            })
-            .collect();
-        views.append(&mut report.entries);
-        report.entries = views;
+    fn inspect_many(values: Vec<Value>) -> EntryView {
+        EntryView { values }
     }
 
-    /// Append the return value as the last entry.
     fn set_value(report: &mut RunReport, value: Value) {
-        report
-            .entries
-            .retain(|entry| !matches!(entry, EntryView::Value(_)));
-        report.entries.push(EntryView::Value(value));
+        report.entries = vec![inspect_one(value)];
     }
 
     /// A reminder lands after the entry its call produced.
@@ -2191,7 +2238,7 @@ mod tests {
     #[test]
     fn call_reminders_sit_above_the_stream_in_call_order() {
         let mut report = base_report();
-        report.entries = vec![text("log", "one")];
+        report.entries = vec![inspect_one(json!("one"))];
         report.reminders = vec![
             CallReminder {
                 seq: 3,
@@ -2217,7 +2264,7 @@ mod tests {
                 "↳ #3 tools.read: showing lines 1-2000 of 5000; continue with start_line 2001",
                 "↳ #4 tools.grep: the pattern was not found",
                 "",
-                "[log] one",
+                "one",
             ],
             "{out}"
         );
@@ -2283,8 +2330,8 @@ mod tests {
         let mut report = base_report();
         report.warnings = vec!["a contract warning".into()];
         report.entries = vec![
-            text("log", "one"),
-            EntryView::Value(json!({ "ok": true, "n": 1 })),
+            inspect_one(json!("one")),
+            inspect_one(json!({ "ok": true, "n": 1 })),
         ];
         report.reminders = vec![
             CallReminder {
@@ -2306,7 +2353,7 @@ mod tests {
         let lines: Vec<&str> = out.lines().collect();
         let last_stream = lines
             .iter()
-            .rposition(|line| line.starts_with("[log] ") || line.starts_with('{'))
+            .rposition(|line| *line == "one" || line.starts_with('{'))
             .expect("the stream");
         assert_eq!(last_stream, lines.len() - 1, "{out}");
         assert!(
@@ -2352,10 +2399,10 @@ mod tests {
                 text: "failed(not_found); the program kept going".into(),
             },
         ];
-        report.entries = vec![text("log", "before"), text("log", "after")];
+        report.entries = vec![inspect_one(json!("before")), inspect_one(json!("after"))];
         let out = render_model_view(&report);
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.last().copied(), Some("[log] after"), "{out}");
+        assert_eq!(lines.last().copied(), Some("after"), "{out}");
         let at = |needle: &str| {
             lines
                 .iter()
@@ -2365,11 +2412,11 @@ mod tests {
         assert!(
             at("run_code failed") < at("#1 tools.read")
                 && at("#1 tools.read") < at("↳")
-                && at("↳") < at("[log] before"),
+                && at("↳") < at("before"),
             "{out}"
         );
         assert!(out.contains("↳ #2 tools.grep: failed(not_found)"), "{out}");
-        assert!(!lines[at("[log] before")..].iter().any(|line| line.starts_with("↳")), "{out}");
+        assert!(!lines[at("before")..].iter().any(|line| line.starts_with("↳")), "{out}");
     }
 
     /// A rejection line and the precheck warning state one fact: the anchored
@@ -2560,7 +2607,7 @@ mod tests {
             .map(|i| format!("contract warning {i} {}", "w".repeat(120)))
             .collect();
         report.entries = (0..200)
-            .map(|i| text("log", &format!("line {i}")))
+            .map(|i| inspect_one(json!(format!("line {i}"))))
             .collect();
         report.reminders = (0..50)
             .map(|i| CallReminder {
@@ -2589,7 +2636,7 @@ mod tests {
     #[test]
     fn a_reminder_is_one_short_line() {
         let mut report = base_report();
-        report.entries = vec![text("log", "x")];
+        report.entries = vec![inspect_one(json!("x"))];
         let long = format!("{}\nsecond line", "y".repeat(400));
         report.reminders = vec![CallReminder {
             seq: 1,
@@ -2611,7 +2658,9 @@ mod tests {
     #[test]
     fn reminders_are_charged_to_the_same_budget() {
         let mut report = base_report();
-        report.entries = (0..200).map(|i| text("log", &format!("line {i}"))).collect();
+        report.entries = (0..200)
+            .map(|i| inspect_one(json!(format!("line {i}"))))
+            .collect();
         report.reminders = (0..200)
             .map(|i| CallReminder {
                 seq: i as u64,
@@ -2625,13 +2674,13 @@ mod tests {
         assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{} bytes", out.len());
     }
 
-    /// A reminder is distinguishable from a bare returned string.
+    /// A reminder is distinguishable from a bare inspected string.
     #[test]
     fn a_reminder_is_marked_next_to_a_bare_value() {
         let mut report = base_report();
         report.entries = vec![
-            EntryView::Value(serde_json::json!("showing lines 1-500 of 5000")),
-            text("log", "done"),
+            inspect_one(serde_json::json!("showing lines 1-500 of 5000")),
+            inspect_one(json!("done")),
         ];
         report.reminders = vec![CallReminder {
             seq: 2,
@@ -2661,9 +2710,9 @@ mod tests {
     fn no_legacy_sections_in_the_view() {
         let mut report = base_report();
         report.entries = vec![
-            text("log", "one"),
-            text("warn", "two"),
-            EntryView::Value(serde_json::json!({ "ok": true, "n": 1 })),
+            inspect_one(json!("one")),
+            inspect_one(json!("two")),
+            inspect_one(serde_json::json!({ "ok": true, "n": 1 })),
         ];
         let out = render_model_view(&report);
         assert!(!out.contains("logs:"), "{out}");
@@ -2673,20 +2722,57 @@ mod tests {
     }
 
     #[test]
-    fn success_stream_keeps_console_order_then_the_value() {
+    fn success_stream_keeps_inspect_order_with_smart_spacing() {
         let mut report = base_report();
         report.call_total = Some(3);
         report.entries = vec![
-            text("log", "first"),
-            text("warn", "second"),
-            EntryView::Value(serde_json::json!({ "done": true, "ok": true })),
+            inspect_one(json!("first")),
+            inspect_many(vec![json!("count:"), json!(42)]),
+            inspect_one(serde_json::json!({ "done": true, "ok": true })),
         ];
         let out = render_model_view(&report);
         assert_eq!(
             out,
-            "run_code ok · 3 calls · 12ms\n\n[log] first\n[warn] second\n{\"done\":true,\"ok\":true}",
+            "run_code ok · 3 calls · 12ms\n\nfirst\ncount: 42\n{\"done\":true,\"ok\":true}",
             "{out}"
         );
+
+        let mut multiline = base_report();
+        multiline.call_total = Some(2);
+        multiline.entries = vec![
+            inspect_many(vec![
+                json!("file"),
+                json!({ "lines": [{ "line": 1, "text": "hello" }] }),
+            ]),
+            inspect_many(vec![
+                json!("run:"),
+                json!({ "exit_code": 0, "output": "ok\n", "output_file": "" }),
+            ]),
+        ];
+        let out = render_model_view(&multiline);
+        assert_eq!(
+            out,
+            "run_code ok · 2 calls · 12ms\n\nfile:\nlines:\n1: hello\n\nrun:\nexit_code: 0\nok\n",
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn inspect_multi_arg_scalars_and_labeled_tables_render_cleanly() {
+        let mut report = base_report();
+        report.entries = vec![
+            inspect_many(vec![json!("saw"), json!("not_found"), json!(404)]),
+            inspect_many(vec![
+                json!("rows"),
+                json!([
+                    { "a": 1, "b": "x" },
+                    { "a": 2, "b": "y" },
+                    { "a": 3, "b": "z" }
+                ]),
+            ]),
+        ];
+        let out = render_model_view(&report);
+        assert!(out.contains("saw not_found 404\n\nrows:\n[3]{a,b}:\n1,x\n2,y\n3,z"), "{out}");
     }
 
     #[test]
@@ -2698,12 +2784,12 @@ mod tests {
         report.source = "a\nb\nboom();".into();
         report.calls = vec![settled(1, "write", "path=a.txt", "ok", "a.txt")];
         report.call_total = Some(1);
-        report.entries = vec![text("log", "before")];
+        report.entries = vec![inspect_one(json!("before"))];
         let out = render_model_view(&report);
         // Snapshot: header, then the settled-call brief, then the same stream.
         assert_eq!(
             out,
-            "run_code failed: exception · 12ms · line 3, column 5 · boom(); · boom\n\n#1 tools.write path=a.txt → ok: a.txt\n\n[log] before",
+            "run_code failed: exception · 12ms · line 3, column 5 · boom(); · boom\n\n#1 tools.write path=a.txt → ok: a.txt\n\nbefore",
             "{out}"
         );
     }
@@ -2716,7 +2802,9 @@ mod tests {
             .map(|i| settled(i + 1, "write", "path=f.txt", "ok", "f.txt"))
             .collect();
         report.call_total = Some(400);
-        report.entries = (0..200).map(|i| text("log", &format!("line {i}"))).collect();
+        report.entries = (0..200)
+            .map(|i| inspect_one(json!(format!("line {i}"))))
+            .collect();
         let out = render_model_view(&report);
         assert!(
             out.len() <= RUN_CODE_VIEW_MAX_BYTES,
@@ -2730,9 +2818,9 @@ mod tests {
         let mut report = base_report();
         let body = "word ".repeat(20_000);
         report.entries = vec![
-            text("log", "HEAD_STREAM_SENTINEL"),
-            text("log", &body),
-            EntryView::Value(serde_json::json!({ "tail": "TAIL_SENTINEL" })),
+            inspect_one(json!("HEAD_STREAM_SENTINEL")),
+            inspect_one(json!(body)),
+            inspect_one(serde_json::json!({ "tail": "TAIL_SENTINEL" })),
         ];
         let out = render_model_view(&report);
         assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{} bytes", out.len());
@@ -2749,8 +2837,8 @@ mod tests {
     fn the_value_is_not_reserved_a_separate_share() {
         let mut report = base_report();
         report.entries = (0..40)
-            .map(|i| text("log", &format!("line {i} {}", "x".repeat(400))))
-            .chain(std::iter::once(EntryView::Value(serde_json::json!({
+            .map(|i| inspect_one(json!(format!("line {i} {}", "x".repeat(400)))))
+            .chain(std::iter::once(inspect_one(serde_json::json!({
                 "payload": "v".repeat(200_000)
             }))))
             .collect();
@@ -2767,7 +2855,7 @@ mod tests {
     #[test]
     fn byte_fallback_keeps_head_and_tail_for_multibyte_cjk() {
         let mut report = base_report();
-        set_logs(&mut report, vec![("log", "中".repeat(60_000))]);
+        report.entries = vec![inspect_one(json!("中".repeat(60_000)))];
         let out = render_model_view(&report);
         assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", out.len());
         assert!(std::str::from_utf8(out.as_bytes()).is_ok());
@@ -2776,11 +2864,12 @@ mod tests {
     #[test]
     fn typical_stream_fits_under_the_byte_cap() {
         let mut report = base_report();
-        set_logs(
-            &mut report,
-            (0..40).map(|i| ("log", format!("line {i} of a normal run"))).collect(),
-        );
-        set_value(&mut report, serde_json::json!({ "ok": true, "paths": ["a", "b"] }));
+        report.entries = (0..40)
+            .map(|i| inspect_one(json!(format!("line {i} of a normal run"))))
+            .chain(std::iter::once(inspect_one(
+                serde_json::json!({ "ok": true, "paths": ["a", "b"] }),
+            )))
+            .collect();
         let out = render_model_view(&report);
         assert!(out.len() < RUN_CODE_VIEW_MAX_BYTES / 4, "{} bytes", out.len());
     }
@@ -2789,7 +2878,7 @@ mod tests {
     fn oversized_entry_keeps_head_and_tail() {
         let mut report = base_report();
         let body = format!("HEAD{}\n{}TAIL", "m".repeat(60_000), "n".repeat(60_000));
-        report.entries = vec![text("log", &body)];
+        report.entries = vec![inspect_one(json!(body))];
         let out = render_model_view(&report);
         assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{} bytes", out.len());
         assert!(out.contains("HEAD"), "{out}");
@@ -2797,19 +2886,16 @@ mod tests {
     }
 
     #[test]
-    fn dropped_undefined_and_non_finite_lines_sit_in_the_header() {
+    fn dropped_undefined_sits_in_the_header_on_failure() {
         let mut report = base_report();
         report.failure_kind = Some(FailureKind::Exception);
         report.dropped_undefined = Some("dropped undefined at a".into());
         let head = render_model_view(&report);
         assert!(head.contains("dropped undefined at a"), "{head}");
         let mut clean = base_report();
-        clean.coerced_non_finite = Some("coerced non-finite number at n to null".into());
+        clean.dropped_undefined = Some("dropped undefined at a".into());
         let head = render_model_view(&clean);
-        assert!(
-            head.contains("coerced non-finite number at n to null"),
-            "{head}"
-        );
+        assert!(!head.contains("dropped undefined at a"), "{head}");
     }
 
     #[test]
@@ -2824,7 +2910,7 @@ mod tests {
             "H ".repeat(6000),
             "T ".repeat(3000)
         );
-        report.entries = vec![text("log", &body)];
+        report.entries = vec![inspect_one(json!(body))];
         let out = render_model_view_in(&report, Some(dir.path()));
         assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{} bytes", out.len());
         assert!(out.contains("HEAD_START_SENTINEL"), "{out}");
@@ -2843,7 +2929,7 @@ mod tests {
     fn fits_within_budget_does_not_create_spill_file() {
         let dir = tempfile::tempdir().unwrap();
         let mut report = base_report();
-        report.entries = vec![text("log", "short clean output")];
+        report.entries = vec![inspect_one(json!("short clean output"))];
         let out = render_model_view_in(&report, Some(dir.path()));
         assert!(out.contains("short clean output"));
         assert!(!dir.path().join(".litecode/run").exists());
@@ -3086,19 +3172,16 @@ mod tests {
     }
 
     #[test]
-    fn pretty_json_log_lines_are_compacted() {
+    fn pretty_json_string_entries_are_compacted() {
         let mut report = base_report();
-        set_logs(
-            &mut report,
-            vec![
-                ("log", "{\n  \"a\": 1\n}".to_string()),
-                ("log", "plain text".to_string()),
-            ],
-        );
+        report.entries = vec![
+            inspect_one(json!("{\n  \"a\": 1\n}")),
+            inspect_one(json!("plain text")),
+        ];
         let text = render_model_view(&report);
-        assert!(text.contains("[log] {\"a\":1}"), "{text}");
-        assert!(text.contains("[log] plain text"), "{text}");
-        assert!(!text.contains("[log] {\n"), "{text}");
+        assert!(text.contains("{\"a\":1}"), "{text}");
+        assert!(text.contains("plain text"), "{text}");
+        assert!(!text.contains("{\n"), "{text}");
     }
 
     #[test]
@@ -3126,14 +3209,14 @@ mod tests {
         let mut report = base_report();
         report.failure_kind = Some(FailureKind::OutputLimit);
         report.failure_text = Some("output exceeded 1048576 bytes".into());
-        set_logs(&mut report, vec![("info", "中".repeat(40_000))]);
+        report.entries = vec![inspect_one(json!("中".repeat(40_000)))];
         let text = render_model_view(&report);
         assert!(text.contains("[output limit reached]"), "{text}");
         assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
         let marked = text
             .lines()
             .find(|line| line.contains("[output limit reached]"))
-            .expect("marked log line");
+            .expect("marked line");
         assert!(marked.ends_with("[output limit reached]"), "{marked}");
         assert!(std::str::from_utf8(text.as_bytes()).is_ok());
     }

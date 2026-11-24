@@ -53,7 +53,6 @@ pub struct SdkToolFragment {
 pub struct SdkFragments {
     pub version: u32,
     pub sdk_hash: String,
-    pub prose: String,
     pub declarations: String,
     pub libs: String,
     pub types: BTreeMap<String, String>,

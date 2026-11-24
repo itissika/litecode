@@ -20,7 +20,7 @@ use crate::context_pipeline::Context;
 use crate::permission::{AskPrompt, AskReply, PermissionEngine, PermissionSink};
 use crate::ptc::{
     self, BudgetPause, CallInfo, CallState, ExecuteRequest, FailureKind, HostBinding, HostFn, Json,
-    Limits, LogLevel, Namespace,
+    Limits, Namespace,
 };
 use crate::tool::Tool;
 use crate::tool::code_contract::CodeSurface;
@@ -189,18 +189,25 @@ impl MediaRegistry {
         Value::Object(obj)
     }
 
-    fn collect_returned_parts(
+    fn collect_inspected_parts(
         &self,
         entries: &[crate::ptc::Entry],
-    ) -> Vec<crate::types::ToolOutputPart> {
+    ) -> (Vec<crate::types::ToolOutputPart>, Vec<String>) {
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
+        let mut invalid = Vec::new();
         for entry in entries {
-            if let crate::ptc::EntryBody::Value(json) = &entry.body {
-                collect_media_handles_iterative(json.as_value(), &self.items, &mut seen, &mut out);
+            for json in &entry.values {
+                collect_media_handles_iterative(
+                    json.as_value(),
+                    &self.items,
+                    &mut seen,
+                    &mut out,
+                    &mut invalid,
+                );
             }
         }
-        out
+        (out, invalid)
     }
 }
 
@@ -209,6 +216,7 @@ fn collect_media_handles_iterative(
     items: &HashMap<String, crate::types::MediaArtifact>,
     seen: &mut std::collections::HashSet<String>,
     out: &mut Vec<crate::types::ToolOutputPart>,
+    invalid: &mut Vec<String>,
 ) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -219,13 +227,27 @@ fn collect_media_handles_iterative(
                 }
             }
             Value::Object(map) => {
-                if let Some(id) = map.get("__litecode_media").and_then(Value::as_str)
-                    && let Some(artifact) = items.get(id)
-                {
-                    if seen.insert(id.to_string()) {
-                        out.push(crate::types::ToolOutputPart::Media {
-                            artifact: artifact.clone(),
-                        });
+                if let Some(raw_handle) = map.get("__litecode_media") {
+                    match raw_handle.as_str() {
+                        Some(id) if items.contains_key(id) => {
+                            if seen.insert(id.to_string()) {
+                                out.push(crate::types::ToolOutputPart::Media {
+                                    artifact: items[id].clone(),
+                                });
+                            }
+                        }
+                        Some(id) => {
+                            let label = id.to_string();
+                            if !invalid.contains(&label) {
+                                invalid.push(label);
+                            }
+                        }
+                        None => {
+                            let label = raw_handle.to_string();
+                            if !invalid.contains(&label) {
+                                invalid.push(label);
+                            }
+                        }
                     }
                     continue;
                 }
@@ -784,10 +806,16 @@ impl CodeTool {
         }
         let mut collected = reminders.lock().expect("reminder buffer").split_off(0);
         collected.sort_by_key(|reminder| reminder.seq);
-        let returned_parts = media
+        let (returned_parts, invalid_media) = media
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .collect_returned_parts(&outcome.entries);
+            .collect_inspected_parts(&outcome.entries);
+        if outcome.failure.is_none() && !invalid_media.is_empty() {
+            outcome.failure = Some(crate::ptc::Failure::illegal(format!(
+                "unknown __litecode_media handle(s) ({}) not produced by any bound tool in this run",
+                invalid_media.join(", ")
+            )));
+        }
         render_run_output_in(
             &ledger,
             &outcome,
@@ -1258,19 +1286,20 @@ fn render_run_output_in(
         .map_or(run_timeout_ms, |_| wall_timeout_ms);
     let failure_text = outcome.failure.as_ref().map(|failure| match failure.kind {
         FailureKind::Timeout => format!("run_code timed out after {effective_timeout_ms}ms"),
-        FailureKind::Cancelled if outcome.value().is_some() => {
-            "cancelled after the program returned".to_string()
-        }
         FailureKind::Cancelled => "code execution cancelled".to_string(),
         FailureKind::OutputLimit => failure.message.clone(),
         FailureKind::IllegalOutput => {
-            format!("program result is not JSON: {}", failure.message)
+            if failure.message.starts_with("unknown __litecode_media") {
+                failure.message.clone()
+            } else {
+                format!("inspected output is not presentable: {}", failure.message)
+            }
         }
         FailureKind::Syntax => failure.message.clone(),
         _ => failure.message.clone(),
     });
-    // Keep whatever the program produced even on failure: the stream is the
-    // record. A returned value that cannot be presented is an illegal output.
+    // Keep whatever the program inspected even on failure: the stream is the
+    // record.
     let failure_kind = outcome.failure.as_ref().map(|failure| failure.kind);
     let resource = outcome
         .failure
@@ -1278,7 +1307,7 @@ fn render_run_output_in(
         .and_then(|failure| failure.resource);
     let (entries, illegal_output) = match entry_views(&outcome.entries) {
         Ok(entries) => (entries, None),
-        Err(message) => (text_views(&outcome.entries), Some(message)),
+        Err(message) => (Vec::new(), Some(message)),
     };
     let (failure_text, failure_kind) = match &illegal_output {
         Some(message) => (Some(message.clone()), Some(FailureKind::IllegalOutput)),
@@ -1386,18 +1415,10 @@ fn run_report(
             brief: line.brief.clone(),
         });
     }
-    let mut warnings = outcome.warnings.clone();
-    if failure_kind.is_none() && outcome.used_console && outcome.value().is_none() {
-        warnings.push(
-            "Returned nothing (console output only). End with 'return' on tool results instead."
-                .to_string(),
-        );
-    }
     render::RunReport {
         reminders,
-        warnings,
+        warnings: outcome.warnings.clone(),
         dropped_undefined: outcome.dropped_undefined.head_line(),
-        coerced_non_finite: outcome.dropped_undefined.non_finite_head_line(),
         entries,
         failure_text,
         failure_kind,
@@ -1474,49 +1495,20 @@ fn merge_call_outcome(host: Option<&str>, state: Option<CallState>) -> String {
     }
 }
 
-fn log_level_name(level: LogLevel) -> &'static str {
-    match level {
-        LogLevel::Log => "log",
-        LogLevel::Info => "info",
-        LogLevel::Warn => "warn",
-        LogLevel::Error => "error",
-        LogLevel::Debug => "debug",
-    }
-}
-
-
-/// The report's view of the stream: text as-is, the value depth-guarded.
+/// The report's view of the stream: each `inspect(...)` call's values, depth-guarded.
 fn entry_views(entries: &[crate::ptc::Entry]) -> Result<Vec<render::EntryView>, String> {
     let mut views = Vec::with_capacity(entries.len());
     for entry in entries {
-        match &entry.body {
-            crate::ptc::EntryBody::Text { level, text } => views.push(render::EntryView::Text {
-                level: log_level_name(*level).to_string(),
-                text: text.clone(),
-            }),
-            crate::ptc::EntryBody::Value(value) => {
-                views.push(render::EntryView::Value(present_returned_value(value)?));
-            }
+        let mut values = Vec::with_capacity(entry.values.len());
+        for value in &entry.values {
+            values.push(present_inspected_value(value)?);
         }
+        views.push(render::EntryView { values });
     }
     Ok(views)
 }
 
-/// Text entries only, for a run whose value cannot be presented.
-fn text_views(entries: &[crate::ptc::Entry]) -> Vec<render::EntryView> {
-    entries
-        .iter()
-        .filter_map(|entry| match &entry.body {
-            crate::ptc::EntryBody::Text { level, text } => Some(render::EntryView::Text {
-                level: log_level_name(*level).to_string(),
-                text: text.clone(),
-            }),
-            crate::ptc::EntryBody::Value(_) => None,
-        })
-        .collect()
-}
-
-fn present_returned_value(value: &Json) -> Result<Value, String> {
+fn present_inspected_value(value: &Json) -> Result<Value, String> {
     let raw = value.as_value();
     if let Value::String(text) = raw {
         return Ok(Value::String(text.clone()));
@@ -1548,7 +1540,7 @@ impl Tool for CodeTool {
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "Async JavaScript function body for the SDK below. Active JS execution has a 600000 ms cap (paused during tool calls), with a 1800000 ms wall-clock cap (paused during human prompts)."
+                        "description": "Async TypeScript/JavaScript body for the bound SDK below. Call inspect(value) to emit outputs. Active JS execution has a 600000 ms cap (paused during tool calls), with a 1800000 ms wall-clock cap (paused during human prompts)."
                     }
                 },
                 "required": ["code"],
@@ -1629,7 +1621,6 @@ mod outcome_tests {
             entries: Vec::new(),
             warnings: Vec::new(),
             dropped_undefined: Default::default(),
-            used_console: false,
             failure: Some(Failure::cancelled()),
             duration_ms: 0,
             calls: vec![CallRecord {
@@ -1686,7 +1677,6 @@ mod outcome_tests {
             entries: Vec::new(),
             warnings: Vec::new(),
             dropped_undefined: Default::default(),
-            used_console: false,
             failure: None,
             duration_ms: 0,
             calls: vec![CallRecord {
@@ -1747,10 +1737,9 @@ mod outcome_tests {
             warnings: Vec::new(),
             entries: vec![crate::ptc::Entry {
                 order: 1,
-                body: crate::ptc::EntryBody::Value(Json::new(json!("done"))),
+                values: vec![Json::new(json!("done"))],
             }],
             dropped_undefined: Default::default(),
-            used_console: false,
             failure: None,
             duration_ms: 42,
             calls: vec![
@@ -1799,19 +1788,15 @@ mod outcome_tests {
     }
 
     #[test]
-    fn internal_warn_entry_without_console_never_triggers_console_only_reminder() {
+    fn runtime_warnings_render_in_upfloat_above_stream() {
         let ledger = CallLedger::new();
         let outcome = Outcome {
-            warnings: Vec::new(),
+            warnings: vec!["unhandled promise rejection (1): boom".into()],
             entries: vec![crate::ptc::Entry {
                 order: 1,
-                body: crate::ptc::EntryBody::Text {
-                    level: crate::ptc::LogLevel::Warn,
-                    text: "internal notice".into(),
-                },
+                values: vec![Json::new(json!("done"))],
             }],
             dropped_undefined: Default::default(),
-            used_console: false,
             failure: None,
             duration_ms: 5,
             calls: Vec::new(),
@@ -1819,17 +1804,19 @@ mod outcome_tests {
         let result = render_run_output(&ledger, &outcome, 120_000, "", Vec::new());
         assert!(result.error.is_none(), "{}", result.content);
         assert!(
-            !result.content.contains("Returned nothing"),
+            result
+                .content
+                .contains("↳ unhandled promise rejection (1): boom"),
             "{}",
             result.content
         );
-        assert!(result.content.contains("[warn] internal notice"), "{}", result.content);
+        assert!(result.content.ends_with("done"), "{}", result.content);
     }
 
     #[test]
-    fn media_registry_attaches_only_handles_present_in_return_value() {
+    fn media_registry_attaches_only_handles_present_in_inspected_values() {
         let mut reg = MediaRegistry::default();
-        let h1 = reg.register(crate::types::MediaArtifact::image(
+        let _uninspected = reg.register(crate::types::MediaArtifact::image(
             crate::types::MediaSource::Url {
                 url: "https://example.com/a.png".into(),
             },
@@ -1841,24 +1828,19 @@ mod outcome_tests {
             },
             "image/png",
         ));
-        // Only h2 is returned (twice); h1 is NOT returned -> 不 return 不给
+        // Only h2 is inspected (via labeled call + nested object); h1 is NOT inspected -> 不 inspect 不给
         let entries = vec![
             crate::ptc::Entry {
                 order: 1,
-                body: crate::ptc::EntryBody::Text {
-                    level: crate::ptc::LogLevel::Log,
-                    text: h1.to_string(),
-                },
+                values: vec![Json::new(json!("shot")), Json::new(h2.clone())],
             },
             crate::ptc::Entry {
                 order: 2,
-                body: crate::ptc::EntryBody::Value(Json::new(json!({
-                    "kept": h2.clone(),
-                    "dup": h2
-                }))),
+                values: vec![Json::new(json!({ "dup": h2 }))],
             },
         ];
-        let parts = reg.collect_returned_parts(&entries);
+        let (parts, invalid) = reg.collect_inspected_parts(&entries);
+        assert!(invalid.is_empty(), "{invalid:?}");
         assert_eq!(parts.len(), 1);
         match &parts[0] {
             crate::types::ToolOutputPart::Media { artifact } => {
@@ -1871,5 +1853,19 @@ mod outcome_tests {
             }
             other => panic!("expected media part, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn media_registry_reports_unknown_forged_handles() {
+        let reg = MediaRegistry::default();
+        let entries = vec![crate::ptc::Entry {
+            order: 1,
+            values: vec![Json::new(json!({
+                "media": [{ "__litecode_media": "small.png", "kind": "image", "mime_type": "image/png" }]
+            }))],
+        }];
+        let (parts, invalid) = reg.collect_inspected_parts(&entries);
+        assert!(parts.is_empty());
+        assert_eq!(invalid, vec!["small.png"]);
     }
 }

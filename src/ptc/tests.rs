@@ -95,21 +95,26 @@ async fn run(source: &str, namespaces: Vec<Namespace>) -> Outcome {
     .await
 }
 
+fn last_json(outcome: &Outcome) -> Option<&super::Json> {
+    outcome
+        .entries
+        .last()
+        .and_then(|entry| entry.values.last())
+}
+
 fn value_of(outcome: &Outcome) -> &Value {
     assert!(
         outcome.failure.is_none(),
         "expected success, got {outcome:?}"
     );
-    outcome
-        .value()
-        .as_ref()
-        .expect("success carries a value")
+    last_json(outcome)
+        .expect("success carries an inspected value")
         .as_value()
 }
 
 #[tokio::test]
 async fn a_proxy_of_a_plain_object_is_presented() {
-    let outcome = run("return new Proxy({ a: 1 }, {});", tools(vec![])).await;
+    let outcome = run("inspect(new Proxy({ a: 1 }, {}));", tools(vec![])).await;
     assert!(
         outcome.failure.is_none(),
         "a proxy result must be presented: {outcome:?}"
@@ -126,7 +131,7 @@ async fn fs_ls_exposes_truncation_as_a_field() {
         std::fs::write(dir.path().join(format!("f{index:04}.txt")), "x").unwrap();
     }
     let outcome = execute(ExecuteRequest {
-        source: "return fs.ls(\".\");".into(),
+        source: "inspect(fs.ls(\".\"));".into(),
         namespaces: Vec::new(),
         limits: limits(),
         budget: Duration::from_secs(5),
@@ -150,7 +155,7 @@ async fn fs_ls_and_stat_throw_error_on_missing_or_outside() {
             const out = {};
             try { fs.ls("nope"); } catch (e) { out.ls = [e instanceof Error, e.code]; }
             try { fs.stat("../"); } catch (e) { out.stat = [e instanceof Error, e.code]; }
-            return out;
+            inspect(out);
         "#
         .into(),
         namespaces: Vec::new(),
@@ -166,17 +171,6 @@ async fn fs_ls_and_stat_throw_error_on_missing_or_outside() {
     assert_eq!(value["ls"], json!([true, "not_found"]), "{value}");
     assert_eq!(value["stat"], json!([true, "permission"]), "{value}");
 }
-/// Console lines of the run, in order.
-fn texts(outcome: &Outcome) -> Vec<String> {
-    outcome
-        .entries
-        .iter()
-        .filter_map(|entry| match &entry.body {
-            crate::ptc::EntryBody::Text { text, .. } => Some(text.clone()),
-            crate::ptc::EntryBody::Value(_) => None,
-        })
-        .collect()
-}
 
 fn failure_kind(outcome: &Outcome) -> FailureKind {
     outcome
@@ -190,7 +184,7 @@ fn failure_kind(outcome: &Outcome) -> FailureKind {
 async fn dotted_binding_installs_a_nested_namespace() {
     let echo = HostFn::new(|_, _, _, _| async move { Ok(json!({ "nested": true })) });
     let outcome = run(
-        "return await tools.deck.only({ n: 1 });",
+        "inspect(await tools.deck.only({ n: 1 }));",
         tools(vec![("deck.only", echo)]),
     )
     .await;
@@ -210,7 +204,7 @@ async fn budget_interrupts_infinite_loop() {
     )
     .await;
     assert_eq!(failure_kind(&outcome), FailureKind::Timeout);
-    assert!(outcome.value().is_none());
+    assert!(outcome.entries.is_empty());
     assert!(started.elapsed() < Duration::from_secs(2));
 }
 
@@ -255,7 +249,7 @@ async fn cancel_while_js_running_cancels_inflight() {
     .expect("cancel while running timed out");
     waiter.await.unwrap();
     assert_eq!(failure_kind(&outcome), FailureKind::Cancelled);
-    assert!(outcome.value().is_none());
+    assert!(outcome.entries.is_empty());
     assert!(saw.load(Ordering::SeqCst));
     assert_eq!(outcome.calls.len(), 1);
     assert_eq!(outcome.calls[0].state, CallState::CancelledFinished);
@@ -285,7 +279,7 @@ async fn cancel_while_awaiting_host() {
         cancel_task.cancel();
     });
     let outcome = run_with(
-        "return await tools.watch(null);",
+        "inspect(await tools.watch(null));",
         tools(vec![("watch", watch)]),
         limits(),
         Duration::from_secs(5),
@@ -295,7 +289,7 @@ async fn cancel_while_awaiting_host() {
     .await;
     waiter.await.unwrap();
     assert_eq!(failure_kind(&outcome), FailureKind::Cancelled);
-    assert!(outcome.value().is_none());
+    assert!(outcome.entries.is_empty());
     assert!(saw.load(Ordering::SeqCst));
     assert_eq!(outcome.calls[0].state, CallState::CancelledFinished);
 }
@@ -324,7 +318,7 @@ async fn cancel_grace_records_unfinished() {
     });
     let started_at = Instant::now();
     let outcome = run_with(
-        "return await tools.hang(null);",
+        "inspect(await tools.hang(null));",
         tools(vec![("hang", hang)]),
         limits(),
         Duration::from_secs(5),
@@ -348,7 +342,7 @@ async fn budget_pause_is_not_charged() {
         Ok(json!(7))
     });
     let outcome = run_with(
-        "return await tools.wait(null);",
+        "inspect(await tools.wait(null));",
         tools(vec![("wait", pause_host)]),
         limits(),
         Duration::from_millis(80),
@@ -366,7 +360,7 @@ async fn budget_pause_is_not_charged() {
         }
     });
     let outcome = run_with(
-        "return await tools.wait(null);",
+        "inspect(await tools.wait(null));",
         tools(vec![("wait", plain)]),
         limits(),
         Duration::from_millis(80),
@@ -383,7 +377,7 @@ async fn memory_limit() {
     let mut limits = limits();
     limits.memory_bytes = 3 * 1024 * 1024;
     let outcome = run_with(
-        "const blob = new Uint8Array(16 * 1024 * 1024); return blob[0];",
+        "const blob = new Uint8Array(16 * 1024 * 1024); inspect(blob[0]);",
         Vec::new(),
         limits,
         Duration::from_secs(2),
@@ -409,9 +403,9 @@ async fn memory_exhaustion_stays_sealed_when_the_program_catches_it() {
         r#"
         try {
           const blob = new Uint8Array(16 * 1024 * 1024);
-          return "caught " + blob[0];
+          inspect("caught " + blob[0]);
         } catch (e) {
-          return "caught";
+          inspect("caught");
         }
         "#,
         Vec::new(),
@@ -422,9 +416,9 @@ async fn memory_exhaustion_stays_sealed_when_the_program_catches_it() {
     )
     .await;
     assert!(
-        outcome.value().is_none(),
-        "program returned {:?}",
-        outcome.value()
+        outcome.entries.is_empty(),
+        "program emitted {:?}",
+        outcome.entries
     );
     let failure = outcome.failure.expect("out of memory is not catchable");
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
@@ -440,9 +434,9 @@ async fn caught_allocation_failure_is_memory_when_the_stack_watch_is_disarmed() 
         r#"
         try {
           const blob = new Uint8Array(16 * 1024 * 1024);
-          return "caught " + blob[0];
+          inspect("caught " + blob[0]);
         } catch (e) {
-          return "caught";
+          inspect("caught");
         }
         "#,
         Vec::new(),
@@ -452,11 +446,6 @@ async fn caught_allocation_failure_is_memory_when_the_stack_watch_is_disarmed() 
         CancellationToken::new(),
     )
     .await;
-    assert!(
-        outcome.value().is_none(),
-        "program returned {:?}",
-        outcome.value()
-    );
     let failure = outcome.failure.expect("memory fault overrides success");
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
     assert_eq!(failure.resource, Some(ResourceKind::Memory), "{failure:?}");
@@ -467,7 +456,7 @@ async fn stack_limit() {
     let mut limits = limits();
     limits.stack_bytes = 64 * 1024;
     let outcome = run_with(
-        "function f(){ return 1 + f(); } return f();",
+        "function f(){ return 1 + f(); } inspect(f());",
         Vec::new(),
         limits,
         Duration::from_secs(2),
@@ -493,7 +482,7 @@ async fn stack_overflow_caught_then_immediate_return_is_still_sealed() {
     let outcome = run_with(
         r#"
         function f(){ return 1 + f(); }
-        try { f(); } catch (e) { return "caught"; }
+        try { f(); } catch (e) { return; }
         "#,
         Vec::new(),
         limits,
@@ -502,11 +491,6 @@ async fn stack_overflow_caught_then_immediate_return_is_still_sealed() {
         CancellationToken::new(),
     )
     .await;
-    assert!(
-        outcome.value().is_none(),
-        "program returned {:?}",
-        outcome.value()
-    );
     let failure = outcome.failure.expect("stack overflow is not catchable");
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
     assert_eq!(failure.resource, Some(ResourceKind::Stack), "{failure:?}");
@@ -520,9 +504,9 @@ async fn stack_overflow_stays_sealed_when_the_program_catches_it() {
         r#"
         try {
           function f(){ return 1 + f(); }
-          return f();
+          inspect(f());
         } catch (e) {
-          return "caught";
+          inspect("caught");
         }
         "#,
         Vec::new(),
@@ -532,36 +516,27 @@ async fn stack_overflow_stays_sealed_when_the_program_catches_it() {
         CancellationToken::new(),
     )
     .await;
-    assert!(
-        outcome.value().is_none(),
-        "program returned {:?}",
-        outcome.value()
-    );
     let failure = outcome.failure.expect("stack overflow is not catchable");
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
     assert_eq!(failure.resource, Some(ResourceKind::Stack), "{failure:?}");
 }
 
 #[tokio::test]
-async fn success_survives_budget_expiry_at_return() {
-    // The interrupt aborts JavaScript once the clock is exhausted, so a live
-    // program cannot return after the deadline. The expiry-after-return policy
-    // is locked in `engine::settle_tests`. This run checks that a normal return
-    // is still a success.
-    let outcome = run("return \"kept\";", Vec::new()).await;
+async fn success_survives_normal_inspect() {
+    let outcome = run("inspect(\"kept\");", Vec::new()).await;
     assert_eq!(value_of(&outcome), &json!("kept"), "{outcome:?}");
     assert!(outcome.failure.is_none(), "{outcome:?}");
 }
 
 #[tokio::test]
-async fn output_limit_keeps_log_prefix() {
+async fn output_limit_is_uncatchable_and_keeps_prior_entries() {
     let mut limits = limits();
     limits.output_bytes = 12;
     let outcome = run_with(
         r#"
-        console.log("abcdefghij");
-        try { console.log("XYZ"); return "caught"; }
-        catch (e) { return "caught"; }
+        inspect("abcdefghij");
+        try { inspect("XYZ"); inspect("caught"); }
+        catch (e) { inspect("caught"); }
         "#,
         Vec::new(),
         limits,
@@ -571,16 +546,16 @@ async fn output_limit_keeps_log_prefix() {
     )
     .await;
     assert_eq!(failure_kind(&outcome), FailureKind::OutputLimit);
-    assert!(outcome.value().is_none());
-    assert_eq!(texts(&outcome), vec!["abcdefghij", "XY"]);
+    assert_eq!(outcome.entries.len(), 1);
+    assert_eq!(outcome.entries[0].values[0].as_value(), &json!("abcdefghij"));
 }
 
 #[tokio::test]
-async fn output_limit_counts_final_value() {
+async fn output_limit_sums_across_inspect_calls() {
     let mut limits = limits();
     limits.output_bytes = 8;
     let outcome = run_with(
-        r#"console.log("ab"); return "hello";"#,
+        r#"inspect("ab"); inspect("hello");"#,
         Vec::new(),
         limits,
         Duration::from_secs(2),
@@ -589,12 +564,12 @@ async fn output_limit_counts_final_value() {
     )
     .await;
     assert_eq!(failure_kind(&outcome), FailureKind::OutputLimit);
-    assert_eq!(texts(&outcome), vec!["ab"]);
-    assert!(outcome.value().is_none());
+    assert_eq!(outcome.entries.len(), 1);
+    assert_eq!(outcome.entries[0].values[0].as_value(), &json!("ab"));
 
-    limits.output_bytes = 3;
+    limits.output_bytes = 5;
     let outcome = run_with(
-        r#"console.log("ab"); return 1;"#,
+        r#"inspect("ab"); inspect(1);"#,
         Vec::new(),
         limits,
         Duration::from_secs(2),
@@ -602,70 +577,152 @@ async fn output_limit_counts_final_value() {
         CancellationToken::new(),
     )
     .await;
-    assert_eq!(value_of(&outcome), &json!(1));
-    assert_eq!(texts(&outcome), vec!["ab"]);
+    assert!(outcome.failure.is_none(), "{outcome:?}");
+    assert_eq!(outcome.entries.len(), 2);
+    assert_eq!(outcome.entries[0].values[0].as_value(), &json!("ab"));
+    assert_eq!(outcome.entries[1].values[0].as_value(), &json!(1));
 }
 
 #[tokio::test]
-async fn illegal_output_values() {
-    let cases = [
-        ("return 1n;", "bigint at $"),
-        ("return { a: { b: 1n } };", "bigint at $.a.b"),
-        ("return [1, Symbol('s')];", "symbol at $[1]"),
-        ("return { f() {} };", "function at $.f"),
-        ("return function () {};", "function"),
-        ("return Symbol('s');", "symbol"),
-        ("const a = {}; a.self = a; return a;", "circular reference"),
-        ("return new Date();", "Date"),
-        ("return [1,,2];", "sparse array"),
-        (
-            "const marked = { a: 1 }; marked[Symbol('s')] = 2; return marked;",
-            "symbol key",
-        ),
-    ];
-    for (source, needle) in cases {
-        let outcome = run(source, Vec::new()).await;
-        let failure = outcome
-            .failure
-            .as_ref()
-            .unwrap_or_else(|| panic!("{source} succeeded: {outcome:?}"));
-        assert_eq!(failure.kind, FailureKind::IllegalOutput, "{source}");
-        assert!(
-            failure.message.contains(needle),
-            "{source}: {}",
-            failure.message
-        );
-        assert!(outcome.value().is_none());
-    }
-}
-
-#[tokio::test]
-async fn non_finite_output_is_nulled_with_paths() {
+async fn inspect_accepts_arbitrary_js_values_without_failing() {
+    let host = HostFn::new(|_, _, _, _| async move {
+        Err(HostError::tool(
+            "no_match",
+            "missing line",
+            Some(json!({ "line": 42 })),
+            true,
+        ))
+    });
     let outcome = run(
-        "return { n: NaN, nested: [Infinity, -Infinity] };",
-        Vec::new(),
+        r#"
+        const circObj = { a: 1 }; circObj.self = circObj;
+        const circArr = [1]; circArr.push(circArr);
+        const circSet = new Set([1]); circSet.add(circSet);
+        const circMap = new Map([["a", 1]]); circMap.set("self", circMap);
+        const symObj = { a: 1 }; symObj[Symbol("s")] = 2;
+        class Box { constructor(v) { this.v = v; } }
+        class Empty {}
+        let toolErr = null;
+        try { await tools.edit({}); } catch (e) { toolErr = e; }
+        inspect({
+            bi: 123456789012345678901234567890n,
+            sym: Symbol("tag"),
+            fn: function helper() {},
+            anon: () => {},
+            err: new TypeError("bad type"),
+            toolErr,
+            circObj,
+            circArr,
+            date: new Date("2026-01-02T03:04:05.000Z"),
+            badDate: new Date(NaN),
+            re: /foo\d+/gi,
+            set: new Set(["a", "b", "c"]),
+            circSet,
+            mapStr: new Map([["x", 1], ["y", 2]]),
+            mapNum: new Map([[1, "one"]]),
+            circMap,
+            bytes: new Uint8Array([1, 2, 255]),
+            bigBytes: new Uint8Array(5000),
+            buf: new ArrayBuffer(16),
+            prom: Promise.resolve(1),
+            smallSparse: [1, , 2],
+            symObj,
+            box: new Box(9),
+            empty: new Empty(),
+            nan: NaN,
+            inf: Infinity,
+            ninf: -Infinity,
+            ns: tools,
+        });
+        "#,
+        tools(vec![("edit", host)]),
     )
     .await;
-    assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
-    assert_eq!(
-        value_of(&outcome),
-        &json!({"n": null, "nested": [null, null]})
+    assert!(outcome.failure.is_none(), "{outcome:?}");
+    let v = value_of(&outcome);
+    assert_eq!(v["bi"], json!("123456789012345678901234567890n"));
+    assert_eq!(v["sym"], json!("Symbol(tag)"));
+    assert_eq!(v["fn"], json!("[Function: helper]"));
+    assert!(v["anon"].as_str().unwrap().starts_with("[Function"));
+    assert_eq!(v["err"]["name"], json!("TypeError"));
+    assert_eq!(v["err"]["message"], json!("bad type"));
+    assert_eq!(v["toolErr"]["code"], json!("no_match"));
+    assert_eq!(v["toolErr"]["tool"], json!("edit"));
+    assert_eq!(v["toolErr"]["retryable"], json!(true));
+    assert_eq!(v["toolErr"]["details"], json!({ "line": 42 }));
+    assert_eq!(v["circObj"], json!({ "a": 1, "self": "[Circular]" }));
+    assert_eq!(v["circArr"], json!([1, "[Circular]"]));
+    assert_eq!(v["date"], json!("2026-01-02T03:04:05.000Z"));
+    assert_eq!(v["badDate"], json!("[Invalid Date]"));
+    assert_eq!(v["re"], json!("/foo\\d+/gi"));
+    assert_eq!(v["set"], json!(["a", "b", "c"]));
+    assert_eq!(v["circSet"], json!([1, "[Circular]"]));
+    assert_eq!(v["mapStr"], json!({ "x": 1, "y": 2 }));
+    assert_eq!(v["mapNum"], json!([[1, "one"]]));
+    assert_eq!(v["circMap"], json!({ "a": 1, "self": "[Circular]" }));
+    assert_eq!(v["bytes"], json!([1, 2, 255]));
+    assert!(
+        v["bigBytes"]
+            .as_str()
+            .unwrap()
+            .starts_with("[Uint8Array(5000):"),
+        "{}",
+        v["bigBytes"]
     );
-    let line = outcome
-        .dropped_undefined
-        .non_finite_head_line()
-        .expect("coercion warning");
-    assert!(line.contains("n"), "{line}");
-    assert!(line.contains("nested[0]"), "{line}");
-    assert!(line.contains("nested[1]"), "{line}");
-    assert!(outcome.dropped_undefined.head_line().is_none());
+    assert_eq!(v["buf"], json!("[ArrayBuffer(byteLength=16)]"));
+    assert_eq!(v["prom"], json!("[Promise]"));
+    assert_eq!(v["smallSparse"], json!([1, null, 2]));
+    assert_eq!(v["symObj"], json!({ "a": 1 }));
+    assert_eq!(v["box"], json!({ "v": 9 }));
+    assert_eq!(v["empty"], json!("[Empty]"));
+    assert_eq!(v["nan"], json!("NaN"));
+    assert_eq!(v["inf"], json!("Infinity"));
+    assert_eq!(v["ninf"], json!("-Infinity"));
+    assert_eq!(v["ns"]["edit"], json!("[Function: edit]"));
+}
+
+#[tokio::test]
+async fn console_is_removed_and_guides_to_inspect() {
+    let outcome = run("console.log('hi');", Vec::new()).await;
+    let failure = outcome.failure.expect("console must fail");
+    assert_eq!(failure.kind, FailureKind::Exception);
+    assert!(
+        failure.message.contains("use inspect(value) to emit output"),
+        "{}",
+        failure.message
+    );
+}
+
+#[tokio::test]
+async fn top_level_return_value_is_rejected_before_any_host_call() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let host = HostFn::new(move |_, _, _, _| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        async move { Ok(json!(1)) }
+    });
+    let outcome = run(
+        "const r = await tools.f({});\nreturn r;",
+        tools(vec![("f", host)]),
+    )
+    .await;
+    let failure = outcome.failure.expect("top-level return value must fail");
+    assert_eq!(failure.kind, FailureKind::Syntax);
+    assert!(failure.message.contains("inspect(value)"), "{failure:?}");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    // Bare top-level `return;` works as early exit.
+    let early = run("inspect('first'); return; inspect('second');", Vec::new()).await;
+    assert!(early.failure.is_none(), "{early:?}");
+    assert_eq!(early.entries.len(), 1);
+    assert_eq!(early.entries[0].values[0].as_value(), &json!("first"));
 }
 
 #[tokio::test]
 async fn unknown_tool_is_a_contract_failure() {
     // B3: naming a tool that does not exist is a contract failure, not a
     // catchable TypeError with a bare "not a function".
-    let outcome = run("return await tools.nope({});", tools(vec![])).await;
+    let outcome = run("inspect(await tools.nope({}));", tools(vec![])).await;
     let failure = outcome.failure.as_ref().expect("unknown tool must fail");
     assert_eq!(failure.kind, FailureKind::Exception);
     assert!(!failure.uncaught_type_error, "{failure:?}");
@@ -708,8 +765,9 @@ async fn illegal_arguments_skip_host() {
     ];
     for (body, needle) in cases {
         calls.store(0, Ordering::SeqCst);
-        let source =
-            format!("try {{ {body} return 'called'; }} catch (e) {{ return String(e.message); }}");
+        let source = format!(
+            "try {{ {body} inspect('called'); }} catch (e) {{ inspect(String(e.message)); }}"
+        );
         let outcome = run(&source, tools(vec![("f", host.clone())])).await;
         let message = value_of(&outcome).as_str().unwrap_or("");
         assert!(message.contains(needle), "{body}: {message}");
@@ -733,8 +791,8 @@ async fn host_integer_above_safe_range_is_rejected() {
         });
         let outcome = run(
             r#"
-            try { return { ok: true, value: await tools.n(null) }; }
-            catch (e) { return { ok: false, message: String(e.message) }; }
+            try { inspect({ ok: true, value: await tools.n(null) }); }
+            catch (e) { inspect({ ok: false, message: String(e.message) }); }
             "#,
             tools(vec![("n", host)]),
         )
@@ -749,7 +807,7 @@ async fn host_integer_above_safe_range_is_rejected() {
     }
 
     let fraction = HostFn::new(|_, _, _, _| async move { Ok(json!(1.25)) });
-    let outcome = run("return await tools.n(null);", tools(vec![("n", fraction)])).await;
+    let outcome = run("inspect(await tools.n(null));", tools(vec![("n", fraction)])).await;
     assert_eq!(value_of(&outcome), &json!(1.25));
 }
 
@@ -757,16 +815,16 @@ async fn host_integer_above_safe_range_is_rejected() {
 async fn no_ambient_capabilities() {
     let outcome = run(
         r#"
-        const names = ["fetch", "require", "process", "setTimeout", "std", "os", "Atomics", "SharedArrayBuffer"];
+        const names = ["fetch", "require", "process", "setTimeout", "std", "os", "Atomics", "SharedArrayBuffer", "console"];
         const present = names.filter((name) => typeof globalThis[name] !== "undefined");
         let imported = false;
         try { await import("fs"); imported = true; } catch (e) { imported = false; }
-        return {
+        inspect({
           present,
           imported,
           evalOk: eval("1+1") === 2,
           fnOk: (new Function("return 3"))() === 3
-        };
+        });
         "#,
         Vec::new(),
     )
@@ -782,7 +840,7 @@ async fn unhandled_promise_rejection_warns_without_failing() {
     let outcome = run(
         r#"
         Promise.reject("boom-unhandled");
-        return "ok";
+        inspect("ok");
         "#,
         tools(vec![]),
     )
@@ -790,12 +848,13 @@ async fn unhandled_promise_rejection_warns_without_failing() {
     assert_eq!(value_of(&outcome), &json!("ok"));
     assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
     assert!(
-        texts(&outcome)
+        outcome
+            .warnings
             .iter()
             .any(|text| text.contains("unhandled promise rejection")
                 && text.contains("boom-unhandled")),
         "{:?}",
-        texts(&outcome)
+        outcome.warnings
     );
 }
 
@@ -804,25 +863,26 @@ async fn handled_promise_rejection_does_not_warn() {
     let outcome = run(
         r#"
         Promise.reject("caught").catch(() => {});
-        return "ok";
+        inspect("ok");
         "#,
         tools(vec![]),
     )
     .await;
     assert_eq!(value_of(&outcome), &json!("ok"));
     assert!(
-        texts(&outcome)
+        outcome
+            .warnings
             .iter()
             .all(|text| !text.contains("unhandled promise rejection")),
         "{:?}",
-        texts(&outcome)
+        outcome.warnings
     );
 }
 
 #[tokio::test]
 async fn synchronous_type_error_in_wrapper_does_not_warn_unhandled_rejection() {
     let outcome = run(
-        "const src = String.raw`Public entry point: ``run_tasks``.\n`;\nreturn src;",
+        "const src = String.raw`Public entry point: ``run_tasks``.\n`;\ninspect(src);",
         tools(vec![]),
     )
     .await;
@@ -830,11 +890,12 @@ async fn synchronous_type_error_in_wrapper_does_not_warn_unhandled_rejection() {
     assert_eq!(failure.kind, FailureKind::Exception);
     assert!(failure.uncaught_type_error, "{failure:?}");
     assert!(
-        texts(&outcome)
+        outcome
+            .warnings
             .iter()
             .all(|text| !text.contains("unhandled promise rejection")),
         "{:?}",
-        texts(&outcome)
+        outcome.warnings
     );
 }
 
@@ -848,7 +909,7 @@ async fn wall_budget_stops_paused_host_wait_while_active_budget_stays_frozen() {
         }
     });
     let outcome = execute(ExecuteRequest {
-        source: "return await tools.sleepy({});".into(),
+        source: "inspect(await tools.sleepy({}));".into(),
         namespaces: tools(vec![("sleepy", sleepy)]),
         limits: limits(),
         budget: Duration::from_millis(60),
@@ -876,7 +937,7 @@ async fn unawaited_calls_are_waited_and_recorded() {
         }
     });
     let outcome = run(
-        "tools.echo({ n: 1 }); return 'done';",
+        "tools.echo({ n: 1 }); inspect('done');",
         tools(vec![("echo", echo)]),
     )
     .await;
@@ -887,11 +948,12 @@ async fn unawaited_calls_are_waited_and_recorded() {
     assert_eq!(outcome.calls[0].state, CallState::CancelledFinished);
     assert!(outcome.calls[0].ended.is_some());
     assert!(
-        texts(&outcome)
+        outcome
+            .warnings
             .iter()
             .any(|text| text.contains("1 host call was still running")),
         "{:?}",
-        texts(&outcome)
+        outcome.warnings
     );
 }
 
@@ -904,9 +966,9 @@ async fn tool_error_is_a_plain_catchable_error() {
         r#"
         try {
           await tools.read(null);
-          return "resolved";
+          inspect("resolved");
         } catch (e) {
-          return [
+          inspect([
             e instanceof Error,
             e.name,
             e.code,
@@ -914,7 +976,7 @@ async fn tool_error_is_a_plain_catchable_error() {
             typeof e.seq,
             e.message,
             e.__litecode_host_call__ === true,
-          ];
+          ]);
         }
         "#,
         tools(vec![("read", host)]),
@@ -1010,7 +1072,7 @@ async fn success_cancels_inflight_calls() {
     });
     let started = Instant::now();
     let outcome = run_with(
-        "tools.slow(null); return 'ok';",
+        "tools.slow(null); inspect('ok');",
         tools(vec![("slow", slow)]),
         limits(),
         Duration::from_millis(80),
@@ -1028,11 +1090,12 @@ async fn success_cancels_inflight_calls() {
     assert_eq!(outcome.calls.len(), 1);
     assert_eq!(outcome.calls[0].state, CallState::CancelledUnfinished);
     assert!(
-        texts(&outcome)
+        outcome
+            .warnings
             .iter()
             .any(|text| text.contains("1 host call was still running")),
         "{:?}",
-        texts(&outcome)
+        outcome.warnings
     );
 
     let paused = HostFn::new(|_, _, pause, _| async move {
@@ -1042,7 +1105,7 @@ async fn success_cancels_inflight_calls() {
     });
     let started = Instant::now();
     let outcome = run_with(
-        "tools.hold(null); return 1;",
+        "tools.hold(null); inspect(1);",
         tools(vec![("hold", paused)]),
         limits(),
         Duration::from_millis(50),
@@ -1052,7 +1115,7 @@ async fn success_cancels_inflight_calls() {
     .await;
     assert!(
         started.elapsed() < Duration::from_millis(600),
-        "paused call did not return: {:?}",
+        "paused call did not finish: {:?}",
         started.elapsed()
     );
     assert_eq!(value_of(&outcome), &json!(1));
@@ -1084,7 +1147,7 @@ async fn user_exceptions_are_not_classified_by_message() {
             FailureKind::Exception,
             "{source}: {failure:?}"
         );
-        assert!(outcome.value().is_none());
+        assert!(outcome.entries.is_empty());
     }
 }
 
@@ -1096,7 +1159,7 @@ async fn dense_array_within_output_budget() {
         r#"
         const values = [];
         for (let i = 0; i < 40000; i++) values.push(i);
-        return values;
+        inspect(values);
         "#,
         Vec::new(),
         wide,
@@ -1113,10 +1176,10 @@ async fn dense_array_within_output_budget() {
 }
 
 #[tokio::test]
-async fn sparse_huge_array_rejected_before_allocation() {
+async fn sparse_huge_array_summarized_before_allocation() {
     if !isolated(concat!(
         module_path!(),
-        "::sparse_huge_array_rejected_before_allocation"
+        "::sparse_huge_array_summarized_before_allocation"
     )) {
         return;
     }
@@ -1124,9 +1187,9 @@ async fn sparse_huge_array_rejected_before_allocation() {
     wide.memory_bytes = 64 * 1024 * 1024;
     wide.output_bytes = 1024 * 1024;
     for source in [
-        "const sparse = []; sparse.length = 1e8; return sparse;",
-        "return new Array(1e8);",
-        "const sparse = []; sparse[0] = 1; sparse[3] = 2; sparse.length = 1e8; return sparse;",
+        "const sparse = []; sparse.length = 1e8; inspect(sparse);",
+        "inspect(new Array(1e8));",
+        "const sparse = []; sparse[0] = 1; sparse[3] = 2; sparse.length = 1e8; inspect(sparse);",
     ] {
         let started = Instant::now();
         let outcome = run_with(
@@ -1143,24 +1206,11 @@ async fn sparse_huge_array_rejected_before_allocation() {
             "{source} took {:?}",
             started.elapsed()
         );
-        let failure = outcome
-            .failure
-            .as_ref()
-            .unwrap_or_else(|| panic!("{source} succeeded"));
-        assert_eq!(
-            failure.kind,
-            FailureKind::IllegalOutput,
-            "{source}: {failure:?}"
-        );
+        assert!(outcome.failure.is_none(), "{source}: {outcome:?}");
+        let text = value_of(&outcome).as_str().unwrap_or("");
         assert!(
-            failure.message.contains("sparse array"),
-            "{source}: {}",
-            failure.message
-        );
-        assert!(
-            !failure.message.contains("nesting depth"),
-            "{source}: {}",
-            failure.message
+            text.starts_with("[SparseArray(length=100000000"),
+            "{source}: {text}"
         );
     }
 }
@@ -1192,19 +1242,19 @@ fn deep_array_source() -> &'static str {
     r#"
     let value = 0;
     for (let i = 0; i < 20000; i++) value = [value];
-    return value;
+    inspect(value);
     "#
 }
 
 async fn deep_nest_child() {
     {
-        let returned = run(deep_array_source(), Vec::new()).await;
+        let inspected = run(deep_array_source(), Vec::new()).await;
         assert!(
-            returned.failure.is_none(),
-            "deep return: {}",
-            failure_text(&returned)
+            inspected.failure.is_none(),
+            "deep inspect: {}",
+            failure_text(&inspected)
         );
-        let value = returned.value().expect("deep value");
+        let value = last_json(&inspected).expect("deep value");
         assert_eq!(array_depth(value.as_value()), 20_000);
         exercise_json(value);
     }
@@ -1215,7 +1265,7 @@ async fn deep_nest_child() {
             r#"
             let value = 0;
             for (let i = 0; i < 20000; i++) value = [value];
-            return await tools.f(value);
+            inspect(await tools.f(value));
             "#,
             tools(vec![("f", ignored)]),
         )
@@ -1227,7 +1277,7 @@ async fn deep_nest_child() {
     {
         let injected = HostFn::new(|_, _, _, _| async move { Ok(nested_arrays(20_000)) });
         let host_to_js = run(
-            "return await tools.deep(null);",
+            "inspect(await tools.deep(null));",
             tools(vec![("deep", injected)]),
         )
         .await;
@@ -1236,7 +1286,7 @@ async fn deep_nest_child() {
             "deep host result: {}",
             failure_text(&host_to_js)
         );
-        let value = host_to_js.value().expect("injected value");
+        let value = last_json(&host_to_js).expect("injected value");
         assert_eq!(array_depth(value.as_value()), 20_000);
         exercise_json(value);
     }
@@ -1255,27 +1305,23 @@ async fn deep_nest_child() {
         .await;
         let failure = over_budget.failure.as_ref().expect("output budget");
         assert_eq!(failure.kind, FailureKind::OutputLimit, "{failure:?}");
-        assert!(over_budget.value().is_none());
+        assert!(over_budget.entries.is_empty());
     }
 
     {
-        let illegal = run(
+        let mixed = run(
             r#"
             let value = 0;
             for (let i = 0; i < 20000; i++) value = [value];
-            return [value, 1n];
+            inspect([value, 1n]);
             "#,
             Vec::new(),
         )
         .await;
-        let failure = illegal.failure.as_ref().expect("illegal sibling");
-        assert_eq!(failure.kind, FailureKind::IllegalOutput, "{failure:?}");
-        assert!(
-            failure.message.contains("bigint at $[1]"),
-            "{}",
-            failure.message
-        );
-        assert!(illegal.value().is_none());
+        assert!(mixed.failure.is_none(), "{mixed:?}");
+        let arr = value_of(&mixed).as_array().expect("pair");
+        assert_eq!(array_depth(&arr[0]), 20_000);
+        assert_eq!(arr[1], json!("1n"));
     }
 
     let mut wide = limits();
@@ -1283,7 +1329,7 @@ async fn deep_nest_child() {
     wide.output_bytes = 64 * 1024;
     let started = Instant::now();
     let sparse = run_with(
-        "const sparse = []; sparse.length = 1e8; return sparse;",
+        "const sparse = []; sparse.length = 1e8; inspect(sparse);",
         Vec::new(),
         wide,
         Duration::from_secs(2),
@@ -1296,12 +1342,10 @@ async fn deep_nest_child() {
         "sparse array took {:?}",
         started.elapsed()
     );
-    let failure = sparse.failure.as_ref().expect("sparse array");
-    assert_eq!(failure.kind, FailureKind::IllegalOutput, "{failure:?}");
-    assert!(
-        failure.message.contains("sparse array"),
-        "{}",
-        failure.message
+    assert!(sparse.failure.is_none(), "{sparse:?}");
+    assert_eq!(
+        value_of(&sparse),
+        &json!("[SparseArray(length=100000000, populated=0)]")
     );
 }
 
@@ -1318,7 +1362,7 @@ async fn host_receives_extra_arguments_as_a_json_array() {
         }
     });
     let outcome = run(
-        "await tools.echo({ path: 'a' }, { timeout_ms: 5 }); return null;",
+        "await tools.echo({ path: 'a' }, { timeout_ms: 5 }); inspect(null);",
         tools(vec![("echo", echo)]),
     )
     .await;
@@ -1331,28 +1375,27 @@ async fn host_receives_extra_arguments_as_a_json_array() {
 
 // WP-206 #7: undefined tolerance.
 #[tokio::test]
-async fn undefined_in_result_is_stripped_or_nulled_and_reported() {
-    let bare = run("return undefined;", Vec::new()).await;
+async fn undefined_in_inspect_is_stripped_or_nulled_and_reported() {
+    let bare = run("inspect(undefined);", Vec::new()).await;
     assert!(bare.failure.is_none(), "{bare:?}");
-    assert!(bare.value().is_none(), "undefined must not become null");
-    assert_eq!(bare.dropped_undefined.paths, ["$"]);
-    assert_eq!(bare.dropped_undefined.total, 1);
+    assert_eq!(value_of(&bare), &json!("undefined"));
+    assert!(bare.dropped_undefined.is_empty());
     let cases: [(&str, Value, &[&str], usize); 4] = [
-        ("return { a: 1, b: undefined };", json!({"a": 1}), &["b"], 1),
+        ("inspect({ a: 1, b: undefined });", json!({"a": 1}), &["b"], 1),
         (
-            "return { a: { b: undefined } };",
+            "inspect({ a: { b: undefined } });",
             json!({"a": {}}),
             &["a.b"],
             1,
         ),
         (
-            "return { list: [1, undefined] };",
+            "inspect({ list: [1, undefined] });",
             json!({"list": [1, null]}),
             &["list[1]"],
             1,
         ),
         (
-            "return { 'a-b': undefined };",
+            "inspect({ 'a-b': undefined });",
             json!({}),
             &[r#"["a-b"]"#],
             1,
@@ -1364,13 +1407,13 @@ async fn undefined_in_result_is_stripped_or_nulled_and_reported() {
         assert_eq!(outcome.dropped_undefined.paths, paths, "{source}");
         assert_eq!(outcome.dropped_undefined.total, total, "{source}");
     }
-    let outcome = run("return [undefined, undefined, 3];", Vec::new()).await;
+    let outcome = run("inspect([undefined, undefined, 3]);", Vec::new()).await;
     assert_eq!(value_of(&outcome), &json!([null, null, 3]));
     assert_eq!(
         outcome.dropped_undefined.head_line().as_deref(),
         Some("dropped undefined at [0], [1]")
     );
-    let clean = run("return { a: null };", Vec::new()).await;
+    let clean = run("inspect({ a: null });", Vec::new()).await;
     assert!(clean.dropped_undefined.is_empty());
     assert!(clean.dropped_undefined.head_line().is_none());
 }
@@ -1378,7 +1421,7 @@ async fn undefined_in_result_is_stripped_or_nulled_and_reported() {
 #[tokio::test]
 async fn dropped_undefined_list_is_capped_with_more_count() {
     let outcome = run(
-        "const o = {}; for (let i = 0; i < 25; i++) o['k' + i] = undefined; o.keep = 1; return o;",
+        "const o = {}; for (let i = 0; i < 25; i++) o['k' + i] = undefined; o.keep = 1; inspect(o);",
         Vec::new(),
     )
     .await;
@@ -1402,7 +1445,7 @@ async fn undefined_in_arguments_is_dropped_silently() {
         async move { Ok(json!("ok")) }
     });
     let outcome = run(
-        "await tools.f({ a: 1, b: undefined, c: [undefined, 2] }); await tools.f(undefined); return 'done';",
+        "await tools.f({ a: 1, b: undefined, c: [undefined, 2] }); await tools.f(undefined); inspect('done');",
         tools(vec![("f", host)]),
     )
     .await;
@@ -1437,7 +1480,7 @@ async fn runtime_exception_reports_line_column_and_stack() {
 async fn object_keys_keep_agent_order_across_the_bridge() {
     let echo = HostFn::new(|args, _, _, _| async move { Ok(args.into_value()) });
     let outcome = run(
-        "const back = await tools.echo({zeta: 1, alpha: 2, mid: {y: 1, b: 2}});\nreturn {z: 1, a: back, m: 3};",
+        "const back = await tools.echo({zeta: 1, alpha: 2, mid: {y: 1, b: 2}});\ninspect({z: 1, a: back, m: 3});",
         tools(vec![("echo", echo)]),
     )
     .await;
@@ -1482,8 +1525,8 @@ async fn m1_contract_error_is_not_catchable() {
     });
     let outcome = run(
         r#"
-        try { await tools.read({ path: "a.txt" }); } catch (e) { return "swallowed"; }
-        return "done";
+        try { await tools.read({ path: "a.txt" }); } catch (e) { inspect("swallowed"); }
+        inspect("done");
         "#,
         tools(vec![("read", host)]),
     )
@@ -1498,8 +1541,7 @@ async fn m1_contract_error_is_not_catchable() {
     );
 }
 
-/// M2: a contract error inside Promise.all still ends the run. (Expected red
-/// before B2 second cut; this is the await boundary the whole channel depends on.)
+/// M2: a contract error inside Promise.all still ends the run.
 #[tokio::test]
 async fn m2_contract_error_inside_promise_all_ends_run() {
     let host = HostFn::new(|_, _, _, _| async move {
@@ -1511,8 +1553,8 @@ async fn m2_contract_error_inside_promise_all_ends_run() {
     });
     let outcome = run(
         r#"
-        try { await Promise.all([tools.read({ path: "a.txt" })]); } catch (e) { return "swallowed"; }
-        return "done";
+        try { await Promise.all([tools.read({ path: "a.txt" })]); } catch (e) { inspect("swallowed"); }
+        inspect("done");
         "#,
         tools(vec![("read", host)]),
     )
@@ -1523,8 +1565,7 @@ async fn m2_contract_error_inside_promise_all_ends_run() {
     );
 }
 
-/// M3: after a contract error nothing else is dispatched. (Expected red before
-/// B2 second cut.)
+/// M3: after a contract error nothing else is dispatched.
 #[tokio::test]
 async fn m3_no_host_call_after_contract_error() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -1547,7 +1588,7 @@ async fn m3_no_host_call_after_contract_error() {
         r#"
         try { await tools.read({ nope: 1 }); } catch (e) {}
         try { await tools.read({ path: "ok" }); } catch (e) {}
-        return "finished";
+        inspect("finished");
         "#,
         tools(vec![("read", host)]),
     )
@@ -1561,12 +1602,11 @@ async fn m3_no_host_call_after_contract_error() {
 }
 
 /// P2: an unknown member throws at property access, not on call.
-/// (Expected red before B3.)
 #[tokio::test]
 async fn p2_unknown_member_throws_at_property_access() {
     let echo = HostFn::new(|_, _, _, _| async move { Ok(json!({ "ok": true })) });
     let outcome = run(
-        r#"const f = tools.file.readx; return typeof f;"#,
+        r#"const f = tools.file.readx; inspect(typeof f);"#,
         tools(vec![("file.write", echo)]),
     )
     .await;
@@ -1577,14 +1617,14 @@ async fn p2_unknown_member_throws_at_property_access() {
     assert!(failure.message.contains("file.readx"), "{failure:?}");
 }
 
-/// P6: an unknown suite names the available suites. (Expected red before B3.)
+/// P6: an unknown suite names the available suites.
 #[tokio::test]
 async fn p6_unknown_suite_names_the_candidates() {
     let echo = HostFn::new(|_, _, _, _| async move { Ok(json!({ "ok": true })) });
     let outcome = run(
         r#"
-        try { tools.zzz.one({ path: "a" }); } catch (e) { return "swallowed"; }
-        return "done";
+        try { tools.zzz.one({ path: "a" }); } catch (e) { inspect("swallowed"); }
+        inspect("done");
         "#,
         tools(vec![("alpha.one", echo)]),
     )
@@ -1598,14 +1638,13 @@ async fn p6_unknown_suite_names_the_candidates() {
 }
 
 /// P7: an unknown member names the member and its suite's candidates.
-/// (Expected red before B3.)
 #[tokio::test]
 async fn p7_unknown_member_names_the_candidates() {
     let echo = HostFn::new(|_, _, _, _| async move { Ok(json!({ "ok": true })) });
     let outcome = run(
         r#"
-        try { await tools.file.readx({ path: "a" }); } catch (e) { return "swallowed"; }
-        return "done";
+        try { await tools.file.readx({ path: "a" }); } catch (e) { inspect("swallowed"); }
+        inspect("done");
         "#,
         tools(vec![("file.write", echo)]),
     )
@@ -1618,13 +1657,12 @@ async fn p7_unknown_member_names_the_candidates() {
     assert!(failure.message.contains("write"), "{failure:?}");
 }
 
-/// B3: typeof on a missing name ends the run. Intentional: reading a name that
-/// does not exist is judged before the program can branch on the value.
+/// B3: typeof on a missing name ends the run.
 #[tokio::test]
 async fn p10_typeof_unknown_suite_ends_the_run() {
     let echo = HostFn::new(|_, _, _, _| async move { Ok(json!({ "ok": true })) });
     let outcome = run(
-        r#"const hint = typeof tools.zzz; return hint;"#,
+        r#"const hint = typeof tools.zzz; inspect(hint);"#,
         tools(vec![("alpha.one", echo)]),
     )
     .await;
@@ -1643,7 +1681,7 @@ async fn p11_membership_is_false_and_suites_are_cached() {
     let outcome = run(
         r#"
         const same = tools.alpha === tools.alpha;
-        return [same, "zzz" in tools, "alpha" in tools];
+        inspect([same, "zzz" in tools, "alpha" in tools]);
         "#,
         tools(vec![("alpha.one", echo)]),
     )
@@ -1651,12 +1689,7 @@ async fn p11_membership_is_false_and_suites_are_cached() {
     assert_eq!(value_of(&outcome), &json!([true, false, true]));
 }
 
-// P4 and P9 moved to the bridge: a field list is only meaningful against the
-// contract, and the engine harness has none. See
-// `src/tools/code/bridge_tests.rs::s4_*`.
-
 /// P8: the read proxy must not misfire on the ways a result is normally used.
-/// (Green before B4; must stay green after it.)
 #[tokio::test]
 async fn p8_proxy_passthrough_does_not_misfire() {
     let host = HostFn::new(|_, _, _, _| async move {
@@ -1670,8 +1703,8 @@ async fn p8_proxy_passthrough_does_not_misfire() {
         const rendered = String(r);
         const spread = { ...r };
         const ctor = typeof r.constructor;
-        console.log(r);
-        return [awaited.lines.length, text.includes('"lines"'), rendered.length > 0, spread.path, ctor];
+        inspect(r);
+        inspect([awaited.lines.length, text.includes('"lines"'), rendered.length > 0, spread.path, ctor]);
         "#,
         tools_with_contract(
             vec![("read", host)],
@@ -1679,14 +1712,14 @@ async fn p8_proxy_passthrough_does_not_misfire() {
         ),
     )
     .await;
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
     assert_eq!(
         value_of(&outcome),
         &json!([1, true, true, "p", "function"])
     );
 }
 
-/// P5: benchmark for the per-field read cost. Not a gate. (Expected flat
-/// before B4; re-run after it.)
+/// P5: benchmark for the per-field read cost. Not a gate.
 #[tokio::test]
 #[ignore = "benchmark: field reads through the read proxy"]
 async fn p5_read_proxy_overhead() {
@@ -1697,7 +1730,7 @@ async fn p5_read_proxy_overhead() {
     let none = run(
         r#"
         const r = await tools.read({ path: "p" });
-        return r.path === "p" ? 1 : 0;
+        inspect(r.path === "p" ? 1 : 0);
         "#,
         tools_with_contract(
             vec![("read", host.clone())],
@@ -1713,7 +1746,7 @@ async fn p5_read_proxy_overhead() {
         const r = await tools.read({ path: "p" });
         let n = 0;
         for (let i = 0; i < 1000; i++) { if (r.path === "p") n++; }
-        return n;
+        inspect(n);
         "#,
         tools_with_contract(
             vec![("read", host)],
@@ -1729,4 +1762,130 @@ async fn p5_read_proxy_overhead() {
         baseline,
         (thousand.saturating_sub(baseline)) / 1000
     );
+}
+
+#[tokio::test]
+async fn erasable_typescript_runs_and_preserves_lines() {
+    let echo = HostFn::new(|args, _, _, _| async move { Ok(args.into_value()) });
+    let outcome = run(
+        r#"
+        interface EchoInput {
+            path: string;
+            extra?: number;
+        }
+        type Summary = {
+            path: string;
+            total: number;
+            tag: "ok";
+        };
+        const req: EchoInput = { path: "src/lib.rs" };
+        const res = await tools.echo<EchoInput>(req) as EchoInput;
+        const picked = <string>res.path!;
+        function sum<T extends number>(...nums: T[]): number {
+            return nums.reduce((acc, n) => acc + n, 0);
+        }
+        const check = (x?: number): number => (x ?? 10);
+        const out = {
+            path: picked,
+            total: sum<number>(1, 2, check()),
+            tag: "ok" as const,
+        } satisfies Summary;
+        inspect(out);
+        "#,
+        tools(vec![("echo", echo)]),
+    )
+    .await;
+    assert_eq!(
+        value_of(&outcome),
+        &json!({ "path": "src/lib.rs", "total": 13, "tag": "ok" })
+    );
+
+    let thrown = run(
+        "const a: number = 1;\nconst b: string = \"x\";\nthrow new Error(\"boom\");\n",
+        Vec::new(),
+    )
+    .await;
+    let failure = thrown.failure.expect("must fail");
+    assert_eq!(failure.kind, FailureKind::Exception);
+    assert_eq!(failure.location.map(|l| l.line), Some(3));
+}
+
+#[tokio::test]
+async fn non_erasable_typescript_fails_syntax() {
+    let enum_outcome = run("enum E { A }\ninspect(1);\n", Vec::new()).await;
+    let enum_failure = enum_outcome.failure.expect("enum must fail");
+    assert_eq!(enum_failure.kind, FailureKind::Syntax);
+    assert!(enum_failure.message.contains("enum"));
+
+    let ns_outcome = run("namespace N { export const v = 1; }\ninspect(1);\n", Vec::new()).await;
+    let ns_failure = ns_outcome.failure.expect("namespace must fail");
+    assert_eq!(ns_failure.kind, FailureKind::Syntax);
+
+    let prop_outcome = run(
+        "class C { constructor(public x: number) {} }\ninspect(new C(1).x);\n",
+        Vec::new(),
+    )
+    .await;
+    let prop_failure = prop_outcome.failure.expect("parameter property must fail");
+    assert_eq!(prop_failure.kind, FailureKind::Syntax);
+}
+
+#[tokio::test]
+async fn unresolved_promise_deadlock_aborts_fast() {
+    let started = Instant::now();
+    let outcome = run_with(
+        "await new Promise(() => {});",
+        Vec::new(),
+        limits(),
+        Duration::from_secs(10),
+        Duration::from_millis(200),
+        CancellationToken::new(),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let failure = outcome.failure.expect("deadlocked promise must abort");
+    assert_eq!(failure.kind, FailureKind::Exception);
+    assert!(
+        failure.message.contains("unresolved Promise deadlock"),
+        "{failure:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "deadlock should abort rapidly, took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn slow_host_call_inside_manual_promise_does_not_false_deadlock() {
+    let slow = HostFn::new(|_, _, _, _| async move {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        Ok(json!({ "ok": true }))
+    });
+    let outcome = run(
+        r#"
+        const p = tools.slow({});
+        inspect(await new Promise((resolve) => p.then(resolve)));
+        "#,
+        tools(vec![("slow", slow)]),
+    )
+    .await;
+    assert_eq!(value_of(&outcome), &json!({ "ok": true }));
+}
+
+#[tokio::test]
+async fn sync_infinite_loop_hits_timeout_promptly() {
+    let started = Instant::now();
+    let outcome = run_with(
+        "while (true) {}",
+        Vec::new(),
+        limits(),
+        Duration::from_millis(80),
+        Duration::from_millis(50),
+        CancellationToken::new(),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let failure = outcome.failure.expect("infinite loop must time out");
+    assert_eq!(failure.kind, FailureKind::Timeout);
+    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
 }

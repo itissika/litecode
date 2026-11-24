@@ -246,9 +246,9 @@ async fn run_code_2mb_stream_succeeds_and_spills_full_output_to_litecode_run() {
 
     let script = r#"
 const chunk = "MID_RUN_2MB_ROW alpha beta gamma delta\n".repeat(48000);
-console.log("HEAD_RUN_2MB");
-console.log(chunk);
-return "TAIL_RUN_2MB";
+inspect("HEAD_RUN_2MB");
+inspect(chunk);
+inspect("TAIL_RUN_2MB");
 "#;
     let first = run_code_with_bundle(root, vec![Arc::clone(&read_tool)], script).await;
     assert_eq!(first.level, ToolSignalLevel::Ok, "{}", first.content);
@@ -276,7 +276,7 @@ return "TAIL_RUN_2MB";
     assert!(on_disk.contains("TAIL_RUN_2MB"), "spilled file must keep tail");
 
     let verify_read = format!(
-        "const r = await tools.read({{ path: {} }}); return r.lines.slice(0, 3);",
+        "const r = await tools.read({{ path: {} }}); inspect(r.lines.slice(0, 3));",
         serde_json::to_string(&full_rel).unwrap()
     );
     let second = run_code_with_bundle(root, vec![read_tool], &verify_read).await;
@@ -291,9 +291,9 @@ async fn run_code_failure_with_huge_stream_pins_header_and_error_above_cut() {
     fs::write(root.join("t.txt"), "fn alpha() {}\nfn beta() {}\nfn gamma() {}\n").unwrap();
 
     let script = r#"
-console.log("HEAD_FAIL_LOG");
-console.log("NOISE ".repeat(30000));
-console.log("TAIL_FAIL_LOG");
+inspect("HEAD_FAIL_LOG");
+inspect("NOISE ".repeat(30000));
+inspect("TAIL_FAIL_LOG");
 await tools.apply_edits({
   edits: [{ path: "t.txt", old_string: "fn beeta() {}", new_string: "fn BETA() {}" }]
 });
@@ -324,12 +324,12 @@ async fn exec_command_in_code_mode_passes_120kb_untruncated_and_exposes_output_f
     let script = format!(
         r#"
 const r = await tools.exec_command({{ cmd: {} }});
-return {{
+inspect({{
   has_head: r.output.includes("HEAD_EXEC_120K"),
   has_tail: r.output.includes("TAIL_EXEC_120K"),
   len: r.output.length,
   output_file: r.output_file,
-}};
+}});
 "#,
         serde_json::to_string(&cmd).unwrap()
     );
@@ -355,12 +355,12 @@ async fn exec_command_explicit_small_cap_uses_unified_notice_and_clean_utf8() {
     let script = format!(
         r#"
 const r = await tools.exec_command({{ cmd: {}, max_output_tokens: 256 }});
-return {{
+inspect({{
   dirty_prefix: r.output.startsWith("... (truncated)"),
   has_replacement: r.output.includes("\uFFFD"),
   has_tail: r.output.includes("TAIL_UTF8_OK"),
   output_file: r.output_file,
-}};
+}});
 "#,
         serde_json::to_string(&cmd).unwrap()
     );
@@ -398,7 +398,7 @@ async fn knowledge_tool_never_spills_to_disk() {
 
     let _ide = IdeBaseHandle::open(root.to_path_buf(), Arc::new(WorkspaceEngines::new())).unwrap();
     let tool: Arc<dyn Tool> = Arc::new(KnowledgeListTool::new());
-    let script = "const r = await tools.knowledge.list(); return r.nodes.map(n => n.key);";
+    let script = "const r = await tools.knowledge.list(); inspect(r.nodes.map(n => n.key));";
     let res = run_code_with_bundle(root, vec![tool], script).await;
     assert!(res.error.is_none(), "{}", res.content);
     assert!(res.content.contains("node_149"), "all nodes kept without spill: {}", res.content);

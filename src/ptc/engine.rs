@@ -31,7 +31,7 @@ use super::budget::BudgetClock;
 use super::calls::Ledger;
 use super::heap::LimitAlloc;
 use super::output::OutputLedger;
-use super::{ExecuteRequest, Failure, FailureKind, HostFn, Json, LogLevel, Outcome, ResourceKind};
+use super::{ExecuteRequest, Failure, FailureKind, HostFn, Json, Outcome, ResourceKind};
 
 /// Jobs executed while draining the queue after the program settles.
 ///
@@ -238,17 +238,16 @@ enum Stop {
 }
 
 enum ProgramEnd {
-    /// `None` means the program finished without a value (`undefined`).
-    Success(Option<Json>),
-    /// The user cancelled after the program had already returned.
-    CancelledAfterReturn(Option<Json>),
+    Success,
+    /// The user cancelled after the program had already finished.
+    CancelledAfterFinish,
     Failure(Failure),
 }
 
-/// How the run ended, after the value has been appended to the stream.
+/// How the run ended.
 enum EndKind {
     Success,
-    CancelledAfterReturn,
+    CancelledAfterFinish,
     Failure(Failure),
 }
 
@@ -285,6 +284,15 @@ pub(crate) fn drive_blocking(request: ExecuteRequest, handle: Handle) -> Outcome
 }
 
 async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
+    let source = match super::ts_strip::strip(&request.source) {
+        Ok(stripped) => stripped,
+        Err(err) => {
+            if request.cancel.is_cancelled() {
+                return Outcome::from_failure(Failure::cancelled());
+            }
+            return Outcome::from_failure(err.into_failure());
+        }
+    };
     let clock = Arc::new(BudgetClock::with_wall_limit(
         request.budget,
         request.wall_budget,
@@ -395,6 +403,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
         user.clone(),
         stop_tx,
     ));
+    let awaiting_promise = Arc::new(AtomicBool::new(false));
 
     let namespaces = request.namespaces.clone();
     let fs_root = request.fs_root.clone();
@@ -445,19 +454,19 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
         .set_max_stack_size(native_stack_bytes(request.limits.stack_bytes))
         .await;
 
-    let source = request.source.clone();
     let js_clock = Arc::clone(&clock);
     let js_user = user.clone();
     let js_flags = Arc::clone(&flags);
     let js_faults = Arc::clone(&faults);
+    let js_awaiting = Arc::clone(&awaiting_promise);
     let js_output = Rc::clone(&output);
     let js_protos = Rc::clone(&protos);
-    let end = context
-        .async_with(async move |ctx| {
+    let end = {
+        let _enter = handle.enter();
+        let run_fut = context.async_with(async move |ctx| {
             let execution = run_program(
                 ctx.clone(),
                 source,
-                &js_output,
                 output_limit,
                 stack_bytes,
                 &js_faults,
@@ -465,6 +474,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
                 &js_clock,
                 &js_user,
                 &js_protos,
+                &js_awaiting,
             );
             settle(
                 select(Box::pin(execution), Box::pin(stop_rx)).await,
@@ -474,8 +484,16 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
                 &js_user,
                 output_limit,
             )
-        })
-        .await;
+        });
+        let deadlock_fut = monitor_deadlock(&runtime, &calls, &awaiting_promise, &user);
+        match select(Box::pin(run_fut), Box::pin(deadlock_fut)).await {
+            Either::Left((end, _)) => end,
+            Either::Right(((), _)) => ProgramEnd::Failure(Failure::exception(
+                "run_code aborted: unresolved Promise deadlock (no timers or pending tools.* calls remain to settle it)",
+                None,
+            )),
+        }
+    };
     // A host call returns a promise before its Rust future is polled. Drain
     // every queued job (budget, cancellation, and the output cap still apply)
     // so a call behind a long microtask chain is submitted before we seal.
@@ -489,29 +507,22 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
         output_limit,
     )
     .await;
-    let end = reconcile_drain(end, drained, &output);
+    let end = reconcile_drain(end, drained, &faults);
     let pending = calls.seal(grace);
-    let end = match end {
-        ProgramEnd::Success(value) if pending > 0 => {
-            let note = if pending == 1 {
-                "1 host call was still running when the program returned and has been cancelled"
-                    .to_string()
-            } else {
-                format!(
-                    "{pending} host calls were still running when the program returned and have been cancelled"
-                )
-            };
-            if output.borrow_mut().push_text(LogLevel::Warn, note) {
-                ProgramEnd::Success(value)
-            } else {
-                ProgramEnd::Failure(Failure::output(output_limit))
-            }
-        }
-        other => other,
-    };
+    if matches!(end, ProgramEnd::Success) && pending > 0 {
+        let note = if pending == 1 {
+            "1 host call was still running when the program finished and has been cancelled"
+                .to_string()
+        } else {
+            format!(
+                "{pending} host calls were still running when the program finished and have been cancelled"
+            )
+        };
+        faults.warn(note);
+    }
     // Final seal: the latch is set only by `note_stack` when the real stack
     // pointer crossed the watch limit (never by a message). A program that
-    // caught the overflow and returned without reaching another interrupt
+    // caught the overflow and finished without reaching another interrupt
     // point is still a stack failure, not a success or plain exception.
     let end = seal_latched_stack(end, &faults);
     let end = if faults.contract_latched() {
@@ -524,7 +535,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
         if state.count > 0 {
             let first = state.first.as_deref().unwrap_or("rejection");
             let note = format!("unhandled promise rejection ({}): {}", state.count, first);
-            let _ = output.borrow_mut().push_text(LogLevel::Warn, note);
+            faults.warn(note);
         }
     }
     faults.disarm();
@@ -533,30 +544,13 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     drop(context);
     drop(runtime);
 
-    // The return value is the last entry of the stream, not a field beside it.
-    // If it cannot fit, the run is an output-limit failure instead.
     let end = match end {
-        ProgramEnd::Success(Some(value)) => {
-            if output.borrow_mut().push_value(value) {
-                EndKind::Success
-            } else {
-                EndKind::Failure(Failure::output(output_limit))
-            }
-        }
-        ProgramEnd::Success(None) => EndKind::Success,
-        ProgramEnd::CancelledAfterReturn(Some(value)) => {
-            if output.borrow_mut().push_value(value) {
-                EndKind::CancelledAfterReturn
-            } else {
-                EndKind::Failure(Failure::output(output_limit))
-            }
-        }
-        ProgramEnd::CancelledAfterReturn(None) => EndKind::CancelledAfterReturn,
+        ProgramEnd::Success => EndKind::Success,
+        ProgramEnd::CancelledAfterFinish => EndKind::CancelledAfterFinish,
         ProgramEnd::Failure(failure) => EndKind::Failure(failure),
     };
     let entries = output.borrow().entries().to_vec();
     let dropped_undefined = output.borrow().dropped_undefined().clone();
-    let used_console = output.borrow().used_console();
     let warnings = faults.warnings();
     let calls = calls.snapshot();
     let duration_ms = clock.wall_elapsed().as_millis() as u64;
@@ -568,16 +562,14 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
             calls,
             duration_ms,
             dropped_undefined,
-            used_console,
         },
-        EndKind::CancelledAfterReturn => Outcome {
+        EndKind::CancelledAfterFinish => Outcome {
             entries,
             failure: Some(Failure::cancelled()),
             warnings,
             calls,
             duration_ms,
             dropped_undefined,
-            used_console,
         },
         EndKind::Failure(failure) => Outcome {
             entries,
@@ -586,7 +578,6 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
             calls,
             duration_ms,
             dropped_undefined,
-            used_console,
         },
     }
 }
@@ -647,26 +638,22 @@ async fn drive_queued(
     }
 }
 
-/// A program that already returned keeps its value when the drain then stops
-/// for budget or an internal fault. User cancel keeps the value and records
-/// cancellation. Any other drain failure replaces the success.
-fn reconcile_drain(
-    end: ProgramEnd,
-    drained: Option<Failure>,
-    output: &RefCell<OutputLedger>,
-) -> ProgramEnd {
+/// A program that already finished keeps its inspected output when the drain
+/// then stops for budget or an internal fault. User cancel keeps the output
+/// and records cancellation. Any other drain failure replaces the success.
+fn reconcile_drain(end: ProgramEnd, drained: Option<Failure>, faults: &Faults) -> ProgramEnd {
     match (end, drained) {
-        (ProgramEnd::Success(value), Some(failure)) => match failure.kind {
-            FailureKind::Cancelled => ProgramEnd::CancelledAfterReturn(value),
+        (ProgramEnd::Success, Some(failure)) => match failure.kind {
+            FailureKind::Cancelled => ProgramEnd::CancelledAfterFinish,
             FailureKind::Timeout | FailureKind::Internal => {
                 let note = match failure.kind {
                     FailureKind::Timeout => {
-                        "program budget expired while draining host calls after the program returned"
+                        "program budget expired while draining host calls after the program finished"
                     }
-                    _ => "host drain stopped after the program returned",
+                    _ => "host drain stopped after the program finished",
                 };
-                let _ = output.borrow_mut().push_text(LogLevel::Warn, note.to_string());
-                ProgramEnd::Success(value)
+                faults.warn(note.to_string());
+                ProgramEnd::Success
             }
             _ => ProgramEnd::Failure(failure),
         },
@@ -757,6 +744,46 @@ fn spawn_watcher(
     })
 }
 
+/// Detect `await new Promise(() => {})` deadlocks in the closed sandbox: once
+/// `run_program` suspends on the top-level promise with zero host calls in
+/// flight and zero pending QuickJS jobs/spawners across two consecutive probes
+/// (~50ms apart), no timer or host callback exists to settle the promise.
+async fn monitor_deadlock(
+    runtime: &AsyncRuntime,
+    calls: &Ledger,
+    awaiting_promise: &AtomicBool,
+    user: &CancellationToken,
+) {
+    let mut consecutive_idle = 0_u8;
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+            _ = user.cancelled() => {
+                // Let `run_fut` observe cancellation via `spawn_watcher` instead
+                // of reporting a deadlock during cancellation.
+                futures_util::future::pending::<()>().await;
+                return;
+            }
+        }
+        if !awaiting_promise.load(Ordering::Acquire) || calls.in_flight() > 0 {
+            consecutive_idle = 0;
+            continue;
+        }
+        if runtime.is_job_pending().await {
+            consecutive_idle = 0;
+            continue;
+        }
+        if !awaiting_promise.load(Ordering::Acquire) || calls.in_flight() > 0 {
+            consecutive_idle = 0;
+            continue;
+        }
+        consecutive_idle = consecutive_idle.saturating_add(1);
+        if consecutive_idle >= 2 {
+            return;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn settle<Left, Right>(
     raced: Either<
@@ -779,13 +806,13 @@ fn settle<Left, Right>(
             ProgramEnd::Failure(Failure::internal("budget watcher stopped"))
         }
     };
-    if let ProgramEnd::Success(value) = end {
-        // The program already returned. Budget expiry must not rewrite that
-        // into a timeout. Only a user cancel keeps the value and records failure.
+    if let ProgramEnd::Success = end {
+        // The program already finished. Budget expiry must not rewrite that
+        // into a timeout. Only a user cancel keeps the entries and records failure.
         if user.is_cancelled() {
-            return ProgramEnd::CancelledAfterReturn(value);
+            return ProgramEnd::CancelledAfterFinish;
         }
-        return ProgramEnd::Success(value);
+        return ProgramEnd::Success;
     }
     if output.borrow().tripped() || flags.output.load(Ordering::Relaxed) {
         return ProgramEnd::Failure(Failure::output(output_limit));
@@ -819,7 +846,7 @@ fn install(
     output: &Rc<RefCell<OutputLedger>>,
 ) -> Result<(), Failure> {
     install_libs(ctx)?;
-    install_console(ctx, output, flags, faults)?;
+    install_inspect(ctx, output, flags, faults)?;
     let shared = Shared {
         handle: handle.clone(),
         calls: Arc::clone(calls),
@@ -894,45 +921,45 @@ fn install_fs<'js>(ctx: &Ctx<'js>, root: &std::path::Path) -> Result<(), Failure
     define_const(ctx, "fs", object)
 }
 
-fn install_console(
-    ctx: &Ctx<'_>,
+fn install_inspect<'js>(
+    ctx: &Ctx<'js>,
     output: &Rc<RefCell<OutputLedger>>,
     flags: &Arc<Flags>,
     faults: &Arc<Faults>,
 ) -> Result<(), Failure> {
-    let console = Object::new(ctx.clone()).map_err(|error| Failure::internal(error.to_string()))?;
-    for (name, level) in [
-        ("log", LogLevel::Log),
-        ("info", LogLevel::Info),
-        ("warn", LogLevel::Warn),
-        ("error", LogLevel::Error),
-        ("debug", LogLevel::Debug),
-    ] {
-        let output = Rc::clone(output);
-        let flags = Arc::clone(flags);
-        let faults = Arc::clone(faults);
-        let function = Function::new(
-            ctx.clone(),
-            move |ctx: Ctx<'_>, args: Rest<Value<'_>>| -> rquickjs::Result<()> {
-                let message = format_console(&args.0);
-                let mut ledger = output.borrow_mut();
-                ledger.mark_console_used();
-                let accepted = ledger.push_text(level, message);
-                if !accepted {
-                    flags.output.store(true, Ordering::Release);
-                    faults.record(Faults::OUTPUT);
-                    return Err(boundary::uncatchable(&ctx, "output limit"));
+    let output = Rc::clone(output);
+    let flags = Arc::clone(flags);
+    let faults = Arc::clone(faults);
+    let function = Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, args: Rest<Value<'js>>| -> rquickjs::Result<()> {
+            if args.0.is_empty() {
+                return Ok(());
+            }
+            let mut values = Vec::with_capacity(args.0.len());
+            let mut dropped = boundary::DroppedUndefined::default();
+            for value in &args.0 {
+                match boundary::from_js_inspect(&ctx, value, &mut dropped) {
+                    Ok(json) => values.push(json),
+                    Err(thrown) => {
+                        return Err(boundary::throw_message(&ctx, &thrown.message));
+                    }
                 }
-                Ok(())
-            },
-        )
-        .and_then(|function| function.with_name(name))
-        .map_err(|error| Failure::internal(error.to_string()))?;
-        console
-            .set(name, function)
-            .map_err(|error| Failure::internal(error.to_string()))?;
-    }
-    define_const(ctx, "console", console)
+            }
+            let mut ledger = output.borrow_mut();
+            ledger.merge_dropped_undefined(dropped);
+            let accepted = ledger.push_values(values);
+            if !accepted {
+                flags.output.store(true, Ordering::Release);
+                faults.record(Faults::OUTPUT);
+                return Err(boundary::uncatchable(&ctx, "output limit"));
+            }
+            Ok(())
+        },
+    )
+    .and_then(|function| function.with_name("inspect"))
+    .map_err(|error| Failure::internal(error.to_string()))?;
+    define_const(ctx, "inspect", function)
 }
 
 fn install_namespace(
@@ -1275,7 +1302,6 @@ async fn invoke<'js>(
             one,
             boundary::UndefinedPolicy::Strip,
             boundary::NonFinitePolicy::Reject,
-            &mut boundary::DroppedUndefined::default(),
         ) {
             Ok(json) => json,
             Err(BoundaryError::Illegal(message)) => {
@@ -1295,7 +1321,6 @@ async fn invoke<'js>(
                         arg,
                         boundary::UndefinedPolicy::Strip,
                         boundary::NonFinitePolicy::Reject,
-                        &mut boundary::DroppedUndefined::default(),
                     ) {
                         Ok(json) => json,
                         Err(BoundaryError::Illegal(message)) => {
@@ -1520,7 +1545,6 @@ fn throw_tool_error(
 async fn run_program(
     ctx: Ctx<'_>,
     source: String,
-    output: &Rc<RefCell<OutputLedger>>,
     output_limit: usize,
     stack_bytes: usize,
     faults: &Faults,
@@ -1528,6 +1552,7 @@ async fn run_program(
     clock: &BudgetClock,
     user: &CancellationToken,
     protos: &RefCell<Option<Protos>>,
+    awaiting_promise: &AtomicBool,
 ) -> ProgramEnd {
     if let Err(failure) = arm_stack_watch(&ctx, faults, stack_bytes) {
         return ProgramEnd::Failure(failure);
@@ -1560,8 +1585,18 @@ async fn run_program(
     if let Ok(mark) = ctx.eval::<Function<'_>, _>("(p) => { p.catch(() => {}); }") {
         let _ = mark.call::<_, ()>((promise.clone(),));
     }
-    let end = match promise.into_future::<Value<'_>>().await {
-        Ok(value) => {
+    struct AwaitGuard<'a>(&'a AtomicBool);
+    impl Drop for AwaitGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    awaiting_promise.store(true, Ordering::Release);
+    let _await_guard = AwaitGuard(awaiting_promise);
+    let awaited = promise.into_future::<Value<'_>>().await;
+    drop(_await_guard);
+    let end = match awaited {
+        Ok(_value) => {
             // The stack watch may be disarmed, so the allocator cannot poke
             // the interrupt counter. A caught allocation failure still leaves
             // the fault set; that must not resolve as success.
@@ -1572,7 +1607,7 @@ async fn run_program(
                     None,
                 ));
             }
-            accept_value(&value, output.as_ref(), output_limit)
+            ProgramEnd::Success
         }
         Err(error) => classify(
             &ctx,
@@ -1592,29 +1627,6 @@ async fn run_program(
         return ProgramEnd::Failure(contract_failure(faults));
     }
     end
-}
-
-fn accept_value(
-    value: &Value<'_>,
-    output: &RefCell<OutputLedger>,
-    _output_limit: usize,
-) -> ProgramEnd {
-    let mut dropped = boundary::DroppedUndefined::default();
-    let converted = boundary::from_js_with(
-        value,
-        boundary::UndefinedPolicy::StripOrNull,
-        boundary::NonFinitePolicy::Null,
-        &mut dropped,
-    );
-    output.borrow_mut().set_dropped_undefined(dropped);
-    match converted {
-        Err(BoundaryError::Illegal(message)) => ProgramEnd::Failure(Failure::illegal(message)),
-        Err(BoundaryError::Thrown(thrown)) => {
-            ProgramEnd::Failure(Failure::exception(thrown.message, thrown.stack))
-        }
-        Ok(_json) if value.is_undefined() => ProgramEnd::Success(None),
-        Ok(json) => ProgramEnd::Success(Some(json)),
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1739,9 +1751,15 @@ fn classify_value<'js>(
         failure.uncaught_type_error = true;
         return ProgramEnd::Failure(failure.locate_runtime(source_lines));
     }
-    ProgramEnd::Failure(
-        Failure::exception(thrown.message, thrown.stack).locate_runtime(source_lines),
-    )
+    let message = if matches!(
+        thrown.message.as_str(),
+        "'console' is not defined" | "console is not defined"
+    ) {
+        "console is not defined — use inspect(value) to emit output".to_string()
+    } else {
+        thrown.message
+    };
+    ProgramEnd::Failure(Failure::exception(message, thrown.stack).locate_runtime(source_lines))
 }
 
 fn tool_error_info<'js>(
@@ -2060,115 +2078,6 @@ where
     }
 }
 
-fn format_console(args: &[Value<'_>]) -> String {
-    args.iter()
-        .map(|value| {
-            if value.is_string() {
-                value.get::<String>().unwrap_or_else(|_| "[string]".into())
-            } else {
-                format_debug(value, 0, &mut Vec::new())
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn format_error(value: &Value<'_>) -> Option<String> {
-    // JS_IsError, not a property probe: reading `name` here would go through a
-    // tool result proxy and latch a contract failure for an internal check.
-    if !value.is_error() {
-        return None;
-    }
-    let object = value.as_object()?;
-    let name = object.get::<_, String>("name").ok()?;
-    let message = object.get::<_, String>("message").unwrap_or_default();
-    let mut text = format!("{name}: {message}");
-    if name == "ToolError"
-        && let Ok(code) = object.get::<_, String>("code")
-        && !code.is_empty()
-    {
-        text.push_str(&format!(" [{code}]"));
-    }
-    Some(text)
-}
-
-fn format_debug(value: &Value<'_>, depth: usize, stack: &mut Vec<usize>) -> String {
-    if value.is_null() {
-        return "null".into();
-    }
-    if value.is_undefined() {
-        return "undefined".into();
-    }
-    if let Some(bool) = value.as_bool() {
-        return bool.to_string();
-    }
-    if let Some(number) = value.as_number() {
-        return number.to_string();
-    }
-    if value.is_string() {
-        return value.get::<String>().unwrap_or_else(|_| "[string]".into());
-    }
-    if value.is_big_int() {
-        return "[BigInt]".into();
-    }
-    if value.is_symbol() {
-        return "[Symbol]".into();
-    }
-    if value.is_function() {
-        return "[Function]".into();
-    }
-    if let Some(text) = format_error(value) {
-        return text;
-    }
-    if depth >= 4 && value.is_object() {
-        return "[Object …]".into();
-    }
-    if !value.is_object() {
-        return "[Object]".into();
-    }
-    let ptr = unsafe { rquickjs::qjs::JS_VALUE_GET_PTR(value.as_raw()) as usize };
-    if stack.contains(&ptr) {
-        return "[Circular]".into();
-    }
-    stack.push(ptr);
-    let text = if let Some(array) = value.as_array() {
-        let total = array.len();
-        let shown = total.min(20);
-        let mut parts = Vec::new();
-        for index in 0..shown {
-            let element = array.get::<Value<'_>>(index).ok();
-            parts.push(match element {
-                Some(element) => format_debug(&element, depth + 1, stack),
-                None => "[?]".into(),
-            });
-        }
-        if total > shown {
-            format!("[{}, … {} more]", parts.join(", "), total - shown)
-        } else {
-            format!("[{}]", parts.join(", "))
-        }
-    } else if let Some(object) = value.as_object() {
-        let mut parts = Vec::new();
-        let mut extra = 0usize;
-        for (index, (key, child)) in object.props::<String, Value<'_>>().flatten().enumerate() {
-            if index < 20 {
-                parts.push(format!("{key}: {}", format_debug(&child, depth + 1, stack)));
-            } else {
-                extra += 1;
-            }
-        }
-        if extra > 0 {
-            format!("{{{}, … {extra} more}}", parts.join(", "))
-        } else {
-            format!("{{{}}}", parts.join(", "))
-        }
-    } else {
-        "[Object]".into()
-    };
-    stack.pop();
-    text
-}
-
 #[cfg(test)]
 mod settle_tests {
     use super::*;
@@ -2184,60 +2093,42 @@ mod settle_tests {
         };
         let user = CancellationToken::new();
         let end = settle::<(), ()>(
-            Either::Left((
-                ProgramEnd::Success(Some(Json::new(serde_json::json!("kept")))),
-                (),
-            )),
+            Either::Left((ProgramEnd::Success, ())),
             &output,
             &flags,
             &clock,
             &user,
             1024,
         );
-        assert!(matches!(end, ProgramEnd::Success(_)));
+        assert!(matches!(end, ProgramEnd::Success));
     }
 
     #[test]
-    fn timeout_during_drain_keeps_the_returned_value() {
-        let output = RefCell::new(OutputLedger::new(4096));
-        let end = reconcile_drain(
-            ProgramEnd::Success(Some(Json::new(serde_json::json!("kept")))),
-            Some(Failure::timeout()),
-            &output,
+    fn timeout_during_drain_keeps_success_and_warns() {
+        let faults = Faults::new();
+        let end = reconcile_drain(ProgramEnd::Success, Some(Failure::timeout()), &faults);
+        assert!(matches!(end, ProgramEnd::Success));
+        assert!(
+            faults
+                .warnings()
+                .iter()
+                .any(|text| text.contains("program budget expired while draining")),
+            "{:?}",
+            faults.warnings()
         );
-        match end {
-            ProgramEnd::Success(Some(value)) => {
-                assert_eq!(value.as_value(), &serde_json::json!("kept"));
-            }
-            _ => panic!("expected the returned value to survive a drain timeout"),
-        }
-        assert!(output.borrow().entries().iter().any(|entry| match &entry.body {
-            crate::ptc::EntryBody::Text { text, .. } => {
-                text.contains("program budget expired while draining")
-            }
-            crate::ptc::EntryBody::Value(_) => false,
-        }));
     }
 
     #[test]
-    fn cancel_during_drain_keeps_the_value() {
-        let output = RefCell::new(OutputLedger::new(4096));
-        let end = reconcile_drain(
-            ProgramEnd::Success(Some(Json::new(serde_json::json!("kept")))),
-            Some(Failure::cancelled()),
-            &output,
-        );
-        assert!(matches!(end, ProgramEnd::CancelledAfterReturn(_)));
+    fn cancel_during_drain_marks_cancelled_after_finish() {
+        let faults = Faults::new();
+        let end = reconcile_drain(ProgramEnd::Success, Some(Failure::cancelled()), &faults);
+        assert!(matches!(end, ProgramEnd::CancelledAfterFinish));
     }
 
     #[test]
     fn other_drain_failures_replace_success() {
-        let output = RefCell::new(OutputLedger::new(4096));
-        let end = reconcile_drain(
-            ProgramEnd::Success(Some(Json::new(serde_json::json!("kept")))),
-            Some(Failure::output(32)),
-            &output,
-        );
+        let faults = Faults::new();
+        let end = reconcile_drain(ProgramEnd::Success, Some(Failure::output(32)), &faults);
         match end {
             ProgramEnd::Failure(failure) => assert_eq!(failure.kind, FailureKind::OutputLimit),
             _ => panic!("expected the output failure to replace success"),

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "dabff73cbdb295bc75e6fcf95255786ac0732759c8d59445fe08ce79691979f1",
+  "sdk_hash": "2064930d693920eded702bc0544c8c80b6a0b5e69879f85c05b5e8ddfb41c2e4",
   "tools": {
     "apply_edits": {
       "path": [
@@ -574,7 +574,7 @@
       "suite": "process",
       "tool": "exec_command",
       "doc": "Start a command. Waits up to yield_time_ms; a live session_id leaves it running in the background. Poll with write_stdin for output, or leave it and wait for the background-exit reminder (exit code + output_file).",
-      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 600000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB in run_code or 10000 tokens otherwise.\n}): Promise<ExecCommandData>;",
+      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 10000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB.\n}): Promise<ExecCommandData>;",
       "input_type": "(inline)",
       "output_type": "ExecCommandData",
       "type_deps": [
@@ -598,11 +598,11 @@
           },
           "yield_time_ms": {
             "type": "integer",
-            "description": "Initial wait only; 250-600000 ms; default 600000. It does not limit the process lifetime."
+            "description": "Initial wait only; 250-600000 ms; default 10000. It does not limit the process lifetime."
           },
           "max_output_tokens": {
             "type": "integer",
-            "description": "Output token budget for this call; defaults to 1 MiB in run_code or 10000 tokens otherwise."
+            "description": "Output token budget for this call; defaults to 1 MiB."
           }
         },
         "required": [
@@ -657,7 +657,7 @@
       "suite": "process",
       "tool": "write_stdin",
       "doc": "Poll, feed, or interrupt an existing exec session. Empty chars waits until the session exits or yield_time_ms expires, returning accumulated output; on exit, exit_code is set and session_id is null.",
-      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap.\n  max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB in run_code or 10000 tokens otherwise.\n}): Promise<ExecCommandData>;",
+      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap.\n  max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB.\n}): Promise<ExecCommandData>;",
       "input_type": "(inline)",
       "output_type": "ExecCommandData",
       "type_deps": [
@@ -681,7 +681,7 @@
           },
           "max_output_tokens": {
             "type": "integer",
-            "description": "Output token budget for this call; defaults to 1 MiB in run_code or 10000 tokens otherwise."
+            "description": "Output token budget for this call; defaults to 1 MiB."
           }
         },
         "required": [
@@ -2060,8 +2060,8 @@
       ],
       "suite": "todo",
       "tool": "todo.write",
-      "doc": "Replace the current session task list; clearing occurs automatically when all items are completed.",
-      "signature": "write(args: {\n  todos: {\n    /** Task description. */\n    content: string;\n    /** Task status. */\n    status: \"pending\" | \"in_progress\" | \"completed\";\n  }[];\n}): Promise<{\n  total: Integer;\n  pending: Integer;\n  in_progress: Integer;\n  completed: Integer;\n  cleared: boolean;\n}>;",
+      "doc": "Record and update a structured task list to plan multi-step work and show progress; skip this for trivial single-step tasks.\nAdd one todo per concrete step before you start. Keep the task actively being worked on `in_progress` (at most one unless running parallel work), and mark each todo `completed` immediately once it is done. Clearing occurs automatically when all items are completed.",
+      "signature": "write(args: {\n  /** The COMPLETE task list, replacing any previous list. */\n  todos: {\n    /** What the task is — a short, non-empty imperative line. */\n    content: string;\n    /** pending (not started) | in_progress (currently working) | completed (done). */\n    status: \"pending\" | \"in_progress\" | \"completed\";\n  }[];\n}): Promise<{\n  total: Integer;\n  pending: Integer;\n  in_progress: Integer;\n  completed: Integer;\n  cleared: boolean;\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
       "type_deps": [
@@ -2077,7 +2077,7 @@
               "properties": {
                 "content": {
                   "type": "string",
-                  "description": "Task description."
+                  "description": "What the task is — a short, non-empty imperative line."
                 },
                 "status": {
                   "type": "string",
@@ -2086,7 +2086,7 @@
                     "in_progress",
                     "completed"
                   ],
-                  "description": "Task status."
+                  "description": "pending (not started) | in_progress (currently working) | completed (done)."
                 }
               },
               "required": [
@@ -2094,7 +2094,8 @@
                 "status"
               ],
               "additionalProperties": false
-            }
+            },
+            "description": "The COMPLETE task list, replacing any previous list."
           }
         },
         "required": [
@@ -2347,7 +2348,8 @@
       "output_type": "(inline)",
       "type_deps": [
         "KnowledgeIssueRow",
-        "KnowledgeScope"
+        "KnowledgeScope",
+        "Path"
       ],
       "input_schema": {
         "type": "object",
@@ -2357,7 +2359,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Restrict to these folders under the knowledge root."
+            "description": "Restrict to these folders (workspace-relative e.g. `knowledge/arch`, or subfolder under the knowledge root e.g. `arch`)."
           },
           "nodes": {
             "type": "array",
@@ -2381,7 +2383,8 @@
                   "type": "string"
                 },
                 "path": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Workspace-relative path to the node file (usable directly with `read`/`write`/`apply_edits`)."
                 },
                 "severity": {
                   "type": "string",
@@ -2428,12 +2431,13 @@
       ],
       "suite": "knowledge",
       "tool": "knowledge.create",
-      "doc": "Create a new pending knowledge node markdown stub under `.litecode/knowledge/`.",
-      "signature": "create(args: {\n  key: string;\n  folder?: string;\n}): Promise<{\n  key: string;\n  path: string;\n  status: KnowledgeNodeStatus;\n}>;",
+      "doc": "Create a new pending knowledge node markdown stub under the workspace knowledge root (`knowledge/` if present, otherwise `.litecode/knowledge/`).",
+      "signature": "create(args: {\n  key: string;\n  /** Target folder (workspace-relative e.g. `knowledge/arch`, or subfolder under the knowledge root e.g. `arch`). */\n  folder?: string;\n}): Promise<{\n  key: string;\n  path: Path;\n  status: KnowledgeNodeStatus;\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
       "type_deps": [
-        "KnowledgeNodeStatus"
+        "KnowledgeNodeStatus",
+        "Path"
       ],
       "input_schema": {
         "type": "object",
@@ -2442,7 +2446,8 @@
             "type": "string"
           },
           "folder": {
-            "type": "string"
+            "type": "string",
+            "description": "Target folder (workspace-relative e.g. `knowledge/arch`, or subfolder under the knowledge root e.g. `arch`)."
           }
         },
         "required": [
@@ -2457,7 +2462,8 @@
             "type": "string"
           },
           "path": {
-            "type": "string"
+            "type": "string",
+            "description": "Workspace-relative path, or an absolute path when explicitly allowed."
           },
           "status": {
             "type": "string",
@@ -2484,14 +2490,15 @@
       ],
       "suite": "knowledge",
       "tool": "knowledge.list",
-      "doc": "List workspace knowledge nodes as flat summary rows (omit filters to list all); nodes use a `node` fence and `[@ key=\"...\"]` / `[@ file=\"...\"]` citations. The corpus root and node count are shown in the run view, not returned here.",
-      "signature": "list(args?: KnowledgeScope): Promise<{\n  nodes: {\n    key: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    incoming_count: Integer;\n    issue_count: Integer;\n    summary: string;\n  }[];\n}>;",
+      "doc": "List workspace knowledge nodes as flat summary rows with workspace-relative `path` (omit filters to list all); nodes use a `node` fence and `[@ key=\"...\"]` / `[@ file=\"...\"]` citations. The corpus root and node count are shown in the run view, not returned here.",
+      "signature": "list(args?: KnowledgeScope): Promise<{\n  nodes: {\n    key: string;\n    path: Path;\n    status: KnowledgeNodeStatus;\n    incoming_count: Integer;\n    issue_count: Integer;\n    summary: string;\n  }[];\n}>;",
       "input_type": "KnowledgeScope",
       "output_type": "(inline)",
       "type_deps": [
         "Integer",
         "KnowledgeNodeStatus",
-        "KnowledgeScope"
+        "KnowledgeScope",
+        "Path"
       ],
       "input_schema": {
         "type": "object",
@@ -2501,7 +2508,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Restrict to these folders under the knowledge root."
+            "description": "Restrict to these folders (workspace-relative e.g. `knowledge/arch`, or subfolder under the knowledge root e.g. `arch`)."
           },
           "nodes": {
             "type": "array",
@@ -2525,7 +2532,8 @@
                   "type": "string"
                 },
                 "path": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Workspace-relative path, or an absolute path when explicitly allowed."
                 },
                 "status": {
                   "type": "string",
@@ -2574,12 +2582,13 @@
       "suite": "knowledge",
       "tool": "knowledge.refs",
       "doc": "Inspect one knowledge node's markdown body, incoming/outgoing citations, and issues.",
-      "signature": "refs(args: {\n  key: string;\n}): Promise<{\n  key: string;\n  folder: string;\n  path: string;\n  status: KnowledgeNodeStatus;\n  summary: string;\n  body: string;\n  incoming: {\n    key: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    summary: string;\n  }[];\n  outgoing: {\n    key: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    summary: string;\n  }[];\n  missing: string[];\n  issues: KnowledgeIssueRow[];\n}>;",
+      "signature": "refs(args: {\n  key: string;\n}): Promise<{\n  key: string;\n  folder: string;\n  path: Path;\n  status: KnowledgeNodeStatus;\n  summary: string;\n  body: string;\n  incoming: {\n    key: string;\n    path: Path;\n    status: KnowledgeNodeStatus;\n    summary: string;\n  }[];\n  outgoing: {\n    key: string;\n    path: Path;\n    status: KnowledgeNodeStatus;\n    summary: string;\n  }[];\n  missing: string[];\n  issues: KnowledgeIssueRow[];\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
       "type_deps": [
         "KnowledgeIssueRow",
-        "KnowledgeNodeStatus"
+        "KnowledgeNodeStatus",
+        "Path"
       ],
       "input_schema": {
         "type": "object",
@@ -2603,7 +2612,8 @@
             "type": "string"
           },
           "path": {
-            "type": "string"
+            "type": "string",
+            "description": "Workspace-relative path, or an absolute path when explicitly allowed."
           },
           "status": {
             "type": "string",
@@ -2629,7 +2639,8 @@
                   "type": "string"
                 },
                 "path": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Workspace-relative path, or an absolute path when explicitly allowed."
                 },
                 "status": {
                   "type": "string",
@@ -2662,7 +2673,8 @@
                   "type": "string"
                 },
                 "path": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Workspace-relative path, or an absolute path when explicitly allowed."
                 },
                 "status": {
                   "type": "string",
@@ -2701,7 +2713,8 @@
                   "type": "string"
                 },
                 "path": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Workspace-relative path to the node file (usable directly with `read`/`write`/`apply_edits`)."
                 },
                 "severity": {
                   "type": "string",

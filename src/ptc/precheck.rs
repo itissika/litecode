@@ -21,6 +21,10 @@ use crate::tool::code_contract::{CodeSurface, CodeToolContract};
 
 /// Findings for one program, in source order, deduped.
 pub(crate) fn check(source: &str, surface: &CodeSurface) -> Vec<String> {
+    let Ok(stripped) = super::ts_strip::strip(source) else {
+        return Vec::new();
+    };
+    let source = stripped.as_str();
     let mut parser = tree_sitter::Parser::new();
     let language: tree_sitter::Language = tree_sitter_javascript::LANGUAGE.into();
     if parser.set_language(&language).is_err() {
@@ -442,7 +446,7 @@ mod tests {
         let findings = check(
             r#"
             const r = await tools.read({ path: "a.txt", limit: 2 });
-            return r.lines;
+            inspect(r.lines);
             "#,
             &surface(),
         );
@@ -508,7 +512,7 @@ mod tests {
         let findings = check(
             r#"
             const r = await tools.read({ path: "a" });
-            return r.data;
+            inspect(r.data);
             "#,
             &surface(),
         );
@@ -536,7 +540,7 @@ mod tests {
             r#"
             let r = await tools.read({ path: "a" });
             r = await tools.read({ path: "b" });
-            return r.data;
+            inspect(r.data);
             "#,
             &surface(),
         );

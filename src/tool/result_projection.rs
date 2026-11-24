@@ -1,8 +1,8 @@
 //! Code-surface result projection.
 //!
-//! Tools may carry richer data for direct/UI callers. A nested `run_code`
-//! call receives only the agent-facing `data`; reminder-only values move to
-//! `ToolCallResult.metadata`, which never enters JS or the generated SDK.
+//! Nested `run_code` calls receive only the agent-facing `data` fields;
+//! reminder-only values move to `ToolCallResult.metadata`, which never enters
+//! JS or the generated SDK.
 
 use serde_json::{Map, Value};
 
@@ -318,8 +318,8 @@ mod more_tests {
                 "root": ".litecode/knowledge",
                 "total": 2,
                 "nodes": [
-                    {"key":"a","folder":"arch","path":"arch/a.md","status":"enabled","incoming_count":1,"issue_count":0,"summary":"A"},
-                    {"key":"b","folder":"arch","path":"arch/b.md","status":"enabled","incoming_count":0,"issue_count":0,"summary":"B"}
+                    {"key":"a","folder":".litecode/knowledge/arch","path":".litecode/knowledge/arch/a.md","status":"enabled","incoming_count":1,"issue_count":0,"summary":"A"},
+                    {"key":"b","folder":".litecode/knowledge/arch","path":".litecode/knowledge/arch/b.md","status":"enabled","incoming_count":0,"issue_count":0,"summary":"B"}
                 ]
             })),
         );
@@ -327,8 +327,8 @@ mod more_tests {
             result.data,
             Some(json!({
                 "nodes": [
-                    {"key":"a","path":"arch/a.md","status":"enabled","incoming_count":1,"issue_count":0,"summary":"A"},
-                    {"key":"b","path":"arch/b.md","status":"enabled","incoming_count":0,"issue_count":0,"summary":"B"}
+                    {"key":"a","path":".litecode/knowledge/arch/a.md","status":"enabled","incoming_count":1,"issue_count":0,"summary":"A"},
+                    {"key":"b","path":".litecode/knowledge/arch/b.md","status":"enabled","incoming_count":0,"issue_count":0,"summary":"B"}
                 ]
             }))
         );
@@ -347,7 +347,7 @@ mod more_tests {
                 "checked": 9,
                 "issue_count": 1,
                 "issues": [{
-                    "key":"a","folder":"arch","path":"arch/a.md",
+                    "key":"a","folder":".litecode/knowledge/arch","path":".litecode/knowledge/arch/a.md",
                     "severity":"warning","code":"dangling_relation","ref_key":"ghost","message":"missing target"
                 }]
             })),
@@ -356,7 +356,7 @@ mod more_tests {
             result.data,
             Some(json!({
                 "issues": [{
-                    "key":"a","path":"arch/a.md",
+                    "key":"a","path":".litecode/knowledge/arch/a.md",
                     "severity":"warning","code":"dangling_relation","ref_key":"ghost","message":"missing target"
                 }]
             }))

@@ -80,7 +80,7 @@ async fn captured_with(build: impl FnOnce(&std::path::Path) -> Value) -> String 
 
 #[tokio::test(flavor = "current_thread")]
 async fn large_result_is_budgeted_in_the_request() {
-    let text = captured_run_code(r#"return "START_SENTINEL" + "A".repeat(200000) + "END_SENTINEL";"#).await;
+    let text = captured_run_code(r#"inspect("START_SENTINEL" + "A".repeat(200000) + "END_SENTINEL");"#).await;
     assert!(text.len() <= 65_536, "{}", text.len());
     assert!(!text.starts_with("[blob:"), "{text}");
     assert!(text.starts_with("run_code ok"), "{text}");
@@ -100,7 +100,7 @@ async fn caught_tool_error_is_counted_and_stated_once() {
         r#"
         // WP-210 G: not_found is a domain failure and resolves { ok: false }.
         const r = await tools.read({ path: "missing.txt" });
-        return [r.ok, r.reason, "read", typeof r.message];
+        inspect([r.ok, r.reason, "read", typeof r.message]);
         "#,
     )
     .await;
@@ -130,7 +130,7 @@ async fn write_conflict_resolves_ok_false() {
     let text = captured_run(
         json!({ "code": r#"
             const r = await tools.write({ path: "taken.txt", content: "x", create_only: true });
-            return [r.ok, r.reason, typeof r.message];
+            inspect([r.ok, r.reason, typeof r.message]);
         "# }),
         |root| std::fs::write(root.join("taken.txt"), "old").unwrap(),
     )
@@ -172,9 +172,9 @@ async fn a_second_argument_is_a_catchable_type_error() {
             "code": r#"
                 try {
                   await tools.read({ path: "a.txt" }, {});
-                  return "resolved";
+                  inspect("resolved");
                 } catch (e) {
-                  return e.name;
+                  inspect(e.name);
                 }
             "#
         }),
@@ -183,10 +183,7 @@ async fn a_second_argument_is_a_catchable_type_error() {
         },
     )
     .await;
-    assert!(
-        text.contains("result:\nTypeError") || text.contains("\"TypeError\""),
-        "{text}"
-    );
+    assert_eq!(text.lines().last(), Some("TypeError"), "{text}");
     assert!(text.starts_with("run_code ok"), "{text}");
 }
 

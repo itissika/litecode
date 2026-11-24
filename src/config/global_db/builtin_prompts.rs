@@ -8,6 +8,7 @@
 //! non-hidden agent.
 
 pub const HARNESS_SYSTEM: &str = include_str!("prompts/harness/system.md");
+pub const HARNESS_CODE_RUNTIME: &str = include_str!("prompts/harness/code_runtime.md");
 pub const ORCHESTRATOR_PROMPT: &str = concat!(
     include_str!("prompts/orchestrator/identity.md"),
     "\n",
@@ -21,6 +22,13 @@ pub const DEFAULT_PROMPT: &str = concat!(
     include_str!("prompts/default/work.md"),
     "\n",
     include_str!("prompts/default/voice.md"),
+);
+pub const PLAN_PROMPT: &str = concat!(
+    include_str!("prompts/plan/identity.md"),
+    "\n",
+    include_str!("prompts/plan/work.md"),
+    "\n",
+    include_str!("prompts/plan/voice.md"),
 );
 pub const GENERAL_PROMPT: &str = concat!(
     include_str!("prompts/general/identity.md"),
@@ -36,6 +44,13 @@ pub const EXPLORE_PROMPT: &str = concat!(
     "\n",
     include_str!("prompts/explore/voice.md"),
 );
+pub const VERIFICATION_PROMPT: &str = concat!(
+    include_str!("prompts/verification/identity.md"),
+    "\n",
+    include_str!("prompts/verification/work.md"),
+    "\n",
+    include_str!("prompts/verification/voice.md"),
+);
 /// DSH-faithful compaction constant: the trailing summarization instruction.
 /// Compaction is a call mode of the main request, never a hidden agent prompt.
 pub const COMPACTION_INSTRUCTION: &str = include_str!("prompts/compaction_instruction.md");
@@ -43,17 +58,20 @@ pub const COMPACTION_INSTRUCTION: &str = include_str!("prompts/compaction_instru
 /// Framing prepended to every compacted checkpoint inside its `<system-reminder>`.
 pub const CHECKPOINT_PREAMBLE: &str = include_str!("prompts/checkpoint_preamble.md");
 
-/// Shared citation rules for every non-hidden agent. Spliced by `build_system_prompt`.
+/// Shared citation rules for primary agents. Spliced by `build_system_prompt`.
 pub const CITATION_PROMPT: &str = include_str!("prompts/citations.md");
 
-pub const DEFAULT_DESCRIPTION: &str = "General-purpose coding assistant";
+pub const DEFAULT_DESCRIPTION: &str = "General-purpose software engineering agent. Investigates, implements, verifies, and delivers end-to-end changes.";
 
-pub const ORCHESTRATOR_DESCRIPTION: &str =
-    "Orchestrator. Manages a team of subagents and owns the user's goal.";
+pub const PLAN_DESCRIPTION: &str = "Read-only software architect and planner. Explores the codebase, clarifies ambiguities, and produces a concrete implementation plan for user approval.";
 
-pub const GENERAL_DESCRIPTION: &str = "General-purpose implementer. Edits code, runs commands, and reports back. Use for bounded implementation, tests, and fixes.";
+pub const ORCHESTRATOR_DESCRIPTION: &str = "Team coordinator and goal owner. Plans work, delegates bounded tasks to explore/general/verification subagents, enforces independent verification, and owns the final outcome.";
 
-pub const EXPLORE_DESCRIPTION: &str = "A read-only Explore agent. Skilled in investigating local codebases and online sources, returning clear, well-analyzed conclusions. Use when comprehensive understanding across local and web sources is required.";
+pub const GENERAL_DESCRIPTION: &str = "Bounded general-purpose implementer. Executes assigned code changes, fixes, and tests within its owned scope and returns a concise evidence-backed report.";
+
+pub const EXPLORE_DESCRIPTION: &str = "Fast read-only codebase and source investigator. Searches files, traces implementations, and returns concise, evidence-backed conclusions.";
+
+pub const VERIFICATION_DESCRIPTION: &str = "Independent adversarial verifier. Does not modify project files; runs builds, tests, linters, and adversarial probes to issue an evidence-backed PASS, FAIL, or PARTIAL verdict.";
 
 /// DB `system_prompt` values that mean "use the built-in pack for this agent id".
 pub fn is_builtin_prompt_marker(stored: &str) -> bool {
@@ -66,9 +84,11 @@ pub fn is_builtin_prompt_marker(stored: &str) -> bool {
 pub fn builtin_prompt_for(agent_id: &str) -> Option<&'static str> {
     match agent_id {
         "default" => Some(DEFAULT_PROMPT),
+        "plan" => Some(PLAN_PROMPT),
         "orchestrator" => Some(ORCHESTRATOR_PROMPT),
         "general" => Some(GENERAL_PROMPT),
         "explore" => Some(EXPLORE_PROMPT),
+        "verification" => Some(VERIFICATION_PROMPT),
         _ => None,
     }
 }

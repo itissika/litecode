@@ -66,12 +66,16 @@ export const PANEL_EXIT_MS = 160;
  */
 export const BASH_CLAIM_GRACE_MS = 1500;
 /** User message the "执行计划" button sends on the human's behalf. */
-export function planExecutePrompt(): string {
-  return i18n.t("session.planExecutePrompt");
+export function planExecutePrompt(fromPlan = false): string {
+  return i18n.t(
+    fromPlan ? "session.planSwitchExecutePrompt" : "session.planExecutePrompt",
+  );
 }
 
 /** @deprecated Prefer planExecutePrompt(). */
 export const PLAN_EXECUTE_PROMPT = "Start executing according to the current plan.";
+export const PLAN_SWITCH_EXECUTE_PROMPT =
+  "Switched to default mode. Proceeding with the plan while maintaining the todo list.";
 
 /**
  * True when the on-disk plan has a real body (planned). A blank file and the
@@ -513,7 +517,14 @@ export function SessionStatusLine({
   // `false` return means the turn could not start (already running / socket
   // down); the button is disabled while running, so this is the offline case.
   const executePlan = () => {
-    useTurnStore.getState().start(sessionId, planExecutePrompt(), true);
+    const sess = useSessionStore.getState();
+    const activePrimary =
+      sess.byId.get(sessionId)?.activePrimary ?? sess.activePrimary;
+    const fromPlan = activePrimary === "plan";
+    if (fromPlan) {
+      sess.setPrimary(sessionId, "default");
+    }
+    useTurnStore.getState().start(sessionId, planExecutePrompt(fromPlan), true);
   };
 
   const todoCurrent = todoItems.find((item) => item.status === "in_progress");

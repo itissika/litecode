@@ -16,7 +16,6 @@ use crate::permission::{PermissionEngine, PermissionSink};
 use crate::runtime::diagnostics::{AuditEvent, emit_tool_audit};
 use crate::session::media::resolve_media_artifact_url;
 use crate::tool::authorize::{AuthResult, authorize};
-use crate::tool::output;
 use crate::tool::resource_gate::{ToolEffects, process_resource_gate};
 use crate::tool::schema_validate::{
     check_tool_input, invalid_input_for, parse_tool_arguments,
@@ -744,7 +743,7 @@ pub async fn execute_tool_call(
         output_limit: if matches!(origin.caller, ToolCaller::Code { .. }) {
             usize::MAX
         } else {
-            output::direct_output_limit(tool.as_ref())
+            tool.max_result_size()
         },
         session_id: session_id.to_string(),
         session,
@@ -841,36 +840,7 @@ pub async fn execute_tool_call(
         }
         output
     } else {
-        let existing_file = if matches!(tu_name.as_str(), "exec_command" | "write_stdin") {
-            output
-                .data
-                .as_ref()
-                .and_then(|d| d.get("output_file"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        } else {
-            None
-        };
-        let output = wire_result(output);
-        let max_bytes = output::direct_output_max_bytes(tool.as_ref());
-        match output::finalize_direct_tool_call_result(
-            output,
-            data_root,
-            &ctx.cwd,
-            &tu_name,
-            max_bytes,
-            existing_file.as_deref(),
-        ) {
-            Ok(processed) => processed,
-            Err(e) => {
-                tracing::error!(tool = %tu_name, error = %e, "tool output processing failed");
-                wire_result(ToolCallResult::error_with_kind(
-                    ToolErrorKind::Io,
-                    format!("output processing failed: {e}"),
-                    false,
-                ))
-            }
-        }
+        wire_result(output)
     };
     let output = if matches!(origin.caller, ToolCaller::Code { .. }) {
         crate::tool::result_projection::project_code_result(&tu_name, output)

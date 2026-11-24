@@ -199,10 +199,11 @@ fn run_list(input: &Value, workspace: &Path) -> ToolCallResult {
         .map(|node| {
             let issue_count = node_issues(&issues, &node.id).len();
             let incoming_count = corpus.incoming(&node.key).len();
+            let full_path = ws_path(&root, &node.path);
             json!({
                 "key": node.key,
-                "folder": folder_of(&node.path),
-                "path": node.path,
+                "folder": folder_of(&full_path),
+                "path": full_path,
                 "status": status_label(node),
                 "incoming_count": incoming_count,
                 "issue_count": issue_count,
@@ -241,7 +242,7 @@ fn run_check(input: &Value, workspace: &Path) -> ToolCallResult {
     let mut rows: Vec<Value> = Vec::new();
     for node in selected {
         for issue in node_issues(&issues, &node.id) {
-            rows.push(issue_row(node, &issue));
+            rows.push(issue_row(&root, node, &issue));
         }
     }
     let issue_count = rows.len();
@@ -272,26 +273,27 @@ fn run_refs(input: &Value, workspace: &Path) -> ToolCallResult {
     let issues = issues_of(workspace, &corpus);
     let card_issues: Vec<Value> = node_issues(&issues, &node.id)
         .into_iter()
-        .map(|issue| issue_row(node, &issue))
+        .map(|issue| issue_row(&root, node, &issue))
         .collect();
     let body = read_node_file(workspace, &root, node);
     let incoming: Vec<Value> = corpus
         .incoming(&node.key)
         .into_iter()
-        .map(ref_edge)
+        .map(|edge| ref_edge(&root, edge))
         .collect();
     let mut outgoing: Vec<Value> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     for rel in &node.relations {
         match corpus.by_key(rel) {
-            Some(target) => outgoing.push(ref_edge(target)),
+            Some(target) => outgoing.push(ref_edge(&root, target)),
             None => missing.push(rel.clone()),
         }
     }
+    let full_path = ws_path(&root, &node.path);
     let data = json!({
         "key": node.key,
-        "folder": folder_of(&node.path),
-        "path": node.path,
+        "folder": folder_of(&full_path),
+        "path": full_path,
         "status": status_label(node),
         "summary": node.summary,
         "body": body,
@@ -300,7 +302,7 @@ fn run_refs(input: &Value, workspace: &Path) -> ToolCallResult {
         "missing": missing,
         "issues": card_issues,
     });
-    ToolCallResult::ok(format!("Node `{}` ({})", node.key, node.path)).with_data(data)
+    ToolCallResult::ok(format!("Node `{}` ({})", node.key, full_path)).with_data(data)
 }
 
 impl KnowledgeCreateTool {
@@ -316,7 +318,7 @@ impl KnowledgeCreateTool {
         let folder = input
             .get("folder")
             .and_then(Value::as_str)
-            .map(str::trim)
+            .map(|folder| folder.trim().trim_end_matches('/'))
             .filter(|folder| !folder.is_empty());
         if let Some(folder) = folder
             && !folder_ok(folder)
@@ -331,8 +333,11 @@ impl KnowledgeCreateTool {
             KnowledgeRoot::Present(root) => root,
             KnowledgeRoot::Missing => root::PRIVATE_ROOT.to_string(),
         };
-        let rel = match folder {
-            Some(folder) => format!("{folder}/{key}.md"),
+        let subfolder = folder
+            .map(|folder| normalize_folder(&root, folder))
+            .filter(|sub| !sub.is_empty());
+        let rel = match subfolder {
+            Some(sub) => format!("{sub}/{key}.md"),
             None => format!("{key}.md"),
         };
         let full = root::join(&root, &rel);
@@ -375,7 +380,12 @@ struct ScopeFilter {
 }
 
 fn parse_scope(input: &Value) -> Result<ScopeFilter, String> {
-    let folders = parse_string_list(input.get("folders"), "folders")?;
+    let folders = parse_string_list(input.get("folders"), "folders")?.map(|items| {
+        items
+            .into_iter()
+            .map(|item| item.trim_end_matches('/').to_string())
+            .collect::<Vec<_>>()
+    });
     if let Some(list) = &folders {
         for folder in list {
             if !folder_ok(folder) {
@@ -430,12 +440,18 @@ fn select_nodes<'a>(
     let mut matched_paths = HashSet::<String>::new();
     if let Some(folders) = &scope.folders {
         for folder in folders {
-            if !workspace.join(root).join(folder).is_dir() {
+            let sub = normalize_folder(root, folder);
+            let dir = if sub.is_empty() {
+                workspace.join(root)
+            } else {
+                workspace.join(root).join(sub)
+            };
+            if !dir.is_dir() {
                 return Err(ToolCallResult::error(format!(
                     "There is no knowledge folder `{folder}`."
                 )));
             }
-            for node in corpus.in_folder(folder) {
+            for node in corpus.in_folder(sub) {
                 matched_paths.insert(node.path.clone());
             }
         }
@@ -465,17 +481,33 @@ fn status_label(node: &Node) -> &'static str {
     }
 }
 
+fn ws_path(root: &str, node_path: &str) -> String {
+    root::join(root, node_path)
+}
+
+fn normalize_folder<'a>(root: &str, folder: &'a str) -> &'a str {
+    let folder = folder.trim_end_matches('/');
+    if folder == root {
+        return "";
+    }
+    if let Some(rest) = folder.strip_prefix(root).and_then(|s| s.strip_prefix('/')) {
+        return rest;
+    }
+    folder
+}
+
 fn folder_of(path: &str) -> String {
     path.rsplit_once('/')
         .map(|(dir, _)| dir.to_string())
         .unwrap_or_default()
 }
 
-fn issue_row(node: &Node, issue: &Issue) -> Value {
+fn issue_row(root: &str, node: &Node, issue: &Issue) -> Value {
+    let full_path = ws_path(root, &node.path);
     json!({
         "key": node.key,
-        "folder": folder_of(&node.path),
-        "path": node.path,
+        "folder": folder_of(&full_path),
+        "path": full_path,
         "severity": issue.severity.as_str(),
         "code": issue.code,
         "ref_key": issue.ref_key,
@@ -483,10 +515,10 @@ fn issue_row(node: &Node, issue: &Issue) -> Value {
     })
 }
 
-fn ref_edge(node: &Node) -> Value {
+fn ref_edge(root: &str, node: &Node) -> Value {
     json!({
         "key": node.key,
-        "path": node.path,
+        "path": ws_path(root, &node.path),
         "status": status_label(node),
         "summary": node.summary,
     })
@@ -541,8 +573,8 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
         "total": 1,
         "nodes": [{
             "key": "seq",
-            "folder": "arch",
-            "path": "arch/seq.md",
+            "folder": ".litecode/knowledge/arch",
+            "path": ".litecode/knowledge/arch/seq.md",
             "status": "enabled",
             "incoming_count": 2,
             "issue_count": 0,
@@ -555,8 +587,8 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
         "issue_count": 1,
         "issues": [{
             "key": "seq",
-            "folder": "arch",
-            "path": "arch/seq.md",
+            "folder": ".litecode/knowledge/arch",
+            "path": ".litecode/knowledge/arch/seq.md",
             "severity": "warning",
             "code": "dangling_relation",
             "ref_key": "missing",
@@ -565,28 +597,28 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
     }));
     let refs_sample = ToolCallResult::ok("ok").with_data(json!({
         "key": "seq",
-        "folder": "arch",
-        "path": "arch/seq.md",
+        "folder": ".litecode/knowledge/arch",
+        "path": ".litecode/knowledge/arch/seq.md",
         "status": "enabled",
         "summary": "Sequence contract",
         "body": "# Seq\n",
         "incoming": [{
             "key": "other",
-            "path": "other.md",
+            "path": ".litecode/knowledge/other.md",
             "status": "enabled",
             "summary": "Other",
         }],
         "outgoing": [{
             "key": "target",
-            "path": "target.md",
+            "path": ".litecode/knowledge/target.md",
             "status": "enabled",
             "summary": "Target",
         }],
         "missing": ["ghost"],
         "issues": [{
             "key": "seq",
-            "folder": "arch",
-            "path": "arch/seq.md",
+            "folder": ".litecode/knowledge/arch",
+            "path": ".litecode/knowledge/arch/seq.md",
             "severity": "warning",
             "code": "dangling_relation",
             "ref_key": "ghost",
@@ -656,5 +688,109 @@ mod tests {
         let first_issue = &cdata["issues"][0];
         assert!(first_issue["severity"].is_string());
         assert!(!first_issue.as_object().unwrap().values().any(|v| v.is_object() || v.is_array()));
+    }
+
+    #[test]
+    fn knowledge_tools_unify_on_workspace_relative_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("knowledge");
+        std::fs::create_dir_all(root.join("contracts")).unwrap();
+        std::fs::create_dir_all(root.join("arch")).unwrap();
+        std::fs::write(
+            root.join("overview.md"),
+            "```node\nnode : overview\nstatus : enabled\nsummary : Overview\n```\n\nSee [@ key=\"auth-flow\"].\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("contracts/auth-flow.md"),
+            "```node\nnode : auth-flow\nstatus : enabled\nsummary : Auth\n```\n\nCites [@ key=\"missing\"] and [@ key=\"session-store\"].\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("arch/session-store.md"),
+            "```node\nnode : session-store\nstatus : enabled\nsummary : Store\n```\n",
+        )
+        .unwrap();
+
+        let list_all = run_list(&json!({}), dir.path()).data.unwrap();
+        let paths: Vec<&str> = list_all["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                "knowledge/arch/session-store.md",
+                "knowledge/contracts/auth-flow.md",
+                "knowledge/overview.md",
+            ]
+        );
+
+        let by_ws_folder = run_list(&json!({ "folders": ["knowledge/contracts"] }), dir.path())
+            .data
+            .unwrap();
+        assert_eq!(by_ws_folder["total"], 1);
+        assert_eq!(
+            by_ws_folder["nodes"][0]["path"],
+            "knowledge/contracts/auth-flow.md"
+        );
+
+        let by_root_folder = run_list(&json!({ "folders": ["knowledge/"] }), dir.path())
+            .data
+            .unwrap();
+        assert_eq!(by_root_folder["total"], 3);
+
+        let check_ws = run_check(&json!({ "folders": ["knowledge/contracts"] }), dir.path())
+            .data
+            .unwrap();
+        assert_eq!(check_ws["issue_count"], 1);
+        assert_eq!(
+            check_ws["issues"][0]["path"],
+            "knowledge/contracts/auth-flow.md"
+        );
+
+        let refs = run_refs(&json!({ "key": "auth-flow" }), dir.path())
+            .data
+            .unwrap();
+        assert_eq!(refs["folder"], "knowledge/contracts");
+        assert_eq!(refs["path"], "knowledge/contracts/auth-flow.md");
+        assert_eq!(refs["incoming"][0]["path"], "knowledge/overview.md");
+        assert_eq!(refs["outgoing"][0]["path"], "knowledge/arch/session-store.md");
+        assert_eq!(refs["issues"][0]["path"], "knowledge/contracts/auth-flow.md");
+
+        let overview_refs = run_refs(&json!({ "key": "overview" }), dir.path())
+            .data
+            .unwrap();
+        assert_eq!(overview_refs["folder"], "knowledge");
+        assert_eq!(overview_refs["path"], "knowledge/overview.md");
+    }
+
+    #[tokio::test]
+    async fn knowledge_create_accepts_workspace_or_relative_folder_without_double_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let kroot = dir.path().join("knowledge");
+        std::fs::create_dir_all(kroot.join("contracts")).unwrap();
+
+        let engines = std::sync::Arc::new(crate::engines::WorkspaceEngines::new());
+        let ide = crate::ide_base::IdeBaseHandle::open(dir.path().to_path_buf(), engines).unwrap();
+        let tool = KnowledgeCreateTool::new(ide);
+
+        let a = tool.run_create(&json!({ "key": "rate-limit", "folder": "knowledge/contracts" }), dir.path());
+        assert!(a.error.is_none(), "{}", a.content);
+        assert_eq!(a.data.as_ref().unwrap()["path"], "knowledge/contracts/rate-limit.md");
+        assert!(dir.path().join("knowledge/contracts/rate-limit.md").is_file());
+        assert!(!dir.path().join("knowledge/knowledge").exists());
+
+        let b = tool.run_create(&json!({ "key": "top-note", "folder": "knowledge" }), dir.path());
+        assert!(b.error.is_none(), "{}", b.content);
+        assert_eq!(b.data.as_ref().unwrap()["path"], "knowledge/top-note.md");
+        assert!(dir.path().join("knowledge/top-note.md").is_file());
+
+        let c = tool.run_create(&json!({ "key": "sub-note", "folder": "contracts" }), dir.path());
+        assert!(c.error.is_none(), "{}", c.content);
+        assert_eq!(c.data.as_ref().unwrap()["path"], "knowledge/contracts/sub-note.md");
+        assert!(dir.path().join("knowledge/contracts/sub-note.md").is_file());
     }
 }

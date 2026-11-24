@@ -540,6 +540,7 @@
     "workspaceUsage": "工作区用量",
     "planExecute": "执行计划",
     "planExecutePrompt": "按当前计划开始执行。",
+    "planSwitchExecutePrompt": "已经切换至default模式，基于plan，并自行维护todo列表，开始推进执行",
     "planPathExecute": "{{path}} 开始执行",
     "startExecute": "开始执行",
     "noRunningTurn": "没有在运行的回合",

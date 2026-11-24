@@ -29,6 +29,7 @@ on = [
   "exec_command",   # Codex-style unified exec session
   "write_stdin",    # poll / feed / Ctrl-C an exec session
   "run_code",       # the code transport: code tools are called through it
+  "todo.write",     # structured multi-step progress tracking
 ]
 off = [
   # Language service: the container runs no language server, so every call
@@ -63,7 +64,6 @@ off = [
   "plan.create",
   "plan.finish",
   # Product surface: says nothing about how well the task was solved.
-  "todo.write",
   "knowledge.list",
   "knowledge.check",
   "knowledge.refs",

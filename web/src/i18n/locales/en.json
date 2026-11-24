@@ -540,6 +540,7 @@
     "workspaceUsage": "Workspace usage",
     "planExecute": "Execute plan",
     "planExecutePrompt": "Start executing according to the current plan.",
+    "planSwitchExecutePrompt": "Switched to default mode. Proceeding with the plan while maintaining the todo list.",
     "planPathExecute": "{{path}} — start",
     "startExecute": "Start executing",
     "noRunningTurn": "No turn is running",

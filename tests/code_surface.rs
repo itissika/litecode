@@ -346,7 +346,7 @@ mod projection {
         let resolved =
             ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
         let permission = PermissionEngine::resolver(resolved, "default", 0);
-        let denied = permission.evaluate_tool("run_code", &json!({"code": "return 1"}), dir.path());
+        let denied = permission.evaluate_tool("run_code", &json!({"code": "inspect(1)"}), dir.path());
         assert_eq!(denied.action, PermissionAction::Deny);
 
         let context = ctx(dir.path());
@@ -369,7 +369,7 @@ mod projection {
         let transport = litecode::tools::code::CodeTool::from_surface(Vec::new(), surface, host);
         assert!(transport.is_code_transport());
         let allowed = authorize(
-            &call("run_code", json!({"code": "return 1"})),
+            &call("run_code", json!({"code": "inspect(1)"})),
             &transport,
             &permission,
             &context,
@@ -816,7 +816,7 @@ mod run_code_only {
         let result = execute(
             &hosted,
             "run_code",
-            json!({ "code": "return await tools.fast({});" }),
+            json!({ "code": "inspect(await tools.fast({}));" }),
             litecode::permission::deny_permission_sink().as_ref(),
             CancellationToken::new(),
         )
@@ -830,7 +830,7 @@ mod run_code_only {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn non_finite_program_result_is_null_with_a_header_warning() {
+    async fn non_finite_inspect_value_renders_losslessly() {
         let dir = tempfile::tempdir().unwrap();
         let hosted = hosted(
             dir.path(),
@@ -841,20 +841,18 @@ mod run_code_only {
         let result = execute(
             &hosted,
             "run_code",
-            json!({ "code": "return NaN;" }),
+            json!({ "code": "inspect(NaN);" }),
             litecode::permission::deny_permission_sink().as_ref(),
             CancellationToken::new(),
         )
         .await;
         assert!(result.error.is_none(), "{}", result.content);
         assert!(
-            result
-                .content
-                .contains("coerced non-finite number at $ to null"),
+            !result.content.contains("coerced non-finite"),
             "{}",
             result.content
         );
-        assert_eq!(result.content.lines().last(), Some("null"), "{}", result.content);
+        assert_eq!(result.content.lines().last(), Some("NaN"), "{}", result.content);
     }
 
     struct SlowAllow;
@@ -928,12 +926,12 @@ mod run_code_only {
     const glob = await tools.glob({ pattern: "probe.txt" });
     const grep = await tools.grep({ pattern: "zz", path: "probe.txt" });
     const write = await tools.write({ path: "nested.txt", content: "ok" });
-    return {
+    inspect({
       read: Array.isArray(read.lines) ? "ok" : "missing",
       glob: Array.isArray(glob.paths) ? "ok" : "missing",
       grep: Array.isArray(grep.hits) ? "ok" : "missing",
       write: write.path ? "ok" : "missing"
-    };
+    });
     "#;
         let result = execute(
             &hosted,
@@ -996,7 +994,7 @@ mod run_code_only {
             &hosted,
             "run_code",
             json!({
-                "code": "await tools.block({}); return { done: true };"
+                "code": "await tools.block({}); inspect({ done: true });"
             }),
             &sink,
             cancel.clone(),
@@ -1043,7 +1041,7 @@ mod run_code_only {
             &hosted,
             "run_code",
             json!({
-                "code": "await tools.late({}); return 'done';"
+                "code": "await tools.late({}); inspect('done');"
             }),
             &sink,
             CancellationToken::new(),
@@ -1077,7 +1075,7 @@ mod run_code_only {
             &hosted,
             "run_code",
             json!({
-                "code": "const read = await tools.read({ path: \"probe.txt\" }); return Array.isArray(read.lines) ? \"ok\" : \"missing\";"
+                "code": "const read = await tools.read({ path: \"probe.txt\" }); inspect(Array.isArray(read.lines) ? \"ok\" : \"missing\");"
             }),
             sink.as_ref(),
             CancellationToken::new(),
@@ -1111,7 +1109,7 @@ mod run_code_only {
             &hosted,
             "run_code",
             json!({
-                "code": "await tools.fast({}); await tools.hold({}); return { done: true };"
+                "code": "await tools.fast({}); await tools.hold({}); inspect({ done: true });"
             }),
             &sink,
             CancellationToken::new(),
@@ -1157,7 +1155,7 @@ mod run_code_only {
         let result = execute(
             &hosted,
             "run_code",
-            json!({ "code": "return await tools.deck.only({});" }),
+            json!({ "code": "inspect(await tools.deck.only({}));" }),
             sink.as_ref(),
             CancellationToken::new(),
         )
@@ -1180,7 +1178,7 @@ mod run_code_only {
         let result = execute(
             &hosted,
             "run_code",
-            json!({ "code": "return await tools.noargs();" }),
+            json!({ "code": "inspect(await tools.noargs());" }),
             sink.as_ref(),
             CancellationToken::new(),
         )
@@ -1233,7 +1231,7 @@ mod run_code_only {
         let result = execute(
             &hosted,
             "run_code",
-            json!({ "code": "const r = await tools.custom_code({}); return r;" }),
+            json!({ "code": "const r = await tools.custom_code({}); inspect(r);" }),
             sink.as_ref(),
             CancellationToken::new(),
         )
@@ -1475,7 +1473,7 @@ mod edit_write {
     } catch (e) {
       status = "error";
     }
-    return { status };
+    inspect({ status });
     "#;
         let result = execute(
             &hosted,
@@ -1526,7 +1524,7 @@ mod edit_write {
     }} catch (e) {{
       status = "error";
     }}
-    return {{ status }};
+    inspect({{ status }});
     "#
         );
         let result = execute(
@@ -1567,7 +1565,7 @@ mod edit_write {
     ]);
     await tools.write({ path: "seq.txt", content: "one" });
     await tools.write({ path: "seq.txt", content: "two" });
-    return "done";
+    inspect("done");
     "#;
         let result = execute(
             &hosted,
@@ -1611,7 +1609,7 @@ mod edit_write {
     await tools.apply_edits({
       edits: [{ path: "seal.txt", old_string: body, new_string: "y".repeat(80000) }]
     });
-    return "done";
+    inspect("done");
     "#;
         let path = dir.path().join("seal.txt");
         let mut run = std::pin::pin!(execute(
@@ -1938,7 +1936,7 @@ mod edit_write {
     ];
     const held = await readsDuringWrite(READ_PATHS);
     SPELLED_CALLS
-    return { races, held, spelled };
+    inspect({ races, held, spelled });
     "#
         .replace("RACE_CALLS", &race_calls)
         .replace("READ_PATHS", read_paths)
@@ -2283,7 +2281,7 @@ mod approval_locks {
     try {
       await tools.write({ path: "same.txt", content: "from-nested" });
     } catch (e) {}
-    return "done";
+    inspect("done");
     "#;
         let run = tokio::spawn(async move {
             execute(
@@ -2318,7 +2316,7 @@ mod approval_locks {
     if (!write.path) {
       throw new Error("write failed while approval was pending");
     }
-    return "wrote";
+    inspect("wrote");
     "#;
         let other = tokio::time::timeout(
             Duration::from_secs(3),
@@ -2371,7 +2369,7 @@ mod approval_locks {
         let cancel_run = cancel.clone();
         let script = r#"
     await tools.write({ path: "gone.txt", content: "later" });
-    return "done";
+    inspect("done");
     "#;
         let run = tokio::spawn(async move {
             execute(
@@ -2422,7 +2420,7 @@ mod approval_locks {
         let cancel_run = cancel.clone();
         let script = r#"
     await tools.write({ path: "late.txt", content: "maybe" });
-    return "done";
+    inspect("done");
     "#;
         let run = tokio::spawn(async move {
             execute(
@@ -2690,7 +2688,7 @@ mod approval_concurrency {
             execute(
                 &pending,
                 "phase5-pending",
-                r#"try { await tools.write({ path: "pending.txt", content: "wait" }); } catch (e) {} return "done";"#,
+                r#"try { await tools.write({ path: "pending.txt", content: "wait" }); } catch (e) {} inspect("done");"#,
                 &litecode::permission::DenyPermissionSink,
                 cancel,
             )
@@ -2711,7 +2709,7 @@ mod approval_concurrency {
                 r#"
     const page = await tools.read({ path: "other.txt" });
     const found = await tools.grep({ pattern: "OTHER_NEEDLE", path: "other.txt" });
-    return { line: page.lines[0].text, hits: found.hits.length };
+    inspect({ line: page.lines[0].text, hits: found.hits.length });
     "#,
                 &litecode::permission::DenyPermissionSink,
                 CancellationToken::new(),

@@ -1675,7 +1675,7 @@ mod tests {
             .expect("create");
         let default_prompt = crate::config::global_db::DEFAULT_PROMPT;
         assert_eq!(created.body.system_prompt, default_prompt);
-        assert!(!created.body.system_prompt.contains("subagent"));
+        assert!(!created.body.system_prompt.contains("bounded software engineering implementer"));
 
         let registry = f.dir.path().join("bots.json");
         let before_restart = fs::read_to_string(&registry).expect("registry");
@@ -1713,8 +1713,8 @@ mod tests {
         .expect("bot body");
         let config = crate::config::bridge::agent_config_from_profile(&resolution.profile);
         let prompt = crate::context_pipeline::build_system_prompt(&created.id, &config, None);
-        assert!(prompt.contains("General Purpose Agent"));
-        assert!(!prompt.contains("subagent"));
+        assert!(prompt.contains("LiteCode's default coding agent"));
+        assert!(!prompt.contains("bounded software engineering implementer"));
     }
 
     #[tokio::test]

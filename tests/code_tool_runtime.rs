@@ -55,9 +55,9 @@ async fn code_tool_captures_logs_and_enforces_output_ledger() {
     let tools = vec![Arc::clone(&code)];
 
     let logs_script = r#"
-console.log("hello", 42);
-console.error("warn");
-return { ok: true };
+inspect("hello", 42);
+inspect("warn");
+inspect({ ok: true });
 "#;
     let call = FunctionToolCall {
         arguments: json!({ "code": logs_script }).to_string(),
@@ -84,9 +84,14 @@ return { ok: true };
     )
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    // WP-210 D: success keeps the head of the logs within 3k tokens.
+    // Success keeps the head of the inspect stream within the view cap.
     assert!(
-        result.content.contains("[log] hello 42"),
+        result.content.contains("hello: 42"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("warn"),
         "{}",
         result.content
     );
@@ -98,7 +103,7 @@ return { ok: true };
     assert_eq!(run_code_result(&result.content), json!({ "ok": true }));
 
     let failing = FunctionToolCall {
-        arguments: json!({ "code": "console.log(\"hello\", 42);\nconsole.error(\"warn\");\nthrow new Error(\"boom\");" }).to_string(),
+        arguments: json!({ "code": "inspect(\"hello\", 42);\ninspect(\"warn\");\nthrow new Error(\"boom\");" }).to_string(),
         call_id: "code-logs-2".to_string(),
         namespace: None,
         name: "run_code".to_string(),
@@ -122,18 +127,18 @@ return { ok: true };
     )
     .await;
     assert!(
-        result.content.contains("[log] hello 42"),
+        result.content.contains("hello: 42"),
         "{}",
         result.content
     );
     assert!(
-        result.content.contains("[error] warn"),
+        result.content.contains("warn"),
         "{}",
         result.content
     );
 
     let oversized = format!(
-        "return \"x\".repeat({});",
+        "inspect(\"x\".repeat({}));",
         litecode::tools::code::MAX_CODE_OUTPUT_BYTES + 1
     );
     let call = FunctionToolCall {
@@ -210,10 +215,10 @@ try {
 } catch (error) {
   require_state = String(error && error.message ? error.message : error);
 }
-return {
+inspect({
   process: typeof process,
   require_state,
-};
+});
 "#;
     let call = FunctionToolCall {
         arguments: json!({ "code": script }).to_string(),
@@ -284,7 +289,7 @@ async fn fixed_run_timeout_keeps_the_log_tail() {
     let tools = vec![Arc::clone(&code)];
     let call = FunctionToolCall {
         arguments: json!({
-            "code": "console.log('LOG_TAIL_SENTINEL'); while (true) {}"
+            "code": "inspect('LOG_TAIL_SENTINEL'); while (true) {}"
         })
         .to_string(),
         call_id: "code-timeout-1".to_string(),

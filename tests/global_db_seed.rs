@@ -60,6 +60,7 @@ fn config_global_db_migration_and_seed() {
     );
 
     assert!(settings.agents.contains_key("default"));
+    assert!(settings.agents.contains_key("plan"));
     assert!(
         !settings.agents.contains_key("compaction"),
         "compaction is a call mode, not a hidden seeded agent"
@@ -67,9 +68,14 @@ fn config_global_db_migration_and_seed() {
     assert!(settings.agents.contains_key("explore"));
     assert!(settings.agents.contains_key("general"));
     assert!(settings.agents.contains_key("orchestrator"));
+    assert!(settings.agents.contains_key("verification"));
     assert_eq!(
         settings.agents.get("default").unwrap().system_prompt,
-        "builtin:general"
+        "builtin:default"
+    );
+    assert_eq!(
+        settings.agents.get("plan").unwrap().system_prompt,
+        "builtin:plan"
     );
     assert_eq!(
         settings.agents.get("orchestrator").unwrap().system_prompt,
@@ -84,7 +90,15 @@ fn config_global_db_migration_and_seed() {
         "builtin:general"
     );
     assert_eq!(
+        settings.agents.get("verification").unwrap().system_prompt,
+        "builtin:verification"
+    );
+    assert_eq!(
         settings.agents.get("default").unwrap().allowed_subagents,
+        vec!["explore".to_string()]
+    );
+    assert_eq!(
+        settings.agents.get("plan").unwrap().allowed_subagents,
         vec!["explore".to_string()]
     );
     assert_eq!(
@@ -93,7 +107,11 @@ fn config_global_db_migration_and_seed() {
             .get("orchestrator")
             .unwrap()
             .allowed_subagents,
-        vec!["explore".to_string(), "general".to_string()]
+        vec![
+            "explore".to_string(),
+            "general".to_string(),
+            "verification".to_string()
+        ]
     );
     assert!(settings.agents.get("default").unwrap().model_ref.is_empty());
     let default_tools = &settings.agents.get("default").unwrap().tools;

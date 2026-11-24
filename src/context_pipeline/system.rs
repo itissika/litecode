@@ -1,12 +1,13 @@
 use crate::config::AgentConfig;
 use crate::config::global_db::{
-    CITATION_PROMPT, HARNESS_SYSTEM, builtin_prompt_for, is_builtin_prompt_marker,
+    CITATION_PROMPT, HARNESS_CODE_RUNTIME, HARNESS_SYSTEM, builtin_prompt_for,
+    is_builtin_prompt_marker,
 };
 use crate::context_pipeline::env::Context;
 
-/// Unified entry: harness header + editable layers + citations
-/// + process-snapshotted `AGENTS.md` then `CLAUDE.md`.
-/// Hidden agents get the editable body only.
+/// Unified entry: harness header + code runtime + editable layers
+/// + primary-only citations + workspace `AGENTS.md` then `CLAUDE.md`
+/// (skipped for `explore`). Hidden agents get the editable body only.
 pub fn build_system_prompt(
     agent_id: &str,
     agent_config: &AgentConfig,
@@ -28,7 +29,11 @@ pub fn build_system_prompt_with_platform(
     if agent_config.role == "hidden" {
         return editable;
     }
-    let body = splice_harness(&editable, platform);
+    let is_primary = agent_config.role == "primary";
+    let body = splice_harness(&editable, is_primary, platform);
+    if agent_id == "explore" {
+        return body;
+    }
     let agents_md = ctx.and_then(|c| c.agents_md.as_deref()).unwrap_or("");
     let claude_md = ctx.and_then(|c| c.claude_md.as_deref()).unwrap_or("");
     // Stable order: AGENTS.md then CLAUDE.md. An absent file adds no bytes,
@@ -38,10 +43,11 @@ pub fn build_system_prompt_with_platform(
 }
 
 /// Fixed LiteCode layers around the editable block. An empty editable block still
-/// gets the header and citations.
-fn splice_harness(editable: &str, platform: Option<&str>) -> String {
-    let mut parts = Vec::with_capacity(4);
+/// gets the harness header, code runtime, and (for primary agents) citations.
+fn splice_harness(editable: &str, is_primary: bool, platform: Option<&str>) -> String {
+    let mut parts = Vec::with_capacity(5);
     parts.push(HARNESS_SYSTEM.trim());
+    parts.push(HARNESS_CODE_RUNTIME.trim());
     let editable = editable.trim();
     if !editable.is_empty() {
         parts.push(editable);
@@ -52,7 +58,9 @@ fn splice_harness(editable: &str, platform: Option<&str>) -> String {
     {
         parts.push(platform);
     }
-    parts.push(CITATION_PROMPT.trim());
+    if is_primary {
+        parts.push(CITATION_PROMPT.trim());
+    }
     parts.join("\n\n")
 }
 
@@ -102,13 +110,58 @@ mod tests {
     fn primary_splices_agents_md_then_claude_md() {
         let ctx = make_ctx(Some("# contract"), Some("follow agents"));
         let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), Some(&ctx));
+        let harness = prompt.find("# System").unwrap();
+        let code_rt = prompt.find("# Tool Runtime (`run_code`)").unwrap();
+        let body = prompt.find("LiteCode's default coding agent").unwrap();
         let agents = prompt.find("<context from=\"AGENTS.md\">").unwrap();
         let claude = prompt.find("<context from=\"CLAUDE.md\">").unwrap();
-        assert!(prompt.find("# System").unwrap() < prompt.find("General Purpose Agent").unwrap());
+        assert!(harness < code_rt);
+        assert!(code_rt < body);
         assert!(prompt.find("# Citations").unwrap() < agents);
         assert!(agents < claude);
         assert!(prompt.contains("follow agents"));
         assert!(prompt.contains("# contract"));
+    }
+
+    #[test]
+    fn subagents_omit_citations_and_explore_skips_workspace_docs() {
+        let ctx = make_ctx(Some("# contract"), Some("follow agents"));
+
+        let general = build_system_prompt("general", &cfg("subagent", "builtin:general"), Some(&ctx));
+        assert!(general.contains("# System"));
+        assert!(general.contains("# Tool Runtime (`run_code`)"));
+        assert!(!general.contains("# Citations"));
+        assert!(general.contains("<context from=\"AGENTS.md\">"));
+        assert!(general.contains("<context from=\"CLAUDE.md\">"));
+
+        let verification = build_system_prompt(
+            "verification",
+            &cfg("subagent", "builtin:verification"),
+            Some(&ctx),
+        );
+        assert!(verification.contains("# System"));
+        assert!(verification.contains("# Tool Runtime (`run_code`)"));
+        assert!(!verification.contains("# Citations"));
+        assert!(verification.contains("<context from=\"AGENTS.md\">"));
+        assert!(verification.contains("<context from=\"CLAUDE.md\">"));
+
+        let explore = build_system_prompt("explore", &cfg("subagent", "builtin:explore"), Some(&ctx));
+        assert!(explore.contains("# System"));
+        assert!(explore.contains("# Tool Runtime (`run_code`)"));
+        assert!(!explore.contains("# Citations"));
+        assert!(!explore.contains("<context from=\"AGENTS.md\">"));
+        assert!(!explore.contains("<context from=\"CLAUDE.md\">"));
+    }
+
+    #[test]
+    fn plan_primary_keeps_citations_and_workspace_docs() {
+        let ctx = make_ctx(Some("# contract"), Some("follow agents"));
+        let plan = build_system_prompt("plan", &cfg("primary", "builtin:plan"), Some(&ctx));
+        assert!(plan.contains("# System"));
+        assert!(plan.contains("# Tool Runtime (`run_code`)"));
+        assert!(plan.contains("# Citations"));
+        assert!(plan.contains("<context from=\"AGENTS.md\">"));
+        assert!(plan.contains("<context from=\"CLAUDE.md\">"));
     }
 
     #[test]

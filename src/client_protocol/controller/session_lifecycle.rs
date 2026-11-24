@@ -107,10 +107,35 @@ impl SessionController {
         self.runtime.sync_workspace_tool_readiness();
 
         let default_primary = self.runtime.desired_primary_agent();
-        let primary_agent = self
+        let mut primary_agent = self
             .service
             .resolve_primary_agent_for_session(&self.runtime, session_id, default_primary)
             .map_err(|e| StartTurnError::Runtime(anyhow::anyhow!("{e}")))?;
+
+        if matches!(
+            launch,
+            TurnLaunch::User {
+                plan_execution: true,
+                ..
+            }
+        ) && primary_agent == "plan"
+            && crate::runtime::RuntimeHandle::validate_primary_agent(
+                &self.runtime.resolved,
+                "default",
+            )
+            .is_ok()
+        {
+            let project = self.project.clone();
+            self.service
+                .set_agent_id(session_id, "default".to_string())
+                .map_err(|e| StartTurnError::Runtime(anyhow::anyhow!("{e}")))?;
+            primary_agent = "default".to_string();
+            let binding = self.session_binding(session_id);
+            if let Some(proj) = self.projection_mut(session_id) {
+                proj.context_window = binding.context_window;
+                proj.push_operation_ok(OperationKind::SetActivePrimary, &project, &binding);
+            }
+        }
 
         // Keep the session runnable before it is reserved: a sticky model that was
         // never set (agent had none) or that can no longer run (model dropped from

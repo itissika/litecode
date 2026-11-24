@@ -252,9 +252,12 @@ fn render_ts(fragments: &SdkFragments, entries: &[&SdkToolFragment]) -> Result<S
     ))
 }
 
+const RUN_CODE_SDK_HEADER: &str =
+    "Execute an async TypeScript/JavaScript body using the bound SDK below. Call inspect(value) to emit outputs (top-level return values are not supported).";
+
 /// Assemble the prompt-facing SDK for one bound tool set.
 pub fn assemble(fragments: &SdkFragments, selected: &BTreeSet<String>) -> Result<String, String> {
     let entries = sort_fragments(fragments, selected)?;
     let ts = render_ts(fragments, &entries)?;
-    Ok(format!("{}\n\n```ts\n{}```\n", fragments.prose.trim(), ts))
+    Ok(format!("{RUN_CODE_SDK_HEADER}\n\n```ts\n{ts}```\n"))
 }

@@ -133,7 +133,7 @@ fn function_call(call_id: &str, prompt: &str) -> FunctionToolCall {
         "responsibility": "test",
         "prompt": prompt
     });
-    let code = format!("return await tools.subagent.launch({args});");
+    let code = format!("inspect(await tools.subagent.launch({args}));");
     FunctionToolCall {
         arguments: serde_json::json!({ "code": code }).to_string(),
         call_id: call_id.into(),

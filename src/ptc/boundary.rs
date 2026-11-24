@@ -19,7 +19,7 @@
 //! accepted; `2^53` is rejected. Non-integer JSON numbers are injected as
 //! numbers because `serde_json` already stores them as `f64`.
 
-use rquickjs::{Array, Atom, Ctx, Error, Exception, Filter, IntoJs, Object, Type, Value};
+use rquickjs::{Array, Atom, Ctx, Error, Exception, Filter, Function, IntoJs, Object, Type, Value};
 use serde_json::{Map, Number};
 
 use super::MAX_SAFE_INTEGER;
@@ -69,18 +69,14 @@ pub(crate) enum UndefinedPolicy {
     /// Tool arguments: drop undefined properties, undefined elements and the
     /// root become `null`. Nothing is reported.
     Strip,
-    /// Program result: same mapping, every dropped path is recorded.
-    StripOrNull,
 }
 
-/// Boundary coercions recorded while producing the program result. Keeps the
-/// first [`DROPPED_CAP`] paths for each kind and counts the rest.
+/// Boundary coercions recorded while producing `inspect(...)` output. Keeps
+/// the first [`DROPPED_CAP`] paths and counts the rest.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DroppedUndefined {
     pub paths: Vec<String>,
     pub total: usize,
-    pub non_finite_paths: Vec<String>,
-    pub non_finite_total: usize,
 }
 
 pub const DROPPED_CAP: usize = 10;
@@ -93,31 +89,18 @@ impl DroppedUndefined {
         }
     }
 
-    fn record_non_finite(&mut self, path: String) {
-        self.non_finite_total += 1;
-        if self.non_finite_paths.len() < DROPPED_CAP {
-            self.non_finite_paths.push(path);
+    pub(crate) fn merge(&mut self, other: DroppedUndefined) {
+        self.total += other.total;
+        for path in other.paths {
+            if self.paths.len() >= DROPPED_CAP {
+                break;
+            }
+            self.paths.push(path);
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.total == 0 && self.non_finite_total == 0
-    }
-
-    /// `coerced non-finite number at a.b, c[2] to null +N more`.
-    pub fn non_finite_head_line(&self) -> Option<String> {
-        if self.non_finite_total == 0 {
-            return None;
-        }
-        let mut line = format!(
-            "coerced non-finite number at {} to null",
-            self.non_finite_paths.join(", ")
-        );
-        let more = self.non_finite_total - self.non_finite_paths.len();
-        if more > 0 {
-            line.push_str(&format!(" +{more} more"));
-        }
-        Some(line)
+        self.total == 0
     }
 
     /// `dropped undefined at a.b, c[2] +N more`.
@@ -150,51 +133,23 @@ fn display_path(path: String) -> String {
 pub(crate) enum NonFinitePolicy {
     /// Reject with a path-specific illegal-output error (arguments/details).
     Reject,
-    /// Program result: JSON.stringify-style `null`, recorded as a warning.
-    Null,
 }
 
-struct Undef<'a> {
+struct Undef {
     policy: UndefinedPolicy,
     non_finite: NonFinitePolicy,
-    dropped: &'a mut DroppedUndefined,
-}
-
-impl Undef<'_> {
-    fn note(&mut self, frames: &[Frame<'_>]) {
-        if self.policy == UndefinedPolicy::StripOrNull {
-            self.dropped.record(display_path(path_at(frames)));
-        }
-    }
-
-    fn note_non_finite(&mut self, frames: &[Frame<'_>]) {
-        if self.non_finite == NonFinitePolicy::Null {
-            self.dropped
-                .record_non_finite(display_path(path_at(frames)));
-        }
-    }
 }
 
 pub(crate) fn from_js(value: &Value<'_>) -> Result<Json, BoundaryError> {
-    from_js_with(
-        value,
-        UndefinedPolicy::Reject,
-        NonFinitePolicy::Reject,
-        &mut DroppedUndefined::default(),
-    )
+    from_js_with(value, UndefinedPolicy::Reject, NonFinitePolicy::Reject)
 }
 
 pub(crate) fn from_js_with(
     value: &Value<'_>,
     policy: UndefinedPolicy,
     non_finite: NonFinitePolicy,
-    dropped: &mut DroppedUndefined,
 ) -> Result<Json, BoundaryError> {
-    let mut undef = Undef {
-        policy,
-        non_finite,
-        dropped,
-    };
+    let mut undef = Undef { policy, non_finite };
     let mut cycles = Vec::new();
     let mut frames: Vec<Frame<'_>> = Vec::new();
     let mut focus = value.clone();
@@ -221,7 +176,7 @@ fn open<'js>(
     value: &Value<'js>,
     cycles: &mut Vec<usize>,
     frames: &mut Vec<Frame<'js>>,
-    undef: &mut Undef<'_>,
+    undef: &mut Undef,
 ) -> Result<Walk<'js>, BoundaryError> {
     if value.is_null() {
         return Ok(ready(serde_json::Value::Null));
@@ -231,7 +186,6 @@ fn open<'js>(
         if undef.policy == UndefinedPolicy::Reject {
             return Err(undefined_at(frames.as_slice()));
         }
-        undef.note(frames.as_slice());
         return Ok(ready(serde_json::Value::Null));
     }
     if value.is_bool() {
@@ -270,7 +224,7 @@ fn open_array<'js>(
     value: &Value<'js>,
     cycles: &mut Vec<usize>,
     frames: &mut Vec<Frame<'js>>,
-    undef: &mut Undef<'_>,
+    undef: &mut Undef,
 ) -> Result<Walk<'js>, BoundaryError> {
     let array = value
         .as_array()
@@ -310,7 +264,7 @@ fn open_object<'js>(
     value: &Value<'js>,
     cycles: &mut Vec<usize>,
     frames: &mut Vec<Frame<'js>>,
-    undef: &mut Undef<'_>,
+    undef: &mut Undef,
 ) -> Result<Walk<'js>, BoundaryError> {
     if !is_plain_object(value) {
         let name = constructor_name(value);
@@ -353,7 +307,7 @@ enum Child<'js> {
 
 fn next_child<'js>(
     frames: &[Frame<'js>],
-    undef: &mut Undef<'_>,
+    undef: &mut Undef,
 ) -> Result<Child<'js>, BoundaryError> {
     match frames.last() {
         Some(Frame::Array { array, index, .. }) => {
@@ -364,7 +318,6 @@ fn next_child<'js>(
                 if undef.policy == UndefinedPolicy::Reject {
                     return Err(undefined_at(frames));
                 }
-                undef.note(frames);
                 return Ok(Child::Null);
             }
             Ok(Child::Value(element))
@@ -382,7 +335,6 @@ fn next_child<'js>(
                 if undef.policy == UndefinedPolicy::Reject {
                     return Err(undefined_at(frames));
                 }
-                undef.note(frames);
                 return Ok(Child::Skip);
             }
             Ok(Child::Value(child))
@@ -445,7 +397,7 @@ fn illegal_at(kind: &str, frames: &[Frame<'_>]) -> BoundaryError {
 fn descend<'js>(
     frames: &mut Vec<Frame<'js>>,
     cycles: &mut Vec<usize>,
-    undef: &mut Undef<'_>,
+    undef: &mut Undef,
 ) -> Result<Walk<'js>, BoundaryError> {
     loop {
         let complete = match next_child(frames, undef)? {
@@ -494,7 +446,7 @@ fn finish<'js>(
     frames: &mut Vec<Frame<'js>>,
     cycles: &mut Vec<usize>,
     json: Json,
-    undef: &mut Undef<'_>,
+    undef: &mut Undef,
 ) -> Result<Walk<'js>, BoundaryError> {
     let complete = match frames.last_mut() {
         Some(Frame::Array {
@@ -572,13 +524,10 @@ fn array_index(key: &str) -> Option<u64> {
 fn number_from_f64(
     number: f64,
     frames: &[Frame<'_>],
-    undef: &mut Undef<'_>,
+    undef: &mut Undef,
 ) -> Result<serde_json::Value, BoundaryError> {
+    let _ = undef.non_finite;
     if !number.is_finite() {
-        if undef.non_finite == NonFinitePolicy::Null {
-            undef.note_non_finite(frames);
-            return Ok(serde_json::Value::Null);
-        }
         return Err(illegal_at("non-finite number", frames));
     }
     let max = MAX_SAFE_INTEGER as f64;
@@ -895,6 +844,731 @@ pub(crate) fn uncatchable(ctx: &Ctx<'_>, message: &str) -> Error {
             exception.throw()
         }
         Err(error) => error,
+    }
+}
+
+const MAX_SPARSE_EXPAND: usize = 1024;
+const MAX_TYPED_ARRAY_EXPAND: usize = 4096;
+
+enum InspectFrame<'js> {
+    Array {
+        items: Vec<Json>,
+        index: usize,
+        len: usize,
+        array: Array<'js>,
+        sparse: bool,
+    },
+    Object {
+        map: Vec<(String, Json)>,
+        keys: Vec<String>,
+        index: usize,
+        object: Object<'js>,
+    },
+    MapObject {
+        map: Vec<(String, Json)>,
+        keys: Vec<String>,
+        values: Vec<Value<'js>>,
+        index: usize,
+    },
+    ErrorDetails {
+        map: Vec<(String, Json)>,
+    },
+}
+
+/// Lossless JSON-first conversion for `inspect(...)`, with graceful degradation
+/// for arbitrary JavaScript values (`Error`, `Set`, `Map`, `Date`, `RegExp`,
+/// `BigInt`, `Symbol`, `Function`, `TypedArray`, `Promise`, circular refs,
+/// sparse arrays, non-finite numbers, class instances).
+///
+/// Only throws when a user getter/method actively throws during inspection.
+pub(crate) fn from_js_inspect<'js>(
+    ctx: &Ctx<'js>,
+    value: &Value<'js>,
+    dropped: &mut DroppedUndefined,
+) -> Result<Json, Thrown> {
+    let mut cycles = Vec::new();
+    let mut frames: Vec<InspectFrame<'_>> = Vec::new();
+    let mut focus = value.clone();
+    loop {
+        match open_inspect(ctx, &focus, &mut cycles, &mut frames, dropped)? {
+            Walk::Down(next) => focus = next,
+            Walk::Up(mut json) => loop {
+                if frames.is_empty() {
+                    return Ok(json);
+                }
+                match finish_inspect(&mut frames, &mut cycles, json, dropped)? {
+                    Walk::Down(next) => {
+                        focus = next;
+                        break;
+                    }
+                    Walk::Up(parent) => json = parent,
+                }
+            },
+        }
+    }
+}
+
+fn open_inspect<'js>(
+    ctx: &Ctx<'js>,
+    value: &Value<'js>,
+    cycles: &mut Vec<usize>,
+    frames: &mut Vec<InspectFrame<'js>>,
+    dropped: &mut DroppedUndefined,
+) -> Result<Walk<'js>, Thrown> {
+    if value.is_null() {
+        return Ok(ready(serde_json::Value::Null));
+    }
+    if value.is_undefined() {
+        return Ok(ready(serde_json::Value::String("undefined".into())));
+    }
+    if value.is_bool() {
+        return Ok(ready(serde_json::Value::Bool(
+            value.as_bool().unwrap_or(false),
+        )));
+    }
+    if let Some(number) = value.as_number() {
+        if number.is_nan() {
+            return Ok(ready(serde_json::Value::String("NaN".into())));
+        }
+        if number.is_infinite() {
+            let label = if number.is_sign_positive() {
+                "Infinity"
+            } else {
+                "-Infinity"
+            };
+            return Ok(ready(serde_json::Value::String(label.into())));
+        }
+        let max = MAX_SAFE_INTEGER as f64;
+        if number.fract() == 0.0 && number.abs() <= max {
+            return Ok(ready(serde_json::Value::Number((number as i64).into())));
+        }
+        return Ok(ready(
+            Number::from_f64(number)
+                .map(serde_json::Value::Number)
+                .unwrap_or_else(|| serde_json::Value::String(number.to_string())),
+        ));
+    }
+    if value.is_string() {
+        return Ok(ready(serde_json::Value::String(
+            value
+                .get::<String>()
+                .map_err(|error| script_thrown(value, error))?,
+        )));
+    }
+    if value.is_big_int() {
+        let text = js_call_string(ctx, "(v) => v.toString() + 'n'", value)
+            .unwrap_or_else(|| "[BigInt]".into());
+        return Ok(ready(serde_json::Value::String(text)));
+    }
+    if value.is_symbol() {
+        let text = js_call_string(ctx, "(v) => Symbol.prototype.toString.call(v)", value)
+            .unwrap_or_else(|| "[Symbol]".into());
+        return Ok(ready(serde_json::Value::String(text)));
+    }
+    if value.is_function() {
+        let name = value
+            .as_object()
+            .and_then(|object| object.get::<_, String>("name").ok())
+            .filter(|name| !name.is_empty());
+        let label = match name {
+            Some(name) => format!("[Function: {name}]"),
+            None => "[Function]".into(),
+        };
+        return Ok(ready(serde_json::Value::String(label)));
+    }
+    // Check `JS_IsError` before any property/object walk so a tool-result Proxy
+    // never trips unknown-field warnings and errors always serialize cleanly.
+    if value.is_error() {
+        return open_inspect_error(value, cycles, frames);
+    }
+    if value.is_array() {
+        return open_inspect_array(value, cycles, frames, dropped);
+    }
+    if value.is_object() {
+        return open_inspect_object(ctx, value, cycles, frames, dropped);
+    }
+    Ok(ready(serde_json::Value::String(format!(
+        "[{}]",
+        value.type_of().as_str()
+    ))))
+}
+
+fn open_inspect_error<'js>(
+    value: &Value<'js>,
+    cycles: &mut Vec<usize>,
+    frames: &mut Vec<InspectFrame<'js>>,
+) -> Result<Walk<'js>, Thrown> {
+    let ptr = object_ptr(value);
+    if cycles.contains(&ptr) {
+        return Ok(ready(serde_json::Value::String("[Circular]".into())));
+    }
+    let Some(object) = value.as_object() else {
+        return Ok(ready(serde_json::Value::String("[Error]".into())));
+    };
+    let mut map = Vec::new();
+    let name = object
+        .get::<_, String>("name")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Error".into());
+    let message = object.get::<_, String>("message").unwrap_or_default();
+    map.push(("name".into(), Json::new(serde_json::Value::String(name))));
+    map.push((
+        "message".into(),
+        Json::new(serde_json::Value::String(message)),
+    ));
+    if let Ok(code) = object.get::<_, String>("code")
+        && !code.is_empty()
+    {
+        map.push(("code".into(), Json::new(serde_json::Value::String(code))));
+    }
+    if let Ok(tool) = object.get::<_, String>("tool")
+        && !tool.is_empty()
+    {
+        map.push(("tool".into(), Json::new(serde_json::Value::String(tool))));
+    }
+    if let Ok(seq) = object.get::<_, f64>("seq")
+        && seq.is_finite()
+        && seq >= 0.0
+        && seq.fract() == 0.0
+    {
+        map.push(("seq".into(), Json::new(serde_json::Value::from(seq as u64))));
+    }
+    if object.get::<_, bool>("retryable").ok() == Some(true) {
+        map.push(("retryable".into(), Json::new(serde_json::Value::Bool(true))));
+    }
+    if let Ok(details) = object.get::<_, Value<'js>>("details")
+        && !details.is_undefined()
+        && !details.is_null()
+    {
+        cycles.push(ptr);
+        frames.push(InspectFrame::ErrorDetails { map });
+        return Ok(Walk::Down(details));
+    }
+    Ok(Walk::Up(Json::from_object(map)))
+}
+
+fn open_inspect_array<'js>(
+    value: &Value<'js>,
+    cycles: &mut Vec<usize>,
+    frames: &mut Vec<InspectFrame<'js>>,
+    dropped: &mut DroppedUndefined,
+) -> Result<Walk<'js>, Thrown> {
+    let ptr = object_ptr(value);
+    if cycles.contains(&ptr) {
+        return Ok(ready(serde_json::Value::String("[Circular]".into())));
+    }
+    let Some(array) = value.as_array().cloned() else {
+        return Ok(ready(serde_json::Value::String("[Array]".into())));
+    };
+    let len = match array_length(value) {
+        Ok(len) => len,
+        Err(BoundaryError::Thrown(thrown)) => return Err(thrown),
+        Err(BoundaryError::Illegal(_)) => {
+            return Ok(ready(serde_json::Value::String("[Array]".into())));
+        }
+    };
+    if len == 0 {
+        return Ok(ready(serde_json::Value::Array(Vec::new())));
+    }
+    let populated = count_populated_indices(value, len)?;
+    let sparse = populated != len;
+    if sparse && len > MAX_SPARSE_EXPAND as u64 {
+        return Ok(ready(serde_json::Value::String(format!(
+            "[SparseArray(length={len}, populated={populated})]"
+        ))));
+    }
+    let Ok(len_usize) = usize::try_from(len) else {
+        return Ok(ready(serde_json::Value::String(format!(
+            "[Array(length={len})]"
+        ))));
+    };
+    let mut items = Vec::new();
+    if items.try_reserve_exact(len_usize).is_err() {
+        return Ok(ready(serde_json::Value::String(format!(
+            "[Array(length={len})]"
+        ))));
+    }
+    cycles.push(ptr);
+    frames.push(InspectFrame::Array {
+        items,
+        index: 0,
+        len: len_usize,
+        array,
+        sparse,
+    });
+    descend_inspect(frames, cycles, dropped)
+}
+
+fn count_populated_indices(value: &Value<'_>, len: u64) -> Result<u64, Thrown> {
+    let Some(object) = value.as_object() else {
+        return Ok(0);
+    };
+    let mut count = 0u64;
+    for key in object.keys::<String>() {
+        let key = key.map_err(|error| script_thrown(value, error))?;
+        if array_index(&key).is_some_and(|index| index < len) {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn open_inspect_object<'js>(
+    ctx: &Ctx<'js>,
+    value: &Value<'js>,
+    cycles: &mut Vec<usize>,
+    frames: &mut Vec<InspectFrame<'js>>,
+    dropped: &mut DroppedUndefined,
+) -> Result<Walk<'js>, Thrown> {
+    let ptr = object_ptr(value);
+    if cycles.contains(&ptr) {
+        return Ok(ready(serde_json::Value::String("[Circular]".into())));
+    }
+    if is_plain_object(value) {
+        return open_inspect_plain_object(value, ptr, cycles, frames, dropped);
+    }
+    let tag = js_call_string(ctx, "(v) => Object.prototype.toString.call(v)", value)
+        .unwrap_or_default();
+    match tag.as_str() {
+        "[object Date]" => {
+            let text = js_call_string(
+                ctx,
+                "(v) => Number.isNaN(v.getTime()) ? '[Invalid Date]' : v.toISOString()",
+                value,
+            )
+            .unwrap_or_else(|| "[Date]".into());
+            return Ok(ready(serde_json::Value::String(text)));
+        }
+        "[object RegExp]" => {
+            let text = js_call_string(ctx, "(v) => RegExp.prototype.toString.call(v)", value)
+                .unwrap_or_else(|| "[RegExp]".into());
+            return Ok(ready(serde_json::Value::String(text)));
+        }
+        "[object Promise]" => {
+            return Ok(ready(serde_json::Value::String("[Promise]".into())));
+        }
+        "[object Set]" => {
+            if let Some(arr) = js_call_array(ctx, "(v) => Array.from(v)", value) {
+                let len = arr.len();
+                if len == 0 {
+                    return Ok(ready(serde_json::Value::Array(Vec::new())));
+                }
+                let mut items = Vec::new();
+                if items.try_reserve_exact(len).is_ok() {
+                    cycles.push(ptr);
+                    frames.push(InspectFrame::Array {
+                        items,
+                        index: 0,
+                        len,
+                        array: arr,
+                        sparse: false,
+                    });
+                    return descend_inspect(frames, cycles, dropped);
+                }
+            }
+            return Ok(ready(serde_json::Value::String("[Set]".into())));
+        }
+        "[object Map]" => {
+            if let Some(entries) = js_call_array(ctx, "(v) => Array.from(v.entries())", value) {
+                let len = entries.len();
+                if len == 0 {
+                    return Ok(ready(serde_json::Value::Object(Map::new())));
+                }
+                let mut keys = Vec::with_capacity(len);
+                let mut values = Vec::with_capacity(len);
+                let mut all_string_keys = true;
+                for idx in 0..len {
+                    let pair = entries
+                        .get::<Value<'js>>(idx)
+                        .map_err(|error| script_thrown(entries.as_value(), error))?;
+                    let Some(pair_arr) = pair.as_array() else {
+                        all_string_keys = false;
+                        break;
+                    };
+                    let key = pair_arr
+                        .get::<Value<'js>>(0)
+                        .map_err(|error| script_thrown(pair_arr.as_value(), error))?;
+                    if let Some(s) = key.as_string() {
+                        keys.push(s.to_string().map_err(|error| script_thrown(&key, error))?);
+                        let val = pair_arr
+                            .get::<Value<'js>>(1)
+                            .map_err(|error| script_thrown(pair_arr.as_value(), error))?;
+                        values.push(val);
+                    } else {
+                        all_string_keys = false;
+                        break;
+                    }
+                }
+                if all_string_keys {
+                    cycles.push(ptr);
+                    frames.push(InspectFrame::MapObject {
+                        map: Vec::with_capacity(len),
+                        keys,
+                        values,
+                        index: 0,
+                    });
+                    return descend_inspect(frames, cycles, dropped);
+                }
+                let mut items = Vec::new();
+                if items.try_reserve_exact(len).is_ok() {
+                    cycles.push(ptr);
+                    frames.push(InspectFrame::Array {
+                        items,
+                        index: 0,
+                        len,
+                        array: entries,
+                        sparse: false,
+                    });
+                    return descend_inspect(frames, cycles, dropped);
+                }
+            }
+            return Ok(ready(serde_json::Value::String("[Map]".into())));
+        }
+        "[object ArrayBuffer]" | "[object DataView]" => {
+            let label = tag
+                .strip_prefix("[object ")
+                .and_then(|s| s.strip_suffix(']'))
+                .unwrap_or("Buffer");
+            let byte_len = value
+                .as_object()
+                .and_then(|obj| obj.get::<_, f64>("byteLength").ok())
+                .map(|n| n as u64)
+                .unwrap_or(0);
+            return Ok(ready(serde_json::Value::String(format!(
+                "[{label}(byteLength={byte_len})]"
+            ))));
+        }
+        other if is_typed_array_tag(other) => {
+            let type_name = other
+                .strip_prefix("[object ")
+                .and_then(|s| s.strip_suffix(']'))
+                .unwrap_or("TypedArray");
+            let len = value
+                .as_object()
+                .and_then(|obj| obj.get::<_, f64>("length").ok())
+                .map(|n| n as usize)
+                .unwrap_or(0);
+            if len == 0 {
+                return Ok(ready(serde_json::Value::Array(Vec::new())));
+            }
+            if len <= MAX_TYPED_ARRAY_EXPAND
+                && let Some(arr) = js_call_array(
+                    ctx,
+                    "(v) => Array.from(v, (x) => typeof x === 'bigint' ? x.toString() + 'n' : x)",
+                    value,
+                )
+            {
+                let mut items = Vec::new();
+                if items.try_reserve_exact(len).is_ok() {
+                    cycles.push(ptr);
+                    frames.push(InspectFrame::Array {
+                        items,
+                        index: 0,
+                        len,
+                        array: arr,
+                        sparse: false,
+                    });
+                    return descend_inspect(frames, cycles, dropped);
+                }
+            }
+            let preview = js_call_string(
+                ctx,
+                "(v) => Array.from(v.subarray(0, 16), (x) => typeof x === 'bigint' ? x.toString() + 'n' : String(x)).join(', ')",
+                value,
+            )
+            .unwrap_or_default();
+            return Ok(ready(serde_json::Value::String(format!(
+                "[{type_name}({len}): [{preview}, …]]"
+            ))));
+        }
+        _ => {}
+    }
+
+    // Custom class instance or other non-plain object: inspect own enumerable keys.
+    let Some(object) = value.as_object().cloned() else {
+        return Ok(ready(serde_json::Value::String(format!(
+            "[{}]",
+            constructor_name(value)
+        ))));
+    };
+    let mut keys = Vec::new();
+    for key in object.keys::<String>() {
+        keys.push(key.map_err(|error| script_thrown(value, error))?);
+    }
+    if keys.is_empty() {
+        return Ok(ready(serde_json::Value::String(format!(
+            "[{}]",
+            constructor_name(value)
+        ))));
+    }
+    cycles.push(ptr);
+    frames.push(InspectFrame::Object {
+        map: Vec::new(),
+        keys,
+        index: 0,
+        object,
+    });
+    descend_inspect(frames, cycles, dropped)
+}
+
+fn open_inspect_plain_object<'js>(
+    value: &Value<'js>,
+    ptr: usize,
+    cycles: &mut Vec<usize>,
+    frames: &mut Vec<InspectFrame<'js>>,
+    dropped: &mut DroppedUndefined,
+) -> Result<Walk<'js>, Thrown> {
+    let Some(object) = value.as_object().cloned() else {
+        return Ok(ready(serde_json::Value::String("[Object]".into())));
+    };
+    let mut keys = Vec::new();
+    for key in object.keys::<String>() {
+        keys.push(key.map_err(|error| script_thrown(value, error))?);
+    }
+    if keys.is_empty() {
+        if !value.is_proxy() {
+            let ctor = constructor_name(value);
+            if ctor != "Object" {
+                return Ok(ready(serde_json::Value::String(format!("[{ctor}]"))));
+            }
+        }
+        return Ok(ready(serde_json::Value::Object(Map::new())));
+    }
+    cycles.push(ptr);
+    frames.push(InspectFrame::Object {
+        map: Vec::new(),
+        keys,
+        index: 0,
+        object,
+    });
+    descend_inspect(frames, cycles, dropped)
+}
+
+fn is_typed_array_tag(tag: &str) -> bool {
+    matches!(
+        tag,
+        "[object Int8Array]"
+            | "[object Uint8Array]"
+            | "[object Uint8ClampedArray]"
+            | "[object Int16Array]"
+            | "[object Uint16Array]"
+            | "[object Int32Array]"
+            | "[object Uint32Array]"
+            | "[object Float32Array]"
+            | "[object Float64Array]"
+            | "[object BigInt64Array]"
+            | "[object BigUint64Array]"
+    )
+}
+
+fn js_call_string<'js>(ctx: &Ctx<'js>, expr: &str, value: &Value<'js>) -> Option<String> {
+    let f = ctx.eval::<Function<'js>, _>(expr).ok()?;
+    match f.call::<_, String>((value.clone(),)) {
+        Ok(text) => Some(text),
+        Err(_) => {
+            let _ = ctx.catch();
+            None
+        }
+    }
+}
+
+fn js_call_array<'js>(ctx: &Ctx<'js>, expr: &str, value: &Value<'js>) -> Option<Array<'js>> {
+    let f = ctx.eval::<Function<'js>, _>(expr).ok()?;
+    match f.call::<_, Array<'js>>((value.clone(),)) {
+        Ok(arr) => Some(arr),
+        Err(_) => {
+            let _ = ctx.catch();
+            None
+        }
+    }
+}
+
+fn inspect_path_at(frames: &[InspectFrame<'_>]) -> String {
+    let mut path = String::from("$");
+    for frame in frames {
+        match frame {
+            InspectFrame::Array { index, .. } => {
+                path.push('[');
+                path.push_str(&index.to_string());
+                path.push(']');
+            }
+            InspectFrame::Object { keys, index, .. }
+            | InspectFrame::MapObject { keys, index, .. } => {
+                let key = keys[*index].as_str();
+                if is_identifier(key) {
+                    path.push('.');
+                    path.push_str(key);
+                } else {
+                    match serde_json::to_string(key) {
+                        Ok(quoted) => {
+                            path.push('[');
+                            path.push_str(&quoted);
+                            path.push(']');
+                        }
+                        Err(_) => path.push_str("[?]"),
+                    }
+                }
+            }
+            InspectFrame::ErrorDetails { .. } => {
+                path.push_str(".details");
+            }
+        }
+    }
+    path
+}
+
+fn next_inspect_child<'js>(
+    frames: &[InspectFrame<'js>],
+    dropped: &mut DroppedUndefined,
+) -> Result<Child<'js>, Thrown> {
+    match frames.last() {
+        Some(InspectFrame::Array {
+            array,
+            index,
+            sparse,
+            ..
+        }) => {
+            if *sparse
+                && let Some(obj) = array.as_value().as_object()
+                && !obj
+                    .contains_key(*index as u32)
+                    .map_err(|error| script_thrown(array.as_value(), error))?
+            {
+                return Ok(Child::Null);
+            }
+            let element = array
+                .get::<Value<'_>>(*index)
+                .map_err(|error| script_thrown(array.as_value(), error))?;
+            if element.is_undefined() {
+                dropped.record(display_path(inspect_path_at(frames)));
+                return Ok(Child::Null);
+            }
+            Ok(Child::Value(element))
+        }
+        Some(InspectFrame::Object {
+            object,
+            keys,
+            index,
+            ..
+        }) => {
+            let child = object
+                .get::<_, Value<'_>>(&keys[*index])
+                .map_err(|error| script_thrown(object.as_value(), error))?;
+            if child.is_undefined() {
+                dropped.record(display_path(inspect_path_at(frames)));
+                return Ok(Child::Skip);
+            }
+            Ok(Child::Value(child))
+        }
+        Some(InspectFrame::MapObject { values, index, .. }) => {
+            Ok(Child::Value(values[*index].clone()))
+        }
+        Some(InspectFrame::ErrorDetails { .. }) | None => Err(Thrown {
+            message: "internal inspect frame error".into(),
+            stack: None,
+        }),
+    }
+}
+
+fn descend_inspect<'js>(
+    frames: &mut Vec<InspectFrame<'js>>,
+    cycles: &mut Vec<usize>,
+    dropped: &mut DroppedUndefined,
+) -> Result<Walk<'js>, Thrown> {
+    loop {
+        let complete = match next_inspect_child(frames, dropped)? {
+            Child::Value(value) => return Ok(Walk::Down(value)),
+            Child::Null => match frames.last_mut() {
+                Some(InspectFrame::Array {
+                    items, index, len, ..
+                }) => {
+                    items.push(Json::new(serde_json::Value::Null));
+                    *index += 1;
+                    *index == *len
+                }
+                _ => {
+                    return Err(Thrown {
+                        message: "internal inspect frame error".into(),
+                        stack: None,
+                    });
+                }
+            },
+            Child::Skip => match frames.last_mut() {
+                Some(InspectFrame::Object { keys, index, .. }) => {
+                    *index += 1;
+                    *index == keys.len()
+                }
+                _ => {
+                    return Err(Thrown {
+                        message: "internal inspect frame error".into(),
+                        stack: None,
+                    });
+                }
+            },
+        };
+        if complete {
+            return Ok(Walk::Up(close_inspect(frames, cycles)));
+        }
+    }
+}
+
+fn close_inspect(frames: &mut Vec<InspectFrame<'_>>, cycles: &mut Vec<usize>) -> Json {
+    cycles.pop();
+    match frames.pop() {
+        Some(InspectFrame::Array { items, .. }) => Json::from_array(items),
+        Some(InspectFrame::Object { map, .. })
+        | Some(InspectFrame::MapObject { map, .. })
+        | Some(InspectFrame::ErrorDetails { map }) => Json::from_object(map),
+        None => Json::new(serde_json::Value::Null),
+    }
+}
+
+fn finish_inspect<'js>(
+    frames: &mut Vec<InspectFrame<'js>>,
+    cycles: &mut Vec<usize>,
+    json: Json,
+    dropped: &mut DroppedUndefined,
+) -> Result<Walk<'js>, Thrown> {
+    let complete = match frames.last_mut() {
+        Some(InspectFrame::Array {
+            items, index, len, ..
+        }) => {
+            items.push(json);
+            *index += 1;
+            *index == *len
+        }
+        Some(InspectFrame::Object {
+            map, keys, index, ..
+        })
+        | Some(InspectFrame::MapObject {
+            map, keys, index, ..
+        }) => {
+            let key = keys[*index].clone();
+            map.push((key, json));
+            *index += 1;
+            *index == keys.len()
+        }
+        Some(InspectFrame::ErrorDetails { map }) => {
+            map.push(("details".into(), json));
+            true
+        }
+        None => return Ok(Walk::Up(json)),
+    };
+    if !complete {
+        return descend_inspect(frames, cycles, dropped);
+    }
+    Ok(Walk::Up(close_inspect(frames, cycles)))
+}
+
+fn script_thrown(value: &Value<'_>, error: Error) -> Thrown {
+    if matches!(error, Error::Exception) {
+        take_exception(value.ctx())
+    } else {
+        Thrown {
+            message: error.to_string(),
+            stack: None,
+        }
     }
 }
 

@@ -251,7 +251,7 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
     let result = tools[0]
         .execute(
             serde_json::json!({
-                "code": r#"return await tools.mcp_mock.echo({ greeting: "from-list" });"#
+                "code": r#"inspect(await tools.mcp_mock.echo({ greeting: "from-list" }));"#
             }),
             litecode::tool::trait_::ToolExecutionContext {
                 path_mode: litecode::workspace::ToolPathMode::Safe,

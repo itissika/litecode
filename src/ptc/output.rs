@@ -1,13 +1,8 @@
-//! One ordered stream for everything a program produced, under one byte cap.
-//!
-//! Console text and the program's return value are entries of the same stream,
-//! in the order they happened; the return value is simply the last entry. The
-//! ledger keeps one byte budget for all of it, so there is no "logs half" and
-//! "result half" to reason about.
+//! One ordered stream of `inspect(...)` values, under one byte cap.
 
+use super::Entry;
 use super::boundary::DroppedUndefined;
 use super::json::Json;
-use super::{Entry, EntryBody, LogLevel};
 
 #[derive(Debug)]
 pub(crate) struct OutputLedger {
@@ -16,7 +11,6 @@ pub(crate) struct OutputLedger {
     entries: Vec<Entry>,
     order: u64,
     tripped: bool,
-    used_console: bool,
     dropped_undefined: DroppedUndefined,
 }
 
@@ -28,25 +22,16 @@ impl OutputLedger {
             entries: Vec::new(),
             order: 0,
             tripped: false,
-            used_console: false,
             dropped_undefined: Default::default(),
         }
-    }
-
-    pub(crate) fn mark_console_used(&mut self) {
-        self.used_console = true;
-    }
-
-    pub(crate) fn used_console(&self) -> bool {
-        self.used_console
     }
 
     pub(crate) fn tripped(&self) -> bool {
         self.tripped
     }
 
-    pub(crate) fn set_dropped_undefined(&mut self, dropped: DroppedUndefined) {
-        self.dropped_undefined = dropped;
+    pub(crate) fn merge_dropped_undefined(&mut self, dropped: DroppedUndefined) {
+        self.dropped_undefined.merge(dropped);
     }
 
     pub(crate) fn dropped_undefined(&self) -> &DroppedUndefined {
@@ -62,57 +47,26 @@ impl OutputLedger {
         self.order
     }
 
-    /// Append one console line. When it does not fit, keep the UTF-8 prefix that
-    /// does and trip the hard cap. Returns false once the cap has been hit.
-    pub(crate) fn push_text(&mut self, level: LogLevel, message: String) -> bool {
-        if self.tripped {
-            return false;
+    /// Append one `inspect(...values)` call. Returns false once the hard byte
+    /// cap is exceeded.
+    pub(crate) fn push_values(&mut self, values: Vec<Json>) -> bool {
+        if self.tripped || values.is_empty() {
+            return !self.tripped;
         }
-        let room = self.limit.saturating_sub(self.used);
-        if message.len() <= room {
-            self.used += message.len();
-            let order = self.next_order();
-            self.entries.push(Entry {
-                order,
-                body: EntryBody::Text {
-                    level,
-                    text: message,
-                },
-            });
-            return true;
+        let mut bytes = 0usize;
+        for value in &values {
+            let Ok(encoded) = super::json_bytes(value.as_value()) else {
+                return false;
+            };
+            bytes = bytes.saturating_add(encoded.len());
         }
-        let prefix = crate::types::utf8::prefix_utf8(&message, room).to_string();
-        if !prefix.is_empty() {
-            self.used += prefix.len();
-            let order = self.next_order();
-            self.entries.push(Entry {
-                order,
-                body: EntryBody::Text {
-                    level,
-                    text: prefix,
-                },
-            });
-        }
-        self.tripped = true;
-        false
-    }
-
-    /// Append the program's return value. It is the last entry of the stream.
-    pub(crate) fn push_value(&mut self, value: Json) -> bool {
-        let bytes = match super::json_bytes(value.as_value()) {
-            Ok(bytes) => bytes.len(),
-            Err(_) => return false,
-        };
         if self.used.saturating_add(bytes) > self.limit {
             self.tripped = true;
             return false;
         }
         self.used += bytes;
         let order = self.next_order();
-        self.entries.push(Entry {
-            order,
-            body: EntryBody::Value(value),
-        });
+        self.entries.push(Entry { order, values });
         true
     }
 }
@@ -122,29 +76,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn text_and_value_share_one_stream_in_order() {
+    fn inspect_entries_stay_ordered_under_one_cap() {
         let mut ledger = OutputLedger::new(1024);
-        assert!(ledger.push_text(LogLevel::Log, "first".into()));
-        assert!(ledger.push_value(Json::new(serde_json::json!({ "ok": true }))));
-        assert!(ledger.push_text(LogLevel::Warn, "last".into()));
+        assert!(ledger.push_values(vec![Json::new(serde_json::json!("first"))]));
+        assert!(ledger.push_values(vec![
+            Json::new(serde_json::json!("label")),
+            Json::new(serde_json::json!({ "ok": true })),
+        ]));
         let orders: Vec<u64> = ledger.entries().iter().map(|entry| entry.order).collect();
-        assert_eq!(orders, vec![1, 2, 3]);
+        assert_eq!(orders, vec![1, 2]);
+        assert_eq!(ledger.entries()[1].values.len(), 2);
     }
 
     #[test]
-    fn push_keeps_the_fitting_prefix() {
-        let mut ledger = OutputLedger::new(12);
-        assert!(ledger.push_text(LogLevel::Log, "abcdefghij".into()));
-        assert!(!ledger.push_text(LogLevel::Log, "XYZ".into()));
+    fn push_values_trips_cap_and_keeps_earlier_entries() {
+        let mut ledger = OutputLedger::new(10);
+        // `"abcd"` encodes to 6 bytes
+        assert!(ledger.push_values(vec![Json::new(serde_json::json!("abcd"))]));
+        // `"efghi"` encodes to 7 bytes -> 13 > 10
+        assert!(!ledger.push_values(vec![Json::new(serde_json::json!("efghi"))]));
         assert!(ledger.tripped());
-        match &ledger.entries()[0].body {
-            EntryBody::Text { text, .. } => assert_eq!(text, "abcdefghij"),
-            other => panic!("expected text, got {other:?}"),
-        }
-        match &ledger.entries()[1].body {
-            EntryBody::Text { text, .. } => assert_eq!(text, "XY"),
-            other => panic!("expected text, got {other:?}"),
-        }
-        assert!(!ledger.push_value(Json::new(serde_json::json!(1))));
+        assert_eq!(ledger.entries().len(), 1);
+        assert_eq!(
+            ledger.entries()[0].values[0].as_value(),
+            &serde_json::json!("abcd")
+        );
+        // Once tripped, even a tiny value is rejected.
+        assert!(!ledger.push_values(vec![Json::new(serde_json::json!(1))]));
     }
 }

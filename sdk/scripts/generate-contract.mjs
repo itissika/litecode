@@ -10,9 +10,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const sdkDir = path.resolve(here, "..");
 const repoRoot = path.resolve(sdkDir, "..");
 const apiPath = path.join(sdkDir, "src", "api.d.ts");
-const preludeMdPath = path.join(sdkDir, "src", "prelude.md");
 const preludeDtsPath = path.join(sdkDir, "src", "prelude.d.ts");
 const libsDtsPath = path.join(sdkDir, "src", "libs.d.ts");
+const RUN_CODE_SDK_HEADER = "Execute an async TypeScript/JavaScript body using the bound SDK below. Call inspect(value) to emit outputs (top-level return values are not supported).";
 const tsconfigPath = path.join(sdkDir, "tsconfig.json");
 const generatedDir = path.join(sdkDir, "generated");
 const contractPath = path.join(generatedDir, "tool-contract.json");
@@ -400,7 +400,7 @@ for (const name of [...publicNames].sort()) {
 
 function renderDoc(doc, indent) {
   if (!doc) return "";
-  const lines = doc.trim().split(EOL_RE);
+  const lines = doc.trim().split(/\r\n?|\n/);
   if (lines.length === 1) return indent + "/** " + lines[0].trim() + " */\n";
   const prefix = indent + " *";
   const body = lines.map((line) => (line.trim() ? prefix + " " + line.trim() : prefix)).join("\n");
@@ -504,8 +504,7 @@ function renderTsSdk(entries) {
 }
 
 function renderPromptSdk(entries) {
-  const preludeMd = readSdkSource(preludeMdPath).trim();
-  return preludeMd + "\n\n```ts\n" + renderTsSdk(entries) + "```\n";
+  return RUN_CODE_SDK_HEADER + "\n\n```ts\n" + renderTsSdk(entries) + "```\n";
 }
 
 const entries = Object.values(tools).sort((a, b) => a.path.join(".").localeCompare(b.path.join(".")));
@@ -521,7 +520,6 @@ const contract = {
 const fragments = {
   version: 1,
   sdk_hash: sdkHash,
-  prose: readSdkSource(preludeMdPath).trim(),
   declarations: readSdkSource(preludeDtsPath).trim(),
   libs: readSdkSource(libsDtsPath).trim(),
   types: typeDecls,

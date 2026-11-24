@@ -54,7 +54,7 @@ domain : harness-core
 
 **工作流**：优化要可追溯，评测用最新，出问题回退定位。动了 tool 或 ctx 的提交必须带 `Eval:` 指针，指不到证据不算数——`.githooks/commit-msg` 会拦。
 
-**评测管线**：Harbor 跑题、判题、留轨迹；egress 记每个请求的 usage；collect 汇总成矩阵。总 token 和每题成本都要看，单题能占七成。
+**评测管线**：统一入口 `eval/run.py` 与共享聚合层 `eval/core/` 驱动两条管线：product（`eval/usability/` 场景自检与基线门禁）与 panel（Harbor 跑 11 题横评、`egress` 记竞品 usage、LiteCode 直连记 CLI usage、`collect` 汇总出 6 节报告与 tracing）。总 token 和每题成本都要看，单题能占七成。
 
 **依据（每条钉死的东西落在哪）**
 
@@ -62,7 +62,7 @@ domain : harness-core
 - 思考档位：`ThinkingTier` 是唯一枚举，厂商写法只在目录里映射 [@ file="src/platform_knobs.rs" symbol="enum ThinkingTier"]。
 - 压缩预算线：`COMPACTION_BUDGET_PERCENT` 是唯一常量，三处都读它——会话压缩触发线、压缩后历史预算、摘要请求自身的输入上限 [@ file="src/session/estimate.rs" symbol="fn compaction_budget"]。
 - 模型绑定：一次会话一套 provider + 模型，压缩原样复用 [@ file="src/runtime/llm_resolve.rs" symbol="struct TurnLlmBinding"]。
-- 题集和价目表只有一处，报告与 tracing 各一处 [@ file="eval/harbor/bench5/campaigns/bench5.yaml"]。
+- 统一入口、题集/价目表与报告渲染各一处：[@ file="eval/run.py"]、[@ file="eval/harbor/bench5/campaigns/panel-v4.1-flash.yaml"]、[@ file="eval/core/report.py"]。
 
 父节点：[@ key="product-brief"]。
 

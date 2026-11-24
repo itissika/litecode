@@ -203,9 +203,14 @@ fn no_hidden_compaction_agent_or_prompt_binding() {
         );
     }
     let schema = read("src/config/schema.rs");
-    assert!(schema.contains("pub const PROTECTED_AGENT_IDS: &[&str] = &[\"default\"];"));
+    for id in ["default", "plan", "orchestrator", "explore", "general", "verification"] {
+        assert!(schema.contains(&format!("\"{id}\"")), "schema must protect {id}");
+    }
+    assert!(!schema.contains("PROTECTED_AGENT_IDS: &[&str] = &[\"default\", \"compaction\"]"));
     let settings = read("web/src/api/settings.ts");
-    assert!(settings.contains("export const PROTECTED_AGENT_IDS = new Set([\"default\"]);"));
+    for id in ["default", "plan", "orchestrator", "explore", "general", "verification"] {
+        assert!(settings.contains(&format!("\"{id}\"")), "web settings must protect {id}");
+    }
     assert!(!settings.contains("isHiddenSettingsAgent"));
     let agents_section = read("web/src/dockview/panels/settings/AgentsSection.tsx");
     assert!(!agents_section.contains("isHiddenSettingsAgent"));

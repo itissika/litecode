@@ -74,7 +74,14 @@ impl Default for AgentProfile {
 }
 
 /// Agent ids that cannot be deleted via settings API.
-pub const PROTECTED_AGENT_IDS: &[&str] = &["default"];
+pub const PROTECTED_AGENT_IDS: &[&str] = &[
+    "default",
+    "plan",
+    "orchestrator",
+    "explore",
+    "general",
+    "verification",
+];
 
 /// One-card capability id for the five subagent orchestration members.
 pub const SUBAGENT_CAPABILITY_ID: &str = "subagent_tools";

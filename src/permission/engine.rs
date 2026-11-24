@@ -123,6 +123,11 @@ impl PermissionEngine {
         if let Some(floor) = check_floor(tool_name, args, &ctx) {
             return floor;
         }
+        if let Some(plan_guard) =
+            check_plan_file_only(&self.agent_id, tool_name, args, workspace_root)
+        {
+            return plan_guard;
+        }
 
         let result = evaluate(&policy, args, &ctx);
 
@@ -210,13 +215,80 @@ impl PermissionEngine {
             return (ToolPolicy::allow_all(), BindingPathMode::Unrestricted);
         }
         let bind_name = Self::policy_name(tool_name);
-        if crate::permission::has_permission_preset(bind_name) {
+        let (policy, mut path_mode) = if crate::permission::has_permission_preset(bind_name) {
             let preset = self.binding(bind_name).and_then(|b| b.preset);
             if preset == Some(ToolPreset::Safe) {
-                return crate::permission::presets::binding_for_tool(bind_name, preset.unwrap());
+                crate::permission::presets::binding_for_tool(bind_name, ToolPreset::Safe)
+            } else {
+                (ToolPolicy::allow_all(), BindingPathMode::Unrestricted)
             }
+        } else {
+            (ToolPolicy::allow_all(), BindingPathMode::Unrestricted)
+        };
+        if self.agent_id == "plan" && matches!(tool_name, "write" | "edit" | "apply_edits") {
+            path_mode = BindingPathMode::WorkspaceOnly;
         }
-        (ToolPolicy::allow_all(), BindingPathMode::Unrestricted)
+        (policy, path_mode)
+    }
+}
+
+fn plan_file_deny() -> EvalResult {
+    EvalResult {
+        rule_id: "plan_file_only".into(),
+        action: PermissionAction::Deny,
+    }
+}
+
+fn is_under_plan_dir(workspace_root: &std::path::Path, raw: &str) -> bool {
+    let canon_root = crate::config::path::canon_abs_lossy(workspace_root);
+    let Ok(plan_dir) =
+        crate::config::path::canon_join_nonexistent(&canon_root, &canon_root.join(".litecode").join("plan"))
+    else {
+        return false;
+    };
+    let Ok(resolved) = crate::workspace::resolve_tool_path_from(
+        workspace_root,
+        raw,
+        crate::workspace::ToolPathMode::Safe,
+    ) else {
+        return false;
+    };
+    resolved != plan_dir && crate::config::path::is_under(&resolved, &plan_dir)
+}
+
+fn check_plan_file_only(
+    agent_id: &str,
+    tool_name: &str,
+    args: &Value,
+    workspace_root: &std::path::Path,
+) -> Option<EvalResult> {
+    if agent_id != "plan" {
+        return None;
+    }
+    match tool_name {
+        "write" | "edit" => {
+            let allowed = args
+                .get("path")
+                .or_else(|| args.get("file"))
+                .and_then(Value::as_str)
+                .is_some_and(|raw| is_under_plan_dir(workspace_root, raw));
+            (!allowed).then(plan_file_deny)
+        }
+        "apply_edits" => {
+            let allowed = args
+                .get("edits")
+                .and_then(Value::as_array)
+                .is_some_and(|edits| {
+                    !edits.is_empty()
+                        && edits.iter().all(|item| {
+                            item.get("path")
+                                .and_then(Value::as_str)
+                                .is_some_and(|raw| is_under_plan_dir(workspace_root, raw))
+                        })
+                });
+            (!allowed).then(plan_file_deny)
+        }
+        _ => None,
     }
 }
 
@@ -521,5 +593,89 @@ mod tests {
         let decision = engine.evaluate_tool("run_code", &serde_json::json!({}), dir.path());
         assert_eq!(decision.action, PermissionAction::Deny);
         assert_eq!(decision.rule_id, "block");
+    }
+
+    #[test]
+    fn plan_agent_restricts_write_and_apply_edits_to_plan_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        let mut global = GlobalSettings::default();
+        let mut plan = AgentProfile {
+            role: AgentRole::Primary,
+            ..Default::default()
+        };
+        for tool in ["write", "edit"] {
+            plan.tools.insert(
+                tool.into(),
+                AgentToolBinding {
+                    enabled: true,
+                    preset: Some(ToolPreset::All),
+                    allowed_tools: None,
+                },
+            );
+        }
+        global.agents.insert("plan".into(), plan);
+
+        let resolved =
+            ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
+        let engine = PermissionEngine::resolver(resolved, "plan", 0);
+
+        assert_eq!(engine.path_mode("write"), BindingPathMode::WorkspaceOnly);
+        assert_eq!(
+            engine.path_mode("apply_edits"),
+            BindingPathMode::WorkspaceOnly
+        );
+
+        let allow_write = engine.evaluate_tool(
+            "write",
+            &serde_json::json!({ "path": ".litecode/plan/demo.md" }),
+            dir.path(),
+        );
+        assert_eq!(allow_write.action, PermissionAction::Allow);
+
+        let deny_write_src = engine.evaluate_tool(
+            "write",
+            &serde_json::json!({ "path": "src/main.rs" }),
+            dir.path(),
+        );
+        assert_eq!(deny_write_src.action, PermissionAction::Deny);
+        assert_eq!(deny_write_src.rule_id, "plan_file_only");
+
+        let deny_write_traversal = engine.evaluate_tool(
+            "write",
+            &serde_json::json!({ "path": ".litecode/plan/../other.md" }),
+            dir.path(),
+        );
+        assert_eq!(deny_write_traversal.action, PermissionAction::Deny);
+        assert_eq!(deny_write_traversal.rule_id, "plan_file_only");
+
+        let deny_plan_dir = engine.evaluate_tool(
+            "write",
+            &serde_json::json!({ "path": ".litecode/plan" }),
+            dir.path(),
+        );
+        assert_eq!(deny_plan_dir.action, PermissionAction::Deny);
+
+        let allow_edit = engine.evaluate_tool(
+            "apply_edits",
+            &serde_json::json!({ "edits": [{ "path": ".litecode/plan/demo.md", "old_string": "a", "new_string": "b" }] }),
+            dir.path(),
+        );
+        assert_eq!(allow_edit.action, PermissionAction::Allow);
+
+        let deny_mixed_edit = engine.evaluate_tool(
+            "apply_edits",
+            &serde_json::json!({
+                "edits": [
+                    { "path": ".litecode/plan/demo.md", "old_string": "a", "new_string": "b" },
+                    { "path": "src/main.rs", "old_string": "a", "new_string": "b" }
+                ]
+            }),
+            dir.path(),
+        );
+        assert_eq!(deny_mixed_edit.action, PermissionAction::Deny);
+        assert_eq!(deny_mixed_edit.rule_id, "plan_file_only");
     }
 }

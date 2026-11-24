@@ -76,25 +76,40 @@ fn fill_shell_value(value: &mut Value, event_type: Option<&str>) {
     }
 }
 
+fn ensure_array(map: &mut Map<String, Value>, key: &str) {
+    if matches!(map.get(key), None | Some(Value::Null)) {
+        map.insert(key.to_string(), Value::Array(Vec::new()));
+    }
+}
+
+fn ensure_string(map: &mut Map<String, Value>, key: &str, default: impl Into<String>) {
+    if matches!(map.get(key), None | Some(Value::Null)) {
+        map.insert(key.to_string(), Value::String(default.into()));
+    }
+}
+
+fn ensure_u64(map: &mut Map<String, Value>, key: &str, default: u64) {
+    if matches!(map.get(key), None | Some(Value::Null)) {
+        map.insert(key.to_string(), Value::from(default));
+    }
+}
+
 fn fill_typed_object(map: &mut Map<String, Value>, stream_event: Option<&str>) {
     let ty = map.get("type").and_then(Value::as_str).map(str::to_owned);
     if ty
         .as_deref()
         .is_some_and(|t| t.starts_with("response.") || t == "error")
     {
-        map.entry("sequence_number")
-            .or_insert_with(|| Value::from(0u64));
+        ensure_u64(map, "sequence_number", 0);
     }
     match ty.as_deref() {
         Some("reasoning") => {
-            map.entry("summary")
-                .or_insert_with(|| Value::Array(Vec::new()));
+            ensure_array(map, "summary");
         }
         Some("function_call") => {
             coerce_json_text(map, "arguments");
-            map.entry("arguments")
-                .or_insert_with(|| Value::String(String::new()));
-            if !map.contains_key("call_id") {
+            ensure_string(map, "arguments", "");
+            if matches!(map.get("call_id"), None | Some(Value::Null)) {
                 let fallback = map
                     .get("id")
                     .and_then(Value::as_str)
@@ -102,41 +117,32 @@ fn fill_typed_object(map: &mut Map<String, Value>, stream_event: Option<&str>) {
                     .to_string();
                 map.insert("call_id".into(), Value::String(fallback));
             }
-            map.entry("name")
-                .or_insert_with(|| Value::String(String::new()));
+            ensure_string(map, "name", "");
         }
         Some("response.function_call_arguments.delta") => {
             coerce_json_text(map, "delta");
-            map.entry("delta")
-                .or_insert_with(|| Value::String(String::new()));
+            ensure_string(map, "delta", "");
         }
         Some("response.function_call_arguments.done") => {
             coerce_json_text(map, "arguments");
-            map.entry("arguments")
-                .or_insert_with(|| Value::String(String::new()));
+            ensure_string(map, "arguments", "");
         }
         Some("message") => {
-            map.entry("content")
-                .or_insert_with(|| Value::Array(Vec::new()));
-            map.entry("role")
-                .or_insert_with(|| Value::String("assistant".into()));
+            ensure_array(map, "content");
+            ensure_string(map, "role", "assistant");
             let status = match stream_event {
                 Some("response.completed") => "completed",
                 Some("response.incomplete") => "incomplete",
                 _ => "in_progress",
             };
-            map.entry("status")
-                .or_insert_with(|| Value::String(status.into()));
+            ensure_string(map, "status", status);
         }
         Some("summary_text") => {
-            map.entry("text")
-                .or_insert_with(|| Value::String(String::new()));
+            ensure_string(map, "text", "");
         }
         Some("output_text") => {
-            map.entry("text")
-                .or_insert_with(|| Value::String(String::new()));
-            map.entry("annotations")
-                .or_insert_with(|| Value::Array(Vec::new()));
+            ensure_string(map, "text", "");
+            ensure_array(map, "annotations");
         }
         _ => {}
     }
@@ -154,9 +160,8 @@ fn coerce_json_text(map: &mut Map<String, Value>, key: &str) {
 }
 
 fn fill_response_object(map: &mut Map<String, Value>, event_type: Option<&str>) {
-    map.entry("output")
-        .or_insert_with(|| Value::Array(Vec::new()));
-    if !map.contains_key("status") {
+    ensure_array(map, "output");
+    if matches!(map.get("status"), None | Some(Value::Null)) {
         let status = match event_type {
             Some("response.completed") => "completed",
             Some("response.incomplete") => "incomplete",
@@ -174,14 +179,10 @@ fn fill_response_object(map: &mut Map<String, Value>, event_type: Option<&str>) 
 fn fill_token_details(value: &mut Value) {
     walk(value, &mut |map| {
         if let Some(Value::Object(details)) = map.get_mut("input_tokens_details") {
-            details
-                .entry("cached_tokens")
-                .or_insert_with(|| Value::from(0u64));
+            ensure_u64(details, "cached_tokens", 0);
         }
         if let Some(Value::Object(details)) = map.get_mut("output_tokens_details") {
-            details
-                .entry("reasoning_tokens")
-                .or_insert_with(|| Value::from(0u64));
+            ensure_u64(details, "reasoning_tokens", 0);
         }
     });
 }
@@ -195,8 +196,7 @@ fn fill_total_tokens(value: &mut Value) {
                 .get("output_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            map.entry("total_tokens")
-                .or_insert_with(|| Value::from(input.saturating_add(output)));
+            ensure_u64(map, "total_tokens", input.saturating_add(output));
         }
     });
 }
@@ -295,5 +295,75 @@ mod tests {
         harden(&mut event, UsagePatch::None);
         assert_eq!(event["delta"], "{\"command\":");
         assert_eq!(event["sequence_number"], 4);
+    }
+
+    #[test]
+    fn response_created_with_null_output_deserializes_to_stream_event() {
+        let mut event = json!({
+            "type": "response.created",
+            "sequence_number": null,
+            "response": {
+                "id": "resp_1",
+                "object": "response",
+                "created_at": 1,
+                "model": "m",
+                "status": null,
+                "output": null
+            }
+        });
+        harden(&mut event, UsagePatch::None);
+        assert_eq!(event["sequence_number"], 0);
+        assert_eq!(event["response"]["output"], json!([]));
+        assert_eq!(event["response"]["status"], "in_progress");
+        let parsed: crate::authority::responses::ResponseStreamEvent =
+            serde_json::from_value(event).expect("response.created with null output must parse");
+        match parsed {
+            crate::authority::responses::ResponseStreamEvent::ResponseCreated(ev) => {
+                assert!(ev.response.output.is_empty());
+            }
+            other => panic!("expected ResponseCreated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn null_required_shell_fields_are_filled_with_defaults() {
+        let mut event = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_2",
+                "object": "response",
+                "status": null,
+                "output": [
+                    { "type": "reasoning", "summary": null },
+                    {
+                        "type": "message",
+                        "role": null,
+                        "status": null,
+                        "content": [{ "type": "output_text", "text": null, "annotations": null }]
+                    },
+                    { "type": "function_call", "id": "fc_9", "call_id": null, "name": null, "arguments": null }
+                ],
+                "usage": {
+                    "input_tokens": 5,
+                    "output_tokens": 7,
+                    "total_tokens": null,
+                    "input_tokens_details": { "cached_tokens": null },
+                    "output_tokens_details": { "reasoning_tokens": null }
+                }
+            }
+        });
+        harden(&mut event, UsagePatch::MapMaxEffortToXhigh);
+        assert_eq!(event["response"]["status"], "completed");
+        assert_eq!(event["response"]["output"][0]["summary"], json!([]));
+        assert_eq!(event["response"]["output"][1]["role"], "assistant");
+        assert_eq!(event["response"]["output"][1]["status"], "completed");
+        assert_eq!(event["response"]["output"][1]["content"][0]["text"], "");
+        assert_eq!(event["response"]["output"][1]["content"][0]["annotations"], json!([]));
+        assert_eq!(event["response"]["output"][2]["call_id"], "fc_9");
+        assert_eq!(event["response"]["output"][2]["name"], "");
+        assert_eq!(event["response"]["output"][2]["arguments"], "");
+        assert_eq!(event["response"]["usage"]["total_tokens"], 12);
+        assert_eq!(event["response"]["usage"]["input_tokens_details"]["cached_tokens"], 0);
+        assert_eq!(event["response"]["usage"]["output_tokens_details"]["reasoning_tokens"], 0);
     }
 }

@@ -29,6 +29,7 @@ import {
   PANEL_EXIT_MS,
   PANEL_MIN_H,
   PLAN_EXECUTE_PROMPT,
+  PLAN_SWITCH_EXECUTE_PROMPT,
   SessionStatusLine,
 } from "./SessionStatusLine";
 
@@ -1260,6 +1261,51 @@ describe("SessionStatusLine — migrated chip content", () => {
     fireEvent.click(screen.getByTestId("capsule-plan"));
     fireEvent.click(screen.getByRole("button", { name: "Execute plan" }));
 
+    expect(sendRpc).toHaveBeenCalledWith("agent/run", {
+      input: PLAN_EXECUTE_PROMPT,
+      session_id: "s1",
+      plan_execution: true,
+    });
+  });
+
+  it("执行计划 in plan mode switches primary agent to default and sends switch prompt", () => {
+    const sendRpc = vi.fn(async () => ({ started: true }));
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+    useSessionStore.setState({
+      activePrimary: "plan",
+      byId: new Map([["s1", { activePrimary: "plan" }]]),
+    } as never);
+    seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+    fireEvent.click(screen.getByRole("button", { name: "Execute plan" }));
+
+    expect(sendRpc).toHaveBeenNthCalledWith(1, "agent/set-primary", {
+      agent_id: "default",
+      session_id: "s1",
+    });
+    expect(sendRpc).toHaveBeenNthCalledWith(2, "agent/run", {
+      input: PLAN_SWITCH_EXECUTE_PROMPT,
+      session_id: "s1",
+      plan_execution: true,
+    });
+  });
+
+  it("执行计划 in orchestrator mode keeps orchestrator agent and standard prompt", () => {
+    const sendRpc = vi.fn(async () => ({ started: true }));
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+    useSessionStore.setState({
+      activePrimary: "orchestrator",
+      byId: new Map([["s1", { activePrimary: "orchestrator" }]]),
+    } as never);
+    seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
+
+    render(<SessionStatusLine sessionId="s1" />);
+    fireEvent.click(screen.getByTestId("capsule-plan"));
+    fireEvent.click(screen.getByRole("button", { name: "Execute plan" }));
+
+    expect(sendRpc).toHaveBeenCalledTimes(1);
     expect(sendRpc).toHaveBeenCalledWith("agent/run", {
       input: PLAN_EXECUTE_PROMPT,
       session_id: "s1",

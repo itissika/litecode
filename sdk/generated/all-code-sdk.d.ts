@@ -1,4 +1,10 @@
-
+/**
+ * Emit one or more values into the `run_code` output stream; callable anywhere, any number of times.
+ * Pass structured values (tool results, plain objects, uniform object arrays, multiline strings) directly rather than pre-stringifying so the host renders compact tables, line-numbered files, and raw multiline text.
+ * Accepts any JS value (including `Error`, `Set`, `Map`, `Date`, `BigInt`, circular refs). `inspect(label, value)` labels a rendered block.
+ * Media handles (`__litecode_media`) are attached to the turn only when emitted via `inspect(...)`.
+ */
+declare function inspect(...values: unknown[]): void;
 
 type CsvOptions = {
   /** Field separator; one character. Default ",". */
@@ -69,12 +75,16 @@ type NoArgs = {};
 type Path = string;
 
 interface TodoTools {
-  /** Replace the current session task list; clearing occurs automatically when all items are completed. */
+  /**
+   * Record and update a structured task list to plan multi-step work and show progress; skip this for trivial single-step tasks.
+   * Add one todo per concrete step before you start. Keep the task actively being worked on `in_progress` (at most one unless running parallel work), and mark each todo `completed` immediately once it is done. Clearing occurs automatically when all items are completed.
+   */
   write(args: {
+    /** The COMPLETE task list, replacing any previous list. */
     todos: {
-      /** Task description. */
+      /** What the task is — a short, non-empty imperative line. */
       content: string;
-      /** Task status. */
+      /** pending (not started) | in_progress (currently working) | completed (done). */
       status: "pending" | "in_progress" | "completed";
     }[];
   }): Promise<{
@@ -105,7 +115,8 @@ interface PlanTools {
 
 type KnowledgeIssueRow = {
   key: string;
-  path: string;
+  /** Workspace-relative path to the node file (usable directly with `read`/`write`/`apply_edits`). */
+  path: Path;
   severity: "error" | "warning";
   code: string;
   ref_key: string | null;
@@ -113,7 +124,7 @@ type KnowledgeIssueRow = {
 };
 type KnowledgeNodeStatus = "enabled" | "disabled" | "pending" | "invalid";
 type KnowledgeScope = {
-  /** Restrict to these folders under the knowledge root. */
+  /** Restrict to these folders (workspace-relative e.g. `knowledge/arch`, or subfolder under the knowledge root e.g. `arch`). */
   folders?: string[];
   /** Restrict to these node keys. Union with folders when both are set. */
   nodes?: string[];
@@ -124,20 +135,21 @@ interface KnowledgeTools {
   check(args?: KnowledgeScope): Promise<{
     issues: KnowledgeIssueRow[];
   }>;
-  /** Create a new pending knowledge node markdown stub under `.litecode/knowledge/`. */
+  /** Create a new pending knowledge node markdown stub under the workspace knowledge root (`knowledge/` if present, otherwise `.litecode/knowledge/`). */
   create(args: {
     key: string;
+    /** Target folder (workspace-relative e.g. `knowledge/arch`, or subfolder under the knowledge root e.g. `arch`). */
     folder?: string;
   }): Promise<{
     key: string;
-    path: string;
+    path: Path;
     status: KnowledgeNodeStatus;
   }>;
-  /** List workspace knowledge nodes as flat summary rows (omit filters to list all); nodes use a `node` fence and `[@ key="..."]` / `[@ file="..."]` citations. The corpus root and node count are shown in the run view, not returned here. */
+  /** List workspace knowledge nodes as flat summary rows with workspace-relative `path` (omit filters to list all); nodes use a `node` fence and `[@ key="..."]` / `[@ file="..."]` citations. The corpus root and node count are shown in the run view, not returned here. */
   list(args?: KnowledgeScope): Promise<{
     nodes: {
       key: string;
-      path: string;
+      path: Path;
       status: KnowledgeNodeStatus;
       incoming_count: Integer;
       issue_count: Integer;
@@ -150,19 +162,19 @@ interface KnowledgeTools {
   }): Promise<{
     key: string;
     folder: string;
-    path: string;
+    path: Path;
     status: KnowledgeNodeStatus;
     summary: string;
     body: string;
     incoming: {
       key: string;
-      path: string;
+      path: Path;
       status: KnowledgeNodeStatus;
       summary: string;
     }[];
     outgoing: {
       key: string;
-      path: string;
+      path: Path;
       status: KnowledgeNodeStatus;
       summary: string;
     }[];
@@ -521,15 +533,15 @@ interface Tools {
     cmd: string; // Shell command to execute.
     workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.
     tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.
-    yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 600000. It does not limit the process lifetime.
-    max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB in run_code or 10000 tokens otherwise.
+    yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 10000. It does not limit the process lifetime.
+    max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB.
   }): Promise<ExecCommandData>;
   /** Poll, feed, or interrupt an existing exec session. Empty chars waits until the session exits or yield_time_ms expires, returning accumulated output; on exit, exit_code is set and session_id is null. */
   write_stdin(args: {
     session_id: string; // Session id from exec_command.
     chars?: string; // Bytes to write; empty polls. "\u0003" sends SIGINT to the process group.
     yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap.
-    max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB in run_code or 10000 tokens otherwise.
+    max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB.
   }): Promise<ExecCommandData>;
 
   /** Fetch one http(s) URL. */

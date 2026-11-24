@@ -3,34 +3,15 @@ use std::path::{Path, PathBuf};
 
 use crate::authority::responses::FunctionCallOutput;
 use crate::session::media::{MAX_MEDIA_BLOB_SIZE, write_media_blob};
-use crate::tool::trait_::Tool;
-use crate::types::{Item, MediaSource, Result, ToolCallResult, ToolOutputPart};
+use crate::types::{Item, MediaSource, Result, ToolOutputPart};
 use crate::types::utf8::{prefix_utf8, suffix_utf8};
 
 pub const RUN_SPILL_DIR: &str = ".litecode/run";
 pub const BLOB_PREFIX: &str = "[blob:";
 pub const DEFAULT_SPILL_THRESHOLD: usize = 32_768;
-pub const DIRECT_VIEW_MAX_BYTES: usize = 65_536;
 
 pub fn blob_dir(data_root: &Path) -> PathBuf {
     data_root.join("blobs")
-}
-
-pub fn direct_output_limit(tool: &dyn Tool) -> usize {
-    tool.max_result_size()
-}
-
-pub fn direct_output_max_bytes_from_limit(tokens: usize) -> usize {
-    if tokens == usize::MAX {
-        usize::MAX
-    } else {
-        tokens.saturating_mul(4).min(DIRECT_VIEW_MAX_BYTES)
-    }
-}
-
-/// Byte ceiling for a direct-surface tool result.
-pub fn direct_output_max_bytes(tool: &dyn Tool) -> usize {
-    direct_output_max_bytes_from_limit(direct_output_limit(tool))
 }
 
 fn sanitize_stem(stem: &str) -> String {
@@ -117,32 +98,6 @@ pub fn cut_and_spill_full(
         }
     });
     cut_head_tail_with_notice(text, max_bytes, full_path.as_deref())
-}
-
-/// Normalize a single Direct-surface tool result: materialize media parts first,
-/// then apply the single unified full-output spill + 50/50 cut if over budget.
-pub fn finalize_direct_tool_call_result(
-    mut result: ToolCallResult,
-    data_root: &Path,
-    workspace_root: &Path,
-    tool_name: &str,
-    max_bytes: usize,
-    existing_output_file: Option<&str>,
-) -> Result<ToolCallResult> {
-    result.parts = materialize_media_parts(result.parts, data_root)?;
-    if max_bytes < usize::MAX && result.content.len() > max_bytes {
-        if let Some(rel_path) = existing_output_file.filter(|p| !p.is_empty()) {
-            let total_bytes = fs::metadata(workspace_root.join(rel_path))
-                .map(|m| m.len() as usize)
-                .unwrap_or(result.content.len());
-            result.content =
-                cut_head_tail_with_total(&result.content, max_bytes, total_bytes, Some(rel_path));
-        } else {
-            result.content =
-                cut_and_spill_full(&result.content, max_bytes, Some(workspace_root), tool_name);
-        }
-    }
-    Ok(result)
 }
 
 pub fn materialize_media_parts(

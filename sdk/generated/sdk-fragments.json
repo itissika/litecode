@@ -1,16 +1,15 @@
 {
   "version": 1,
-  "sdk_hash": "dabff73cbdb295bc75e6fcf95255786ac0732759c8d59445fe08ce79691979f1",
-  "prose": "`run_code` executes one async JavaScript function body with top-level `await` and `return`. Orchestrate multi-step work in a single call instead of one call at a time: run independent calls concurrently with `Promise.all`, chain dependent steps with `await`, branch or nest on intermediate results, and use loops to batch or filter work. You MUST end with `return` for the data or tool results you need—return result objects directly (single result, `Promise.all` array, or summary object) for full output and metadata, or return filtered/sliced summaries; the host automatically formats returned objects, tables, and multiline strings without JSON-escaping. Only media handles (`media: [{ __litecode_media, kind, mime_type }]`) included in your `return` value are attached as multimodal outputs; unreturned media stays discarded.\n\nCall tools as `tools.<name>(args)` (or `tools.<suite>.<member>(args)` for custom suites). A no-argument tool takes no argument; every other tool takes one object matching its declared input schema. Each call returns a promise that resolves to its declared data or rejects with an ordinary JavaScript `Error`; `try`/`catch` and `Promise.allSettled` handle rejections, and a rejected tool error carries `code`, `message`, and optional `details`. For strings containing backslashes or quotes (such as regex edits), use `String.raw` or template literals — but avoid `String.raw` or bare template literals if the embedded text itself contains backticks (`` ` ``) or `${...}` (e.g. Python docstrings, Markdown, or shell scripts), since `` ` `` cannot be backslash-escaped in `String.raw` and `${...}` is still evaluated; use regular quoted strings or concatenation instead. The declarations below are the source of truth for tool paths, argument shapes, and result fields.\n\n`fs` is a synchronous, read-only, workspace-relative probe (`ls`/`stat` throw `Error` on missing or out-of-workspace paths). `libs` are pure-JS helpers. Both are declared below. No direct network, process, module access, or timers (`setTimeout`/`setInterval`) exist; side effects and external IO go through the bound tools.\n\nUnknown tool bindings, output-contract violations, cancellation, the 600000 ms active JS execution cap (paused while tool calls run, subject to a 1800000 ms hard wall-clock cap per `run_code` call), and hard limits stop the cell and cannot be caught. Non-finite numbers in a result become `null` with a warning.\n\nWhen any output exceeds the display limit, it is cut to a head+tail preview with `… <N> bytes total; full output: <path>`. Every path under `.litecode/run/` holds the complete unclipped output—inspect that path with bounded reads or searches instead of re-running work.",
-  "declarations": "",
+  "sdk_hash": "2064930d693920eded702bc0544c8c80b6a0b5e69879f85c05b5e8ddfb41c2e4",
+  "declarations": "/**\n * Emit one or more values into the `run_code` output stream; callable anywhere, any number of times.\n * Pass structured values (tool results, plain objects, uniform object arrays, multiline strings) directly rather than pre-stringifying so the host renders compact tables, line-numbered files, and raw multiline text.\n * Accepts any JS value (including `Error`, `Set`, `Map`, `Date`, `BigInt`, circular refs). `inspect(label, value)` labels a rendered block.\n * Media handles (`__litecode_media`) are attached to the turn only when emitted via `inspect(...)`.\n */\ndeclare function inspect(...values: unknown[]): void;",
   "libs": "type CsvOptions = {\n  /** Field separator; one character. Default \",\". */\n  delimiter?: string;\n  /** Quote character; one character. Default is a double quote. */\n  quote?: string;\n  /** Trim fields while parsing. Default false. */\n  trim?: boolean;\n};\n\ntype HistogramBin = {\n  start: number;\n  end: number;\n  count: number;\n};\n\ntype DiffLine = {\n  kind: \"equal\" | \"insert\" | \"delete\";\n  text: string;\n};\n\ndeclare const libs: {\n  stats: {\n    sum(values: number[]): number;\n    mean(values: number[]): number;\n    median(values: number[]): number;\n    variance(values: number[], sample?: boolean): number;\n    stddev(values: number[], sample?: boolean): number;\n    quantile(values: number[], q: number): number;\n    histogram(values: number[], bins?: number): HistogramBin[];\n    min(values: number[]): number;\n    max(values: number[]): number;\n  };\n  csv: {\n    parse(text: string, options?: CsvOptions): string[][];\n    format(rows: Array<Array<unknown>>, options?: CsvOptions): string;\n  };\n  text: {\n    lines(text: string): string[];\n    words(text: string): string[];\n    count(text: string, needle: string): number;\n    normalizeNewlines(text: string): string;\n    truncate(text: string, maxChars: number, suffix?: string): string;\n    diffLines(left: string, right: string): DiffLine[];\n  };\n  data: {\n    groupBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, T[]>;\n    countBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, number>;\n    unique<T>(values: T[]): T[];\n    sortBy<T>(rows: T[], key: string | ((row: T) => unknown), direction?: \"asc\" | \"desc\"): T[];\n  };\n};\n\n/** Read-only workspace probes. Synchronous; paths are workspace-relative; throw Error on missing or out-of-workspace paths. */\ndeclare const fs: {\n  /** One level, sorted by name; more than 500 entries set `truncated`. */\n  ls(path: string): { entries: Array<{ name: string; type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number }>; truncated: boolean };\n  /** mtime is ms since the Unix epoch. */\n  stat(path: string): { type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number; mtime: number };\n  exists(path: string): boolean;\n};",
   "types": {
     "BrowserPage": "type BrowserPage = {\n  active: boolean;\n  agentOwned: boolean;\n  id: string;\n  title: string;\n  url: string;\n  visible: boolean;\n};",
     "ExecCommandData": "type ExecCommandData = {\n  /** Live session id; null once the session has exited. */\n  session_id: string | null;\n  /** Process exit code once the session has exited; null while it is live. */\n  exit_code: Integer | null;\n  /** Output since the previous call on this session; the first call returns output since spawn. */\n  output: string;\n  /** Workspace-relative path to the complete `.litecode/run/<job>.stdout` log (always full output on disk). */\n  output_file: string;\n};",
     "Integer": "/** Whole JSON number. The host rejects fractional values. @asType integer */\ntype Integer = number;",
-    "KnowledgeIssueRow": "type KnowledgeIssueRow = {\n  key: string;\n  path: string;\n  severity: \"error\" | \"warning\";\n  code: string;\n  ref_key: string | null;\n  message: string;\n};",
+    "KnowledgeIssueRow": "type KnowledgeIssueRow = {\n  key: string;\n  /** Workspace-relative path to the node file (usable directly with `read`/`write`/`apply_edits`). */\n  path: Path;\n  severity: \"error\" | \"warning\";\n  code: string;\n  ref_key: string | null;\n  message: string;\n};",
     "KnowledgeNodeStatus": "type KnowledgeNodeStatus = \"enabled\" | \"disabled\" | \"pending\" | \"invalid\";",
-    "KnowledgeScope": "type KnowledgeScope = {\n  /** Restrict to these folders under the knowledge root. */\n  folders?: string[];\n  /** Restrict to these node keys. Union with folders when both are set. */\n  nodes?: string[];\n};",
+    "KnowledgeScope": "type KnowledgeScope = {\n  /** Restrict to these folders (workspace-relative e.g. `knowledge/arch`, or subfolder under the knowledge root e.g. `arch`). */\n  folders?: string[];\n  /** Restrict to these node keys. Union with folders when both are set. */\n  nodes?: string[];\n};",
     "Location": "type Location = {\n  /** Source file path. */\n  path: string;\n  /** 1-based line number. */\n  line: Integer;\n  /** 1-based UTF-16 column on that line. */\n  character: Integer;\n  /** Optional end column. */\n  end_character?: Integer;\n  /** Optional end line. */\n  end_line?: Integer;\n};",
     "LocationsData": "type LocationsData = {\n  locations: Location[];\n};",
     "NoArgs": "/** Empty input for tools that take no arguments. */\ntype NoArgs = {};",
@@ -122,7 +121,7 @@
       ],
       "suite": "process",
       "doc": "Start a command. Waits up to yield_time_ms; a live session_id leaves it running in the background. Poll with write_stdin for output, or leave it and wait for the background-exit reminder (exit code + output_file).",
-      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 600000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB in run_code or 10000 tokens otherwise.\n}): Promise<ExecCommandData>;",
+      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 10000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB.\n}): Promise<ExecCommandData>;",
       "type_deps": [
         "ExecCommandData",
         "Integer"
@@ -134,7 +133,7 @@
       ],
       "suite": "process",
       "doc": "Poll, feed, or interrupt an existing exec session. Empty chars waits until the session exits or yield_time_ms expires, returning accumulated output; on exit, exit_code is set and session_id is null.",
-      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap.\n  max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB in run_code or 10000 tokens otherwise.\n}): Promise<ExecCommandData>;",
+      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap.\n  max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB.\n}): Promise<ExecCommandData>;",
       "type_deps": [
         "ExecCommandData",
         "Integer"
@@ -364,8 +363,8 @@
         "write"
       ],
       "suite": "todo",
-      "doc": "Replace the current session task list; clearing occurs automatically when all items are completed.",
-      "signature": "write(args: {\n  todos: {\n    /** Task description. */\n    content: string;\n    /** Task status. */\n    status: \"pending\" | \"in_progress\" | \"completed\";\n  }[];\n}): Promise<{\n  total: Integer;\n  pending: Integer;\n  in_progress: Integer;\n  completed: Integer;\n  cleared: boolean;\n}>;",
+      "doc": "Record and update a structured task list to plan multi-step work and show progress; skip this for trivial single-step tasks.\nAdd one todo per concrete step before you start. Keep the task actively being worked on `in_progress` (at most one unless running parallel work), and mark each todo `completed` immediately once it is done. Clearing occurs automatically when all items are completed.",
+      "signature": "write(args: {\n  /** The COMPLETE task list, replacing any previous list. */\n  todos: {\n    /** What the task is — a short, non-empty imperative line. */\n    content: string;\n    /** pending (not started) | in_progress (currently working) | completed (done). */\n    status: \"pending\" | \"in_progress\" | \"completed\";\n  }[];\n}): Promise<{\n  total: Integer;\n  pending: Integer;\n  in_progress: Integer;\n  completed: Integer;\n  cleared: boolean;\n}>;",
       "type_deps": [
         "Integer"
       ]
@@ -411,7 +410,8 @@
       "signature": "check(args?: KnowledgeScope): Promise<{\n  issues: KnowledgeIssueRow[];\n}>;",
       "type_deps": [
         "KnowledgeIssueRow",
-        "KnowledgeScope"
+        "KnowledgeScope",
+        "Path"
       ]
     },
     "knowledge.create": {
@@ -420,10 +420,11 @@
         "create"
       ],
       "suite": "knowledge",
-      "doc": "Create a new pending knowledge node markdown stub under `.litecode/knowledge/`.",
-      "signature": "create(args: {\n  key: string;\n  folder?: string;\n}): Promise<{\n  key: string;\n  path: string;\n  status: KnowledgeNodeStatus;\n}>;",
+      "doc": "Create a new pending knowledge node markdown stub under the workspace knowledge root (`knowledge/` if present, otherwise `.litecode/knowledge/`).",
+      "signature": "create(args: {\n  key: string;\n  /** Target folder (workspace-relative e.g. `knowledge/arch`, or subfolder under the knowledge root e.g. `arch`). */\n  folder?: string;\n}): Promise<{\n  key: string;\n  path: Path;\n  status: KnowledgeNodeStatus;\n}>;",
       "type_deps": [
-        "KnowledgeNodeStatus"
+        "KnowledgeNodeStatus",
+        "Path"
       ]
     },
     "knowledge.list": {
@@ -432,12 +433,13 @@
         "list"
       ],
       "suite": "knowledge",
-      "doc": "List workspace knowledge nodes as flat summary rows (omit filters to list all); nodes use a `node` fence and `[@ key=\"...\"]` / `[@ file=\"...\"]` citations. The corpus root and node count are shown in the run view, not returned here.",
-      "signature": "list(args?: KnowledgeScope): Promise<{\n  nodes: {\n    key: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    incoming_count: Integer;\n    issue_count: Integer;\n    summary: string;\n  }[];\n}>;",
+      "doc": "List workspace knowledge nodes as flat summary rows with workspace-relative `path` (omit filters to list all); nodes use a `node` fence and `[@ key=\"...\"]` / `[@ file=\"...\"]` citations. The corpus root and node count are shown in the run view, not returned here.",
+      "signature": "list(args?: KnowledgeScope): Promise<{\n  nodes: {\n    key: string;\n    path: Path;\n    status: KnowledgeNodeStatus;\n    incoming_count: Integer;\n    issue_count: Integer;\n    summary: string;\n  }[];\n}>;",
       "type_deps": [
         "Integer",
         "KnowledgeNodeStatus",
-        "KnowledgeScope"
+        "KnowledgeScope",
+        "Path"
       ]
     },
     "knowledge.refs": {
@@ -447,10 +449,11 @@
       ],
       "suite": "knowledge",
       "doc": "Inspect one knowledge node's markdown body, incoming/outgoing citations, and issues.",
-      "signature": "refs(args: {\n  key: string;\n}): Promise<{\n  key: string;\n  folder: string;\n  path: string;\n  status: KnowledgeNodeStatus;\n  summary: string;\n  body: string;\n  incoming: {\n    key: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    summary: string;\n  }[];\n  outgoing: {\n    key: string;\n    path: string;\n    status: KnowledgeNodeStatus;\n    summary: string;\n  }[];\n  missing: string[];\n  issues: KnowledgeIssueRow[];\n}>;",
+      "signature": "refs(args: {\n  key: string;\n}): Promise<{\n  key: string;\n  folder: string;\n  path: Path;\n  status: KnowledgeNodeStatus;\n  summary: string;\n  body: string;\n  incoming: {\n    key: string;\n    path: Path;\n    status: KnowledgeNodeStatus;\n    summary: string;\n  }[];\n  outgoing: {\n    key: string;\n    path: Path;\n    status: KnowledgeNodeStatus;\n    summary: string;\n  }[];\n  missing: string[];\n  issues: KnowledgeIssueRow[];\n}>;",
       "type_deps": [
         "KnowledgeIssueRow",
-        "KnowledgeNodeStatus"
+        "KnowledgeNodeStatus",
+        "Path"
       ]
     },
     "workspace.help": {

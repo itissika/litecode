@@ -3348,6 +3348,69 @@ mod ask_loop_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plan_execution_auto_switches_plan_to_default_but_keeps_orchestrator() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut global = GlobalSettings::default();
+        for id in ["default", "plan", "orchestrator"] {
+            global.agents.insert(
+                id.into(),
+                AgentProfile {
+                    role: AgentRole::Primary,
+                    model_ref: "default".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let workspace_state = WorkspaceState::new(dir.path());
+        let resolved = resolve_without_catalog(global, workspace_state.clone());
+        let workspace = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        let engines = Arc::new(WorkspaceEngines::new());
+        let hub = Arc::new(crate::terminal::TerminalHub::new());
+        let ide = IdeBaseHandle::new(workspace, Arc::clone(&engines), Arc::clone(&hub));
+        let runtime = RuntimeHandle::new(
+            resolved,
+            "default".into(),
+            workspace_state,
+            Arc::new(EngineManager::new()),
+            engines,
+            ide,
+            Arc::new(AtomicU64::new(0)),
+            dir.path().join("global.db"),
+        );
+        let sessions = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            dir.path().join("sessions.db").to_string_lossy().to_string(),
+        ));
+        let mut controller =
+            SessionController::with_turn_guard(runtime, None, Arc::clone(&sessions)).unwrap();
+        let project = dir.path().to_string_lossy().to_string();
+
+        let plan_sid = sessions.open_session(&project, "plan", None).await.unwrap();
+        let _ = wp091_rpc(
+            &mut controller,
+            "agent/run",
+            serde_json::json!({ "session_id": plan_sid, "input": "go", "plan_execution": true }),
+        )
+        .await;
+        assert_eq!(sessions.agent_id(&plan_sid).as_deref(), Some("default"));
+
+        let orch_sid = sessions
+            .open_session(&project, "orchestrator", None)
+            .await
+            .unwrap();
+        let _ = wp091_rpc(
+            &mut controller,
+            "agent/run",
+            serde_json::json!({ "session_id": orch_sid, "input": "go", "plan_execution": true }),
+        )
+        .await;
+        assert_eq!(
+            sessions.agent_id(&orch_sid).as_deref(),
+            Some("orchestrator")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wp091_retry_on_child_rejected_readonly() {
         let dir = tempfile::tempdir().unwrap();
         let (mut c, _s, _p, child) = wp091_parent_child(dir.path()).await;

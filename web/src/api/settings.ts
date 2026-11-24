@@ -710,7 +710,14 @@ export interface AgentListItem {
   allowed_subagents: string[];
 }
 
-export const PROTECTED_AGENT_IDS = new Set(["default"]);
+export const PROTECTED_AGENT_IDS = new Set([
+  "default",
+  "plan",
+  "orchestrator",
+  "explore",
+  "general",
+  "verification",
+]);
 
 /** One card writes one binding row. */
 export function applyToolEnabled(

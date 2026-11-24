@@ -31,7 +31,7 @@ use crate::types::ToolCallResult;
 
 pub const MIN_YIELD_MS: u64 = 250;
 pub const MAX_YIELD_MS: u64 = 600_000;
-pub const DEFAULT_YIELD_MS: u64 = MAX_YIELD_MS;
+pub const DEFAULT_YIELD_MS: u64 = 10_000;
 pub const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 pub const MAX_OUTPUT_TOKENS: usize = 200_000;
 pub(crate) const CODE_DEFAULT_MAX_OUTPUT_BYTES: usize = 1_048_576;
@@ -80,7 +80,7 @@ impl ExecCommandData {
             if delta.text.is_empty() {
                 notice
             } else {
-                format!("{notice}\n{}", delta.text)
+                format!("{}\n{notice}", delta.text)
             }
         } else {
             delta.text
@@ -666,10 +666,36 @@ mod tests {
     }
 
     #[test]
-    fn exec_command_defaults_yield_ms_to_max() {
+    fn exec_command_defaults_yield_ms_to_ten_seconds() {
         let parsed = ExecCommandTool::parse_args(&serde_json::json!({ "cmd": "true" }))
             .expect("parse default yield");
-        assert_eq!(parsed.yield_ms, MAX_YIELD_MS);
+        assert_eq!(parsed.yield_ms, DEFAULT_YIELD_MS);
+        assert_eq!(parsed.yield_ms, 10_000);
+    }
+
+    #[test]
+    fn from_delta_places_truncation_notice_on_last_line() {
+        let data = ExecCommandData::from_delta(
+            None,
+            Some(0),
+            crate::terminal::OutputDelta {
+                text: "line 1\nline 2".into(),
+                original_bytes: 512,
+                total_file_bytes: 1024,
+                output_file: ".litecode/run/bg_1.stdout".into(),
+                alive: false,
+                exit_code: Some(0),
+                truncated: true,
+            },
+        );
+        let lines: Vec<&str> = data.output.lines().collect();
+        assert_eq!(lines[0], "line 1");
+        assert_eq!(lines[1], "line 2");
+        assert!(
+            lines.last().unwrap().contains("1024 bytes total; full output: .litecode/run/bg_1.stdout"),
+            "{}",
+            data.output
+        );
     }
 }
 

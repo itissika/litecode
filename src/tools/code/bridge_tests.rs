@@ -160,9 +160,9 @@ async fn s2_unknown_parameter_rejects_and_the_run_continues() {
         r#"
         try {
           await tools.read({ path: "a.txt", nope: 1 });
-          return "resolved";
+          inspect("resolved");
         } catch (e) {
-          return e.code + " " + e.message;
+          inspect(e.code + " " + e.message);
         }
         "#,
     )
@@ -196,9 +196,9 @@ async fn s2_missing_required_parameter_fails_the_call() {
         r#"
         try {
           await tools.read({});
-          return "resolved";
+          inspect("resolved");
         } catch (e) {
-          return e.code + " " + e.message;
+          inspect(e.code + " " + e.message);
         }
         "#,
     )
@@ -231,7 +231,7 @@ async fn s2_a_rejected_call_does_not_stop_the_next() {
           first = e.code;
         }
         const second = await tools.read({ path: "a.txt" });
-        return first + " " + second.lines.length;
+        inspect(first + " " + second.lines.length);
         "#,
     )
     .await;
@@ -263,15 +263,15 @@ async fn edit_input_failure_rejects_and_keeps_valid_edits() {
               { path: "a.txt", old_string: "hello", new_string: "hello" },
             ],
           });
-          return "unexpected_ok";
+          inspect("unexpected_ok");
         } catch (e) {
-          return {
+          inspect({
             code: e.code,
             applied: e.details && e.details.applied,
             total: e.details && e.details.total,
             r0: e.details && e.details.results[0].ok,
             r1: e.details && e.details.results[1].reason,
-          };
+          });
         }
         "#,
     )
@@ -307,7 +307,7 @@ async fn edit_on_a_session_record_rejects_with_permission_code() {
             new_string: "b",
         }] });
         await tools.write({ path: "after.txt", content: "should_not_run" });
-        return "unreachable";
+        inspect("unreachable");
         "#,
     )
     .await;
@@ -423,7 +423,7 @@ async fn s4_unknown_result_field_is_a_warning() {
         r#"
         const r = await tools.read({ path: "a.txt" });
         const data = r.path;
-        return typeof data;
+        inspect(typeof data);
         "#,
     )
     .await;
@@ -444,17 +444,17 @@ async fn s4_failed_call_is_caught_with_code_and_message() {
         r#"
         try {
           await tools.read({ path: "p" });
-          return "resolved";
+          inspect("resolved");
         } catch (e) {
-          console.log("saw", e.code, e.message);
+          inspect("saw", e.code, e.message);
         }
-        return "done";
+        inspect("done");
         "#,
     )
     .await;
     assert!(result.error.is_none(), "{}", result.content);
     assert!(
-        result.content.contains("[log] saw not_found p does not exist"),
+        result.content.contains("saw not_found p does not exist"),
         "{}",
         result.content
     );
@@ -473,7 +473,7 @@ async fn s4_field_list_comes_from_each_tools_contract() {
         r#"
         const g = await tools.grep({ pattern: "a" });
         const lines = g.lines;
-        return g.hits.length;
+        inspect(g.hits.length);
         "#,
     )
     .await;
@@ -500,7 +500,7 @@ async fn a_static_typo_is_reported_once_and_the_run_still_happens() {
         r#"
         const r = await tools.read({ path: "a.txt" });
         const data = r.data;
-        return "ran";
+        inspect("ran");
         "#,
     )
     .await;
@@ -532,7 +532,7 @@ async fn a_tool_result_reaches_the_model_with_fields_and_a_reminder_line() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(crate::tools::glob::GlobTool)],
-        r#"const r = await tools.glob({ pattern: "*.txt", limit: 2 }); return JSON.parse(JSON.stringify(r));"#,
+        r#"const r = await tools.glob({ pattern: "*.txt", limit: 2 }); inspect(JSON.parse(JSON.stringify(r)));"#,
     )
     .await;
     let content = result.content;
@@ -550,9 +550,6 @@ async fn a_tool_result_reaches_the_model_with_fields_and_a_reminder_line() {
 }
 
 /// Facts must not depend on the program handing the result back.
-///
-/// The program returns only the lines array; the read facts still have to
-/// reach the model, because they describe the call and not the returned value.
 #[tokio::test]
 async fn a_slice_of_a_result_still_reaches_the_model() {
     let dir = tempfile::tempdir().unwrap();
@@ -561,7 +558,7 @@ async fn a_slice_of_a_result_still_reaches_the_model() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(crate::tools::read::ReadTool::default())],
-        r#"const r = await tools.read({ path: "a.txt", limit: 2 }); return r.lines;"#,
+        r#"const r = await tools.read({ path: "a.txt", limit: 2 }); inspect(r.lines);"#,
     )
     .await;
     let content = result.content;
@@ -571,18 +568,15 @@ async fn a_slice_of_a_result_still_reaches_the_model() {
     );
 }
 
-/// The most natural program shape: hand a tool result straight back.
-///
-/// The result arrives behind the contract proxy, so the output walker has to
-/// read through it; calling its own result "unsupported object" was the bug.
+/// The most natural program shape: hand a tool result straight to `inspect`.
 #[tokio::test]
-async fn a_returned_tool_result_is_presented() {
+async fn an_inspected_tool_result_is_presented() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
     let result = run_program(
         dir.path(),
         vec![Arc::new(crate::tools::glob::GlobTool)],
-        r#"return await tools.glob({ pattern: "*.txt" });"#,
+        r#"inspect(await tools.glob({ pattern: "*.txt" }));"#,
     )
     .await;
     let content = result.content;
@@ -620,7 +614,7 @@ async fn lsp_state_reaches_the_model_as_a_reminder_line() {
         dir.path(),
         vec![Arc::new(DiagnosticsStub)],
         r#"const a = await tools.diagnostics({ path: "a.rs" });
-const b = await tools.diagnostics({ path: "b.rs" }); return a.state + b.state;"#,
+const b = await tools.diagnostics({ path: "b.rs" }); inspect(a.state + b.state);"#,
     )
     .await;
     let content = result.content;
@@ -660,7 +654,7 @@ async fn a_capped_grep_says_more_exist() {
         dir.path(),
         vec![Arc::new(crate::tools::grep::GrepTool)],
         r#"const r = await tools.grep({ pattern: "fn ", path: "a.rs", limit: 5 });
-return r.hits.length;"#,
+inspect(r.hits.length);"#,
     )
     .await;
     let content = result.content;
@@ -680,7 +674,7 @@ async fn an_outside_write_reaches_the_model_as_a_field_and_a_line() {
     let target = outside.path().join("note.txt");
     let literal = serde_json::to_string(&target.to_string_lossy().to_string()).unwrap();
     let code = format!(
-        "const r = await tools.write({{ path: {literal}, content: \"hi\" }});\nreturn {{ path: r.path, hasRisk: Object.hasOwn(r, 'path_risk') }};"
+        "const r = await tools.write({{ path: {literal}, content: \"hi\" }});\ninspect({{ path: r.path, hasRisk: Object.hasOwn(r, 'path_risk') }});"
     );
     let result = run_program(
         dir.path(),
@@ -735,18 +729,18 @@ async fn a_caught_failure_reads_as_one_line() {
         r#"
         try {
           await tools.workspace_symbol({ query: "x" });
-          console.log("resolved");
+          inspect("resolved");
         } catch (e) {
-          console.log("saw", e.code, e.message);
+          inspect("saw", e.code, e.message);
         }
-        return 1;
+        inspect(1);
         "#,
     )
     .await;
     let content = result.content;
     assert!(result.error.is_none(), "{content}");
     assert!(
-        content.contains("[log] saw unavailable language server I/O failed"),
+        content.contains("saw unavailable language server I/O failed"),
         "the failure must reach the program as an ordinary Error: {content}"
     );
     assert!(
@@ -771,7 +765,7 @@ async fn a_caught_failure_reads_as_one_line() {
         .unwrap();
     let stream = lines
         .iter()
-        .position(|line| line.starts_with("[log] saw"))
+        .position(|line| line.starts_with("saw "))
         .unwrap();
     assert!(anchor < stream, "{content}");
     assert_eq!(lines.last().copied(), Some("1"), "{content}");
@@ -790,9 +784,9 @@ async fn promise_allsettled_consumes_a_rejection_and_a_success() {
           tools.read({ path: "missing.txt" }),
           tools.read({ path: "a.txt" }),
         ]);
-        return results.map((item) =>
+        inspect(results.map((item) =>
           item.status === "fulfilled" ? item.value.lines.length : item.reason.code
-        );
+        ));
         "#,
     )
     .await;
@@ -839,7 +833,7 @@ async fn a_successful_call_reports_no_failure_line() {
         vec![Arc::new(CountingRead {
             runs: Arc::clone(&runs),
         })],
-        r#"const r = await tools.read({ path: "a.txt" }); return r.lines.length;"#,
+        r#"const r = await tools.read({ path: "a.txt" }); inspect(r.lines.length);"#,
     )
     .await;
     let content = result.content;
@@ -864,11 +858,11 @@ async fn a_computed_unknown_parameter_is_one_line_above_the_stream() {
         const args = { path: "a.txt", [key]: "a.txt" };
         try {
           const r = await tools.read(args);
-          console.log("saw", r.lines.length);
+          inspect("saw", r.lines.length);
         } catch (e) {
-          console.log("saw", e.code);
+          inspect("saw", e.code);
         }
-        return "done";
+        inspect("done");
         "#,
     )
     .await;
@@ -897,7 +891,7 @@ async fn a_computed_unknown_parameter_is_one_line_above_the_stream() {
         .unwrap();
     let stream = lines
         .iter()
-        .position(|line| line.starts_with("[log] saw"))
+        .position(|line| line.starts_with("saw:"))
         .unwrap();
     assert!(anchor < stream, "{content}");
     assert_eq!(lines.last().copied(), Some("done"), "{content}");
@@ -915,9 +909,9 @@ async fn a_literal_unknown_parameter_is_stated_once() {
         r#"
         try {
           await tools.read({ path: "a.txt", pth: "x" });
-          return "resolved";
+          inspect("resolved");
         } catch (e) {
-          return e.code;
+          inspect(e.code);
         }
         "#,
     )
@@ -948,11 +942,11 @@ async fn an_illegal_value_names_the_legal_ones() {
         const format = "pdf";
         try {
           await tools.webfetch({ url: "https://example.com", format });
-          console.log("resolved");
+          inspect("resolved");
         } catch (e) {
-          console.log("saw", e.code);
+          inspect("saw", e.code);
         }
-        return "done";
+        inspect("done");
         "#,
     )
     .await;
@@ -984,7 +978,7 @@ async fn two_arguments_keep_their_single_line() {
         vec![Arc::new(crate::tools::read::ReadTool::default())],
         r#"
         const r = await tools.read({ path: "a.txt" }, { path: "b.txt" });
-        return r.reason;
+        inspect(r.reason);
         "#,
     )
     .await;
@@ -1015,9 +1009,9 @@ async fn a_bad_edit_item_projects_public_reasons_without_leaking_internals() {
         ];
         try {
           await tools.apply_edits({ edits: bad });
-          return "unexpected_ok";
+          inspect("unexpected_ok");
         } catch (e) {
-          return e.details.results.map((item) => item.reason).join(",");
+          inspect(e.details.results.map((item) => item.reason).join(","));
         }
         "#,
     )
@@ -1066,7 +1060,7 @@ async fn a_hits_shape_from_another_tool_produces_no_grep_line() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(HitsLike)],
-        r#"const r = await tools.code_search({ query: "x" }); return r.hits.length;"#,
+        r#"const r = await tools.code_search({ query: "x" }); inspect(r.hits.length);"#,
     )
     .await;
     let content = result.content;
@@ -1074,16 +1068,16 @@ async fn a_hits_shape_from_another_tool_produces_no_grep_line() {
     assert!(!content.contains("↳"), "{content}");
 }
 
-/// Reminders do not need console output or a returned object either.
+/// Reminders do not need a structured inspected object either.
 #[tokio::test]
-async fn a_numeric_return_does_not_hide_the_facts() {
+async fn a_numeric_inspect_does_not_hide_the_facts() {
     let dir = tempfile::tempdir().unwrap();
     let body: String = (0..5).map(|i| format!("line{i}\n")).collect();
     std::fs::write(dir.path().join("a.txt"), body).unwrap();
     let result = run_program(
         dir.path(),
         vec![Arc::new(crate::tools::read::ReadTool::default())],
-        r#"const r = await tools.read({ path: "a.txt", limit: 2 }); return r.lines.length;"#,
+        r#"const r = await tools.read({ path: "a.txt", limit: 2 }); inspect(r.lines.length);"#,
     )
     .await;
     let content = result.content;
@@ -1114,8 +1108,8 @@ async fn s1_unknown_member_ends_the_run_without_a_ledger_row() {
             runs: Arc::clone(&runs),
         })],
         r#"
-        try { await tools.readx({ path: "a.txt" }); } catch (e) { return "swallowed"; }
-        return "continued";
+        try { await tools.readx({ path: "a.txt" }); } catch (e) { inspect("swallowed"); }
+        inspect("continued");
         "#,
     )
     .await;
@@ -1152,9 +1146,9 @@ async fn s2_two_arguments_fail_the_call() {
         r#"
         try {
           await tools.read({ path: "a.txt" }, { path: "b.txt" });
-          return "resolved";
+          inspect("resolved");
         } catch (e) {
-          return e.code + " / " + e.message;
+          inspect(e.code + " / " + e.message);
         }
         "#,
     )
@@ -1181,9 +1175,9 @@ async fn s2_over_deep_arguments_fail_the_call() {
         for (let i = 0; i < 200; i++) { node.next = {}; node = node.next; }
         try {
           await tools.read(root);
-          return "resolved";
+          inspect("resolved");
         } catch (e) {
-          return e.code + " " + e.message;
+          inspect(e.code + " " + e.message);
         }
         "#,
     )
@@ -1195,7 +1189,6 @@ async fn s2_over_deep_arguments_fail_the_call() {
 }
 
 /// S3: a result that does not match its own contract ends the run.
-/// (Expected red before B2: today it becomes an invalid_output value.)
 #[tokio::test]
 async fn s3_result_that_violates_the_contract_ends_the_run() {
     let dir = tempfile::tempdir().unwrap();
@@ -1203,8 +1196,8 @@ async fn s3_result_that_violates_the_contract_ends_the_run() {
         dir.path(),
         vec![Arc::new(BadRead)],
         r#"
-        try { await tools.read({ path: "a.txt" }); } catch (e) { return "swallowed"; }
-        return "continued";
+        try { await tools.read({ path: "a.txt" }); } catch (e) { inspect("swallowed"); }
+        inspect("continued");
         "#,
     )
     .await;
@@ -1214,10 +1207,6 @@ async fn s3_result_that_violates_the_contract_ends_the_run() {
         result.content
     );
     assert!(result.content.contains("lines"), "{}", result.content);
-    // One code for the same failure in both places this layer can see: the
-    // manifest row and the header. The third place, the ToolError identity, is
-    // built from the same slot and asserted at the engine layer
-    // (`contract_latch_tests::contract_failure_carries_the_tool_error_code`).
     assert_eq!(
         result.error_code.as_deref(),
         Some("invalid_output"),
@@ -1297,7 +1286,7 @@ async fn nested_tool_wait_freezes_active_run_code_budget() {
     .with_wall_timeout(std::time::Duration::from_secs(5));
     let result = tool
         .execute(
-            json!({ "code": r#"const r = await tools.read({ path: "a.txt" }); return r.lines;"# }),
+            json!({ "code": r#"const r = await tools.read({ path: "a.txt" }); inspect(r.lines);"# }),
             execution(dir.path()),
         )
         .await;
@@ -1340,7 +1329,7 @@ async fn over_budget_spill_file_is_readable_by_tools_read() {
         .collect::<String>();
     let tail = "TAIL_SPILL_TEST\n";
     let code = format!(
-        "const s = {}; console.log(s);",
+        "const s = {}; inspect(s);",
         serde_json::to_string(&format!("{head}{}{middle}{}{tail}", "H ".repeat(4000), "T ".repeat(2500))).unwrap()
     );
     let first = run_program(dir.path(), vec![read_tool.clone()], &code).await;
@@ -1352,7 +1341,7 @@ async fn over_budget_spill_file_is_readable_by_tools_read() {
         dir.path(),
         vec![read_tool],
         &format!(
-            "const r = await tools.read({{ path: {} }}); return r.lines.slice(0, 5);",
+            "const r = await tools.read({{ path: {} }}); inspect(r.lines.slice(0, 5));",
             serde_json::to_string(rel).unwrap()
         ),
     )
@@ -1365,44 +1354,79 @@ async fn over_budget_spill_file_is_readable_by_tools_read() {
 }
 
 #[tokio::test]
-async fn console_only_prompts_to_return_while_console_plus_return_stays_silent() {
+async fn top_level_return_value_fails_before_executing_tools() {
     let dir = tempfile::tempdir().unwrap();
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(crate::tools::read::ReadTool::default())];
-    let console_only = run_program(dir.path(), tools.clone(), "console.log('step 1');").await;
-    assert!(console_only.error.is_none(), "{}", console_only.content);
+    let runs = Arc::new(AtomicUsize::new(0));
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(CountingRead {
+            runs: Arc::clone(&runs),
+        })],
+        "const r = await tools.read({ path: 'a.txt' });\nreturn r;",
+    )
+    .await;
+    assert!(result.error.is_some(), "{}", result.content);
+    assert!(result.content.contains("syntax error"), "{}", result.content);
+    assert!(result.content.contains("inspect(value)"), "{}", result.content);
+    assert_eq!(runs.load(Ordering::SeqCst), 0, "no tool call may execute");
+}
+
+#[tokio::test]
+async fn console_log_fails_with_inspect_guidance() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = run_program(
+        dir.path(),
+        vec![Arc::new(crate::tools::read::ReadTool::default())],
+        "console.log('step 1');",
+    )
+    .await;
+    assert!(result.error.is_some(), "{}", result.content);
     assert!(
-        console_only
+        result
             .content
-            .contains("↳ Returned nothing (console output only). End with 'return' on tool results instead."),
+            .contains("console is not defined — use inspect(value) to emit output"),
         "{}",
-        console_only.content
+        result.content
     );
-    assert!(console_only.content.contains("[log] step 1"), "{}", console_only.content);
+}
 
-    let both = run_program(
+#[tokio::test]
+async fn inspect_preserves_earlier_structured_output_when_later_step_throws() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha\nbeta\n").unwrap();
+    let result = run_program(
         dir.path(),
-        tools.clone(),
-        "console.log('progress'); return { ok: true };",
+        vec![Arc::new(crate::tools::read::ReadTool::default())],
+        r#"
+        const r = await tools.read({ path: "a.txt" });
+        inspect("first", r);
+        await tools.read({ path: "missing.txt" });
+        "#,
     )
     .await;
-    assert!(both.error.is_none(), "{}", both.content);
-    assert!(
-        !both.content.contains("Returned nothing"),
-        "{}",
-        both.content
-    );
-    assert!(both.content.contains("[log] progress"), "{}", both.content);
-    assert!(both.content.contains(r#"{"ok":true}"#), "{}", both.content);
+    assert!(result.error.is_some(), "{}", result.content);
+    assert!(result.content.contains("run_code failed:"), "{}", result.content);
+    assert!(result.content.contains("first:\n"), "{}", result.content);
+    assert!(result.content.contains("1: alpha\n2: beta"), "{}", result.content);
+}
 
-    let failed = run_program(
+#[tokio::test]
+async fn inspect_handles_caught_tool_error_directly_without_crashing() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = run_program(
         dir.path(),
-        tools,
-        "console.log('step 1'); throw new Error('boom');",
+        vec![Arc::new(FailingRead)],
+        r#"
+        try {
+          await tools.read({ path: "missing.txt" });
+        } catch (e) {
+          inspect("err", e);
+        }
+        "#,
     )
     .await;
-    assert!(
-        !failed.content.contains("Returned nothing"),
-        "{}",
-        failed.content
-    );
+    assert!(result.error.is_none(), "{}", result.content);
+    assert!(result.content.contains("err: "), "{}", result.content);
+    assert!(result.content.contains("\"code\":\"not_found\""), "{}", result.content);
+    assert!(result.content.contains("p does not exist"), "{}", result.content);
 }

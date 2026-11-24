@@ -2,7 +2,7 @@
 //!
 //! This module does not know about tools, sessions, or permissions. [`execute`]
 //! takes a program, named async host bindings, a pausable time budget, a
-//! cancellation token, and resource limits. It returns logs, a JSON value, an
+//! cancellation token, and resource limits. It returns inspected values, an
 //! orthogonal failure, and a host-call log.
 //!
 //! JavaScript runs on a dedicated thread. Host futures run on the caller's
@@ -27,6 +27,7 @@ mod heap;
 mod json;
 mod output;
 pub(crate) mod precheck;
+mod ts_strip;
 
 use std::fmt;
 use std::future::Future;
@@ -40,20 +41,13 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) use boundary::json_bytes;
 pub use boundary::{DROPPED_CAP, DroppedUndefined};
-/// One entry of the run's output stream.
+/// One `inspect(...)` call in the run's output stream.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
-    /// Monotonic position in the stream, assigned when the entry was appended.
+    /// Monotonic position in the stream, assigned when `inspect(...)` was called.
     pub order: u64,
-    pub body: EntryBody,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum EntryBody {
-    /// One console line.
-    Text { level: LogLevel, text: String },
-    /// The program's return value. Always the last entry when present.
-    Value(Json),
+    /// Converted values emitted by one `inspect(...values)` call (always non-empty).
+    pub values: Vec<Json>,
 }
 pub use budget::{BudgetPause, BudgetPauseGuard, HumanPauseGuard};
 pub use json::Json;
@@ -68,7 +62,7 @@ pub struct Limits {
     pub memory_bytes: usize,
     /// QuickJS stack cap in bytes.
     pub stack_bytes: usize,
-    /// Shared hard cap for console text and the final JSON value, in UTF-8 bytes.
+    /// Shared hard cap for all `inspect(...)` output, in UTF-8 JSON bytes.
     pub output_bytes: usize,
     /// Maximum number of host calls that may be in flight together.
     pub max_in_flight: usize,
@@ -246,8 +240,9 @@ pub struct BindingContract {
 
 /// A global object whose properties are async host functions.
 ///
-/// `libs` and `console` are reserved. Names must be JavaScript identifiers.
-/// Dotted binding names create nested objects with async functions on the leaf.
+/// `libs`, `fs`, `inspect`, and `ToolError` are reserved. Names must be
+/// JavaScript identifiers. Dotted binding names create nested objects with
+/// async functions on the leaf.
 #[derive(Debug, Clone)]
 pub struct Namespace {
     pub name: String,
@@ -257,7 +252,8 @@ pub struct Namespace {
 /// One execution of a program.
 #[derive(Debug, Clone)]
 pub struct ExecuteRequest {
-    /// Async function body. Top-level `await` and `return` are supported.
+    /// Async TypeScript/JavaScript body. Top-level `await` and bare `return;`
+    /// are supported; call `inspect(...)` to emit output.
     pub source: String,
     pub namespaces: Vec<Namespace>,
     pub limits: Limits,
@@ -271,21 +267,6 @@ pub struct ExecuteRequest {
     /// Workspace root for the read-only `fs.ls/stat/exists` probes
     /// (WP-210 I). `None` leaves `fs` undefined.
     pub fs_root: Option<std::path::PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogLevel {
-    Log,
-    Info,
-    Warn,
-    Error,
-    Debug,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogEntry {
-    pub level: LogLevel,
-    pub message: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -492,11 +473,9 @@ fn program_js_site(text: &str) -> Option<(u32, u32)> {
 
 /// Result of one program.
 ///
-/// `entries` is one ordered stream: console text and, when the program
-/// returned, its value as the **last** entry. `failure` coexists with a value
-/// only for [`FailureKind::Cancelled`] (the user cancelled after the return). A
-/// later [`FailureKind::Timeout`] or [`FailureKind::Internal`] during drain is
-/// a text entry.
+/// `entries` is one ordered stream of `inspect(...)` calls. Runtime warnings
+/// (contract warnings, unhandled promise rejections, cancelled in-flight calls,
+/// drain notices) sit in `warnings` rather than the stream.
 ///
 /// Entries hold [`Json`], so dropping, cloning, comparing, or debugging an
 /// outcome does not overflow the stack on a deep tree.
@@ -504,30 +483,17 @@ fn program_js_site(text: &str) -> Option<(u32, u32)> {
 pub struct Outcome {
     pub entries: Vec<Entry>,
     pub failure: Option<Failure>,
-    /// Contract violations the run survived (wrong field names, rejected
-    /// arguments): reported once at the end, never a reason to stop.
+    /// Contract and runtime warnings the run survived: reported once in the
+    /// upfloat block above the stream, never a reason to stop.
     pub warnings: Vec<String>,
     pub calls: Vec<CallRecord>,
     /// Active program time when the run settled (excludes approval pauses).
     pub duration_ms: u64,
     /// Result paths where `undefined` was dropped / nulled (WP-206 #7).
     pub dropped_undefined: boundary::DroppedUndefined,
-    /// True when the program itself called `console.*` at least once.
-    pub used_console: bool,
 }
 
 impl Outcome {
-    /// The program's return value: the last entry, and only when it is a value.
-    pub fn value(&self) -> Option<&Json> {
-        match self.entries.last() {
-            Some(Entry {
-                body: EntryBody::Value(value),
-                ..
-            }) => Some(value),
-            _ => None,
-        }
-    }
-
     pub(crate) fn from_failure(failure: Failure) -> Self {
         Self {
             entries: Vec::new(),
@@ -536,7 +502,6 @@ impl Outcome {
             calls: Vec::new(),
             duration_ms: 0,
             dropped_undefined: Default::default(),
-            used_console: false,
         }
     }
 }
@@ -591,7 +556,10 @@ fn validate(request: &ExecuteRequest) -> Result<(), String> {
         if !is_ident(&namespace.name) {
             return Err(format!("invalid namespace '{}'", namespace.name));
         }
-        if matches!(namespace.name.as_str(), "libs" | "console" | "ToolError") {
+        if matches!(
+            namespace.name.as_str(),
+            "libs" | "inspect" | "fs" | "ToolError"
+        ) {
             return Err(format!("'{}' is reserved", namespace.name));
         }
         if !namespaces.insert(namespace.name.as_str()) {

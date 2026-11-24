@@ -115,7 +115,16 @@ describe("settings helpers", () => {
 
   it("identifies protected agents", async () => {
     const { isProtectedAgent } = await import("./settings");
-    expect(isProtectedAgent("default")).toBe(true);
+    for (const id of [
+      "default",
+      "plan",
+      "orchestrator",
+      "explore",
+      "general",
+      "verification",
+    ]) {
+      expect(isProtectedAgent(id)).toBe(true);
+    }
     expect(isProtectedAgent("compaction")).toBe(false);
     expect(isProtectedAgent("reviewer")).toBe(false);
   });
