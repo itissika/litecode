@@ -314,11 +314,9 @@ fn render_projection_page(
             total_lines,
             end - start,
             clamped,
-            Vec::new(),
         );
     }
     let mut lines = Vec::new();
-    let mut line_capped: Vec<usize> = Vec::new();
     let mut skipped_in_context = 0usize;
     for i in start..end {
         let line_no = (i + 1) as u32;
@@ -330,10 +328,7 @@ fn render_projection_page(
             continue;
         }
         let raw = file.lines.get(i).map(String::as_str).unwrap_or("");
-        let (text, capped) = data_line_text(raw);
-        if capped {
-            line_capped.push(i + 1);
-        }
+        let text = data_line_text(raw);
         lines.push(ReadLine {
             line: i + 1,
             text,
@@ -347,7 +342,6 @@ fn render_projection_page(
         total_lines,
         skipped_in_context,
         clamped,
-        line_capped,
     )
 }
 
@@ -369,27 +363,14 @@ fn render_text_page(content: &str, input: &Value, path: &str) -> ToolCallResult 
     let start = start_line.saturating_sub(1);
     let end = (start + limit).min(total_lines);
     let mut out = Vec::new();
-    let mut line_capped: Vec<usize> = Vec::new();
     for i in start..end {
-        let (text, capped) = data_line_text(lines[i]);
-        if capped {
-            line_capped.push(i + 1);
-        }
+        let text = data_line_text(lines[i]);
         out.push(ReadLine {
             line: i + 1,
             text,
         });
     }
-    finish_read(
-        path,
-        start_line,
-        out,
-        end,
-        total_lines,
-        0,
-        clamped,
-        line_capped,
-    )
+    finish_read(path, start_line, out, end, total_lines, 0, clamped)
 }
 
 /// `start_line` beyond the last line (including an empty file): resolve an
@@ -408,7 +389,6 @@ fn past_eof_page(
         total_lines,
         0,
         clamped,
-        Vec::new(),
     )
 }
 
@@ -431,9 +411,6 @@ struct ReadData {
     /// Lines the window covered but left out because they are already in the
     /// model's context. A gap in `lines` is explained by this number.
     skipped_in_context: usize,
-    /// Lines shortened to the per-line character cap, by number.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    lines_capped: Vec<usize>,
     /// Parameters adjusted to a legal value; absent when nothing moved.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     clamped: Vec<crate::tool::clamp::Clamp>,
@@ -459,7 +436,6 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
                 requested: serde_json::json!(0),
                 applied: serde_json::json!(1),
             }],
-            vec![1],
         ),
         all_optional_absent: finish_read(
             "note.txt",
@@ -471,7 +447,6 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
             1,
             1,
             0,
-            Vec::new(),
             Vec::new(),
         ),
     }]
@@ -485,7 +460,6 @@ fn finish_read(
     total_lines: usize,
     skipped_in_context: usize,
     clamped: Vec<crate::tool::clamp::Clamp>,
-    lines_capped: Vec<usize>,
 ) -> ToolCallResult {
     // Paging is a fact, not a sentence: has_more + total_lines say it, and the
     // renderer turns the pair into one reminder line for the model.
@@ -497,22 +471,18 @@ fn finish_read(
         total_lines,
         has_more,
         skipped_in_context,
-        lines_capped,
         clamped,
     })
 }
 
-fn data_line_text(line: &str) -> (String, bool) {
-    if line.chars().count() <= MAX_LINE_CHARS {
-        (line.to_string(), false)
+fn data_line_text(line: &str) -> String {
+    let mut chars = line.chars();
+    let kept: String = chars.by_ref().take(MAX_LINE_CHARS).collect();
+    let omitted = chars.count();
+    if omitted > 0 {
+        format!("{kept}... [+{omitted} chars]")
     } else {
-        (
-            format!(
-                "{}...",
-                line.chars().take(MAX_LINE_CHARS).collect::<String>()
-            ),
-            true,
-        )
+        kept
     }
 }
 
@@ -834,10 +804,10 @@ mod tests {
             "path": dir.path().join("wide.txt").to_str().unwrap()
         }));
         let line = page_lines(&result)[0].clone();
-        assert!(line.ends_with("..."));
-        assert!(line.chars().count() <= MAX_LINE_CHARS + 3);
+        assert!(line.ends_with("... [+500 chars]"), "{line}");
+        assert_eq!(line.chars().count(), MAX_LINE_CHARS + "... [+500 chars]".len());
         let data = result.data.as_ref().unwrap();
-        assert_eq!(data["lines_capped"], json!([1]), "{data}");
+        assert!(data.get("lines_capped").is_none(), "{data}");
         assert_eq!(data["lines"][0]["line"], 1);
         assert!(data["lines"][0]["text"].is_string());
     }

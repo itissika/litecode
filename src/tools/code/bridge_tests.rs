@@ -377,7 +377,6 @@ impl Tool for GrepLike {
         result.data = Some(json!({
             "hits": [{"path": "a", "line": 1, "text": "a"}],
             "at_limit_cap": false,
-            "lines_truncated": false,
             "context_omitted": false,
             "output_capped": false
         }));

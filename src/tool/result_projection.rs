@@ -96,7 +96,6 @@ pub fn project_code_result(tool: &str, mut result: ToolCallResult) -> ToolCallRe
                     "total_lines",
                     "has_more",
                     "skipped_in_context",
-                    "lines_capped",
                     "clamped",
                 ],
             );
@@ -123,7 +122,6 @@ pub fn project_code_result(tool: &str, mut result: ToolCallResult) -> ToolCallRe
                 "empty_reason",
                 "total_hits",
                 "at_limit_cap",
-                "lines_truncated",
                 "context_omitted",
                 "output_capped",
                 "clamped",

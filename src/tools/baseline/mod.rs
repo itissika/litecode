@@ -422,8 +422,8 @@ fn expect_shape(case: &Live, result: &ToolCallResult) {
         let data = result.data.as_ref().unwrap();
         let metadata = result.metadata.as_ref().expect("reminder metadata");
         let line = data["lines"][0].as_str().unwrap();
-        assert!(line.ends_with("..."), "{data}");
-        assert_eq!(metadata["lines_capped"], json!([1]), "{metadata}");
+        assert!(line.contains("... [+") && line.ends_with(" chars]"), "{data}");
+        assert!(metadata.get("lines_capped").is_none(), "{metadata}");
     }
     if case.tool == "glob" && case.scenario == "truncation" {
         let data = result.data.as_ref().unwrap();

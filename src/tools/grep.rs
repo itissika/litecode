@@ -446,7 +446,6 @@ fn search(
         scan.hits,
         GrepFacts {
             at_limit_cap: scan.truncated && total >= MAX_GREP_LIMIT,
-            lines_truncated: scan.line_capped,
             truncated: scan.truncated,
             ..GrepFacts::default()
         },
@@ -457,7 +456,6 @@ struct Scan {
     hits: Vec<GrepHit>,
     truncated: bool,
     opened: bool,
-    line_capped: bool,
 }
 
 fn collect_matches(
@@ -475,7 +473,6 @@ fn collect_matches(
     let mut opened = false;
     let mut last_file_full = false;
     let mut files_left = false;
-    let mut line_capped = false;
     for (index, candidate) in candidates.iter().enumerate() {
         if cancel.is_cancelled() {
             return Err(LitecodeError::ToolExecution("search cancelled".into()));
@@ -485,14 +482,11 @@ fn collect_matches(
             break;
         }
         let fetch = target - kept.len();
-        let (hits, file_opened, capped) = search_file(
+        let (hits, file_opened) = search_file(
             workspace, outside, candidate, options, preset, 0, fetch, cancel,
         )?;
         if file_opened {
             opened = true;
-        }
-        if capped {
-            line_capped = true;
         }
         last_file_full = hits.len() == fetch;
         kept.extend(hits);
@@ -510,7 +504,6 @@ fn collect_matches(
         hits: kept,
         truncated,
         opened,
-        line_capped,
     })
 }
 
@@ -523,7 +516,7 @@ fn search_file(
     min_line: u64,
     fetch: usize,
     cancel: &tokio_util::sync::CancellationToken,
-) -> Result<(Vec<GrepHit>, bool, bool)> {
+) -> Result<(Vec<GrepHit>, bool)> {
     let root = if outside {
         candidate
             .abs
@@ -550,25 +543,17 @@ fn search_file(
     };
     let outcome = lexical_search_for_agent_cancellable(&query, preset, workspace, Some(cancel))?;
     let opened = outcome.files_searched > 0 || !outcome.matches.is_empty();
-    let mut line_capped = false;
     let hits = outcome
         .matches
         .into_iter()
         .map(|hit| {
-            let (text, capped) = cap_match_line(&hit.line_text);
-            if capped {
-                line_capped = true;
-            }
+            let text = cap_match_line(&hit.line_text);
             let before_start = hit
                 .start_line
                 .saturating_sub(hit.context_before.len() as u32)
                 .max(1);
-            let before = context_lines(hit.context_before, before_start, &mut line_capped);
-            let after = context_lines(
-                hit.context_after,
-                hit.end_line.saturating_add(1),
-                &mut line_capped,
-            );
+            let before = context_lines(hit.context_before, before_start);
+            let after = context_lines(hit.context_after, hit.end_line.saturating_add(1));
             GrepHit {
                 path: candidate.display.clone(),
                 line: hit.start_line,
@@ -578,7 +563,7 @@ fn search_file(
             }
         })
         .collect();
-    Ok((hits, opened, line_capped))
+    Ok((hits, opened))
 }
 fn list_candidates(
     workspace: &Path,
@@ -736,33 +721,24 @@ fn glob_allows(
     }
 }
 
-fn cap_match_line(text: &str) -> (String, bool) {
+fn cap_match_line(text: &str) -> String {
     let without_newline = text.trim_end_matches(['\n', '\r']);
     let mut chars = without_newline.chars();
     let kept: String = chars.by_ref().take(MAX_MATCH_LINE_CHARS).collect();
-    if chars.next().is_some() {
-        (format!("{kept}..."), true)
+    let omitted = chars.count();
+    if omitted > 0 {
+        format!("{kept}... [+{omitted} chars]")
     } else {
-        (kept, false)
+        kept
     }
 }
 
-fn context_lines(
-    raw: Vec<String>,
-    first_line: u32,
-    line_capped: &mut bool,
-) -> Vec<GrepContextLine> {
+fn context_lines(raw: Vec<String>, first_line: u32) -> Vec<GrepContextLine> {
     raw.into_iter()
         .enumerate()
-        .map(|(offset, line)| {
-            let (text, capped) = cap_match_line(&line);
-            if capped {
-                *line_capped = true;
-            }
-            GrepContextLine {
-                line: first_line.saturating_add(offset as u32),
-                text,
-            }
+        .map(|(offset, line)| GrepContextLine {
+            line: first_line.saturating_add(offset as u32),
+            text: cap_match_line(&line),
         })
         .collect()
 }
@@ -819,8 +795,6 @@ struct GrepFacts {
     total_hits: Option<usize>,
     /// The hit limit stopped the scan.
     at_limit_cap: bool,
-    /// Match or context lines were shortened to the line cap.
-    lines_truncated: bool,
     /// Context lines were dropped to fit the token budget.
     context_omitted: bool,
     /// Hits were dropped to fit the token budget.
@@ -836,7 +810,6 @@ fn hits_data(hits: &[GrepHit], with_context: bool, facts: &GrepFacts) -> Value {
     let mut data = serde_json::json!({
         "hits": rows,
         "at_limit_cap": facts.at_limit_cap,
-        "lines_truncated": facts.lines_truncated,
         "context_omitted": facts.context_omitted,
         "output_capped": facts.output_capped,
     });
@@ -1108,12 +1081,9 @@ fn grep_transcript(
     let context = |start: usize, end: usize| -> Vec<GrepContextLine> {
         (start..end.min(file.lines.len()))
             .filter(|index| visible[*index])
-            .map(|index| {
-                let (text, _) = cap_match_line(&file.lines[index]);
-                GrepContextLine {
-                    line: line_number(index),
-                    text,
-                }
+            .map(|index| GrepContextLine {
+                line: line_number(index),
+                text: cap_match_line(&file.lines[index]),
             })
             .collect()
     };
@@ -1123,7 +1093,7 @@ fn grep_transcript(
             continue;
         }
         if re.is_match(line) {
-            let (text, _) = cap_match_line(line);
+            let text = cap_match_line(line);
             let before_start = index.saturating_sub(options.before);
             let after_end = index.saturating_add(1).saturating_add(options.after);
             hits.push(GrepHit {

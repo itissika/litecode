@@ -502,21 +502,6 @@ fn read_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
             "start_line {start_line} is past the end; the file has {total_lines} lines"
         ));
     }
-    if let Some(capped) = object
-        .get("lines_capped")
-        .and_then(Value::as_array)
-        .filter(|capped| !capped.is_empty())
-    {
-        let mut numbers: Vec<String> = capped.iter().take(5).map(compact_number).collect();
-        let more = capped.len().saturating_sub(5);
-        if more > 0 {
-            numbers.push(format!("+{more} more"));
-        }
-        out.push(format!(
-            "lines {} shortened to fit the line cap",
-            numbers.join(", ")
-        ));
-    }
     out.extend(clamp_reminders(object));
 }
 
@@ -568,7 +553,6 @@ fn grep_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
         .and_then(Value::as_u64)
         .filter(|&total| total > shown as u64);
     let at_cap = object.get("at_limit_cap").and_then(Value::as_bool) == Some(true);
-    let lines_trunc = object.get("lines_truncated").and_then(Value::as_bool) == Some(true);
     let ctx_omitted = object.get("context_omitted").and_then(Value::as_bool) == Some(true);
     let out_capped = object.get("output_capped").and_then(Value::as_bool) == Some(true);
 
@@ -583,9 +567,6 @@ fn grep_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
     }
     if at_cap {
         parts.push("at limit max".to_string());
-    }
-    if lines_trunc {
-        parts.push("long lines shortened".to_string());
     }
     if ctx_omitted {
         parts.push("context omitted".to_string());
@@ -1741,7 +1722,7 @@ mod tests {
         let base = |extra: Value| {
             let mut value = serde_json::json!({
                 "hits": [], "at_limit_cap": false,
-                "lines_truncated": false, "context_omitted": false, "output_capped": false,
+                "context_omitted": false, "output_capped": false,
             });
             let object = value.as_object_mut().unwrap();
             for (key, item) in extra.as_object().unwrap() {
@@ -1797,9 +1778,9 @@ mod tests {
             ),
             (
                 base(serde_json::json!({
-                    "lines_truncated": true, "context_omitted": true, "output_capped": true,
+                    "context_omitted": true, "output_capped": true,
                 })),
-                vec!["output capped; long lines shortened; context omitted"],
+                vec!["output capped; context omitted"],
             ),
             (
                 base(serde_json::json!({"clamped": [{"parameter": "before", "requested": 25, "applied": 10}]})),
@@ -1892,14 +1873,6 @@ mod tests {
                     "total_lines": 1, "has_more": false, "skipped_in_context": 0,
                 }),
                 vec!["start_line 5 is past the end; the file has 1 lines"],
-            ),
-            (
-                serde_json::json!({
-                    "path": "a.txt", "start_line": 1, "lines": ["x"],
-                    "total_lines": 1, "has_more": false, "skipped_in_context": 0,
-                    "lines_capped": [1, 7],
-                }),
-                vec!["lines 1, 7 shortened to fit the line cap"],
             ),
             (
                 serde_json::json!({
