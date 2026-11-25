@@ -29,6 +29,8 @@ impl CompactionCheckpoint {
         let preamble = crate::config::global_db::CHECKPOINT_PREAMBLE.trim();
         let framed = if body.is_empty() {
             preamble.to_string()
+        } else if preamble.is_empty() {
+            body.to_string()
         } else {
             format!("{preamble}\n\n{body}")
         };

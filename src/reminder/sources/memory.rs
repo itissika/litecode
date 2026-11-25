@@ -20,7 +20,7 @@ pub(crate) fn memory(view: &SpineReminderView, facts: &MemoryFacts) -> Option<Re
 
 fn render(facts: &MemoryFacts) -> String {
     let mut out = String::from(
-        "Session memory (survives compaction; update with memory.upsert, remove stale with memory.delete):",
+        "Session memory (update with memory.upsert, remove stale with memory.delete):",
     );
     for entry in &facts.entries {
         out.push_str(&format!("\n- {} ({})", entry.text, entry.id));
