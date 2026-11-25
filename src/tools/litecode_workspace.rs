@@ -48,7 +48,6 @@ struct WorkspaceHelpData {
 #[derive(Debug, Serialize)]
 struct WorkspaceRefreshData {
     ok: bool,
-    summary: String,
     excludes_ok: bool,
     mcp_ok: bool,
     custom_tools_ok: bool,
@@ -86,7 +85,6 @@ struct AppStatusRow {
 
 #[derive(Debug, Serialize)]
 struct WorkspaceStatusData {
-    summary: String,
     excludes: String,
     mcp: Vec<McpStatusRow>,
     custom_tools: Vec<CustomToolStatusRow>,
@@ -296,7 +294,6 @@ impl WorkspaceRefreshTool {
 
         ToolOutcome::ok(WorkspaceRefreshData {
             ok,
-            summary,
             excludes_ok,
             mcp_ok,
             custom_tools_ok,
@@ -367,7 +364,7 @@ impl WorkspaceStatusTool {
             .unwrap_or_default()
     }
 
-    fn build_status(&self, runtime: &RuntimeHandle) -> WorkspaceStatusData {
+    fn build_status(&self, runtime: &RuntimeHandle) -> (String, WorkspaceStatusData) {
         let resolved = &runtime.resolved;
         let excludes = excludes_counts(&active_workspace_excludes());
 
@@ -442,13 +439,15 @@ impl WorkspaceStatusTool {
             apps.len()
         );
 
-        WorkspaceStatusData {
+        (
             summary,
-            excludes,
-            mcp,
-            custom_tools,
-            apps,
-        }
+            WorkspaceStatusData {
+                excludes,
+                mcp,
+                custom_tools,
+                apps,
+            },
+        )
     }
 }
 
@@ -473,8 +472,7 @@ impl Tool for WorkspaceStatusTool {
         let Some(runtime) = &self.runtime else {
             return coded_error("unavailable", "workspace.status requires an active runtime");
         };
-        let status = self.build_status(runtime);
-        let summary = status.summary.clone();
+        let (summary, status) = self.build_status(runtime);
         ToolOutcome::ok(status).into_call_result(summary)
     }
 }
@@ -572,7 +570,6 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
             tool: WORKSPACE_REFRESH_TOOL,
             all_optional_present: ok_data(WorkspaceRefreshData {
                 ok: false,
-                summary: "workspace validation failed: mcp (1 issue(s))".into(),
                 excludes_ok: true,
                 mcp_ok: false,
                 custom_tools_ok: true,
@@ -581,7 +578,6 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
             }),
             all_optional_absent: ok_data(WorkspaceRefreshData {
                 ok: true,
-                summary: "workspace configs valid (excludes, mcp, custom_tools, apps)".into(),
                 excludes_ok: true,
                 mcp_ok: true,
                 custom_tools_ok: true,
@@ -592,7 +588,6 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
         DriftCase {
             tool: WORKSPACE_STATUS_TOOL,
             all_optional_present: ok_data(WorkspaceStatusData {
-                summary: "excludes (files 1); 1 mcp, 1 custom tool(s), 1 app(s)".into(),
                 excludes: "files 1 · search 1 · watcher 1 · code_index_extensions 1 · git_ignore true · explorer_git_ignore true".into(),
                 mcp: vec![McpStatusRow {
                     id: "fs".into(),
@@ -618,7 +613,6 @@ pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
                 }],
             }),
             all_optional_absent: ok_data(WorkspaceStatusData {
-                summary: "excludes (files 0); 1 mcp, 1 custom tool(s), 1 app(s)".into(),
                 excludes: "files 0 · search 0 · watcher 0 · code_index_extensions 0 · git_ignore false · explorer_git_ignore false".into(),
                 mcp: vec![McpStatusRow {
                     id: "fs".into(),
@@ -721,8 +715,9 @@ mod tests {
         assert_eq!(data["custom_tools_ok"], true);
         assert_eq!(data["apps_ok"], true);
         assert_eq!(data["issues"], json!([]));
+        assert!(data.get("summary").is_none());
         assert_eq!(
-            data["summary"],
+            result.content,
             "workspace configs valid (excludes, mcp, custom_tools, apps)"
         );
     }

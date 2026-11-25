@@ -121,11 +121,22 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
         "exec" => ToolPolicy {
             default: PermissionAction::Deny,
             default_id: super::policy::DEFAULT_RULE_ID.into(),
-            rules: vec![PolicyRule {
-                id: "readonly_command".into(),
-                when: ArgMatcher::BashReadonlyCommand,
-                action: PermissionAction::Allow,
-            }],
+            rules: vec![
+                // SAFE strictly denies workdir outside the workspace even for
+                // readonly commands, matching read/glob/grep.
+                PolicyRule {
+                    id: "outside_workspace".into(),
+                    when: ArgMatcher::PathOutsideWorkspace {
+                        name: "workdir".into(),
+                    },
+                    action: PermissionAction::Deny,
+                },
+                PolicyRule {
+                    id: "readonly_command".into(),
+                    when: ArgMatcher::BashReadonlyCommand,
+                    action: PermissionAction::Allow,
+                },
+            ],
         },
         // Read actions (`workspace.help`, `workspace.status`) stay open.
         // `workspace.refresh` reloads workspace config and asks under SAFE.
@@ -144,4 +155,52 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use crate::permission::evaluate::evaluate;
+    use crate::permission::matchers::MatchContext;
+
+    #[test]
+    fn safe_exec_denies_outside_workspace_workdir_even_for_readonly_command() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let (policy, path_mode) = binding_for_tool("exec", ToolPreset::Safe);
+        let ctx = MatchContext {
+            workspace_root: root.path(),
+            path_mode,
+        };
+
+        let in_ws = evaluate(
+            &policy,
+            &serde_json::json!({ "cmd": "ls", "workdir": "." }),
+            &ctx,
+        );
+        assert_eq!(in_ws.action, PermissionAction::Allow);
+
+        let external = evaluate(
+            &policy,
+            &serde_json::json!({
+                "cmd": "ls",
+                "workdir": outside.path().to_string_lossy()
+            }),
+            &ctx,
+        );
+        assert_eq!(external.action, PermissionAction::Deny);
+        assert_eq!(external.rule_id, "outside_workspace");
+
+        let (all_policy, all_mode) = binding_for_tool("exec", ToolPreset::All);
+        let all_ctx = MatchContext {
+            workspace_root: root.path(),
+            path_mode: all_mode,
+        };
+        let all_external = evaluate(
+            &all_policy,
+            &serde_json::json!({
+                "cmd": "ls",
+                "workdir": outside.path().to_string_lossy()
+            }),
+            &all_ctx,
+        );
+        assert_eq!(all_external.action, PermissionAction::Allow);
+    }
+}

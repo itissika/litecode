@@ -407,6 +407,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
 
     let namespaces = request.namespaces.clone();
     let fs_root = request.fs_root.clone();
+    let fs_allow_outside_workspace = request.fs_allow_outside_workspace;
     let installed = context
         .async_with({
             let calls = Arc::clone(&calls);
@@ -430,7 +431,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
                     &output,
                 )?;
                 if let Some(root) = &fs_root {
-                    install_fs(&ctx, root)?;
+                    install_fs(&ctx, root, fs_allow_outside_workspace, &faults)?;
                 }
                 let saved = save_prototypes(&ctx)?;
                 *protos.borrow_mut() = Some(saved);
@@ -870,9 +871,15 @@ fn install_libs(ctx: &Ctx<'_>) -> Result<(), Failure> {
     define_const(ctx, "libs", libs)
 }
 
-/// Read-only `fs` probes (WP-210 I). Synchronous, workspace-confined, no
-/// write/rm/mv. Results cross the boundary as JSON.
-fn install_fs<'js>(ctx: &Ctx<'js>, root: &std::path::Path) -> Result<(), Failure> {
+/// Read-only `fs` probes (WP-210 I). Synchronous, no write/rm/mv. Scope
+/// follows `allow_outside_workspace` (`SAFE` vs `ALL`). Results cross the
+/// boundary as JSON.
+fn install_fs<'js>(
+    ctx: &Ctx<'js>,
+    root: &std::path::Path,
+    allow_outside_workspace: bool,
+    faults: &Arc<Faults>,
+) -> Result<(), Failure> {
     let object = Object::new(ctx.clone()).map_err(|error| Failure::internal(error.to_string()))?;
     let fail = |error: rquickjs::Error| Failure::internal(error.to_string());
     let path_arg =
@@ -887,14 +894,23 @@ fn install_fs<'js>(ctx: &Ctx<'js>, root: &std::path::Path) -> Result<(), Failure
         };
     for name in ["ls", "stat"] {
         let root = root.to_path_buf();
+        let faults = Arc::clone(faults);
         let function = Function::new(
             ctx.clone(),
             move |ctx: Ctx<'js>, args: Rest<Value<'js>>| -> rquickjs::Result<Value<'js>> {
                 let raw = path_arg(&ctx, &args, name)?;
                 let result = if name == "ls" {
-                    super::fs::ls(&root, &raw)
+                    super::fs::ls(&root, &raw, allow_outside_workspace).map(|(value, total)| {
+                        if let Some(total) = total {
+                            faults.warn(format!(
+                                "fs.ls({raw:?}): showing first {} of {total} entries",
+                                super::fs::LS_CAP
+                            ));
+                        }
+                        value
+                    })
                 } else {
-                    super::fs::stat(&root, &raw)
+                    super::fs::stat(&root, &raw, allow_outside_workspace)
                 };
                 match result {
                     Ok(value) => boundary::to_js(&ctx, super::json::Json::new(value))
@@ -912,7 +928,7 @@ fn install_fs<'js>(ctx: &Ctx<'js>, root: &std::path::Path) -> Result<(), Failure
         ctx.clone(),
         move |ctx: Ctx<'_>, args: Rest<Value<'_>>| -> rquickjs::Result<bool> {
             let raw = path_arg(&ctx, &args, "exists")?;
-            Ok(super::fs::exists(&root, &raw))
+            Ok(super::fs::exists(&root, &raw, allow_outside_workspace))
         },
     )
     .and_then(|function| function.with_name("exists"))

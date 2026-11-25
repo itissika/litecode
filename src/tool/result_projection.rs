@@ -45,14 +45,14 @@ pub fn project_code_result(tool: &str, mut result: ToolCallResult) -> ToolCallRe
     let mut metadata = object(result.metadata.as_ref()).unwrap_or_default();
 
     match tool {
-        "exec_command" | "write_stdin" => {
+        "exec_command" => {
             let mut kept = Map::new();
-            for key in ["session_id", "exit_code", "output", "output_file"] {
+            for key in ["exit_code", "output"] {
                 if let Some(value) = data.remove(key) {
                     kept.insert(key.to_string(), value);
                 }
             }
-            move_keys(&mut data, &mut metadata, &["truncated", "total_bytes", "clamped"]);
+            move_keys(&mut data, &mut metadata, &["session_id", "output_file", "clamped"]);
             data = kept;
         }
         "write" => {
@@ -278,7 +278,7 @@ mod more_tests {
     use serde_json::json;
 
     #[test]
-    fn exec_moves_truncation_and_clamp_to_metadata() {
+    fn exec_keeps_only_exit_code_and_output_and_moves_background_facts_to_metadata() {
         let result = project_code_result(
             "exec_command",
             crate::tool::outcome::ok_data(json!({
@@ -286,26 +286,22 @@ mod more_tests {
                 "exit_code": null,
                 "output": "hello",
                 "output_file": ".litecode/run/bg_1.stdout",
-                "truncated": true,
-                "total_bytes": 12000,
-                "clamped": [{"parameter": "yield_time_ms", "requested": 60000, "applied": 30000}]
+                "clamped": [{"parameter": "timeout_ms", "requested": 600000, "applied": 300000}]
             })),
         );
         assert_eq!(
             result.data,
             Some(json!({
-                "session_id": "bg_1",
                 "exit_code": null,
-                "output": "hello",
-                "output_file": ".litecode/run/bg_1.stdout"
+                "output": "hello"
             }))
         );
         assert_eq!(
             result.metadata,
             Some(json!({
-                "truncated": true,
-                "total_bytes": 12000,
-                "clamped": [{"parameter": "yield_time_ms", "requested": 60000, "applied": 30000}]
+                "session_id": "bg_1",
+                "output_file": ".litecode/run/bg_1.stdout",
+                "clamped": [{"parameter": "timeout_ms", "requested": 600000, "applied": 300000}]
             }))
         );
     }

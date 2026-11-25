@@ -79,6 +79,166 @@ fn cut_head_tail_with_total(
     }
 }
 
+/// Result of spilling and clipping a `run_code` model view stream.
+///
+/// The clipped `text` keeps a minimal inline gap marker between head and tail,
+/// while `upfloat_notice` carries the full-output path and exact omitted line
+/// range for the upfloat block above the stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpillCutResult {
+    pub text: String,
+    pub spilled_path: Option<String>,
+    pub upfloat_notice: Option<String>,
+    pub total_lines: usize,
+    pub total_bytes: usize,
+}
+
+fn line_count_1based(text: &str) -> usize {
+    if text.is_empty() {
+        0
+    } else {
+        text.bytes().filter(|&b| b == b'\n').count() + 1
+    }
+}
+
+/// Cut `text` to fit `max_bytes`, spilling the complete unclipped text once
+/// under `.litecode/run/` when it exceeds `max_bytes`.
+///
+/// Prefers line-aligned 50/50 head+tail cuts so the inline gap marker and
+/// upfloat notice report exact 1-based omitted line ranges (`lines A-B omitted`).
+pub fn cut_and_spill_lines(
+    text: &str,
+    max_bytes: usize,
+    workspace_root: Option<&Path>,
+    stem: &str,
+) -> SpillCutResult {
+    let total_bytes = text.len();
+    let total_lines = line_count_1based(text);
+    if total_bytes <= max_bytes {
+        return SpillCutResult {
+            text: text.to_string(),
+            spilled_path: None,
+            upfloat_notice: None,
+            total_lines,
+            total_bytes,
+        };
+    }
+    let full_path = workspace_root.and_then(|root| match spill_full_text(root, stem, text) {
+        Ok(rel) => Some(rel),
+        Err(error) => {
+            tracing::warn!(error = %error, stem, "failed to spill full tool output");
+            None
+        }
+    });
+    let path_suffix = full_path
+        .as_deref()
+        .map(|p| format!("; full output: {p}"))
+        .unwrap_or_default();
+
+    // Reserve enough space for the minimal inline gap line (`\n… lines X-Y omitted\n`).
+    let marker_reserve = 64usize;
+    if max_bytes <= marker_reserve {
+        let gap = format!("… {total_bytes} bytes omitted");
+        let upfloat = format!("output clipped ({total_lines} lines, {total_bytes} bytes){path_suffix}");
+        return SpillCutResult {
+            text: prefix_utf8(&gap, max_bytes).to_string(),
+            spilled_path: full_path,
+            upfloat_notice: Some(upfloat),
+            total_lines,
+            total_bytes,
+        };
+    }
+
+    let preview_budget = max_bytes.saturating_sub(marker_reserve);
+    let head_budget = preview_budget / 2;
+    let tail_budget = preview_budget - head_budget;
+
+    let head_raw = prefix_utf8(text, head_budget);
+    // Align head end to a newline boundary when possible so kept head ends cleanly on a full line.
+    let head_aligned = head_raw
+        .rfind('\n')
+        .map(|nl| (&text[..nl], nl + 1));
+
+    let tail_search_start = head_aligned.map_or(head_raw.len(), |(_, after_nl)| after_nl);
+    let tail_raw = suffix_utf8(&text[tail_search_start..], tail_budget);
+    let tail_raw_start = total_bytes - tail_raw.len();
+    let tail_aligned = tail_raw
+        .find('\n')
+        .map(|nl| (tail_raw_start + nl + 1, &tail_raw[nl + 1..]))
+        .filter(|(_, slice)| !slice.is_empty());
+
+    if let (Some((head, head_after_nl)), Some((tail_byte_start, tail))) = (head_aligned, tail_aligned)
+        && head_after_nl <= tail_byte_start
+    {
+        let head_lines = line_count_1based(head);
+        let tail_start_line = text[..tail_byte_start]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count()
+            + 1;
+        let omit_start = head_lines + 1;
+        let omit_end = tail_start_line.saturating_sub(1);
+        if omit_start <= omit_end {
+            let inline_gap = format!("… lines {omit_start}-{omit_end} omitted");
+            let combined = format!("{head}\n{inline_gap}\n{tail}");
+            if combined.len() <= max_bytes {
+                let upfloat = format!(
+                    "output clipped (lines {omit_start}-{omit_end} of {total_lines} omitted, {total_bytes} bytes){path_suffix}"
+                );
+                return SpillCutResult {
+                    text: combined,
+                    spilled_path: full_path,
+                    upfloat_notice: Some(upfloat),
+                    total_lines,
+                    total_bytes,
+                };
+            }
+        }
+    }
+
+    // Fallback for single very long lines or narrow budgets: UTF-8 byte head+tail cut.
+    let head = head_raw;
+    let tail = suffix_utf8(&text[head.len()..], tail_budget);
+    let omitted_bytes = total_bytes.saturating_sub(head.len() + tail.len());
+    let head_line = text[..head.len()].bytes().filter(|&b| b == b'\n').count() + 1;
+    let tail_start_byte = total_bytes.saturating_sub(tail.len());
+    let tail_line = text[..tail_start_byte]
+        .bytes()
+        .filter(|&b| b == b'\n')
+        .count()
+        + 1;
+    let (inline_gap, detail) = if tail_line > head_line + 1 {
+        let s = head_line + 1;
+        let e = tail_line - 1;
+        (
+            format!("… lines {s}-{e} omitted"),
+            format!("lines {s}-{e} of {total_lines} omitted, {total_bytes} bytes"),
+        )
+    } else {
+        (
+            format!("… {omitted_bytes} bytes omitted (line {head_line})"),
+            format!("{omitted_bytes} bytes omitted on line {head_line}, {total_bytes} bytes total"),
+        )
+    };
+    let mut combined = match (head.is_empty(), tail.is_empty()) {
+        (false, false) => format!("{head}\n{inline_gap}\n{tail}"),
+        (false, true) => format!("{head}\n{inline_gap}"),
+        (true, false) => format!("{inline_gap}\n{tail}"),
+        (true, true) => inline_gap,
+    };
+    if combined.len() > max_bytes {
+        combined = prefix_utf8(&combined, max_bytes).to_string();
+    }
+    let upfloat = format!("output clipped ({detail}){path_suffix}");
+    SpillCutResult {
+        text: combined,
+        spilled_path: full_path,
+        upfloat_notice: Some(upfloat),
+        total_lines,
+        total_bytes,
+    }
+}
+
 /// Unified spill helper: return `text` untouched if it fits `max_bytes`,
 /// otherwise persist the full text under `.litecode/run/` and keep 50/50 head+tail.
 pub fn cut_and_spill_full(

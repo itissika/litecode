@@ -310,10 +310,7 @@ impl SubagentLaunchTool {
         let text = status::format_started(&child_id, &turn_id, Some(&responsibility));
         with_child_meta(
             ToolCallResult::ok(text).with_data(serde_json::json!({
-                "child_session_id": child_id,
-                "turn_id": turn_id,
-                "status": "running",
-                "responsibility": responsibility,
+                "id": child_id,
             })),
             &child_id,
             &turn_id,

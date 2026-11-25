@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::authority::responses::{
-    FunctionCallOutput, InputContent, InputRole, InputTextContent, MessageItem, OutputStatus,
+    FunctionCallOutput, InputContent, InputRole, MessageItem, OutputStatus,
 };
 use crate::context_pipeline::keep_recent::find_keep_recent_cut;
 use crate::context_pipeline::project_model_view;
@@ -199,19 +199,6 @@ impl CompactionInput {
     }
 }
 
-/// The one selected method. Selection is pure and happens before any write.
-enum CompactionSelection {
-    Mechanical {
-        plan: MechanicalPrunePlan,
-        tokens_before: usize,
-        meter_after: ContextMeter,
-    },
-    Summary {
-        plan: CompactionPlan,
-        tokens_before: usize,
-    },
-}
-
 /// The durable result of the one commit. Rebuild reads this back and verifies
 /// the surface; the commit is a fact, but success is only published after that
 /// verification.
@@ -219,12 +206,7 @@ struct CommittedCompaction {
     kind: CompactionCommitKind,
     telemetry: CompactionTelemetry,
     summary: Option<SummaryArtifact>,
-    rebuild: RebuildTarget,
-}
-
-enum RebuildTarget {
-    Summary(Seq),
-    Mechanical(Vec<Seq>),
+    checkpoint_seq: Seq,
 }
 
 fn build_summary_plan_from_input(
@@ -263,54 +245,6 @@ fn build_summary_plan_from_input(
     })
 }
 
-/// Pure branch selection. A worthwhile prune that relieves the sealed input's
-/// pressure wins; otherwise the summary branch is chosen. No write happens here.
-fn select_compaction_method(
-    input: &CompactionInput,
-    budget: &BudgetPolicy,
-    request: &CompactionRequestContext,
-    summary_text_cap: u32,
-    trigger: CompactionTrigger,
-    data_root: &std::path::Path,
-) -> Result<Option<CompactionSelection>> {
-    let input_meter = context_meter_for_rows_local(request, &input.rows, data_root);
-    let tokens_before = input_meter.used_tokens;
-    let protected_tokens = protected_conversation_tokens_for_request(request);
-    let plan = MechanicalPrunePlan::build_limited(
-        &input.rows,
-        MechanicalPruneConfig::default(),
-        protected_tokens,
-        input.sealed_len,
-    );
-    if plan.is_worthwhile() {
-        let mut candidate = input.rows.clone();
-        for replacement in &plan.replacements {
-            if let Some(row) = candidate
-                .iter_mut()
-                .find(|row| row.log_seq == Some(replacement.seq))
-            {
-                row.replace_item(replacement.item.clone());
-            }
-        }
-        let meter_after = context_meter_for_rows_local(request, &candidate, data_root);
-        if meter_after.pressure_enabled() && !meter_after.should_compact() {
-            return Ok(Some(CompactionSelection::Mechanical {
-                plan,
-                tokens_before,
-                meter_after,
-            }));
-        }
-    }
-    let Some(plan) =
-        build_summary_plan_from_input(input, budget, request, summary_text_cap, trigger)
-    else {
-        return Ok(None);
-    };
-    Ok(Some(CompactionSelection::Summary {
-        plan,
-        tokens_before,
-    }))
-}
 
 fn is_contention_error(err: &LitecodeError) -> bool {
     if let LitecodeError::Sqlite(error) = err
@@ -419,62 +353,6 @@ fn measure_final_surface(
     )
 }
 
-fn commit_mechanical_plan(
-    sessions: &SessionManager,
-    session_id: &str,
-    operation_id: &str,
-    plan: &MechanicalPrunePlan,
-) -> Result<Vec<Seq>> {
-    let replacements: Vec<crate::session::data::command::SurfaceReplacement> = plan
-        .replacements
-        .iter()
-        .map(
-            |replacement| crate::session::data::command::SurfaceReplacement {
-                start: replacement.seq,
-                end: replacement.seq,
-                item: replacement.item.clone(),
-                source_seqs: replacement.source_seqs.clone(),
-            },
-        )
-        .collect();
-    for attempt in 1..=COMPACTION_STORE_RETRIES {
-        let mutation = crate::session::data::command::SessionMutation::ReplaceSurface {
-            session_id: session_id.to_string(),
-            operation_id: crate::session::data::command::MutationId(operation_id.to_string()),
-            replacements: replacements.clone(),
-        };
-        match sessions.mutate_blocking(mutation) {
-            Ok(receipt) => match receipt.outcome {
-                crate::session::data::command::CommitKind::Replaced { seqs } => {
-                    return Ok(seqs);
-                }
-                other => {
-                    return Err(LitecodeError::ToolExecution(format!(
-                        "mechanical prune mutation returned unexpected outcome {other:?}"
-                    )));
-                }
-            },
-            Err(error) if is_corruption_error(&error) => {
-                panic!("mechanical prune commit hit a corrupt session store: {error}");
-            }
-            Err(error)
-                if is_retryable_write_error(&error) && attempt < COMPACTION_STORE_RETRIES =>
-            {
-                tracing::warn!(
-                    attempt,
-                    error = %error,
-                    "mechanical prune commit blocked; retrying"
-                );
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    Err(LitecodeError::SessionStorage(
-        "mechanical prune commit kept contending".into(),
-    ))
-}
-
 struct SummaryCommitPlan {
     plan: CompactionPlan,
     checkpoint: CompactionCheckpoint,
@@ -482,23 +360,6 @@ struct SummaryCommitPlan {
     first_seq: Seq,
     tokens_after: usize,
     telemetry: CompactionTelemetry,
-}
-
-enum CompactionCommitPlan {
-    Mechanical {
-        plan: MechanicalPrunePlan,
-        telemetry: CompactionTelemetry,
-    },
-    Summary(SummaryCommitPlan),
-}
-
-impl CompactionCommitPlan {
-    fn telemetry(&self) -> &CompactionTelemetry {
-        match self {
-            Self::Mechanical { telemetry, .. } => telemetry,
-            Self::Summary(commit) => &commit.telemetry,
-        }
-    }
 }
 
 fn commit_summary_plan(
@@ -568,22 +429,6 @@ fn rebuild_summary_surface(
         return Err(LitecodeError::CompactionSurfaceChanged(format!(
             "summary commit {checkpoint_seq} is not the first durable checkpoint row for {session_id}"
         )));
-    }
-    Ok(rows)
-}
-
-fn rebuild_mechanical_surface(
-    sessions: &SessionManager,
-    session_id: &str,
-    replacement_seqs: &[Seq],
-) -> Result<Vec<WorkingRow>> {
-    let rows = read_compaction_surface(sessions, session_id)?;
-    for seq in replacement_seqs {
-        if !rows.iter().any(|row| row.log_seq == Some(*seq)) {
-            return Err(LitecodeError::CompactionSurfaceChanged(format!(
-                "mechanical replacement seq {seq} missing from durable surface for {session_id}"
-            )));
-        }
     }
     Ok(rows)
 }
@@ -790,7 +635,7 @@ fn commit_plan(
     operation_id: &str,
     trigger: CompactionTrigger,
     cancel: &CancellationToken,
-    plan: CompactionCommitPlan,
+    commit: SummaryCommitPlan,
 ) -> Result<CommittedCompaction> {
     if cancel.is_cancelled() {
         let error = LitecodeError::Canceled;
@@ -800,62 +645,33 @@ fn commit_plan(
             trigger,
             Some(operation_id),
             &error,
-            plan.telemetry().clone(),
+            commit.telemetry.clone(),
         );
         return Err(error);
     }
-    match plan {
-        CompactionCommitPlan::Mechanical { plan, telemetry } => {
-            let replacement_seqs =
-                match commit_mechanical_plan(sessions, session_id, operation_id, &plan) {
-                    Ok(seqs) => seqs,
-                    Err(error) => {
-                        record_compact_failure(
-                            sessions,
-                            session_id,
-                            trigger,
-                            Some(operation_id),
-                            &error,
-                            telemetry,
-                        );
-                        return Err(error);
-                    }
-                };
-            Ok(CommittedCompaction {
-                kind: CompactionCommitKind::Mechanical {
-                    replacements: plan.replacements.len(),
-                },
-                telemetry,
-                summary: None,
-                rebuild: RebuildTarget::Mechanical(replacement_seqs),
-            })
-        }
-        CompactionCommitPlan::Summary(commit) => {
-            let checkpoint_seq =
-                match commit_summary_plan(sessions, session_id, operation_id, request, &commit) {
-                    Ok(seq) => seq,
-                    Err(error) => {
-                        record_compact_failure(
-                            sessions,
-                            session_id,
-                            trigger,
-                            Some(operation_id),
-                            &error,
-                            commit.telemetry.clone(),
-                        );
-                        return Err(error);
-                    }
-                };
-            Ok(CommittedCompaction {
-                kind: CompactionCommitKind::Checkpoint {
-                    seq: checkpoint_seq,
-                },
-                telemetry: commit.telemetry,
-                summary: Some(commit.summary),
-                rebuild: RebuildTarget::Summary(checkpoint_seq),
-            })
-        }
-    }
+    let checkpoint_seq =
+        match commit_summary_plan(sessions, session_id, operation_id, request, &commit) {
+            Ok(seq) => seq,
+            Err(error) => {
+                record_compact_failure(
+                    sessions,
+                    session_id,
+                    trigger,
+                    Some(operation_id),
+                    &error,
+                    commit.telemetry.clone(),
+                );
+                return Err(error);
+            }
+        };
+    Ok(CommittedCompaction {
+        kind: CompactionCommitKind::Checkpoint {
+            seq: checkpoint_seq,
+        },
+        telemetry: commit.telemetry,
+        summary: Some(commit.summary),
+        checkpoint_seq,
+    })
 }
 
 #[cfg(test)]
@@ -902,12 +718,7 @@ fn rebuild_committed_surface(
             std::thread::sleep(Duration::from_millis(1));
             continue;
         }
-        let read = match &committed.rebuild {
-            RebuildTarget::Summary(seq) => rebuild_summary_surface(sessions, session_id, *seq),
-            RebuildTarget::Mechanical(seqs) => {
-                rebuild_mechanical_surface(sessions, session_id, seqs)
-            }
-        };
+        let read = rebuild_summary_surface(sessions, session_id, committed.checkpoint_seq);
         match read {
             Ok(rows) => return Ok(rows),
             Err(error)
@@ -951,62 +762,27 @@ async fn compact_input(
     if cancel.is_cancelled() {
         return Err(LitecodeError::Canceled);
     }
-    let Some(selection) = select_compaction_method(
-        &input,
-        budget,
-        request,
-        summary_text_cap,
-        trigger,
-        data_root,
-    )?
+    let tokens_before = context_meter_for_rows_local(request, &input.rows, data_root).used_tokens;
+    let Some(plan) =
+        build_summary_plan_from_input(&input, budget, request, summary_text_cap, trigger)
     else {
         return Ok(None);
     };
 
-    let plan = match selection {
-        CompactionSelection::Mechanical {
-            plan,
-            tokens_before,
-            meter_after,
-        } => {
-            let tokens_after = meter_after.used_tokens;
-            let telemetry = compaction_telemetry(
-                trigger,
-                tokens_before,
-                tokens_before.saturating_sub(tokens_after),
-                tokens_after,
-                Some(0),
-            );
-            emit_compact_started(
-                sessions,
-                session_id,
-                trigger,
-                Some(operation_id),
-                telemetry.clone(),
-                Some(input.last_seq),
-            );
-            CompactionCommitPlan::Mechanical { plan, telemetry }
-        }
-        CompactionSelection::Summary {
-            plan,
-            tokens_before,
-        } => CompactionCommitPlan::Summary(
-            prepare_summary_commit(
-                sessions,
-                session_id,
-                request,
-                &input,
-                plan,
-                tokens_before,
-                cancel,
-                trigger,
-                operation_id,
-                data_root,
-                max_attempts,
-            )
-            .await?,
-        ),
-    };
+    let commit = prepare_summary_commit(
+        sessions,
+        session_id,
+        request,
+        &input,
+        plan,
+        tokens_before,
+        cancel,
+        trigger,
+        operation_id,
+        data_root,
+        max_attempts,
+    )
+    .await?;
 
     let run = commit_plan(
         sessions,
@@ -1015,262 +791,9 @@ async fn compact_input(
         operation_id,
         trigger,
         cancel,
-        plan,
+        commit,
     )?;
     Ok(Some(run))
-}
-
-/// First-version mechanical-prune budgets. All values live here; the pruner
-/// itself contains no scattered literals.
-pub const TOOL_RESULT_PRUNE_THRESHOLD_CHARS: usize = 8_192;
-pub const TOOL_RESULT_PRUNE_HEAD_CHARS: usize = 4_096;
-pub const TOOL_RESULT_PRUNE_TAIL_CHARS: usize = 1_024;
-pub const TOOL_RESULT_PRUNE_MARKER: &str = "[...]";
-/// The first share of the effective context window whose request prefix is
-/// never rewritten by mechanical pruning. A replacement may start only at or
-/// after this token position, so the provider's cached prefix survives.
-pub const PRUNE_PROTECTED_WINDOW_PERCENT: usize = 60;
-/// Absolute floor for one useful prune. The relative gate is separate: a batch
-/// must remove at least [`PRUNE_MIN_SAVED_SUFFIX_PERCENT`] of the suffix it
-/// actually rewrites, because that suffix pays one full-price cache miss.
-pub const PRUNE_MIN_SAVED_TOKENS_FLOOR: usize = 12_288;
-/// Minimum share of the rewritten suffix (from the first replacement to the
-/// end of the persisted prefix), in percent.
-pub const PRUNE_MIN_SAVED_SUFFIX_PERCENT: usize = 60;
-
-/// Token position inside the persisted conversation that mechanical pruning
-/// must not touch. The first [`PRUNE_PROTECTED_WINDOW_PERCENT`] of the
-/// model-visible request stays cache-stable; the fixed request envelope is
-/// subtracted because it is never pruned and always precedes the conversation.
-pub fn protected_conversation_tokens(context_window: usize, envelope_fixed_tokens: usize) -> usize {
-    context_window
-        .saturating_mul(PRUNE_PROTECTED_WINDOW_PERCENT)
-        .saturating_div(100)
-        .saturating_sub(envelope_fixed_tokens)
-}
-
-/// The same protected position for a compaction request: the effective window
-/// and fixed envelope are exactly the ones the pressure meter uses.
-pub fn protected_conversation_tokens_for_request(request: &CompactionRequestContext) -> usize {
-    protected_conversation_tokens(
-        request.context_window,
-        ContextEnvelope::from_compaction_request(request).fixed_prompt_tokens(),
-    )
-}
-
-/// Mechanical-prune character budgets. Characters are Unicode code points so a
-/// retained boundary never splits a surrogate pair.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MechanicalPruneConfig {
-    pub threshold_chars: usize,
-    pub head_chars: usize,
-    pub tail_chars: usize,
-}
-
-impl Default for MechanicalPruneConfig {
-    fn default() -> Self {
-        Self {
-            threshold_chars: TOOL_RESULT_PRUNE_THRESHOLD_CHARS,
-            head_chars: TOOL_RESULT_PRUNE_HEAD_CHARS,
-            tail_chars: TOOL_RESULT_PRUNE_TAIL_CHARS,
-        }
-    }
-}
-
-/// Absolute cache-bust floor. The rewritten-suffix share gate is separate and
-/// usually dominates at normal session sizes: see
-/// [`MechanicalPrunePlan::is_worthwhile`].
-pub fn prune_min_saved_tokens() -> usize {
-    PRUNE_MIN_SAVED_TOKENS_FLOOR
-}
-
-/// One durable surface replacement. `seq` is the shadowed node; the appended
-/// replacement event cites it through `source_seqs`, so the original event
-/// remains in the append-only log and replay can recover this exact input.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PruneReplacement {
-    pub seq: Seq,
-    pub source_seqs: Vec<Seq>,
-    pub item: Item,
-    pub chars_before: usize,
-    pub chars_after: usize,
-    pub estimated_saved_tokens: usize,
-}
-
-/// Cumulative token starts for the persisted rows: `starts[i]` is the token
-/// offset at which row `i` begins, and `starts[persisted_len]` is the total.
-/// One pass over the projected items, so the positional filter stays cheap.
-fn row_start_tokens(rows: &[WorkingRow], persisted_len: usize) -> Vec<usize> {
-    let items = project_items(&rows[..persisted_len]);
-    debug_assert_eq!(items.len(), persisted_len, "projection is one item per row");
-    let mut starts = Vec::with_capacity(items.len() + 1);
-    let mut total: usize = 0;
-    starts.push(0);
-    for item in &items {
-        total = total.saturating_add(crate::session::estimate::item_token_estimate(item));
-        starts.push(total);
-    }
-    starts
-}
-
-/// Deterministic, model-free first stage of compaction. Building a plan never
-/// mutates the session; only a plan that clears the protected line, the savings
-/// floor, the rewritten-suffix share, and the relief preflight is committed as
-/// one batch (one suffix rewrite / one cache bust).
-///
-/// `estimated_saved_tokens` is measured against the item the model would
-/// actually receive. Historical media is already replaced by the ephemeral
-/// show-once projection, so a media-only plan usually saves zero live tokens
-/// and never clears the floor by itself; media replacements still ride along in
-/// a batch whose text pruning pays for the cache bust.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct MechanicalPrunePlan {
-    pub replacements: Vec<PruneReplacement>,
-    pub estimated_saved_tokens: usize,
-    /// Conversation-token position below which no replacement may land.
-    pub protected_tokens: usize,
-    /// Tokens from the first replacement's row start to the end of the
-    /// persisted prefix: the exact suffix whose KV cache this plan rewrites.
-    pub rewritten_suffix_tokens: usize,
-}
-
-impl MechanicalPrunePlan {
-    /// Build a prune plan from the current durable working set. Pending rows do
-    /// not have a seq and cannot be replaced. No replacement may start before
-    /// `protected_tokens`; a row that straddles that line stays protected.
-    /// Only historical (stale) media is touched; fresh media from the current
-    /// model/tool batch stays intact.
-    pub fn build(
-        rows: &[WorkingRow],
-        config: MechanicalPruneConfig,
-        protected_tokens: usize,
-    ) -> Self {
-        Self::build_limited(rows, config, protected_tokens, persisted_prefix_len(rows))
-    }
-
-    /// Build against an explicit sealed prefix. Rows at or after `sealed_len`
-    /// are never candidates: a seal rewrites their payload in place.
-    fn build_limited(
-        rows: &[WorkingRow],
-        config: MechanicalPruneConfig,
-        protected_tokens: usize,
-        sealed_len: usize,
-    ) -> Self {
-        let persisted_len = sealed_len.min(persisted_prefix_len(rows));
-        let starts = row_start_tokens(rows, persisted_len);
-        let total_tokens = starts.last().copied().unwrap_or(0);
-        let Some(eligible_start) = starts
-            .iter()
-            .position(|&start| start >= protected_tokens)
-            .filter(|&index| index < persisted_len)
-        else {
-            return Self {
-                replacements: Vec::new(),
-                estimated_saved_tokens: 0,
-                protected_tokens,
-                rewritten_suffix_tokens: 0,
-            };
-        };
-        // The projection already decides which media is stale. Probe a clone so
-        // the durable rows are never rewritten by the ephemeral view path.
-        let projected = project_items(rows);
-        let mut media_probe = projected.clone();
-        let _ = crate::context_pipeline::media_budget::drop_stale_media(&mut media_probe);
-
-        let mut replacements = Vec::new();
-        let mut first_replacement_index = None;
-        for (index, row) in rows
-            .iter()
-            .enumerate()
-            .take(persisted_len)
-            .skip(eligible_start)
-        {
-            let Some(seq) = row.log_seq else {
-                continue;
-            };
-            let Some(item) = row.item() else {
-                continue;
-            };
-            let stale_media = projected.get(index) != media_probe.get(index);
-            let Some(replacement_item) = prune_item_for_compaction(item, config, stale_media)
-            else {
-                continue;
-            };
-            if replacement_item == *item {
-                continue;
-            }
-            // Savings must be measured against the item the model would
-            // actually receive. Historical media is already replaced by the
-            // ephemeral show-once projection, so its durable placeholder often
-            // saves the live request nothing even though the raw row shrank.
-            // Such media rewrites still ride along once another candidate
-            // clears the savings floor; they are never the reason to bust cache.
-            let effective_before = media_probe.get(index).unwrap_or(item);
-            let chars_before = item_text_chars(effective_before);
-            let chars_after = item_text_chars(&replacement_item);
-            let saved_tokens = crate::session::estimate::compute_token_estimate(
-                std::slice::from_ref(effective_before),
-            )
-            .saturating_sub(crate::session::estimate::compute_token_estimate(
-                std::slice::from_ref(&replacement_item),
-            ));
-            let media_rewrite = stale_media && item_has_media(item);
-            if saved_tokens == 0 && !media_rewrite {
-                continue;
-            }
-            if first_replacement_index.is_none() {
-                first_replacement_index = Some(index);
-            }
-            replacements.push(PruneReplacement {
-                seq,
-                source_seqs: vec![seq],
-                item: replacement_item,
-                chars_before,
-                chars_after,
-                estimated_saved_tokens: saved_tokens,
-            });
-        }
-        let estimated_saved_tokens = replacements
-            .iter()
-            .map(|replacement| replacement.estimated_saved_tokens)
-            .sum();
-        let rewritten_suffix_tokens =
-            first_replacement_index.map_or(0, |index| total_tokens.saturating_sub(starts[index]));
-        Self {
-            replacements,
-            estimated_saved_tokens,
-            protected_tokens,
-            rewritten_suffix_tokens,
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.replacements.is_empty()
-    }
-
-    /// The absolute floor. Equality counts as clearing it.
-    pub fn meets_min_savings(&self) -> bool {
-        !self.is_empty() && self.estimated_saved_tokens >= prune_min_saved_tokens()
-    }
-
-    /// The plan must also remove at least
-    /// [`PRUNE_MIN_SAVED_SUFFIX_PERCENT`] of the suffix it actually rewrites
-    /// (from the first replacement's row start to the end of the persisted
-    /// prefix). Equality counts as clearing the share.
-    pub fn meets_rewritten_share(&self) -> bool {
-        !self.is_empty()
-            && self.rewritten_suffix_tokens > 0
-            && self.estimated_saved_tokens.saturating_mul(100)
-                >= self
-                    .rewritten_suffix_tokens
-                    .saturating_mul(PRUNE_MIN_SAVED_SUFFIX_PERCENT)
-    }
-
-    /// Both dimensions: the absolute savings floor and the rewritten-suffix
-    /// share. Clearing only one still pays a cache miss for too little.
-    pub fn is_worthwhile(&self) -> bool {
-        self.meets_min_savings() && self.meets_rewritten_share()
-    }
 }
 
 /// Minimal summary acceptance failures. No section, anchor, placeholder,
@@ -1394,42 +917,6 @@ fn worse_summary_finish(a: SummaryFinish, b: SummaryFinish) -> SummaryFinish {
     if severity(b) >= severity(a) { b } else { a }
 }
 
-fn is_media_part(part: &InputContent) -> bool {
-    matches!(
-        part,
-        InputContent::InputImage(_) | InputContent::InputFile(_)
-    )
-}
-
-fn media_placeholder(part: &InputContent) -> &'static str {
-    match part {
-        InputContent::InputImage(_) => "[image already viewed]",
-        InputContent::InputFile(_) => "[file already viewed]",
-        InputContent::InputText(_) => "",
-    }
-}
-
-fn content_text_chars(parts: &[InputContent]) -> usize {
-    parts
-        .iter()
-        .filter_map(|part| match part {
-            InputContent::InputText(text) => Some(text.text.chars().count()),
-            _ => None,
-        })
-        .sum()
-}
-
-fn item_text_chars(item: &Item) -> usize {
-    match item {
-        Item::Message(MessageItem::Input(message)) => content_text_chars(&message.content),
-        Item::FunctionCallOutput(output) => match &output.output {
-            FunctionCallOutput::Text(text) => text.chars().count(),
-            FunctionCallOutput::Content(parts) => content_text_chars(parts),
-        },
-        _ => 0,
-    }
-}
-
 fn item_has_image(item: &Item) -> bool {
     match item {
         Item::Message(MessageItem::Input(message)) => message
@@ -1443,157 +930,6 @@ fn item_has_image(item: &Item) -> bool {
             FunctionCallOutput::Text(_) => false,
         },
         _ => false,
-    }
-}
-
-fn item_has_media(item: &Item) -> bool {
-    match item {
-        Item::Message(MessageItem::Input(message)) => message.content.iter().any(is_media_part),
-        Item::FunctionCallOutput(output) => match &output.output {
-            FunctionCallOutput::Text(_) => false,
-            FunctionCallOutput::Content(parts) => parts.iter().any(is_media_part),
-        },
-        _ => false,
-    }
-}
-
-/// Replace each stale media part with a stable text placeholder while keeping
-/// every other part in its original relative position.
-fn replace_stale_media_parts(parts: &mut [InputContent]) -> bool {
-    let mut changed = false;
-    for part in parts.iter_mut() {
-        if !is_media_part(part) {
-            continue;
-        }
-        let placeholder = media_placeholder(part);
-        *part = InputContent::InputText(InputTextContent {
-            text: placeholder.to_string(),
-        });
-        changed = true;
-    }
-    changed
-}
-
-/// Deterministic head/marker/tail pruning across all text blocks in a tool
-/// result. Non-text blocks keep their relative order. The emitted replacement
-/// is always <= `threshold_chars`, so running the pruner again cannot grow it.
-fn prune_text_content(
-    parts: Vec<InputContent>,
-    config: MechanicalPruneConfig,
-) -> Option<Vec<InputContent>> {
-    let total_chars = content_text_chars(&parts);
-    if total_chars <= config.threshold_chars {
-        return None;
-    }
-
-    let removed_start = config.head_chars;
-    let removed_end = total_chars.saturating_sub(config.tail_chars);
-    let mut consumed = 0usize;
-    let mut marker_inserted = false;
-    let mut out = Vec::with_capacity(parts.len());
-
-    for part in parts {
-        let InputContent::InputText(text) = part else {
-            out.push(part);
-            continue;
-        };
-        let points: Vec<char> = text.text.chars().collect();
-        let block_start = consumed;
-        let block_end = block_start + points.len();
-        let head_end = points
-            .len()
-            .min(config.head_chars.saturating_sub(block_start));
-        let tail_start = points.len().min(removed_end.saturating_sub(block_start));
-        let intersects = block_start < removed_end && block_end > removed_start;
-        let marker = if intersects && !marker_inserted {
-            marker_inserted = true;
-            TOOL_RESULT_PRUNE_MARKER
-        } else {
-            ""
-        };
-
-        let mut next = String::with_capacity(head_end + marker.len() + points.len() - tail_start);
-        next.extend(points[..head_end].iter());
-        next.push_str(marker);
-        next.extend(points[tail_start..].iter());
-        if !next.is_empty() {
-            out.push(InputContent::InputText(InputTextContent { text: next }));
-        }
-        consumed = block_end;
-    }
-
-    // `total_chars > threshold` and a valid head/tail budget guarantee a
-    // removed text span. Keep the invariant explicit instead of emitting an
-    // unbounded replacement.
-    if !marker_inserted || content_text_chars(&out) > config.threshold_chars {
-        return None;
-    }
-    Some(out)
-}
-
-fn prune_text_value(text: &str, config: MechanicalPruneConfig) -> Option<String> {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= config.threshold_chars {
-        return None;
-    }
-    let head_end = chars.len().min(config.head_chars);
-    let tail_start = chars.len().saturating_sub(config.tail_chars);
-    if tail_start <= head_end {
-        return None;
-    }
-    let emitted_chars =
-        head_end + TOOL_RESULT_PRUNE_MARKER.chars().count() + chars.len() - tail_start;
-    if emitted_chars > config.threshold_chars {
-        return None;
-    }
-    let mut out = String::with_capacity(emitted_chars);
-    out.extend(chars[..head_end].iter());
-    out.push_str(TOOL_RESULT_PRUNE_MARKER);
-    out.extend(chars[tail_start..].iter());
-    Some(out)
-}
-
-fn prune_tool_output(
-    output: &mut FunctionCallOutput,
-    config: MechanicalPruneConfig,
-    strip_stale_media: bool,
-) -> bool {
-    match output {
-        FunctionCallOutput::Text(text) => {
-            let Some(next) = prune_text_value(text, config) else {
-                return false;
-            };
-            *text = next;
-            true
-        }
-        FunctionCallOutput::Content(parts) => {
-            let mut changed = strip_stale_media && replace_stale_media_parts(parts);
-            if let Some(next) = prune_text_content(parts.clone(), config) {
-                *parts = next;
-                changed = true;
-            }
-            changed
-        }
-    }
-}
-
-fn prune_item_for_compaction(
-    item: &Item,
-    config: MechanicalPruneConfig,
-    strip_stale_media: bool,
-) -> Option<Item> {
-    match item {
-        Item::Message(MessageItem::Input(message)) if strip_stale_media => {
-            let mut message = message.clone();
-            replace_stale_media_parts(&mut message.content)
-                .then_some(Item::Message(MessageItem::Input(message)))
-        }
-        Item::FunctionCallOutput(output) => {
-            let mut output = output.clone();
-            prune_tool_output(&mut output.output, config, strip_stale_media)
-                .then_some(Item::FunctionCallOutput(output))
-        }
-        _ => None,
     }
 }
 
@@ -1618,13 +954,6 @@ fn context_meter_for_rows_local(
     )
 }
 
-/// Whether the deterministic prune can pay for its own suffix rewrite:
-/// position protection, absolute savings floor, and the rewritten-suffix share.
-pub fn prune_is_worthwhile(rows: &[WorkingRow], protected_tokens: usize) -> bool {
-    MechanicalPrunePlan::build(rows, MechanicalPruneConfig::default(), protected_tokens)
-        .is_worthwhile()
-}
-
 /// Compaction policy and execution.
 pub struct CompactPolicy;
 
@@ -1645,25 +974,6 @@ impl CompactPolicy {
             return false;
         }
         Self::can_compact(budget, &project_items(&rows[..sealed_len]))
-    }
-
-    /// Manual admission discovery when keep-recent has no cut but a mechanical
-    /// prune would clear the fixed protected line and both savings gates. This
-    /// is only a predicate; the episode selects on the sealed prefix and commits
-    /// at most one method.
-    pub fn can_prune(rows: &[WorkingRow], protected_tokens: usize) -> bool {
-        prune_is_worthwhile(rows, protected_tokens)
-    }
-
-    /// Admission predicate for the sealed prefix only. In-progress rows stay in
-    /// the tail and must not make a manual prune look eligible.
-    pub fn can_prune_sealed(
-        rows: &[WorkingRow],
-        in_progress: &HashSet<Seq>,
-        protected_tokens: usize,
-    ) -> bool {
-        let sealed_len = sealed_prefix_len(rows, in_progress);
-        prune_is_worthwhile(&rows[..sealed_len], protected_tokens)
     }
 
     /// Meter for the ordinary/manual auto trigger: only sealed rows count.
@@ -3635,86 +2945,6 @@ max_output = 8192
         );
     }
 
-    #[tokio::test]
-    async fn non_relieving_mechanical_prune_is_not_committed_before_summary_failure() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let sessions = Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            dir.path()
-                .join("global-litecode.db")
-                .to_string_lossy()
-                .to_string(),
-        ));
-        let sid = sessions
-            .open_session_sync("/p", "default", Some("test/test-primary-model"))
-            .expect("open session");
-        let seed = vec![
-            user_text("start of the transcript"),
-            prune_call("call-prune-survives"),
-            prune_tool_text("call-prune-survives", "word ".repeat(250_000)),
-            user_text(format!("after-tools {}", "z".repeat(40_000))),
-            user_text("kept-tail"),
-        ];
-        sessions.insert_detail_rows(&sid, &seed).expect("seed");
-        let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
-        let before_revision = sessions.data().revision_blocking(&sid).unwrap();
-        let provider = Arc::new(InvalidSummaryProvider::new());
-        let mut request = compact_context(provider.clone());
-        set_request_window(&mut request, 128_000, 1_024);
-        let error = CompactPolicy::compact_transcript(
-            &BudgetPolicy::new(10_000).with_keep_recent_tokens(1),
-            &sessions,
-            &sid,
-            &request,
-            1_024,
-            &ProviderPromptBaseline::default(),
-            &mut rows,
-            &CancellationToken::new(),
-            CompactionTrigger::Auto,
-            Some("prune-survives-summary-failure"),
-            &sessions.data_root_path(),
-            MAX_SUMMARY_ATTEMPTS,
-        )
-        .await
-        .expect_err("invalid summary must still fail when no prune can relieve");
-        assert_eq!(
-            error.compaction_failure_kind(),
-            Some(crate::types::CompactionFailureKind::SummaryFinish)
-        );
-        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-
-        let durable = sessions.data().working_set_blocking(&sid).unwrap();
-        let tool_outputs = durable
-            .iter()
-            .filter_map(|row| row.item())
-            .filter(|item| matches!(item, Item::FunctionCallOutput(_)))
-            .map(item_text_preview)
-            .collect::<Vec<_>>();
-        assert!(
-            tool_outputs
-                .iter()
-                .all(|text| !text.contains(TOOL_RESULT_PRUNE_MARKER)),
-            "a prune that cannot relieve pressure must not rewrite the surface: {tool_outputs:?}"
-        );
-        assert!(
-            !durable.iter().any(|row| row.checkpoint().is_some()),
-            "a failed summary must not write a checkpoint"
-        );
-        assert_eq!(
-            sessions.data().revision_blocking(&sid).unwrap(),
-            before_revision,
-            "a skipped prune must not advance the revision"
-        );
-        assert!(
-            !sessions
-                .data()
-                .events_blocking(&sid)
-                .unwrap()
-                .iter()
-                .any(|event| matches!(event.event_type, crate::session::EventType::Compacted))
-        );
-    }
-
     #[test]
     fn sealed_prefix_stops_at_the_first_in_progress_row() {
         let rows = vec![
@@ -3981,329 +3211,6 @@ max_output = 8192
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
-    use crate::authority::responses::{
-        FunctionCallOutputItemParam, FunctionToolCall, InputImageContent,
-    };
-
-    fn prune_call(call_id: &str) -> Item {
-        Item::FunctionCall(FunctionToolCall {
-            call_id: call_id.into(),
-            name: "read".into(),
-            arguments: "{}".into(),
-            id: Some(format!("call-item-{call_id}")),
-            status: None,
-            namespace: None,
-        })
-    }
-
-    fn prune_tool_text(call_id: &str, text: String) -> Item {
-        Item::FunctionCallOutput(FunctionCallOutputItemParam {
-            call_id: call_id.into(),
-            output: FunctionCallOutput::Text(text),
-            id: Some(format!("output-{call_id}")),
-            status: Some(OutputStatus::Completed),
-        })
-    }
-
-    fn prune_tool_image(call_id: &str, url: &str) -> Item {
-        Item::FunctionCallOutput(FunctionCallOutputItemParam {
-            call_id: call_id.into(),
-            output: FunctionCallOutput::Content(vec![
-                InputContent::InputText(InputTextContent {
-                    text: "caption".into(),
-                }),
-                InputContent::InputImage(InputImageContent {
-                    detail: Default::default(),
-                    file_id: None,
-                    image_url: Some(url.into()),
-                }),
-            ]),
-            id: Some(format!("output-{call_id}")),
-            status: Some(OutputStatus::Completed),
-        })
-    }
-
-    fn prune_media_count(item: &Item) -> usize {
-        match item {
-            Item::FunctionCallOutput(output) => match &output.output {
-                FunctionCallOutput::Content(parts) => {
-                    parts.iter().filter(|part| is_media_part(part)).count()
-                }
-                FunctionCallOutput::Text(_) => 0,
-            },
-            Item::Message(MessageItem::Input(message)) => message
-                .content
-                .iter()
-                .filter(|part| is_media_part(part))
-                .count(),
-            _ => 0,
-        }
-    }
-
-    fn replace_output_in_rows(
-        rows: &[WorkingRow],
-        replacement: &PruneReplacement,
-    ) -> Vec<WorkingRow> {
-        let mut rows = rows.to_vec();
-        let index = rows
-            .iter()
-            .position(|row| row.log_seq == Some(replacement.seq))
-            .expect("replacement source row");
-        rows[index] = WorkingRow::persisted(replacement.seq + 10_000, replacement.item.clone());
-        rows
-    }
-
-    #[test]
-    fn tool_result_prune_uses_exact_head_marker_tail_boundaries() {
-        let config = MechanicalPruneConfig::default();
-        let at_limit = prune_tool_text(
-            "call-at-limit",
-            "x".repeat(TOOL_RESULT_PRUNE_THRESHOLD_CHARS),
-        );
-        let mut unchanged = at_limit.clone();
-        let Item::FunctionCallOutput(output) = &mut unchanged else {
-            panic!("expected tool result");
-        };
-        assert!(
-            !prune_tool_output(&mut output.output, config, false),
-            "exactly threshold chars must not be rewritten"
-        );
-        assert_eq!(unchanged, at_limit);
-
-        let over = prune_tool_text(
-            "call-over",
-            "x".repeat(TOOL_RESULT_PRUNE_THRESHOLD_CHARS + 1),
-        );
-        let replacement = prune_item_for_compaction(&over, config, false).expect("over threshold");
-        let Item::FunctionCallOutput(output) = &replacement else {
-            panic!("expected tool result");
-        };
-        let FunctionCallOutput::Text(text) = &output.output else {
-            panic!("text tool result must stay a text result");
-        };
-        assert_eq!(
-            text.chars().count(),
-            TOOL_RESULT_PRUNE_HEAD_CHARS
-                + TOOL_RESULT_PRUNE_MARKER.chars().count()
-                + TOOL_RESULT_PRUNE_TAIL_CHARS
-        );
-        assert!(text.starts_with(&"x".repeat(TOOL_RESULT_PRUNE_HEAD_CHARS)));
-        assert!(text.ends_with(&"x".repeat(TOOL_RESULT_PRUNE_TAIL_CHARS)));
-        assert_eq!(text.matches(TOOL_RESULT_PRUNE_MARKER).count(), 1);
-    }
-
-    #[test]
-    fn tool_result_prune_counts_unicode_code_points_without_splitting() {
-        let config = MechanicalPruneConfig::default();
-        let over = prune_tool_text(
-            "call-unicode",
-            "é".repeat(TOOL_RESULT_PRUNE_THRESHOLD_CHARS + 1),
-        );
-        let replacement = prune_item_for_compaction(&over, config, false).expect("over threshold");
-        let Item::FunctionCallOutput(output) = &replacement else {
-            panic!("expected tool result");
-        };
-        let FunctionCallOutput::Text(text) = &output.output else {
-            panic!("text tool result must stay text");
-        };
-        assert_eq!(
-            text.chars().count(),
-            TOOL_RESULT_PRUNE_HEAD_CHARS
-                + TOOL_RESULT_PRUNE_MARKER.chars().count()
-                + TOOL_RESULT_PRUNE_TAIL_CHARS
-        );
-        assert!(!text.contains('\u{fffd}'));
-        assert_eq!(text.matches(TOOL_RESULT_PRUNE_MARKER).count(), 1);
-    }
-
-    #[test]
-    fn tool_result_prune_preserves_pair_and_provider_metadata_and_is_idempotent() {
-        let rows = vec![
-            WorkingRow::persisted(1, user_text("go")),
-            WorkingRow::persisted(2, prune_call("call-1")),
-            WorkingRow::persisted(3, prune_tool_text("call-1", "word ".repeat(2_400))),
-            WorkingRow::persisted(4, assistant_text("done")),
-        ];
-        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), 0);
-        assert_eq!(
-            MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), 0),
-            plan,
-            "the same input must produce the same plan"
-        );
-        assert_eq!(plan.replacements.len(), 1, "only the result is pruned");
-        let replacement = &plan.replacements[0];
-        assert_eq!(replacement.seq, 3);
-        assert_eq!(replacement.source_seqs, vec![3]);
-        let Item::FunctionCallOutput(output) = &replacement.item else {
-            panic!("expected replacement tool result");
-        };
-        assert_eq!(output.call_id, "call-1", "pair identity must survive");
-        assert_eq!(output.id.as_deref(), Some("output-call-1"));
-        assert_eq!(output.status, Some(OutputStatus::Completed));
-
-        let applied = replace_output_in_rows(&rows, replacement);
-        let second = MechanicalPrunePlan::build(&applied, MechanicalPruneConfig::default(), 0);
-        assert!(
-            second.is_empty(),
-            "replaying the pruned surface must not create another replacement"
-        );
-        assert_eq!(
-            item_text_chars(applied[2].item().unwrap()),
-            replacement.chars_after,
-            "second pass must not grow the replacement"
-        );
-    }
-
-    #[test]
-    fn stale_media_gets_a_placeholder_while_fresh_media_is_kept() {
-        let old_user = crate::types::user_message("look", &["litecode-media:old.png".into()]);
-        let rows = vec![
-            WorkingRow::persisted(1, old_user),
-            WorkingRow::persisted(2, prune_call("call-old")),
-            WorkingRow::persisted(
-                3,
-                prune_tool_image("call-old", "https://example.com/old.png"),
-            ),
-            WorkingRow::persisted(4, assistant_text("done")),
-            WorkingRow::persisted(5, user_text("next")),
-            WorkingRow::persisted(6, prune_call("call-new")),
-            WorkingRow::persisted(
-                7,
-                prune_tool_image("call-new", "https://example.com/new.png"),
-            ),
-        ];
-        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), 0);
-        assert_eq!(
-            plan.replacements.len(),
-            2,
-            "one stale user media, one stale tool media"
-        );
-        for replacement in &plan.replacements {
-            assert_eq!(
-                prune_media_count(&replacement.item),
-                0,
-                "durable replacement must carry only text"
-            );
-            assert!(
-                item_text_chars(&replacement.item) > 0,
-                "media replacement must keep a stable text placeholder"
-            );
-        }
-        let Item::Message(MessageItem::Input(message)) = &plan.replacements[0].item else {
-            panic!("stale user media replacement must stay a user message");
-        };
-        let text = message
-            .content
-            .iter()
-            .filter_map(|part| match part {
-                InputContent::InputText(text) => Some(text.text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(text, "look\n[image already viewed]");
-        assert_eq!(
-            prune_media_count(rows[6].item().unwrap()),
-            1,
-            "fresh tool media stays in the row until it becomes historical"
-        );
-
-        assert_eq!(prune_media_count(&plan.replacements[0].item), 0);
-
-        let mut applied = rows.clone();
-        for replacement in &plan.replacements {
-            let index = applied
-                .iter()
-                .position(|row| row.log_seq == Some(replacement.seq))
-                .expect("media source row");
-            applied[index] =
-                WorkingRow::persisted(replacement.seq + 10_000, replacement.item.clone());
-        }
-        assert!(
-            MechanicalPrunePlan::build(&applied, MechanicalPruneConfig::default(), 0).is_empty(),
-            "durable media placeholders must be stable on a second pass"
-        );
-    }
-
-    #[test]
-    fn mechanical_prune_gate_requires_floor_and_suffix_share() {
-        assert_eq!(prune_min_saved_tokens(), PRUNE_MIN_SAVED_TOKENS_FLOOR);
-        assert_eq!(PRUNE_MIN_SAVED_SUFFIX_PERCENT, 60);
-        assert_eq!(PRUNE_PROTECTED_WINDOW_PERCENT, 60);
-        assert_eq!(protected_conversation_tokens(128_000, 1_000), 75_800);
-        assert_eq!(protected_conversation_tokens(1_000, 2_000), 0);
-        let rows = vec![
-            WorkingRow::persisted(1, prune_call("call-small")),
-            WorkingRow::persisted(2, prune_tool_text("call-small", "x".repeat(8_300))),
-        ];
-        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), 0);
-        assert_eq!(plan.replacements.len(), 1);
-        assert!(
-            plan.estimated_saved_tokens < PRUNE_MIN_SAVED_TOKENS_FLOOR,
-            "a single small text result is below the cache-bust floor: {plan:?}"
-        );
-        assert!(!plan.meets_min_savings());
-        assert!(!plan.is_worthwhile());
-        assert!(!prune_is_worthwhile(&rows, 0));
-    }
-
-    #[test]
-    fn mechanical_prune_never_touches_rows_before_the_protected_line() {
-        let rows = vec![
-            WorkingRow::persisted(1, user_text("go")),
-            WorkingRow::persisted(2, prune_call("call-early")),
-            WorkingRow::persisted(3, prune_tool_text("call-early", "word ".repeat(3_600))),
-            WorkingRow::persisted(4, assistant_text("middle")),
-            WorkingRow::persisted(5, prune_call("call-late")),
-            WorkingRow::persisted(6, prune_tool_text("call-late", "word ".repeat(3_600))),
-            WorkingRow::persisted(7, assistant_text("done")),
-        ];
-        let starts = row_start_tokens(&rows, rows.len());
-        let late_start = starts[5];
-        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), late_start);
-        assert_eq!(plan.protected_tokens, late_start);
-        assert!(
-            plan.replacements
-                .iter()
-                .all(|replacement| replacement.seq >= 5),
-            "no replacement may land before the protected line: {plan:?}"
-        );
-        assert_eq!(plan.replacements.len(), 1);
-        assert_eq!(plan.replacements[0].seq, 6);
-
-        // A line that falls inside the early result protects that whole row,
-        // even though the row ends after the line.
-        let straddle = row_start_tokens(&rows, rows.len())[2] + 1;
-        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), straddle);
-        assert!(
-            plan.replacements
-                .iter()
-                .all(|replacement| replacement.seq >= 5),
-            "a straddling row must stay protected: {plan:?}"
-        );
-    }
-
-    #[test]
-    fn mechanical_prune_suffix_share_uses_only_the_rewritten_tail() {
-        let rows = vec![
-            WorkingRow::persisted(1, user_text("go")),
-            WorkingRow::persisted(2, prune_call("call-early")),
-            WorkingRow::persisted(3, prune_tool_text("call-early", "word ".repeat(3_600))),
-            WorkingRow::persisted(4, prune_call("call-late")),
-            WorkingRow::persisted(5, prune_tool_text("call-late", "word ".repeat(3_600))),
-        ];
-        let starts = row_start_tokens(&rows, rows.len());
-        let late_start = starts[4];
-        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), late_start);
-        assert_eq!(plan.replacements.len(), 1);
-        assert_eq!(plan.replacements[0].seq, 5);
-        assert_eq!(plan.rewritten_suffix_tokens, starts[5] - late_start);
-        assert!(
-            plan.meets_rewritten_share(),
-            "the denominator is the rewritten suffix, not the whole prefix: {plan:?}"
-        );
-    }
-
     #[tokio::test]
     async fn dual_window_compaction_uses_product_window_for_budget_and_physical_max_for_input() {
         let sessions = Arc::new(SessionManager::new_for_test(
@@ -4336,7 +3243,6 @@ max_output = 8192
 
         let budget = BudgetPolicy::new(request.context_window);
         assert_eq!(budget.keep_recent_tokens, 38_338);
-        assert!(protected_conversation_tokens_for_request(&request) < 153_600);
 
         let compacted = CompactPolicy::compact_transcript(
             &budget,

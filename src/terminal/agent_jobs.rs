@@ -12,11 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
-use super::ProcessSignal;
-use super::pty::PtySession;
 use super::tee::BoundedTee;
 
 fn now_unix_ms() -> i64 {
@@ -65,35 +62,6 @@ pub(crate) fn alloc_pipe_job_id(jobs: &AgentJobRegistry, workspace_root: &Path) 
         return id;
     }
     format!("bg_{}", super::bash_nonce())
-}
-
-/// Signal a process tree by pid. Unix: the child's process group.
-///
-/// `Kill` is the hard stop used by `kill`; `Interrupt` is the real Ctrl-C
-/// semantics used by `write_stdin` and is deliberately separate. Windows has
-/// no equivalent of a process-group SIGINT through this path, so only `Kill`
-/// is delivered there.
-pub(crate) fn signal_process_tree(pid: u32, signal: ProcessSignal) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        let sig = match signal {
-            ProcessSignal::Interrupt => libc::SIGINT,
-            ProcessSignal::Terminate => libc::SIGTERM,
-            ProcessSignal::Kill => libc::SIGKILL,
-        };
-        return unsafe { libc::kill(-(pid as i32), sig) } == 0;
-    }
-    #[cfg(windows)]
-    {
-        if signal == ProcessSignal::Kill {
-            kill_process_tree(pid);
-            return true;
-        }
-        return false;
-    }
 }
 
 /// Kill a process tree by pid. Unix: the child's process group. Windows:
@@ -202,26 +170,8 @@ impl Drop for JobTree {
     }
 }
 
-/// How a unified-exec session receives input after it has been started.
-///
-/// Pipe sessions use an unbounded channel owned by the supervisor. PTY
-/// sessions use the existing `PtySession` writer, which is already serialized
-/// by its own mutex. A job created by the legacy `run` tool has no input.
-#[derive(Clone)]
-pub enum JobIo {
-    Pipe(tokio::sync::mpsc::UnboundedSender<Vec<u8>>),
-    Pty(Arc<PtySession>),
-}
-
 fn output_file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
-}
-
-#[derive(Debug, Clone)]
-pub struct SignalledJob {
-    pub delivered: bool,
-    pub alive: bool,
-    pub exit_code: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -263,9 +213,7 @@ pub struct AgentJobRecord {
     /// Set only by [`supervise_pipe`] when it chooses the background or promoted
     /// oneshot. Fixture inserts may be born already detached; nothing else flips it.
     detached: bool,
-    /// Input path for a Codex-style unified-exec session. Legacy `run` jobs have none.
-    io: Option<JobIo>,
-    /// Byte offset already returned by `exec_command` / `write_stdin`.
+    /// Byte offset already returned by `exec_command`.
     read_cursor: u64,
 }
 
@@ -482,74 +430,7 @@ impl AgentJobRegistry {
         })
     }
 
-    /// Send bytes to a unified-exec session. The supervisor owns the pipe
-    /// child's stdin; PTY sessions own their writer. A legacy `run` job has no
-    /// input channel and returns an error instead of silently discarding bytes.
-    pub fn write_stdin(&self, id: &str, bytes: &[u8]) -> Result<(), String> {
-        let io = {
-            let g = self.inner.lock().expect("jobs lock");
-            let rec = g
-                .jobs
-                .get(id)
-                .ok_or_else(|| format!("job '{id}' not found"))?;
-            rec.io
-                .clone()
-                .ok_or_else(|| format!("job '{id}' has no stdin channel"))?
-        };
-        match io {
-            JobIo::Pipe(tx) => tx
-                .send(bytes.to_vec())
-                .map_err(|_| format!("job '{id}' stdin is closed")),
-            JobIo::Pty(session) => session
-                .write(bytes)
-                .map_err(|error| format!("job '{id}' pty write failed: {error}")),
-        }
-    }
-
-    /// Deliver a signal to a job's process group without latching `tool_killed`.
-    /// Ctrl-C is an interaction, not a hard stop; `kill` keeps its own path.
-    pub fn signal_registered(&self, id: &str, signal: ProcessSignal) -> Option<SignalledJob> {
-        let (alive, pid, io) = {
-            let g = self.inner.lock().expect("jobs lock");
-            let rec = g.jobs.get(id)?;
-            (rec.alive, rec.pid, rec.io.clone())
-        };
-        let delivered = if alive {
-            match io {
-                Some(JobIo::Pty(session)) => session.signal(signal).is_ok(),
-                _ => signal_process_tree(pid.unwrap_or(0), signal),
-            }
-        } else {
-            false
-        };
-        let (alive, exit_code) = self
-            .get(id)
-            .map(|(alive, code, _, _)| (alive, code))
-            .unwrap_or((false, None));
-        tracing::info!(
-            job_id = id,
-            ?signal,
-            delivered,
-            alive,
-            exit_code = ?exit_code,
-            "process signal"
-        );
-        Some(SignalledJob {
-            delivered,
-            alive,
-            exit_code,
-        })
-    }
-
-    pub fn read_cursor(&self, id: &str) -> Option<u64> {
-        let g = self.inner.lock().expect("jobs lock");
-        g.jobs.get(id).map(|rec| rec.read_cursor)
-    }
-
-    /// Remove a finished unified-exec session even when it was detached. The
-    /// legacy `run` path keeps detached records for the exit mailbox; an
-    /// `exec_command` session has no such consumer once its final output has
-    /// been returned.
+    /// Remove a finished exec session even when it was detached.
     pub fn discard_finished(&self, id: &str) -> bool {
         let session_id = {
             let mut g = self.inner.lock().expect("jobs lock");
@@ -614,65 +495,6 @@ impl AgentJobRegistry {
             exit_code,
             truncated,
         })
-    }
-
-    /// Wait until the job emits new output or exits. This is the polling leg of
-    /// `write_stdin`; the caller owns the final output read and decides whether
-    /// the session is still alive.
-    pub async fn wait_output_or_exit(
-        &self,
-        id: &str,
-        since_cursor: u64,
-        timeout: Duration,
-        cancel: &CancellationToken,
-    ) -> bool {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            let (has_output, alive) = {
-                let g = self.inner.lock().expect("jobs lock");
-                let Some(rec) = g.jobs.get(id) else {
-                    return true;
-                };
-                (output_file_len(&rec.output_path) > since_cursor, rec.alive)
-            };
-            if has_output || !alive {
-                return true;
-            }
-            tokio::select! {
-                _ = cancel.cancelled() => return true,
-                _ = tokio::time::sleep_until(deadline) => return false,
-                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
-            }
-        }
-    }
-
-    /// Wait until the job exits or `timeout` expires (used for empty-chars
-    /// `write_stdin` polling so caller yield budgets are honored rather than
-    /// returning early on the first byte of partial output).
-    pub async fn wait_exit_or_timeout(
-        &self,
-        id: &str,
-        timeout: Duration,
-        cancel: &CancellationToken,
-    ) -> bool {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            let alive = {
-                let g = self.inner.lock().expect("jobs lock");
-                let Some(rec) = g.jobs.get(id) else {
-                    return true;
-                };
-                rec.alive
-            };
-            if !alive {
-                return true;
-            }
-            tokio::select! {
-                _ = cancel.cancelled() => return true,
-                _ = tokio::time::sleep_until(deadline) => return false,
-                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
-            }
-        }
     }
 
     #[cfg(test)]
@@ -1226,7 +1048,6 @@ impl AgentJobRegistry {
                 pid: None,
                 tree: None,
                 detached: true,
-                io: None,
                 read_cursor: 0,
             },
         );
@@ -1315,187 +1136,11 @@ pub struct PipeRequest {
     /// that sets `detached`. Never given to the stdout or stderr readers.
     pub cancel: CancellationToken,
     pub detach: PipeDetach,
-    /// Keep the child stdin pipe and expose it through the job registry.
-    pub open_stdin: bool,
-    /// Send stdout and stderr through one tee/log. Unified exec returns one
-    /// stream, matching Codex's `exec_command`; legacy `run` keeps them split.
+    /// Send stdout and stderr through one tee/log.
     pub merge_output: bool,
     /// Fired once `spawn()` succeeded. Dropped unsent on every early return
     /// (cancel before spawn, spawn failure), so the receiver always resolves.
     pub on_spawned: Option<tokio::sync::oneshot::Sender<()>>,
-}
-
-/// Parameters for a PTY-backed Codex-style exec session.
-pub struct PtyRequest {
-    pub command: String,
-    pub cwd: PathBuf,
-    pub workspace_root: PathBuf,
-    pub session_id: String,
-    pub call_id: String,
-    pub yield_window: Duration,
-    pub cancel: CancellationToken,
-    pub on_spawned: Option<tokio::sync::oneshot::Sender<()>>,
-}
-
-/// Own a PTY child on the calling tokio runtime. The session is registered in
-/// the same job registry as pipe jobs, so `write_stdin`, `kill`, output
-/// cursors and session ownership are shared rather than forked.
-pub fn supervise_pty(
-    jobs: Arc<AgentJobRegistry>,
-    request: PtyRequest,
-) -> tokio::sync::oneshot::Receiver<PipeDecision> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
-        run_pty_supervisor(jobs, request, tx).await;
-    });
-    rx
-}
-
-async fn run_pty_supervisor(
-    jobs: Arc<AgentJobRegistry>,
-    mut request: PtyRequest,
-    tx: tokio::sync::oneshot::Sender<PipeDecision>,
-) {
-    if request.cancel.is_cancelled() {
-        let _ = tx.send(PipeDecision::Cancelled {
-            job_id: String::new(),
-        });
-        return;
-    }
-    let id = alloc_pipe_job_id(&jobs, &request.workspace_root);
-    let (stdout_path, _stderr_path) = pipe_log_paths(&request.workspace_root, &id);
-    if let Err(error) = std::fs::create_dir_all(pipe_log_dir(&request.workspace_root)) {
-        let _ = tx.send(PipeDecision::Failed {
-            message: format!("failed to create output dir: {error}"),
-        });
-        return;
-    }
-    let tee = match BoundedTee::create(stdout_path.clone()) {
-        Ok(tee) => Arc::new(Mutex::new(tee)),
-        Err(error) => {
-            let _ = tx.send(PipeDecision::Failed {
-                message: format!("failed to create pty log: {error}"),
-            });
-            return;
-        }
-    };
-    let on_data = {
-        let tee = Arc::clone(&tee);
-        Arc::new(move |chunk: &str| {
-            if let Ok(mut tee) = tee.lock() {
-                tee.push_raw(chunk);
-            }
-        }) as Arc<dyn Fn(&str) + Send + Sync>
-    };
-    let shell = super::shell::shell_command(&request.command);
-    let session = match PtySession::spawn_agent(
-        id.clone(),
-        &shell,
-        &request.cwd,
-        Some(on_data),
-        None,
-        super::pty::AGENT_NON_INTERACTIVE_ENV,
-    ) {
-        Ok(session) => Arc::new(session),
-        Err(error) => {
-            let _ = tx.send(PipeDecision::Failed {
-                message: format!("failed to spawn pty: {error}"),
-            });
-            return;
-        }
-    };
-    if let Some(spawned) = request.on_spawned.take() {
-        let _ = spawned.send(());
-    }
-    let session_id = if request.session_id.is_empty() {
-        "_".to_string()
-    } else {
-        request.session_id.clone()
-    };
-    let stderr_tee = Arc::clone(&tee);
-    jobs.insert(
-        id.clone(),
-        AgentJobRecord {
-            session_id,
-            call_id: request.call_id.clone(),
-            command_preview: command_preview(&request.command),
-            output_path: stdout_path.clone(),
-            tee,
-            alive: true,
-            reader_eof: false,
-            exit_code: None,
-            started_at_ms: now_unix_ms(),
-            user_killed: false,
-            tool_killed: false,
-            workspace_root: request.workspace_root.clone(),
-            stderr_path: stdout_path,
-            stderr_tee,
-            pid: session.pid(),
-            tree: None,
-            detached: false,
-            io: Some(JobIo::Pty(Arc::clone(&session))),
-            read_cursor: 0,
-        },
-    );
-    // The reaper turns PTY EOF into the registry's exit fact. The PTY reader
-    // sets `alive=false` on EOF; `try_reap` then obtains the real exit code.
-    let notify = Arc::new(tokio::sync::Notify::new());
-    {
-        let jobs = Arc::clone(&jobs);
-        let session = Arc::clone(&session);
-        let notify = Arc::clone(&notify);
-        let id = id.clone();
-        tokio::spawn(async move {
-            let mut exited_at: Option<std::time::Instant> = None;
-            loop {
-                session.try_reap();
-                if !session.is_alive() {
-                    if let Some(code) = session.exit_code() {
-                        jobs.finish(&id, Some(code));
-                        jobs.finish_readers(&id);
-                        notify.notify_waiters();
-                        break;
-                    }
-                    // The PTY reader can observe EOF before the child is
-                    // reaped. Give the OS status a short window instead of
-                    // recording a false `None` exit code.
-                    let since = exited_at.get_or_insert_with(std::time::Instant::now);
-                    if since.elapsed() >= Duration::from_secs(2) {
-                        jobs.finish(&id, None);
-                        jobs.finish_readers(&id);
-                        notify.notify_waiters();
-                        break;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        });
-    }
-    let deadline = tokio::time::Instant::now() + request.yield_window;
-    tokio::select! {
-        _ = notify.notified() => {}
-        _ = tokio::time::sleep_until(deadline) => {}
-        _ = request.cancel.cancelled() => {
-            let _ = session.kill();
-            let _ = tx.send(PipeDecision::Cancelled { job_id: id });
-            return;
-        }
-    }
-    let (alive, exit_code) = jobs
-        .get(&id)
-        .map(|(alive, code, _, _)| (alive, code))
-        .unwrap_or((false, None));
-    if alive {
-        // PTY sessions leave through the same background path as pipes, so
-        // their eventual exit must reach the mailbox/exit handler too.
-        jobs.mark_detached(&id);
-        let _ = tx.send(PipeDecision::Background { job_id: id });
-    } else {
-        let _ = tx.send(PipeDecision::Exited {
-            job_id: id,
-            exit_code: exit_code.map(|code| code as i32),
-        });
-    }
 }
 
 /// Own a piped child on the calling tokio runtime.
@@ -1522,7 +1167,6 @@ async fn run_pipe_supervisor(
     tx: tokio::sync::oneshot::Sender<PipeDecision>,
 ) {
     let on_spawned = request.on_spawned.take();
-    let open_stdin = request.open_stdin;
     let merge_output = request.merge_output;
     if request.cancel.is_cancelled() {
         let _ = tx.send(PipeDecision::Cancelled {
@@ -1536,11 +1180,7 @@ async fn run_pipe_supervisor(
     let mut cmd = tokio::process::Command::new(&spec.program);
     cmd.args(&spec.args)
         .current_dir(&request.cwd)
-        .stdin(if open_stdin {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -1574,7 +1214,6 @@ async fn run_pipe_supervisor(
         let _ = spawned.send(());
     }
     let pid = child.id().filter(|pid| *pid != 0);
-    let mut child_stdin = child.stdin.take();
     // Kill scope for the whole tree. Windows attaches a per-job Job Object to
     // the suspended shell; when that is unavailable the child still resumes and
     // tree kill falls back to `taskkill /T /F`.
@@ -1650,12 +1289,6 @@ async fn run_pipe_supervisor(
         }
     };
 
-    let (stdin_tx, mut stdin_rx) = if open_stdin {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        (Some(tx), Some(rx))
-    } else {
-        (None, None)
-    };
     let session_id = if request.session_id.is_empty() {
         "_".to_string()
     } else {
@@ -1681,7 +1314,6 @@ async fn run_pipe_supervisor(
             pid,
             tree,
             detached: false,
-            io: stdin_tx.map(JobIo::Pipe),
             read_cursor: 0,
         },
     );
@@ -1707,32 +1339,6 @@ async fn run_pipe_supervisor(
         let cancel_token = nested.clone();
         tokio::select! {
             biased;
-            input = async {
-                match stdin_rx.as_mut() {
-                    Some(rx) => rx.recv().await,
-                    None => std::future::pending().await,
-                }
-            }, if stdin_rx.is_some() => {
-                match input {
-                    Some(bytes) => {
-                        let mut failed = false;
-                        if let Some(stdin) = child_stdin.as_mut() {
-                            if stdin.write_all(&bytes).await.is_err() {
-                                failed = true;
-                            } else {
-                                let _ = stdin.flush().await;
-                            }
-                        }
-                        if failed {
-                            child_stdin = None;
-                        }
-                    }
-                    None => {
-                        child_stdin = None;
-                        stdin_rx = None;
-                    }
-                }
-            }
             status = child.wait() => {
                 let code = status.ok().and_then(|s| s.code());
                 // Process exit is the lifecycle fact. Readers may still be
@@ -2091,7 +1697,6 @@ mod tests {
             pid: None,
             tree: None,
             detached: false,
-            io: None,
             read_cursor: 0,
         }
     }
@@ -2141,7 +1746,6 @@ mod tests {
             call_id: call_id.into(),
             cancel,
             detach,
-            open_stdin: false,
             merge_output: false,
             on_spawned: None,
         }
@@ -2455,86 +2059,6 @@ mod tests {
         assert!(reg.readers_eof("bg_drain1"));
         assert!(reg.discard_attached("bg_drain1"));
         assert!(!reg.mailbox_pending("s1"));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn signal_interrupt_reaches_process_group_and_runs_trap() {
-        let dir = tempfile::tempdir().unwrap();
-        let jobs = Arc::new(AgentJobRegistry::new());
-        let rx = supervise_pipe(
-            Arc::clone(&jobs),
-            pipe_request(
-                dir.path(),
-                "trap 'echo INT_SEEN; exit 0' INT; while :; do sleep 1; done",
-                "call_sigint",
-                CancellationToken::new(),
-                PipeDetach::Background {
-                    window: Duration::from_millis(100),
-                },
-            ),
-        );
-        let decision = recv_decision(rx).await;
-        let PipeDecision::Background { job_id } = decision else {
-            panic!("expected background, got {decision:?}");
-        };
-        let signalled = jobs
-            .signal_registered(&job_id, ProcessSignal::Interrupt)
-            .expect("registered job");
-        assert!(signalled.delivered, "SIGINT should be delivered");
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while jobs.get(&job_id).is_some_and(|(alive, ..)| alive)
-            && std::time::Instant::now() < deadline
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let output = jobs.output_delta(&job_id, 64 * 1024).expect("output");
-        assert!(output.text.contains("INT_SEEN"), "{output:?}");
-        let _ = jobs.kill_registered(&job_id, false);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn write_stdin_reaches_a_pipe_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let jobs = Arc::new(AgentJobRegistry::new());
-        let rx = supervise_pipe(
-            Arc::clone(&jobs),
-            PipeRequest {
-                command: "cat".into(),
-                cwd: dir.path().to_path_buf(),
-                workspace_root: dir.path().to_path_buf(),
-                session_id: "s1".into(),
-                call_id: "call_stdin".into(),
-                cancel: CancellationToken::new(),
-                detach: PipeDetach::Background {
-                    window: Duration::from_millis(100),
-                },
-                open_stdin: true,
-                merge_output: false,
-                on_spawned: None,
-            },
-        );
-        let decision = recv_decision(rx).await;
-        let PipeDecision::Background { job_id } = decision else {
-            panic!("expected background, got {decision:?}");
-        };
-        jobs.write_stdin(&job_id, b"hello stdin\n").expect("stdin");
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut seen = String::new();
-        loop {
-            let output = jobs.output_delta(&job_id, 64 * 1024).expect("output");
-            seen.push_str(&output.text);
-            if seen.contains("hello stdin") {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "stdin output missing: {seen:?}"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let _ = jobs.kill_registered(&job_id, false);
     }
 
     #[test]

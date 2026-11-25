@@ -3,9 +3,8 @@ import { describe, expect, it } from "vitest";
 import { processToolBucket } from "./toolCategory";
 
 describe("processToolBucket", () => {
-  it("maps exec_command, write_stdin, and edit to dedicated buckets", () => {
+  it("maps exec_command and edit to dedicated buckets", () => {
     expect(processToolBucket("exec_command")).toBe("bash");
-    expect(processToolBucket("write_stdin")).toBe("bash");
     expect(processToolBucket("edit")).toBe("edit");
   });
 

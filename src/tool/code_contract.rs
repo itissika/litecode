@@ -378,19 +378,22 @@ mod tests {
     }
 
     #[test]
-    fn exec_contract_allows_tty_and_yield() {
+    fn exec_contract_allows_timeout_and_background() {
         let schema = builtin_input_schema("exec_command").expect("exec_command schema");
-        assert_eq!(schema["properties"]["tty"]["type"], "boolean");
-        assert_eq!(schema["properties"]["yield_time_ms"]["type"], "integer");
+        assert_eq!(schema["properties"]["background"]["type"], "boolean");
+        assert_eq!(schema["properties"]["timeout_ms"]["type"], "integer");
+        assert!(schema["properties"].get("tty").is_none());
+        assert!(schema["properties"].get("yield_time_ms").is_none());
+        assert!(schema["properties"].get("max_output_tokens").is_none());
         schema_validate(
             &schema,
             &serde_json::json!({
                 "cmd": "python3 t.py",
-                "tty": true,
-                "yield_time_ms": 1500
+                "timeout_ms": 15000,
+                "background": true
             }),
         )
-        .expect("interactive exec input");
+        .expect("exec input");
     }
 
     #[test]
@@ -449,16 +452,16 @@ mod tests {
     fn suite_local_shared_types_sit_next_to_their_interface() {
         let surface = build_surface(&crate::tool::registry::builtin_code_surface_tools())
             .expect("full builtin surface");
-        let exec = surface
+        let symbols = surface
             .sdk
-            .find("type ExecCommandData =")
-            .expect("ExecCommandData");
+            .find("type SymbolsData =")
+            .expect("SymbolsData");
         let tools_iface = surface
             .sdk
             .find("interface Tools {")
             .expect("Tools");
-        assert!(exec < tools_iface);
-        let between = &surface.sdk[exec..tools_iface];
+        assert!(symbols < tools_iface);
+        let between = &surface.sdk[symbols..tools_iface];
         assert!(
             !between.contains("interface FileTools"),
             "flat built-ins must not emit nested suite interfaces: {between}"

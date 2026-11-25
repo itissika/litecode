@@ -283,7 +283,6 @@ pub enum CompactionCancelReason {
 /// The one durable result an episode may produce.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompactionCommitKind {
-    Mechanical { replacements: usize },
     Checkpoint { seq: crate::session::event::Seq },
 }
 
@@ -5605,7 +5604,7 @@ mod compaction_state_tests {
         );
 
         lease.finish(EpisodeOutcome::Succeeded {
-            commit: CompactionCommitKind::Mechanical { replacements: 1 },
+            commit: CompactionCommitKind::Checkpoint { seq: 1 },
         });
         let state = manager.compaction_state_blocking(&sid);
         assert!(state.active.is_none());
@@ -5808,7 +5807,7 @@ mod compaction_episode_tests {
             .try_begin_compaction_episode(&session_id, CompactionTrigger::Auto)
             .expect("claim");
         let id = lease.id().to_string();
-        lease.mark_committed(CompactionCommitKind::Mechanical { replacements: 2 });
+        lease.mark_committed(CompactionCommitKind::Checkpoint { seq: 2 });
         drop(lease);
         assert!(matches!(
             manager.last_episode_outcome(&session_id, &id),
@@ -5827,13 +5826,13 @@ mod compaction_episode_tests {
             .try_begin_compaction_episode(&session_id, CompactionTrigger::Auto)
             .expect("claim");
         let id = lease.id().to_string();
-        lease.mark_committed(CompactionCommitKind::Mechanical { replacements: 2 });
+        lease.mark_committed(CompactionCommitKind::Checkpoint { seq: 2 });
         lease.mark_delivered();
         drop(lease);
         assert!(matches!(
             manager.last_episode_outcome(&session_id, &id),
             Some(EpisodeOutcome::Succeeded {
-                commit: CompactionCommitKind::Mechanical { replacements: 2 }
+                commit: CompactionCommitKind::Checkpoint { seq: 2 }
             })
         ));
     }

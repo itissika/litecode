@@ -50,10 +50,10 @@ declare const libs: {
   };
 };
 
-/** Read-only workspace probes. Synchronous; paths are workspace-relative; throw Error on missing or out-of-workspace paths. */
+/** Read-only filesystem probes. Synchronous; path scope follows the active read permission mode. */
 declare const fs: {
-  /** One level, sorted by name; more than 500 entries set `truncated`. */
-  ls(path: string): { entries: Array<{ name: string; type: "file" | "dir" | "symlink" | "other"; size: number }>; truncated: boolean };
+  /** One level, sorted by name (capped at 500 entries; truncation is surfaced as a run warning). */
+  ls(path: string): { entries: Array<{ name: string; type: "file" | "dir" | "symlink" | "other"; size: number }> };
   /** mtime is ms since the Unix epoch. */
   stat(path: string): { type: "file" | "dir" | "symlink" | "other"; size: number; mtime: number };
   exists(path: string): boolean;

@@ -267,6 +267,9 @@ pub struct ExecuteRequest {
     /// Workspace root for the read-only `fs.ls/stat/exists` probes
     /// (WP-210 I). `None` leaves `fs` undefined.
     pub fs_root: Option<std::path::PathBuf>,
+    /// Whether `fs.ls/stat/exists` may probe outside `fs_root` (mirrors the
+    /// caller's `read` permission mode: `true` for ALL, `false` for SAFE).
+    pub fs_allow_outside_workspace: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

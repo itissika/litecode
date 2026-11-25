@@ -1863,7 +1863,7 @@ mod compaction_terminal_tests {
         let mut lease = manager
             .try_begin_compaction_episode(&session_id, CompactionTrigger::Auto)
             .expect("claim");
-        lease.mark_committed(CompactionCommitKind::Mechanical { replacements: 1 });
+        lease.mark_committed(CompactionCommitKind::Checkpoint { seq: 1 });
 
         let outcome = worker_terminal(&lease, "read-back failed".into());
         assert!(matches!(
@@ -1882,7 +1882,7 @@ mod compaction_terminal_tests {
         let mut lease = manager
             .try_begin_compaction_episode(&session_id, CompactionTrigger::Auto)
             .expect("claim");
-        lease.mark_committed(CompactionCommitKind::Mechanical { replacements: 1 });
+        lease.mark_committed(CompactionCommitKind::Checkpoint { seq: 1 });
         lease.mark_delivered();
 
         let outcome = worker_terminal(&lease, "should not win".into());

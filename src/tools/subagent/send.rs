@@ -125,14 +125,10 @@ impl SubagentSendTool {
                 return ToolCallResult::error(format!("subagent_send failed: {error}"));
             }
         };
-        let mut text = status::format_started(&child_id, &turn_id, None);
-        text.push_str("status: started\n");
-        let mut result = ToolCallResult::ok(text.clone()).with_data(serde_json::json!({
-            "child_session_id": child_id,
-            "mode": mode.as_str(),
+        let text = status::format_started(&child_id, &turn_id, None)
+            .replacen("status: running\n", "status: started\n", 1);
+        let mut result = ToolCallResult::ok(text).with_data(serde_json::json!({
             "status": "started",
-            "turn_id": turn_id,
-            "message": text,
         }));
         result.metadata = Some(serde_json::json!({
             "child_session_id": child_id,
@@ -173,12 +169,9 @@ impl SubagentSendTool {
                 Ok(FollowUpOutcome::Idle) => None,
                 Ok(FollowUpOutcome::Queued { position }) => {
                     let msg = status::format_queued(child_id, position);
-                    let mut r = ToolCallResult::ok(msg.clone()).with_data(serde_json::json!({
-                        "child_session_id": child_id,
-                        "mode": mode.as_str(),
+                    let mut r = ToolCallResult::ok(msg).with_data(serde_json::json!({
                         "status": "queued",
                         "position": position,
-                        "message": msg,
                     }));
                     r.metadata = Some(meta("queued", serde_json::json!({ "position": position })));
                     Some(r)
@@ -194,14 +187,9 @@ impl SubagentSendTool {
                 match service.enqueue_user_input(child_id, input) {
                     Ok(pending) => {
                         let msg = status::format_steered(child_id, &pending.id);
-                        let mut r =
-                            ToolCallResult::ok(msg.clone()).with_data(serde_json::json!({
-                                "child_session_id": child_id,
-                                "mode": mode.as_str(),
-                                "status": "steered",
-                                "pending_id": pending.id,
-                                "message": msg,
-                            }));
+                        let mut r = ToolCallResult::ok(msg).with_data(serde_json::json!({
+                            "status": "steered",
+                        }));
                         r.metadata = Some(meta(
                             "steered",
                             serde_json::json!({ "pending_id": pending.id }),
@@ -221,13 +209,10 @@ impl SubagentSendTool {
                 Ok((_, FollowUpOutcome::Idle)) => None,
                 Ok((_, FollowUpOutcome::Queued { .. })) => {
                     let msg = status::format_stopped_and_queued(child_id);
-                    let mut r = ToolCallResult::ok(msg.clone()).with_data(serde_json::json!({
-                        "child_session_id": child_id,
-                        "mode": mode.as_str(),
-                        "status": "stopped_and_queued",
-                        "message": msg,
+                    let mut r = ToolCallResult::ok(msg).with_data(serde_json::json!({
+                        "status": "started",
                     }));
-                    r.metadata = Some(meta("stopped_and_queued", serde_json::json!({})));
+                    r.metadata = Some(meta("started", serde_json::json!({})));
                     Some(r)
                 }
                 Err(error) => Some(ToolCallResult::error(format!(

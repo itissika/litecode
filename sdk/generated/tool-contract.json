@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "2064930d693920eded702bc0544c8c80b6a0b5e69879f85c05b5e8ddfb41c2e4",
+  "sdk_hash": "5c1f1c41b7942ad31b2a485c54af081743345af2c7300e3fbc5e332fec4790d4",
   "tools": {
     "apply_edits": {
       "path": [
@@ -82,7 +82,7 @@
       ],
       "suite": "file",
       "tool": "glob",
-      "doc": "Find files by path glob.",
+      "doc": "Find files by path glob. Pass directly to `inspect(r)`—renders `paths` one per line.",
       "signature": "glob(args: {\n  pattern: string; // Glob relative to path, or to the workspace root when path is omitted.\n  limit?: Integer; // Maximum paths to return. 1-5000. @default 1000\n  path?: Path; // Optional directory to search under.\n}): Promise<{\n  paths: string[]; // Matching paths, sorted by depth, then parent directory, then name.\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
@@ -135,7 +135,7 @@
       ],
       "suite": "file",
       "tool": "grep",
-      "doc": "Search file contents.",
+      "doc": "Search file contents. Pass directly to `inspect(r)`—renders `hits` as a compact table.",
       "signature": "grep(args: {\n  pattern: string; // Regular expression over file contents, unless literal is true.\n  before?: Integer; // Lines of context before each hit. 0-10. @default 0\n  after?: Integer; // Lines of context after each hit. 0-10. @default 0\n  glob?: string; // One glob or comma-separated globs. A leading ! excludes. Relative to path.\n  ignore_case?: boolean; // Ignore case when matching. @default false\n  limit?: Integer; // Maximum hits to return. 1-100. @default 40\n  literal?: boolean; // Search for pattern as plain text. @default false\n  path?: Path; // File or directory to search. Defaults to the workspace.\n}): Promise<{\n  hits: Array<{\n    path: string; // Source file path.\n    line: Integer; // 1-based match line.\n    text: string; // Matching line text, capped at 500 characters.\n  }>;\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
@@ -231,7 +231,7 @@
       ],
       "suite": "file",
       "tool": "read",
-      "doc": "Read lines from one file or archived session transcript.",
+      "doc": "Read lines from one file or archived session transcript. Pass directly to `inspect(r)`—renders `line: text` verbatim without `.lines.map(...)`.",
       "signature": "read(args: {\n  path: Path; // Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md.\n  start_line?: Integer; // First line to read, 1-based, inclusive. @default 1\n  limit?: Integer; // Lines to return. 1-5000. @default 2000\n}): Promise<{\n  lines: Array<{\n    line: Integer; // 1-based line number.\n    text: string; // Line content.\n  }>; // Lines for this page, in file order.\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
@@ -573,12 +573,11 @@
       ],
       "suite": "process",
       "tool": "exec_command",
-      "doc": "Start a command. Waits up to yield_time_ms; a live session_id leaves it running in the background. Poll with write_stdin for output, or leave it and wait for the background-exit reminder (exit code + output_file).",
-      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 10000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB.\n}): Promise<ExecCommandData>;",
+      "doc": "Run a non-interactive shell command (stdin closed). Waits up to timeout_ms; commands still running auto-promote to background and deliver an exit notice with log path when done. Pass directly to `inspect(r)`—prints raw output and prepends `exit_code` only when non-zero.",
+      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the workspace root (follows active exec permission mode).\n  timeout_ms?: Integer; // Wait timeout in ms before auto-promoting to background (1000-300000, default 60000).\n  background?: boolean; // True starts in the background and returns immediately after initial output capture.\n}): Promise<{\n  /** Process exit code once exited; null when still running in the background. */\n  exit_code: Integer | null;\n  /** Combined stdout/stderr captured before returning. */\n  output: string;\n}>;",
       "input_type": "(inline)",
-      "output_type": "ExecCommandData",
+      "output_type": "(inline)",
       "type_deps": [
-        "ExecCommandData",
         "Integer"
       ],
       "input_schema": {
@@ -590,19 +589,15 @@
           },
           "workdir": {
             "type": "string",
-            "description": "Working directory; defaults to the turn cwd and must stay inside it."
+            "description": "Working directory; defaults to the workspace root (follows active exec permission mode)."
           },
-          "tty": {
+          "timeout_ms": {
+            "type": "integer",
+            "description": "Wait timeout in ms before auto-promoting to background (1000-300000, default 60000)."
+          },
+          "background": {
             "type": "boolean",
-            "description": "True allocates a PTY; false or omitted uses plain pipes."
-          },
-          "yield_time_ms": {
-            "type": "integer",
-            "description": "Initial wait only; 250-600000 ms; default 10000. It does not limit the process lifetime."
-          },
-          "max_output_tokens": {
-            "type": "integer",
-            "description": "Output token budget for this call; defaults to 1 MiB."
+            "description": "True starts in the background and returns immediately after initial output capture."
           }
         },
         "required": [
@@ -613,13 +608,6 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "session_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Live session id; null once the session has exited."
-          },
           "exit_code": {
             "anyOf": [
               {
@@ -630,101 +618,16 @@
                 "type": "null"
               }
             ],
-            "description": "Process exit code once the session has exited; null while it is live."
+            "description": "Process exit code once exited; null when still running in the background."
           },
           "output": {
             "type": "string",
-            "description": "Output since the previous call on this session; the first call returns output since spawn."
-          },
-          "output_file": {
-            "type": "string",
-            "description": "Workspace-relative path to the complete `.litecode/run/<job>.stdout` log (always full output on disk)."
+            "description": "Combined stdout/stderr captured before returning."
           }
         },
         "required": [
-          "session_id",
           "exit_code",
-          "output",
-          "output_file"
-        ],
-        "additionalProperties": false
-      }
-    },
-    "write_stdin": {
-      "path": [
-        "write_stdin"
-      ],
-      "suite": "process",
-      "tool": "write_stdin",
-      "doc": "Poll, feed, or interrupt an existing exec session. Empty chars waits until the session exits or yield_time_ms expires, returning accumulated output; on exit, exit_code is set and session_id is null.",
-      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap.\n  max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB.\n}): Promise<ExecCommandData>;",
-      "input_type": "(inline)",
-      "output_type": "ExecCommandData",
-      "type_deps": [
-        "ExecCommandData",
-        "Integer"
-      ],
-      "input_schema": {
-        "type": "object",
-        "properties": {
-          "session_id": {
-            "type": "string",
-            "description": "Session id from exec_command."
-          },
-          "chars": {
-            "type": "string",
-            "description": "Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group."
-          },
-          "yield_time_ms": {
-            "type": "integer",
-            "description": "Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap."
-          },
-          "max_output_tokens": {
-            "type": "integer",
-            "description": "Output token budget for this call; defaults to 1 MiB."
-          }
-        },
-        "required": [
-          "session_id"
-        ],
-        "additionalProperties": false
-      },
-      "output_schema": {
-        "type": "object",
-        "properties": {
-          "session_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Live session id; null once the session has exited."
-          },
-          "exit_code": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "description": "Whole JSON number. The host rejects fractional values."
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Process exit code once the session has exited; null while it is live."
-          },
-          "output": {
-            "type": "string",
-            "description": "Output since the previous call on this session; the first call returns output since spawn."
-          },
-          "output_file": {
-            "type": "string",
-            "description": "Workspace-relative path to the complete `.litecode/run/<job>.stdout` log (always full output on disk)."
-          }
-        },
-        "required": [
-          "session_id",
-          "exit_code",
-          "output",
-          "output_file"
+          "output"
         ],
         "additionalProperties": false
       }
@@ -2825,7 +2728,7 @@
       "suite": "workspace",
       "tool": "workspace.refresh",
       "doc": "Validate `.litecode/{excludes,mcp,custom_tools,apps}.json` in one check.",
-      "signature": "refresh(args?: NoArgs): Promise<{\n  ok: boolean;\n  summary: string;\n  excludes_ok: boolean;\n  mcp_ok: boolean;\n  custom_tools_ok: boolean;\n  apps_ok: boolean;\n  issues: string[];\n}>;",
+      "signature": "refresh(args?: NoArgs): Promise<{\n  ok: boolean;\n  excludes_ok: boolean;\n  mcp_ok: boolean;\n  custom_tools_ok: boolean;\n  apps_ok: boolean;\n  issues: string[];\n}>;",
       "input_type": "NoArgs",
       "output_type": "(inline)",
       "type_deps": [
@@ -2841,9 +2744,6 @@
         "properties": {
           "ok": {
             "type": "boolean"
-          },
-          "summary": {
-            "type": "string"
           },
           "excludes_ok": {
             "type": "boolean"
@@ -2866,7 +2766,6 @@
         },
         "required": [
           "ok",
-          "summary",
           "excludes_ok",
           "mcp_ok",
           "custom_tools_ok",
@@ -2884,7 +2783,7 @@
       "suite": "workspace",
       "tool": "workspace.status",
       "doc": "Read live runtime workspace status: active excludes, loaded MCP servers, custom tools, and Apps.",
-      "signature": "status(args?: NoArgs): Promise<{\n  summary: string;\n  excludes: string;\n  mcp: {\n    id: string;\n    enabled: boolean;\n    origin: string;\n    state: string;\n    command: string;\n  }[];\n  custom_tools: {\n    id: string;\n    suite: string | null;\n    enabled: boolean;\n    origin: string;\n    timeout_secs: Integer;\n    command: string;\n  }[];\n  apps: {\n    id: string;\n    kind: string;\n    status: string;\n    url: string | null;\n    error: string | null;\n  }[];\n}>;",
+      "signature": "status(args?: NoArgs): Promise<{\n  excludes: string;\n  mcp: {\n    id: string;\n    enabled: boolean;\n    origin: string;\n    state: string;\n    command: string;\n  }[];\n  custom_tools: {\n    id: string;\n    suite: string | null;\n    enabled: boolean;\n    origin: string;\n    timeout_secs: Integer;\n    command: string;\n  }[];\n  apps: {\n    id: string;\n    kind: string;\n    status: string;\n    url: string | null;\n    error: string | null;\n  }[];\n}>;",
       "input_type": "NoArgs",
       "output_type": "(inline)",
       "type_deps": [
@@ -2899,9 +2798,6 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "summary": {
-            "type": "string"
-          },
           "excludes": {
             "type": "string"
           },
@@ -3014,7 +2910,6 @@
           }
         },
         "required": [
-          "summary",
           "excludes",
           "mcp",
           "custom_tools",
@@ -3031,7 +2926,7 @@
       "suite": "subagent",
       "tool": "subagent.launch",
       "doc": "Launch a configured subagent child session asynchronously.",
-      "signature": "launch(args: {\n  /** Subagent id from allowed_subagents. */\n  agent: string;\n  /** Brief statement of the child's owned scope. */\n  responsibility: string;\n  /** Initial prompt delivered to the child session. */\n  prompt: string;\n}): Promise<{\n  child_session_id: string;\n  turn_id: string;\n  status: \"running\";\n  responsibility: string;\n}>;",
+      "signature": "launch(args: {\n  /** Subagent id from allowed_subagents. */\n  agent: string;\n  /** Brief statement of the child's owned scope. */\n  responsibility: string;\n  /** Initial prompt delivered to the child session. */\n  prompt: string;\n}): Promise<{\n  id: string;\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
       "type_deps": [],
@@ -3061,25 +2956,12 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "child_session_id": {
-            "type": "string"
-          },
-          "turn_id": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "const": "running"
-          },
-          "responsibility": {
+          "id": {
             "type": "string"
           }
         },
         "required": [
-          "child_session_id",
-          "turn_id",
-          "status",
-          "responsibility"
+          "id"
         ],
         "additionalProperties": false
       }
@@ -3091,12 +2973,11 @@
       ],
       "suite": "subagent",
       "tool": "subagent.list",
-      "doc": "List all descendant child sessions of this session with current status and transcript metadata.",
-      "signature": "list(args?: NoArgs): Promise<{\n  count: Integer;\n  sessions: {\n    id: string;\n    agent: string;\n    responsibility: string;\n    state: string;\n    transcript: string;\n    transcript_lines?: Integer;\n    step?: Integer;\n    step_max?: Integer;\n    reason?: string;\n  }[];\n}>;",
+      "doc": "List all descendant child sessions of this session with current status. Past transcripts are readable at `.litecode/sessions/<id>.md`.",
+      "signature": "list(args?: NoArgs): Promise<{\n  sessions: {\n    id: string;\n    agent: string;\n    responsibility: string;\n    state: string;\n    reason?: string;\n  }[];\n}>;",
       "input_type": "NoArgs",
       "output_type": "(inline)",
       "type_deps": [
-        "Integer",
         "NoArgs"
       ],
       "input_schema": {
@@ -3107,10 +2988,6 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "count": {
-            "type": "integer",
-            "description": "Whole JSON number. The host rejects fractional values."
-          },
           "sessions": {
             "type": "array",
             "items": {
@@ -3128,21 +3005,6 @@
                 "state": {
                   "type": "string"
                 },
-                "transcript": {
-                  "type": "string"
-                },
-                "transcript_lines": {
-                  "type": "integer",
-                  "description": "Whole JSON number. The host rejects fractional values."
-                },
-                "step": {
-                  "type": "integer",
-                  "description": "Whole JSON number. The host rejects fractional values."
-                },
-                "step_max": {
-                  "type": "integer",
-                  "description": "Whole JSON number. The host rejects fractional values."
-                },
                 "reason": {
                   "type": "string"
                 }
@@ -3151,15 +3013,13 @@
                 "id",
                 "agent",
                 "responsibility",
-                "state",
-                "transcript"
+                "state"
               ],
               "additionalProperties": false
             }
           }
         },
         "required": [
-          "count",
           "sessions"
         ],
         "additionalProperties": false
@@ -3173,7 +3033,7 @@
       "suite": "subagent",
       "tool": "subagent.send",
       "doc": "Queue, steer, or stop-and-send a follow-up message to a child subagent session.",
-      "signature": "send(args: {\n  id: string;\n  message: string;\n  mode?: \"queue\" | \"steer\" | \"stop_and_send\";\n}): Promise<{\n  child_session_id: string;\n  mode: string;\n  status: \"started\" | \"queued\" | \"steered\" | \"stopped_and_queued\";\n  turn_id?: string;\n  position?: Integer;\n  pending_id?: string;\n  message: string;\n}>;",
+      "signature": "send(args: {\n  id: string;\n  message: string;\n  mode?: \"queue\" | \"steer\" | \"stop_and_send\";\n}): Promise<{\n  status: \"queued\" | \"steered\" | \"started\";\n  position?: Integer;\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
       "type_deps": [
@@ -3206,40 +3066,21 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "child_session_id": {
-            "type": "string"
-          },
-          "mode": {
-            "type": "string"
-          },
           "status": {
             "type": "string",
             "enum": [
-              "started",
               "queued",
               "steered",
-              "stopped_and_queued"
+              "started"
             ]
-          },
-          "turn_id": {
-            "type": "string"
           },
           "position": {
             "type": "integer",
             "description": "Whole JSON number. The host rejects fractional values."
-          },
-          "pending_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
           }
         },
         "required": [
-          "child_session_id",
-          "mode",
-          "status",
-          "message"
+          "status"
         ],
         "additionalProperties": false
       }
@@ -3252,7 +3093,7 @@
       "suite": "subagent",
       "tool": "subagent.stop",
       "doc": "Stop the active running turn of a child subagent session.",
-      "signature": "stop(args: {\n  id: string;\n}): Promise<{\n  child_session_id: string;\n  status: \"stopped\" | \"nothing_running\";\n  turn_id?: string;\n  reason?: string;\n  output?: string;\n  transcript?: string;\n  message: string;\n}>;",
+      "signature": "stop(args: {\n  id: string;\n}): Promise<{\n  status: \"stopped\" | \"nothing_running\";\n  reason?: string;\n  output?: string;\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
       "type_deps": [],
@@ -3271,9 +3112,6 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "child_session_id": {
-            "type": "string"
-          },
           "status": {
             "type": "string",
             "enum": [
@@ -3281,26 +3119,15 @@
               "nothing_running"
             ]
           },
-          "turn_id": {
-            "type": "string"
-          },
           "reason": {
             "type": "string"
           },
           "output": {
             "type": "string"
-          },
-          "transcript": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
           }
         },
         "required": [
-          "child_session_id",
-          "status",
-          "message"
+          "status"
         ],
         "additionalProperties": false
       }
@@ -3312,13 +3139,11 @@
       ],
       "suite": "subagent",
       "tool": "subagent.wait",
-      "doc": "Wait for selected running subagent turns (or snapshot active children) to settle.",
-      "signature": "wait(args?: {\n  /** Optional child_session_ids; omit to await/snapshot all currently running children. */\n  ids?: string[];\n  /** Number of selected turns to settle before returning. */\n  count?: Integer;\n}): Promise<{\n  status: \"settled\" | \"nothing_to_wait_for\";\n  settled: {\n    child_session_id: string;\n    turn_id: string;\n    reason: string;\n    agent?: string;\n    responsibility?: string;\n    output: string;\n    output_truncated?: boolean;\n    cancelled_by?: string;\n    transcript: string;\n    start_line?: Integer;\n    end_line?: Integer;\n  }[];\n  skipped: {\n    id: string;\n    reason: string;\n  }[];\n  summary: string;\n}>;",
+      "doc": "Wait for subagent children to finish. Pass `ids` to wait for specific children, or omit/pass empty to wait for all running children.",
+      "signature": "wait(args?: {\n  /** Child session ids to wait for; omit or pass `[]` to wait for all running children. */\n  ids?: string[];\n}): Promise<{\n  settled: {\n    id: string;\n    reason: string;\n    responsibility?: string;\n    output: string;\n  }[];\n  skipped?: {\n    id: string;\n    reason: string;\n  }[];\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
-      "type_deps": [
-        "Integer"
-      ],
+      "type_deps": [],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -3327,11 +3152,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Optional child_session_ids; omit to await/snapshot all currently running children."
-          },
-          "count": {
-            "type": "integer",
-            "description": "Number of selected turns to settle before returning."
+            "description": "Child session ids to wait for; omit or pass `[]` to wait for all running children."
           }
         },
         "additionalProperties": false
@@ -3339,28 +3160,15 @@
       "output_schema": {
         "type": "object",
         "properties": {
-          "status": {
-            "type": "string",
-            "enum": [
-              "settled",
-              "nothing_to_wait_for"
-            ]
-          },
           "settled": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "child_session_id": {
-                  "type": "string"
-                },
-                "turn_id": {
+                "id": {
                   "type": "string"
                 },
                 "reason": {
-                  "type": "string"
-                },
-                "agent": {
                   "type": "string"
                 },
                 "responsibility": {
@@ -3368,31 +3176,12 @@
                 },
                 "output": {
                   "type": "string"
-                },
-                "output_truncated": {
-                  "type": "boolean"
-                },
-                "cancelled_by": {
-                  "type": "string"
-                },
-                "transcript": {
-                  "type": "string"
-                },
-                "start_line": {
-                  "type": "integer",
-                  "description": "Whole JSON number. The host rejects fractional values."
-                },
-                "end_line": {
-                  "type": "integer",
-                  "description": "Whole JSON number. The host rejects fractional values."
                 }
               },
               "required": [
-                "child_session_id",
-                "turn_id",
+                "id",
                 "reason",
-                "output",
-                "transcript"
+                "output"
               ],
               "additionalProperties": false
             }
@@ -3415,16 +3204,10 @@
               ],
               "additionalProperties": false
             }
-          },
-          "summary": {
-            "type": "string"
           }
         },
         "required": [
-          "status",
-          "settled",
-          "skipped",
-          "summary"
+          "settled"
         ],
         "additionalProperties": false
       }

@@ -771,6 +771,13 @@ impl CodeTool {
         let reminders: Arc<std::sync::Mutex<Vec<render::CallReminder>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let media = Arc::new(Mutex::new(MediaRegistry::default()));
+        let fs_allow_outside_workspace = self
+            .host
+            .permission
+            .binding("read")
+            .is_none_or(|binding| binding.enabled)
+            && self.host.permission.path_mode("read")
+                == crate::permission::BindingPathMode::Unrestricted;
         let request = ExecuteRequest {
             source: code.clone(),
             namespaces: vec![Namespace {
@@ -790,6 +797,7 @@ impl CodeTool {
             wall_budget: Some(Duration::from_millis(wall_timeout_ms)),
             grace: NESTED_CANCEL_GRACE,
             fs_root: Some(execution.workspace_root.clone()),
+            fs_allow_outside_workspace,
             cancel: execution.cancel,
         };
         let mut outcome = ptc::execute(request).await;

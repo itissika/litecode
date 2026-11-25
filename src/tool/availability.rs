@@ -277,9 +277,9 @@ mod tests {
     #[test]
     fn member_names_resolve_to_their_owning_card() {
         let resolved = resolved();
-        assert!(is_available(&resolved, "write_stdin"));
+        assert!(is_available(&resolved, "exec_command"));
         assert_eq!(
-            member_owner(&resolved, "write_stdin").as_deref(),
+            member_owner(&resolved, "exec_command").as_deref(),
             Some("exec")
         );
         assert_eq!(

@@ -288,18 +288,16 @@ fn half_a_card_is_refused() {
     let profile = EvalProfile::parse(
         r#"name = "t"
 [tools]
-on = ["exec_command"]
-[permissions]
-exec = "all"
+on = ["memory.list"]
 "#,
     )
     .expect("parses");
     let error = fixture
         .apply(&profile, WebMode::Off)
-        .expect_err("exec is a card of two");
+        .expect_err("memory is a card of three");
     let message = error.to_string();
     assert!(message.contains("half bound"), "{message}");
-    assert!(message.contains("write_stdin"), "{message}");
+    assert!(message.contains("memory.upsert"), "{message}");
 }
 
 /// A bound dial without a stated tier would apply an inherited default.

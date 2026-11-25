@@ -5,8 +5,8 @@
 //! scored surface: an id the live capability catalog does not know is an error,
 //! never a silent omission.
 //!
-//! Bindings are per capability card (\`exec\` = exec_command/write_stdin, \`edit\` =
-//! edit/apply_edits, \`lsp\` = seven), so this module takes model-visible tool
+//! Bindings are per capability card (\`exec\` = exec_command, \`edit\` =
+//! apply_edits, \`lsp\` = seven), so this module takes model-visible tool
 //! names and requires each touched card to be covered as a whole.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

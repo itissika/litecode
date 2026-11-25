@@ -78,17 +78,6 @@ type RejectedItem = {
   detail?: string;
 };
 
-type ExecCommandData = {
-  /** Live session id; null once the session has exited. */
-  session_id: string | null;
-  /** Process exit code once the session has exited; null while it is live. */
-  exit_code: Integer | null;
-  /** Output since the previous call on this session; the first call returns output since spawn. */
-  output: string;
-  /** Workspace-relative path to the complete `.litecode/run/<job>.stdout` log (always full output on disk). */
-  output_file: string;
-};
-
 type KnowledgeScope = {
   /** Restrict to these folders (workspace-relative e.g. `knowledge/arch`, or subfolder under the knowledge root e.g. `arch`). */
   folders?: string[];
@@ -212,7 +201,6 @@ interface WorkspaceTools {
   /** Validate `.litecode/{excludes,mcp,custom_tools,apps}.json` in one check. @tool workspace.refresh @suite workspace */
   refresh(args?: NoArgs): Promise<{
     ok: boolean;
-    summary: string;
     excludes_ok: boolean;
     mcp_ok: boolean;
     custom_tools_ok: boolean;
@@ -221,7 +209,6 @@ interface WorkspaceTools {
   }>;
   /** Read live runtime workspace status: active excludes, loaded MCP servers, custom tools, and Apps. @tool workspace.status @suite workspace */
   status(args?: NoArgs): Promise<{
-    summary: string;
     excludes: string;
     mcp: {
       id: string;
@@ -258,37 +245,23 @@ interface SubagentTools {
     /** Initial prompt delivered to the child session. */
     prompt: string;
   }): Promise<{
-    child_session_id: string;
-    turn_id: string;
-    status: "running";
-    responsibility: string;
+    id: string;
   }>;
-  /** Wait for selected running subagent turns (or snapshot active children) to settle. @tool subagent.wait @suite subagent */
+  /** Wait for subagent children to finish. Pass `ids` to wait for specific children, or omit/pass empty to wait for all running children. @tool subagent.wait @suite subagent */
   wait(args?: {
-    /** Optional child_session_ids; omit to await/snapshot all currently running children. */
+    /** Child session ids to wait for; omit or pass `[]` to wait for all running children. */
     ids?: string[];
-    /** Number of selected turns to settle before returning. */
-    count?: Integer;
   }): Promise<{
-    status: "settled" | "nothing_to_wait_for";
     settled: {
-      child_session_id: string;
-      turn_id: string;
+      id: string;
       reason: string;
-      agent?: string;
       responsibility?: string;
       output: string;
-      output_truncated?: boolean;
-      cancelled_by?: string;
-      transcript: string;
-      start_line?: Integer;
-      end_line?: Integer;
     }[];
-    skipped: {
+    skipped?: {
       id: string;
       reason: string;
     }[];
-    summary: string;
   }>;
   /** Queue, steer, or stop-and-send a follow-up message to a child subagent session. @tool subagent.send @suite subagent */
   send(args: {
@@ -296,38 +269,24 @@ interface SubagentTools {
     message: string;
     mode?: "queue" | "steer" | "stop_and_send";
   }): Promise<{
-    child_session_id: string;
-    mode: string;
-    status: "started" | "queued" | "steered" | "stopped_and_queued";
-    turn_id?: string;
+    status: "queued" | "steered" | "started";
     position?: Integer;
-    pending_id?: string;
-    message: string;
   }>;
   /** Stop the active running turn of a child subagent session. @tool subagent.stop @suite subagent */
   stop(args: {
     id: string;
   }): Promise<{
-    child_session_id: string;
     status: "stopped" | "nothing_running";
-    turn_id?: string;
     reason?: string;
     output?: string;
-    transcript?: string;
-    message: string;
   }>;
-  /** List all descendant child sessions of this session with current status and transcript metadata. @tool subagent.list @suite subagent */
+  /** List all descendant child sessions of this session with current status. Past transcripts are readable at `.litecode/sessions/<id>.md`. @tool subagent.list @suite subagent */
   list(args?: NoArgs): Promise<{
-    count: Integer;
     sessions: {
       id: string;
       agent: string;
       responsibility: string;
       state: string;
-      transcript: string;
-      transcript_lines?: Integer;
-      step?: Integer;
-      step_max?: Integer;
       reason?: string;
     }[];
   }>;
@@ -368,7 +327,7 @@ interface BotTools {
 }
 
 interface Tools {
-  /** Read lines from one file or archived session transcript. @tool read @suite file */
+  /** Read lines from one file or archived session transcript. Pass directly to `inspect(r)`—renders `line: text` verbatim without `.lines.map(...)`. @tool read @suite file */
   read(args: {
     path: Path; // Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md.
     start_line?: Integer; // First line to read, 1-based, inclusive. @default 1
@@ -401,7 +360,7 @@ interface Tools {
       path: string;
     }>;
   }>;
-  /** Find files by path glob. @tool glob @suite file */
+  /** Find files by path glob. Pass directly to `inspect(r)`—renders `paths` one per line. @tool glob @suite file */
   glob(args: {
     pattern: string; // Glob relative to path, or to the workspace root when path is omitted.
     limit?: Integer; // Maximum paths to return. 1-5000. @default 1000
@@ -409,7 +368,7 @@ interface Tools {
   }): Promise<{
     paths: string[]; // Matching paths, sorted by depth, then parent directory, then name.
   }>;
-  /** Search file contents. @tool grep @suite file */
+  /** Search file contents. Pass directly to `inspect(r)`—renders `hits` as a compact table. @tool grep @suite file */
   grep(args: {
     pattern: string; // Regular expression over file contents, unless literal is true.
     before?: Integer; // Lines of context before each hit. 0-10. @default 0
@@ -469,21 +428,18 @@ interface Tools {
     semantic: boolean; // False when the semantic leg was unavailable: the hits are lexical only.
   }>;
 
-  /** Start a command. Waits up to yield_time_ms; a live session_id leaves it running in the background. Poll with write_stdin for output, or leave it and wait for the background-exit reminder (exit code + output_file). @tool exec_command @suite process */
+  /** Run a non-interactive shell command (stdin closed). Waits up to timeout_ms; commands still running auto-promote to background and deliver an exit notice with log path when done. Pass directly to `inspect(r)`—prints raw output and prepends `exit_code` only when non-zero. @tool exec_command @suite process */
   exec_command(args: {
     cmd: string; // Shell command to execute.
-    workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.
-    tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.
-    yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 10000. It does not limit the process lifetime.
-    max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB.
-  }): Promise<ExecCommandData>;
-  /** Poll, feed, or interrupt an existing exec session. Empty chars waits until the session exits or yield_time_ms expires, returning accumulated output; on exit, exit_code is set and session_id is null. @tool write_stdin @suite process */
-  write_stdin(args: {
-    session_id: string; // Session id from exec_command.
-    chars?: string; // Bytes to write; empty polls. "\u0003" sends SIGINT to the process group.
-    yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap.
-    max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB.
-  }): Promise<ExecCommandData>;
+    workdir?: string; // Working directory; defaults to the workspace root (follows active exec permission mode).
+    timeout_ms?: Integer; // Wait timeout in ms before auto-promoting to background (1000-300000, default 60000).
+    background?: boolean; // True starts in the background and returns immediately after initial output capture.
+  }): Promise<{
+    /** Process exit code once exited; null when still running in the background. */
+    exit_code: Integer | null;
+    /** Combined stdout/stderr captured before returning. */
+    output: string;
+  }>;
 
   /** Fetch one http(s) URL. @tool webfetch @suite web */
   webfetch(args: {

@@ -312,7 +312,7 @@ await tools.apply_edits({
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn exec_command_in_code_mode_passes_120kb_untruncated_and_exposes_output_file() {
+async fn exec_command_in_code_mode_passes_120kb_untruncated_and_keeps_minimal_fields() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let payload = format!("HEAD_EXEC_120K\n{}TAIL_EXEC_120K\n", "x".repeat(120 * 1024));
@@ -325,60 +325,75 @@ async fn exec_command_in_code_mode_passes_120kb_untruncated_and_exposes_output_f
         r#"
 const r = await tools.exec_command({{ cmd: {} }});
 inspect({{
+  keys: Object.keys(r).sort(),
+  exit_code: r.exit_code,
   has_head: r.output.includes("HEAD_EXEC_120K"),
   has_tail: r.output.includes("TAIL_EXEC_120K"),
   len: r.output.length,
-  output_file: r.output_file,
 }});
 "#,
         serde_json::to_string(&cmd).unwrap()
     );
     let res = run_code_with_bundle(root, vec![exec_tool], &script).await;
     assert!(res.error.is_none(), "{}", res.content);
+    assert!(res.content.contains("\"exit_code\":0"), "{}", res.content);
     assert!(res.content.contains("\"has_head\":true"), "{}", res.content);
     assert!(res.content.contains("\"has_tail\":true"), "{}", res.content);
-    assert!(res.content.contains(".litecode/run/bg_"), "{}", res.content);
-    assert!(res.content.contains(".stdout"), "{}", res.content);
-    assert!(!res.content.contains("full output:"), "no spill needed when JS filters small return: {}", res.content);
+    assert!(
+        res.content.contains("\"keys\":[\"exit_code\",\"output\"]"),
+        "JS result must only contain exit_code and output: {}",
+        res.content
+    );
+    assert!(
+        !res.content.contains("full output:"),
+        "no spill needed when JS filters small return: {}",
+        res.content
+    );
+    // Foreground completion must not leave orphan `.litecode/run/bg_*.stdout` logs behind.
+    if let Ok(entries) = fs::read_dir(root.join(".litecode/run")) {
+        for entry in entries.flatten() {
+            assert!(
+                !entry.file_name().to_string_lossy().ends_with(".stdout"),
+                "foreground tee file leaked: {:?}",
+                entry.path()
+            );
+        }
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn exec_command_explicit_small_cap_uses_unified_notice_and_clean_utf8() {
+async fn exec_command_direct_inspect_spills_only_through_run_code_view() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let body = format!("中{}\nTAIL_UTF8_OK\n", "中".repeat(6000));
+    let body = format!(
+        "HEAD_UTF8_LINE\n{}\nTAIL_UTF8_OK\n",
+        (0..2000)
+            .map(|i| format!("row_{i:04} 中中文测试 payload"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     fs::write(root.join("utf8.txt"), &body).unwrap();
 
     let jobs = Arc::new(AgentJobRegistry::new());
     let exec_tool: Arc<dyn Tool> = Arc::new(ExecCommandTool::new(jobs));
     let cmd = read_file_cmd("utf8.txt");
     let script = format!(
-        r#"
-const r = await tools.exec_command({{ cmd: {}, max_output_tokens: 256 }});
-inspect({{
-  dirty_prefix: r.output.startsWith("... (truncated)"),
-  has_replacement: r.output.includes("\uFFFD"),
-  has_tail: r.output.includes("TAIL_UTF8_OK"),
-  output_file: r.output_file,
-}});
-"#,
+        "inspect(await tools.exec_command({{ cmd: {} }}));",
         serde_json::to_string(&cmd).unwrap()
     );
     let res = run_code_with_bundle(root, vec![exec_tool], &script).await;
     assert!(res.error.is_none(), "{}", res.content);
-    assert!(res.content.contains("\"dirty_prefix\":false"), "{}", res.content);
-    assert!(res.content.contains("\"has_replacement\":false"), "{}", res.content);
-    assert!(res.content.contains("\"has_tail\":true"), "{}", res.content);
-    assert!(
-        res.content.contains("bytes total; full output: .litecode/run/bg_"),
-        "{}",
-        res.content
-    );
-    assert!(
-        !res.content.contains("output was clipped by max_output_tokens"),
-        "{}",
-        res.content
-    );
+    assert!(res.content.len() <= RUN_CODE_VIEW_MAX_BYTES + 256, "{}", res.content.len());
+    assert!(res.content.contains("HEAD_UTF8_LINE"), "{}", res.content);
+    assert!(res.content.contains("TAIL_UTF8_OK"), "{}", res.content);
+    assert!(res.content.contains("↳ output clipped (lines "), "{}", res.content);
+    assert!(res.content.contains("… lines "), "{}", res.content);
+    assert!(!res.content.contains('\u{FFFD}'), "{}", res.content);
+    let full_rel = extract_full_output_path(&res.content)
+        .unwrap_or_else(|| panic!("expected `full output: <path>` in:\n{}", res.content));
+    assert!(full_rel.starts_with(".litecode/run/run_code_"), "{full_rel}");
+    let disk = fs::read_to_string(root.join(&full_rel)).unwrap();
+    assert!(disk.contains("row_1000 中中文测试 payload"));
 }
 
 #[tokio::test(flavor = "current_thread")]

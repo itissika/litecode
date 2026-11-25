@@ -184,7 +184,7 @@ impl PermissionEngine {
     fn policy_name(tool_name: &str) -> &str {
         match tool_name {
             "apply_edits" => "edit",
-            "exec_command" | "write_stdin" => "exec",
+            "exec_command" => "exec",
             "workspace.help" | "workspace.status" => "litecode_workspace",
             _ => tool_name,
         }

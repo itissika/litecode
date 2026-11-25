@@ -60,10 +60,8 @@ impl SubagentStopTool {
         {
             // WP-094 L5: the parent stopped it itself — no ChildStopped to self.
             let msg = status::format_stopped(child_id);
-            return ToolCallResult::ok(msg.clone()).with_data(serde_json::json!({
-                "child_session_id": child_id,
+            return ToolCallResult::ok(msg).with_data(serde_json::json!({
                 "status": "stopped",
-                "message": msg,
             }));
         }
 
@@ -79,28 +77,26 @@ impl SubagentStopTool {
                         &result,
                     )
                 );
+                let cancelled_by = match service.latest_turn_end(child_id) {
+                    Ok(Some((tid, _, by))) if tid == result.turn_id => by,
+                    _ => None,
+                };
                 let mut data = serde_json::Map::new();
-                data.insert("child_session_id".into(), Value::String(child_id.to_string()));
                 data.insert("status".into(), Value::String("nothing_running".into()));
-                data.insert("turn_id".into(), Value::String(result.turn_id.clone()));
-                data.insert("reason".into(), Value::String(result.reason.clone()));
-                data.insert("output".into(), Value::String(result.output.clone()));
                 data.insert(
-                    "transcript".into(),
-                    Value::String(result.transcript_path.clone()),
+                    "reason".into(),
+                    Value::String(status::merged_reason(&result.reason, false, cancelled_by)),
                 );
-                data.insert("message".into(), Value::String(msg.clone()));
+                data.insert("output".into(), Value::String(result.output.clone()));
                 ToolCallResult::ok(msg).with_data(Value::Object(data))
             }
             Ok(None) => {
                 let msg = format!(
                     "status: nothing running\nchild_session_id: {child_id}\nreason: no completed turn\n"
                 );
-                ToolCallResult::ok(msg.clone()).with_data(serde_json::json!({
-                    "child_session_id": child_id,
+                ToolCallResult::ok(msg).with_data(serde_json::json!({
                     "status": "nothing_running",
                     "reason": "no completed turn",
-                    "message": msg,
                 }))
             }
             Err(error) => ToolCallResult::error(format!(

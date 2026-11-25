@@ -73,13 +73,17 @@ impl SubagentWaitTool {
             .descendant_session_ids(&parent)
             .into_iter()
             .collect();
-        let requested = input.get("ids").and_then(Value::as_array).map(|ids| {
-            ids.iter()
-                .filter_map(Value::as_str)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        });
+        let requested = input
+            .get("ids")
+            .and_then(Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|ids| !ids.is_empty());
         let explicit_ids = requested.is_some();
         let ids = requested.unwrap_or_else(|| descendants.iter().cloned().collect());
         let mut selected = HashMap::<String, String>::new();
@@ -116,22 +120,22 @@ impl SubagentWaitTool {
         }
         if selected.is_empty() && completed.is_empty() {
             let text = status::format_wait_outcome(service, &completed, &skipped);
-            let data = status::format_wait_outcome_data(service, &completed, &skipped, &text);
-            return ToolCallResult::ok(text).with_data(data);
+            let (data, metadata) = status::format_wait_outcome_data(service, &completed, &skipped);
+            let mut res = ToolCallResult::ok(text).with_data(data);
+            res.metadata = metadata;
+            return res;
         }
-        let available = selected.len() + completed.len();
-        let target = input
-            .get("count")
-            .and_then(Value::as_u64)
-            .map(|count| (count as usize).clamp(1, available))
-            .unwrap_or(available);
+        let target = selected.len() + completed.len();
 
         loop {
             if completed.len() >= target {
                 completed.truncate(target);
                 let text = status::format_wait_outcome(service, &completed, &skipped);
-                let data = status::format_wait_outcome_data(service, &completed, &skipped, &text);
-                return ToolCallResult::ok(text).with_data(data);
+                let (data, metadata) =
+                    status::format_wait_outcome_data(service, &completed, &skipped);
+                let mut res = ToolCallResult::ok(text).with_data(data);
+                res.metadata = metadata;
+                return res;
             }
             tokio::select! {
                 _ = self.cancel.cancelled() => {
@@ -231,9 +235,9 @@ impl Tool for SubagentWaitTool {
         let object = input
             .as_object()
             .ok_or_else(|| crate::tool::expected_type("input", "object", input))?;
-        if let Some(key) = object.keys().find(|key| *key != "ids" && *key != "count") {
+        if let Some(key) = object.keys().find(|key| *key != "ids") {
             return Err(format!(
-                "unsupported field '{key}'; subagent_wait accepts only ids and count"
+                "unsupported field '{key}'; subagent_wait accepts only ids"
             ));
         }
         if let Some(ids) = input.get("ids") {
@@ -246,11 +250,6 @@ impl Tool for SubagentWaitTool {
             {
                 return Err("ids must contain only non-empty strings".into());
             }
-        }
-        if let Some(count) = input.get("count")
-            && count.as_u64().filter(|value| *value > 0).is_none()
-        {
-            return Err(crate::tool::must_be("count", "a positive integer"));
         }
         Ok(())
     }

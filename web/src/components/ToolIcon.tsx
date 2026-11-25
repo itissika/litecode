@@ -39,7 +39,6 @@ export type Glyph = ComponentType<GlyphProps>;
 // `mcp_*` tools share PlugsConnected; unknown tools fall back to a wrench.
 const NAME_GLYPH: Record<string, Glyph> = {
   exec_command: TerminalIcon,
-  write_stdin: TerminalIcon,
   subagent_wait: HourglassIcon,
   subagent_stop: StopIcon,
   subagent_send: PaperPlaneTiltIcon,

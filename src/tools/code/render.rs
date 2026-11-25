@@ -28,7 +28,7 @@ use crate::session::transcript_file::RUN_CODE_SESSION_NOTE;
 use crate::types::utf8::prefix_utf8;
 
 /// Hard cap for the model-facing `run_code` view, including omission notes.
-pub const RUN_CODE_VIEW_MAX_BYTES: usize = 65_536;
+pub const RUN_CODE_VIEW_MAX_BYTES: usize = 20_480;
 
 const HEADER_CAP: usize = 1024;
 const HEAD_MESSAGE_CAP: usize = 240;
@@ -150,35 +150,67 @@ pub(super) fn render_model_view_in(
     let after_head = RUN_CODE_VIEW_MAX_BYTES
         .saturating_sub(header.len())
         .saturating_sub(manifest.as_ref().map_or(0, |m| m.len() + 2));
-    let upfloat = render_upfloat(report, after_head / 3, manifest.as_deref());
+    let mut upfloat = render_upfloat(report, after_head / 3, manifest.as_deref());
 
-    let mut prefix_parts = vec![header];
-    prefix_parts.extend(manifest);
-    if !upfloat.is_empty() {
-        prefix_parts.push(upfloat);
-    }
-    let prefix = prefix_parts.join("\n\n");
+    let assemble_prefix = |upfloat_text: &str| {
+        let mut prefix_parts = vec![header.clone()];
+        prefix_parts.extend(manifest.clone());
+        if !upfloat_text.is_empty() {
+            prefix_parts.push(upfloat_text.to_string());
+        }
+        prefix_parts.join("\n\n")
+    };
 
     let output_limited = report.failure_kind == Some(FailureKind::OutputLimit);
     if report.entries.is_empty() {
-        return prefix;
+        return assemble_prefix(&upfloat);
     }
     let mut blocks: Vec<String> = report.entries.iter().map(render_entry).collect();
     if output_limited && let Some(last) = blocks.last_mut() {
         last.push_str(OUTPUT_LIMIT_MARK);
     }
     let full_stream = join_stream_blocks(&blocks);
-    let stream_budget = RUN_CODE_VIEW_MAX_BYTES.saturating_sub(prefix.len() + 2);
-    let shown_stream = crate::tool::output::cut_and_spill_full(
+
+    let base_prefix = assemble_prefix(&upfloat);
+    if base_prefix.len() + 2 + full_stream.len() <= RUN_CODE_VIEW_MAX_BYTES {
+        return if full_stream.is_empty() {
+            base_prefix
+        } else {
+            format!("{base_prefix}\n\n{full_stream}")
+        };
+    }
+
+    // Reserve space for the spilled upfloat line (path + exact omitted line range)
+    // so the complete output strictly stays within RUN_CODE_VIEW_MAX_BYTES.
+    const SPILL_UPFLOAT_RESERVE: usize = 220;
+    let stream_budget = RUN_CODE_VIEW_MAX_BYTES
+        .saturating_sub(base_prefix.len() + 2 + SPILL_UPFLOAT_RESERVE);
+    let cut = crate::tool::output::cut_and_spill_lines(
         &full_stream,
         stream_budget,
         workspace_root,
         "run_code",
     );
-    if shown_stream.is_empty() {
-        prefix
+    if let Some(notice) = cut.upfloat_notice {
+        let line = warning_line(&notice);
+        if upfloat.is_empty() {
+            upfloat = line;
+        } else {
+            upfloat.push('\n');
+            upfloat.push_str(&line);
+        }
+    }
+    let final_prefix = assemble_prefix(&upfloat);
+    let shown_stream = if final_prefix.len() + 2 + cut.text.len() > RUN_CODE_VIEW_MAX_BYTES {
+        let remaining = RUN_CODE_VIEW_MAX_BYTES.saturating_sub(final_prefix.len() + 2);
+        prefix_utf8(&cut.text, remaining).to_string()
     } else {
-        format!("{prefix}\n\n{shown_stream}")
+        cut.text
+    };
+    if shown_stream.is_empty() {
+        final_prefix
+    } else {
+        format!("{final_prefix}\n\n{shown_stream}")
     }
 }
 
@@ -287,7 +319,8 @@ pub(super) fn reminders_for_call_with_metadata(
         "grep" => grep_reminders(object, &mut out),
         "knowledge.list" | "knowledge.check" => knowledge_reminders(tool, object, &mut out),
         tool if is_lsp_tool(tool) => lsp_reminders(tool, object, &mut out),
-        "exec_command" | "write_stdin" => unified_exec_reminders(tool, object, false, &mut out),
+        "exec_command" => exec_reminders(object, &mut out),
+        "subagent.wait" => subagent_wait_reminders(object, &mut out),
         "write" => write_reminders(object, &mut out),
         "apply_edits" => edit_reminders(tool, object, &mut out),
         _ => {}
@@ -304,27 +337,7 @@ fn array_len(object: &serde_json::Map<String, Value>, key: &str) -> usize {
         .map_or(0, Vec::len)
 }
 
-/// Path risk and post-write diagnostics, shared by `write`, `edit`, and the
-/// per-item results of `apply_edits`.
-fn path_risk_reminders(
-    outside_prefix: &str,
-    sensitive_label: &str,
-    risk: &Value,
-    out: &mut Vec<String>,
-) {
-    if risk.get("outside_workspace").and_then(Value::as_bool) == Some(true) {
-        let resolved = risk.get("resolved").and_then(Value::as_str).unwrap_or("?");
-        out.push(format!("{outside_prefix} (outside workspace): {resolved}"));
-    }
-    if risk.get("sensitive").and_then(Value::as_bool) == Some(true) {
-        out.push(format!("{sensitive_label} targets a sensitive system location"));
-    }
-}
-
 fn write_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
-    if let Some(risk) = object.get("path_risk") {
-        path_risk_reminders("wrote", "this write", risk, out);
-    }
     lsp_diagnostics_reminder(None, object, out);
 }
 
@@ -358,61 +371,62 @@ fn edit_reminders(
         return;
     };
     for (index, item) in results.iter().enumerate() {
-        if let Some(risk) = item.get("path_risk") {
-            path_risk_reminders(
-                &format!("edit #{} applied", index + 1),
-                &format!("edit #{}", index + 1),
-                risk,
-                out,
-            );
-        }
         if let Some(item) = item.as_object() {
             lsp_diagnostics_reminder(Some(&format!("edit #{}", index + 1)), item, out);
         }
-        // `detail` is already one sentence inside the result, so this block
-        // never says it again: the line would be a second copy of the row the
-        // model has in front of it, and the batch table already anchors it.
     }
 }
 fn is_lsp_tool(tool: &str) -> bool {
     crate::tools::lsp::LSP_CODE_TOOL_NAMES.contains(&tool)
 }
 
-/// Codex-style exec sessions use a session id and incremental output, so the
-/// old command reminder would be actively wrong. Only the start call gets the
-/// live-session line: repeating it after `write_stdin` would tell the model to
-/// call the tool it just called.
-fn unified_exec_reminders(
-    tool: &str,
-    object: &serde_json::Map<String, Value>,
-    direct: bool,
-    out: &mut Vec<String>,
-) {
-    if tool == "exec_command"
-        && let Some(session_id) = object.get("session_id").and_then(Value::as_str)
+/// Background handoff and clamp reminders for `exec_command`.
+/// Foreground completion needs no reminder; overflow spilling is owned solely
+/// by the outer `run_code` model view.
+fn exec_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
+    if let Some(session_id) = object
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
     {
-        let poll_target = if direct {
-            "write_stdin"
-        } else {
-            "tools.write_stdin"
-        };
+        let log_part = object
+            .get("output_file")
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+            .map(|p| format!("; log: {p}"))
+            .unwrap_or_default();
         out.push(format!(
-            "session {session_id} is live; poll with {poll_target} or wait for its exit reminder"
-        ));
-    }
-    if object.get("truncated").and_then(Value::as_bool) == Some(true) {
-        let total_bytes = object
-            .get("total_bytes")
-            .and_then(Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok())
-            .unwrap_or(0);
-        let output_file = object.get("output_file").and_then(Value::as_str);
-        out.push(crate::tool::output::full_output_notice(
-            total_bytes,
-            output_file,
+            "background ({session_id}){log_part}; exit notice on finish"
         ));
     }
     out.extend(clamp_reminders(object));
+}
+
+fn subagent_wait_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
+    let Some(items) = object.get("truncated_children").and_then(Value::as_array) else {
+        return;
+    };
+    for item in items {
+        let Some(map) = item.as_object() else { continue };
+        let Some(id) = map.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let transcript = map
+            .get("transcript")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        let range = match (
+            map.get("start_line").and_then(Value::as_u64),
+            map.get("end_line").and_then(Value::as_u64),
+        ) {
+            (Some(start), Some(end)) => format!(" lines {start}-{end}"),
+            _ => String::new(),
+        };
+        match transcript {
+            Some(path) => out.push(format!("{id} output truncated; read {path}{range}")),
+            None => out.push(format!("{id} output truncated")),
+        }
+    }
 }
 
 fn lsp_reminders(
@@ -455,7 +469,7 @@ fn lsp_reminders(
         out.push(format!("results were cut at {shown}; more exist"));
     }
     let line = match (empty, state) {
-        (true, "ok") => format!("no {subject} reported; the index is ready, so this is a real miss"),
+        (true, "ok") => return,
         (true, "partial") => format!(
             "no {subject} reported; the index is still building, so this is not a confirmed miss"
         ),
@@ -483,23 +497,9 @@ fn read_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let lines = object.get("lines").and_then(Value::as_array);
-    let shown = lines.map_or(0, Vec::len) as u64;
-    let skipped = object
-        .get("skipped_in_context")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
     if lines.is_some_and(Vec::is_empty) && start_line > total_lines {
         out.push(format!(
             "start_line {start_line} is past the end; the file has {total_lines} lines"
-        ));
-    } else if object.get("has_more").and_then(Value::as_bool) == Some(true) {
-        // Every line the page covered is either in the list or counted as
-        // skipped, so the window end is exact even for a fully hidden page.
-        let covered = shown + skipped;
-        let end = start_line + covered.saturating_sub(1);
-        out.push(format!(
-            "showing lines {start_line}-{end} of {total_lines}; continue with start_line {}",
-            start_line + covered
         ));
     }
     if let Some(capped) = object
@@ -549,40 +549,49 @@ fn knowledge_reminders(
 fn grep_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>) {
     if let Some(reason) = object.get("empty_reason").and_then(Value::as_str) {
         let text = match reason {
-            "glob_no_files" => "no file matched the glob filter",
-            "file_unreadable" => "the file could not be read as text",
-            "binary" => "the file is binary; grep only searches text files",
-            "hidden_by_filters" => "the searched path is excluded by default filters",
-            "no_match" => "the pattern was not found",
-            "no_files" => "nothing to search under this path",
-            other => other,
+            "glob_no_files" => Some("no file matched the glob filter"),
+            "file_unreadable" => Some("the file could not be read as text"),
+            "binary" => Some("the file is binary; grep only searches text files"),
+            "hidden_by_filters" => Some("the searched path is excluded by default filters"),
+            // `hits: []` already states normal empty results; skip redundant prose.
+            "no_match" | "no_files" => None,
+            other => Some(other),
         };
-        out.push(text.to_string());
+        if let Some(text) = text {
+            out.push(text.to_string());
+        }
     }
     let shown = object.get("hits").and_then(Value::as_array).map_or(0, Vec::len);
-    // The cut is the fact, not the total: a scan stops early and never learns
-    // how many matches exist, so the sentence must not depend on that number.
-    if object.get("truncated").and_then(Value::as_bool) == Some(true) {
-        out.push(format!(
-            "showing the first {shown} matches; more exist — narrow the pattern/path or raise limit"
-        ));
+    let truncated = object.get("truncated").and_then(Value::as_bool) == Some(true);
+    let total_more = object
+        .get("total_hits")
+        .and_then(Value::as_u64)
+        .filter(|&total| total > shown as u64);
+    let at_cap = object.get("at_limit_cap").and_then(Value::as_bool) == Some(true);
+    let lines_trunc = object.get("lines_truncated").and_then(Value::as_bool) == Some(true);
+    let ctx_omitted = object.get("context_omitted").and_then(Value::as_bool) == Some(true);
+    let out_capped = object.get("output_capped").and_then(Value::as_bool) == Some(true);
+
+    // Combine all grep cut/cap boundaries into at most one concise line.
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(total) = total_more {
+        parts.push(format!("showing {shown} of {total} matches"));
+    } else if truncated {
+        parts.push(format!("cut at {shown} matches; more exist"));
+    } else if out_capped {
+        parts.push("output capped".to_string());
     }
-    if let Some(total) = object.get("total_hits").and_then(Value::as_u64)
-        && total > shown as u64
-    {
-        out.push(format!("showing {shown} of {total} matches"));
+    if at_cap {
+        parts.push("at limit max".to_string());
     }
-    if object.get("at_limit_cap").and_then(Value::as_bool) == Some(true) {
-        out.push("the limit is already at its maximum; narrow the pattern or path".to_string());
+    if lines_trunc {
+        parts.push("long lines shortened".to_string());
     }
-    if object.get("lines_truncated").and_then(Value::as_bool) == Some(true) {
-        out.push("long lines were shortened to fit the line cap".to_string());
+    if ctx_omitted {
+        parts.push("context omitted".to_string());
     }
-    if object.get("context_omitted").and_then(Value::as_bool) == Some(true) {
-        out.push("surrounding lines were omitted to fit the output cap".to_string());
-    }
-    if object.get("output_capped").and_then(Value::as_bool) == Some(true) {
-        out.push("output was capped; narrow the pattern or path".to_string());
+    if !parts.is_empty() {
+        out.push(parts.join("; "));
     }
     out.extend(clamp_reminders(object));
 }
@@ -601,15 +610,14 @@ fn glob_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
     if let Some(reason) = object.get("empty_reason").and_then(Value::as_str) {
         let text = match reason {
             "hidden_by_filters" => {
-                "the searched path is excluded by default filters; an empty page is not \"no matches\""
+                Some("the searched path is excluded by default filters; an empty page is not \"no matches\"")
             }
-            "no_match" => "no path matched the pattern",
-            other => other,
+            "no_match" => None,
+            other => Some(other),
         };
-        out.push(text.to_string());
-    }
-    if object.get("outside_workspace").and_then(Value::as_bool) == Some(true) {
-        out.push("paths outside the workspace are absolute".to_string());
+        if let Some(text) = text {
+            out.push(text.to_string());
+        }
     }
     out.extend(clamp_reminders(object));
 }
@@ -941,21 +949,28 @@ fn render_line_text_array(items: &[Value]) -> Option<String> {
     Some(out.join("\n"))
 }
 
-/// All-string array, one value per line. Fewer than three entries stay inline
-/// JSON: a pair of strings is not a list.
+/// All-string array, one value per line. A pair of short tokens stays inline
+/// JSON; 3+ entries, or 2 entries that are longer/multiline (paths, diagnostics),
+/// render one per line without JSON escaping.
 fn render_string_array(items: &[Value]) -> Option<String> {
-    if items.len() < 3 {
+    if items.len() < 2 {
         return None;
     }
-    let mut out = String::new();
-    for (idx, item) in items.iter().enumerate() {
+    let mut strs = Vec::with_capacity(items.len());
+    let mut total_bytes = 0usize;
+    let mut has_multiline = false;
+    for item in items {
         let text = item.as_str()?;
-        if idx > 0 {
-            out.push('\n');
+        total_bytes += text.len();
+        if text.contains('\n') {
+            has_multiline = true;
         }
-        out.push_str(text);
+        strs.push(text);
     }
-    Some(out)
+    if items.len() < 3 && total_bytes <= 24 && !has_multiline {
+        return None;
+    }
+    Some(strs.join("\n"))
 }
 
 fn render_read_lines_object(map: &serde_json::Map<String, Value>) -> Option<String> {
@@ -980,44 +995,36 @@ fn render_read_lines_object(map: &serde_json::Map<String, Value>) -> Option<Stri
 }
 
 fn render_exec_output_object(map: &serde_json::Map<String, Value>) -> Option<String> {
-    let output = map.get("output")?.as_str()?;
-    let mut has_exec_meta = false;
-    for (k, v) in map {
-        match k.as_str() {
-            "output" => {}
-            "exit_code" => {
-                if !(v.is_i64() || v.is_null()) {
-                    return None;
-                }
-                has_exec_meta = true;
-            }
-            "session_id" | "output_file" => {
-                if !(v.is_string() || v.is_null()) {
-                    return None;
-                }
-                has_exec_meta = true;
-            }
-            _ => return None,
-        }
-    }
-    if !has_exec_meta {
+    if map.len() != 2 {
         return None;
     }
-    let header = if let Some(code) = map.get("exit_code").and_then(Value::as_i64) {
-        format!("exit_code: {code}")
-    } else if let Some(sid) = map
-        .get("session_id")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-    {
-        format!("session_id: {sid}")
-    } else {
-        "exit_code: null".to_string()
-    };
-    if output.is_empty() {
-        Some(header)
-    } else {
-        Some(format!("{header}\n{output}"))
+    let output = map.get("output")?.as_str()?;
+    let exit_code = map.get("exit_code")?;
+    if !(exit_code.is_i64() || exit_code.is_null()) {
+        return None;
+    }
+    match exit_code.as_i64() {
+        Some(0) => {
+            if output.is_empty() {
+                Some("exit_code: 0".to_string())
+            } else {
+                Some(output.to_string())
+            }
+        }
+        Some(code) => {
+            if output.is_empty() {
+                Some(format!("exit_code: {code}"))
+            } else {
+                Some(format!("exit_code: {code}\n{output}"))
+            }
+        }
+        None => {
+            if output.is_empty() {
+                Some("(running in background)".to_string())
+            } else {
+                Some(output.to_string())
+            }
+        }
     }
 }
 
@@ -1033,10 +1040,15 @@ fn is_structured_value(value: &Value) -> bool {
         Value::Object(map) => {
             render_read_lines_object(map).is_some()
                 || render_exec_output_object(map).is_some()
-                || map.values().any(is_structured_value)
+                || map
+                    .values()
+                    .any(|v| is_structured_value(v) || is_multiline_plain_string(v))
         }
         Value::Array(items) => {
-            render_line_text_array(items).is_some() || items.iter().any(is_structured_value)
+            render_line_text_array(items).is_some()
+                || items
+                    .iter()
+                    .any(|v| is_structured_value(v) || is_multiline_plain_string(v))
         }
         _ => false,
     }
@@ -1205,7 +1217,7 @@ fn strip_json_whitespace(text: &str) -> String {
     out
 }
 
-const TABLE_MIN_ROWS: usize = 3;
+const TABLE_MIN_ROWS: usize = 1;
 
 /// Guard against a row set whose union of keys explodes the header: a ragged
 /// array with one unique key per row would otherwise render a useless table.
@@ -1224,7 +1236,9 @@ fn table_columns(items: &[Value]) -> Option<Vec<String>> {
             return None;
         }
         for (key, value) in map {
-            if matches!(value, Value::Array(_) | Value::Object(_)) {
+            if matches!(value, Value::Array(_) | Value::Object(_))
+                || is_multiline_plain_string(value)
+            {
                 return None;
             }
             if !columns.iter().any(|column| column == key) {
@@ -1738,7 +1752,7 @@ mod tests {
         let cases: Vec<(Value, Vec<&str>)> = vec![
             (
                 base(serde_json::json!({"empty_reason": "no_files"})),
-                vec!["nothing to search under this path"],
+                vec![],
             ),
             (
                 base(serde_json::json!({"empty_reason": "glob_no_files"})),
@@ -1746,7 +1760,7 @@ mod tests {
             ),
             (
                 base(serde_json::json!({"empty_reason": "no_match"})),
-                vec!["the pattern was not found"],
+                vec![],
             ),
             (
                 base(serde_json::json!({"empty_reason": "file_unreadable"})),
@@ -1765,39 +1779,27 @@ mod tests {
                     "at_limit_cap": true, "truncated": true,
                     "hits": [{"path": "a.rs", "line": 1, "text": "needle"}],
                 })),
-                vec![
-                    "showing the first 1 matches; more exist — narrow the pattern/path or raise limit",
-                    "the limit is already at its maximum; narrow the pattern or path",
-                ],
+                vec!["cut at 1 matches; more exist; at limit max"],
             ),
             (
                 base(serde_json::json!({
                     "total_hits": 9, "truncated": true,
                     "hits": [{"path": "a.rs", "line": 1, "text": "needle"}],
                 })),
-                vec![
-                    "showing the first 1 matches; more exist — narrow the pattern/path or raise limit",
-                    "showing 1 of 9 matches",
-                ],
+                vec!["showing 1 of 9 matches"],
             ),
             (
                 base(serde_json::json!({
                     "truncated": true,
                     "hits": [{"path": "a.rs", "line": 1, "text": "needle"}],
                 })),
-                vec![
-                    "showing the first 1 matches; more exist — narrow the pattern/path or raise limit",
-                ],
+                vec!["cut at 1 matches; more exist"],
             ),
             (
                 base(serde_json::json!({
                     "lines_truncated": true, "context_omitted": true, "output_capped": true,
                 })),
-                vec![
-                    "long lines were shortened to fit the line cap",
-                    "surrounding lines were omitted to fit the output cap",
-                    "output was capped; narrow the pattern or path",
-                ],
+                vec!["output capped; long lines shortened; context omitted"],
             ),
             (
                 base(serde_json::json!({"clamped": [{"parameter": "before", "requested": 25, "applied": 10}]})),
@@ -1875,16 +1877,14 @@ mod tests {
                     "path": "a.txt", "start_line": 1, "lines": ["a", "b"],
                     "total_lines": 9, "has_more": true, "skipped_in_context": 0,
                 }),
-                vec!["showing lines 1-2 of 9; continue with start_line 3"],
+                vec![],
             ),
             (
                 serde_json::json!({
                     "path": "a.txt", "start_line": 4, "lines": [],
                     "total_lines": 9, "has_more": true, "skipped_in_context": 2,
                 }),
-                vec![
-                    "showing lines 4-5 of 9; continue with start_line 6",
-                ],
+                vec![],
             ),
             (
                 serde_json::json!({
@@ -1952,14 +1952,14 @@ mod tests {
                     "paths": [], "total": 0, "truncated": false,
                     "outside_workspace": false, "empty_reason": "no_match",
                 }),
-                vec!["no path matched the pattern"],
+                vec![],
             ),
             (
                 serde_json::json!({
                     "paths": ["../x.rs"], "total": 1, "truncated": false,
                     "outside_workspace": true,
                 }),
-                vec!["paths outside the workspace are absolute"],
+                vec![],
             ),
             (
                 serde_json::json!({
@@ -1999,12 +1999,11 @@ mod tests {
         let locations = miss("locations");
         let diagnostics = miss("diagnostics");
         let symbols = miss("symbols");
-        let hover = miss("hover information");
         let cases: Vec<(&str, Value, Vec<String>)> = vec![
             (
                 "diagnostics",
                 json!({"items": [], "state": "ok", "truncated": false}),
-                vec![diagnostics[0].clone()],
+                Vec::new(),
             ),
             (
                 "diagnostics",
@@ -2037,7 +2036,7 @@ mod tests {
             (
                 "hover",
                 json!({"markdown": "", "state": "ok", "truncated": false}),
-                vec![hover[0].clone()],
+                Vec::new(),
             ),
             (
                 "document_symbol",
@@ -2133,12 +2132,12 @@ mod tests {
             (
                 "write",
                 write(json!({ "path_risk": risk("/tmp/x.txt") })),
-                vec!["wrote (outside workspace): /tmp/x.txt"],
+                Vec::new(),
             ),
             (
                 "write",
                 write(json!({ "path_risk": {"outside_workspace": false, "sensitive": true} })),
-                vec!["this write targets a sensitive system location"],
+                Vec::new(),
             ),
             (
                 "write",
@@ -2164,10 +2163,7 @@ mod tests {
                         },
                     ]
                 }),
-                vec![
-                    "edit #1: the language server reported errors in this file",
-                    "edit #2 applied (outside workspace): /tmp/z.txt",
-                ],
+                vec!["edit #1: the language server reported errors in this file"],
             ),
         ];
         for (tool, value, expected) in cases {
@@ -2205,7 +2201,6 @@ mod tests {
             "diagnostics",
             "hover",
             "exec_command",
-            "write_stdin",
             "write",
             "apply_edits",
         ];
@@ -2703,7 +2698,7 @@ mod tests {
 
     #[test]
     fn one_budget_covers_the_whole_view() {
-        assert_eq!(RUN_CODE_VIEW_MAX_BYTES, 65_536);
+        assert_eq!(RUN_CODE_VIEW_MAX_BYTES, 20_480);
     }
 
     #[test]
@@ -2746,13 +2741,13 @@ mod tests {
             ]),
             inspect_many(vec![
                 json!("run:"),
-                json!({ "exit_code": 0, "output": "ok\n", "output_file": "" }),
+                json!({ "exit_code": 0, "output": "ok\n" }),
             ]),
         ];
         let out = render_model_view(&multiline);
         assert_eq!(
             out,
-            "run_code ok · 2 calls · 12ms\n\nfile:\nlines:\n1: hello\n\nrun:\nexit_code: 0\nok\n",
+            "run_code ok · 2 calls · 12ms\n\nfile:\nlines:\n1: hello\n\nrun:\nok\n",
             "{out}"
         );
     }
@@ -2824,11 +2819,8 @@ mod tests {
         ];
         let out = render_model_view(&report);
         assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{} bytes", out.len());
-        assert!(
-            out.contains("bytes total"),
-            "the cut names the notice: {}",
-            &out[out.len().saturating_sub(300)..]
-        );
+        assert!(out.contains("↳ output clipped ("), "{out}");
+        assert!(out.contains("omitted"), "{out}");
         assert!(out.contains("HEAD_STREAM_SENTINEL"), "{out}");
         assert!(out.contains("TAIL_SENTINEL"), "{out}");
     }
@@ -2845,11 +2837,7 @@ mod tests {
         let out = render_model_view(&report);
         assert!(out.len() <= RUN_CODE_VIEW_MAX_BYTES, "{} bytes", out.len());
         assert!(out.contains("line 0 "), "{out}");
-        assert!(
-            out.contains("bytes total"),
-            "{}",
-            &out[out.len().saturating_sub(400)..]
-        );
+        assert!(out.contains("↳ output clipped ("), "{out}");
     }
 
     #[test]
@@ -3197,10 +3185,11 @@ mod tests {
         let text = render_model_view(&report);
         assert!(text.starts_with("run_code ok"));
         assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
+        assert!(text.contains("↳ output clipped (lines "), "{text}");
         let result = result_of(&text);
         assert!(result.contains("line 0 alpha"), "{result}");
         assert!(result.contains("RESULT_END_SENTINEL"), "{result}");
-        assert!(result.contains("bytes total"), "{result}");
+        assert!(result.contains("… lines "), "{result}");
         assert!(!text.starts_with("[blob:"));
     }
 
@@ -3276,7 +3265,7 @@ mod tests {
     #[test]
     fn table_cells_quote_ambiguous_strings() {
         let text = ok_with(serde_json::json!([
-            {"v": "a,b"}, {"v": "say \"hi\""}, {"v": "x\ny"},
+            {"v": "a,b"}, {"v": "say \"hi\""}, {"v": "x\ty"},
             {"v": " pad"}, {"v": ""}, {"v": "42"}, {"v": "true"}, {"v": "null"}, {"v": "中文 ok"},
         ]));
         let rows: Vec<&str> = result_of(&text).lines().collect();
@@ -3286,7 +3275,7 @@ mod tests {
             &[
                 r#""a,b""#,
                 r#""say \"hi\"""#,
-                r#""x\ny""#,
+                r#""x\ty""#,
                 r#"" pad""#,
                 r#""""#,
                 r#""42""#,
@@ -3321,13 +3310,13 @@ mod tests {
         set_value(&mut report, Value::Array(rows));
         let text = render_model_view_in(&report, Some(dir.path()));
         assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
-        let result = result_of(&text);
-        assert!(result.starts_with("[5000]{path,line}:\nsrc/mod_0/file.rs,0"), "{result}");
-        assert!(result.contains("src/mod_4999/file.rs,4999"), "{result}");
+        assert!(text.contains("↳ output clipped (lines "), "{text}");
+        assert!(text.contains("[5000]{path,line}:\nsrc/mod_0/file.rs,0"), "{text}");
+        assert!(text.contains("src/mod_4999/file.rs,4999"), "{text}");
         let rel_marker = ".litecode/run/run_code_";
-        let start = result.find(rel_marker).expect("spill path in notice");
-        let end = result[start..].find(".txt").unwrap() + start + 4;
-        let rel = &result[start..end];
+        let start = text.find(rel_marker).expect("spill path in upfloat notice");
+        let end = text[start..].find(".txt").unwrap() + start + 4;
+        let rel = &text[start..end];
         let spilled = std::fs::read_to_string(dir.path().join(rel)).unwrap();
         assert!(spilled.contains("src/mod_2500/file.rs,2500"));
     }
@@ -3386,17 +3375,15 @@ mod metadata_reminder_tests {
     use serde_json::json;
 
     #[test]
-    fn exec_reminders_use_data_for_identity_and_metadata_for_facts() {
+    fn exec_reminders_surface_background_handoff_and_clamp_from_metadata() {
         let data = json!({
-            "ok": true,
-            "session_id": "bg_1",
-            "output": "",
-            "output_file": ".litecode/run/bg_1.stdout"
+            "exit_code": null,
+            "output": "booting...\n"
         });
         let metadata = json!({
-            "truncated": true,
-            "total_bytes": 12000,
-            "clamped": [{"parameter": "yield_time_ms", "requested": 60000, "applied": 30000}]
+            "session_id": "bg_1",
+            "output_file": ".litecode/run/bg_1.stdout",
+            "clamped": [{"parameter": "timeout_ms", "requested": 600000, "applied": 300000}]
         });
         let lines = reminders_for_call_with_metadata(
             "exec_command",
@@ -3406,81 +3393,80 @@ mod metadata_reminder_tests {
         assert_eq!(
             lines,
             vec![
-                "session bg_1 is live; poll with tools.write_stdin or wait for its exit reminder",
-                "… 12000 bytes total; full output: .litecode/run/bg_1.stdout",
-                "yield_time_ms 30000 used instead of 60000",
+                "background (bg_1); log: .litecode/run/bg_1.stdout; exit notice on finish",
+                "timeout_ms 300000 used instead of 600000",
             ]
         );
         for line in &lines {
-            assert!(line.chars().count() <= REMINDER_MAX_CHARS, "{line}");
+            assert!(
+                format!("↳ #1 tools.exec_command: {line}").chars().count() <= REMINDER_MAX_CHARS,
+                "{line}"
+            );
         }
+
+        // Foreground completion emits zero reminders when nothing was clamped.
+        let fg = reminders_for_call_with_metadata(
+            "exec_command",
+            &json!({ "exit_code": 0, "output": "ok\n" }),
+            None,
+        );
+        assert!(fg.is_empty(), "{fg:?}");
     }
 
     #[test]
-    fn write_stdin_does_not_repeat_the_live_session_reminder() {
-        let data = json!({
-            "ok": true,
-            "session_id": "bg_1",
-            "output": "",
-            "output_file": ".litecode/run/bg_1.stdout"
-        });
-        let metadata = json!({
-            "truncated": true,
-            "total_bytes": 12000,
-            "clamped": [{"parameter": "yield_time_ms", "requested": 600000, "applied": 300000}]
-        });
-        let lines = reminders_for_call_with_metadata(
-            "write_stdin",
-            &data,
-            Some(&metadata),
-        );
-        assert_eq!(
-            lines,
-            vec![
-                "… 12000 bytes total; full output: .litecode/run/bg_1.stdout",
-                "yield_time_ms 300000 used instead of 600000",
-            ]
-        );
-    }
-
-    #[test]
-    fn render_result_body_formats_exec_output_object_verbatim_with_exit_code() {
-        let val = json!({
+    fn render_result_body_formats_exec_output_object_cleanly() {
+        let ok = json!({
             "exit_code": 0,
-            "output": "line 1\nline 2\n",
-            "output_file": ""
+            "output": "line 1\nline 2\n"
         });
-        assert_eq!(render_result_body(&val), "exit_code: 0\nline 1\nline 2\n");
+        assert_eq!(render_result_body(&ok), "line 1\nline 2\n");
 
-        let live = json!({
-            "session_id": "bg_3",
-            "output": "running...\n",
-            "output_file": ".litecode/run/bg_3.stdout"
+        let ok_empty = json!({
+            "exit_code": 0,
+            "output": ""
         });
-        assert_eq!(render_result_body(&live), "session_id: bg_3\nrunning...\n");
+        assert_eq!(render_result_body(&ok_empty), "exit_code: 0");
+
+        let fail = json!({
+            "exit_code": 2,
+            "output": "boom\n"
+        });
+        assert_eq!(render_result_body(&fail), "exit_code: 2\nboom\n");
+
+        let bg = json!({
+            "exit_code": null,
+            "output": "running...\n"
+        });
+        assert_eq!(render_result_body(&bg), "running...\n");
+
+        let bg_empty = json!({
+            "exit_code": null,
+            "output": ""
+        });
+        assert_eq!(render_result_body(&bg_empty), "(running in background)");
     }
 
     #[test]
     fn render_result_body_formats_promise_all_and_composite_objects_losslessly() {
         let batch = json!([
-            { "exit_code": 0, "output": "a\nb\n", "output_file": "" },
-            { "exit_code": 1, "output": "err\n", "output_file": "" },
-            { "exit_code": 0, "output": "ok\n", "output_file": "" }
+            { "exit_code": 0, "output": "a\nb\n" },
+            { "exit_code": 1, "output": "err\n" },
+            { "exit_code": 0, "output": "ok\n" }
         ]);
         assert_eq!(
             render_result_body(&batch),
-            "[0]\nexit_code: 0\na\nb\n\n[1]\nexit_code: 1\nerr\n\n[2]\nexit_code: 0\nok"
+            "[0]\na\nb\n\n[1]\nexit_code: 1\nerr\n\n[2]\nok"
         );
 
         let composite = json!({
             "status": "done",
-            "build": { "exit_code": 0, "output": "compiled\n", "output_file": "" },
+            "build": { "exit_code": 0, "output": "compiled\n" },
             "file": { "lines": ["1: alpha", "2: beta"] },
             "raw_log": "first line\nsecond line\n"
         });
         let rendered = render_result_body(&composite);
         assert!(rendered.contains(r#"{"status":"done"}"#), "{rendered}");
-        assert!(rendered.contains("build:\nexit_code: 0\ncompiled"), "{rendered}");
+        assert!(rendered.contains("build:\ncompiled"), "{rendered}");
         assert!(rendered.contains("file:\nlines:\n1: alpha\n2: beta"), "{rendered}");
         assert!(rendered.contains("raw_log:\nfirst line\nsecond line"), "{rendered}");
     }
@@ -3502,11 +3488,83 @@ mod metadata_reminder_tests {
     fn render_result_body_renders_string_arrays_one_per_line() {
         let rendered = render_result_body(&json!({ "paths": ["a.rs", "b.rs", "c.rs"] }));
         assert_eq!(rendered, "paths[3]:\na.rs\nb.rs\nc.rs");
-        // Two entries are not a list: they stay one compact JSON line.
+        // Two short tokens stay one compact JSON line.
         assert_eq!(
             render_result_body(&json!({ "paths": ["a.rs", "b.rs"] })),
             "{\"paths\":[\"a.rs\",\"b.rs\"]}"
         );
+        // Two longer paths or diagnostic messages render one per line.
+        assert_eq!(
+            render_result_body(&json!({
+                "paths": ["src/auth/token.ts", "src/net/client.ts"]
+            })),
+            "paths[2]:\nsrc/auth/token.ts\nsrc/net/client.ts"
+        );
+    }
+
+    #[test]
+    fn render_result_body_renders_one_and_two_row_object_arrays_as_tables() {
+        let one_hit = json!({
+            "hits": [{"path": "src/a.rs", "line": 7, "text": "let x = 1;"}]
+        });
+        assert_eq!(
+            render_result_body(&one_hit),
+            "hits[1]{path,line,text}:\nsrc/a.rs,7,let x = 1;"
+        );
+
+        let two_entries = json!({
+            "entries": [
+                {"name": "CLAUDE.md", "type": "file", "size": 70},
+                {"name": "src", "type": "dir", "size": 0}
+            ]
+        });
+        assert_eq!(
+            render_result_body(&two_entries),
+            "entries[2]{name,type,size}:\nCLAUDE.md,file,70\nsrc,dir,0"
+        );
+    }
+
+    #[test]
+    fn render_result_body_splits_object_arrays_with_multiline_strings_verbatim() {
+        let diags = json!({
+            "items": [
+                {
+                    "severity": "Warning",
+                    "path": "src/service.rs",
+                    "line": 8,
+                    "message": "unused variable: `x`\nhelp: prefix with `_x`"
+                },
+                {
+                    "severity": "Hint",
+                    "path": "src/service.rs",
+                    "line": 9,
+                    "message": "single line hint"
+                }
+            ]
+        });
+        let rendered = render_result_body(&diags);
+        assert!(rendered.starts_with("items:\n[0]\n"), "{rendered}");
+        assert!(rendered.contains("message:\nunused variable: `x`\nhelp: prefix with `_x`"), "{rendered}");
+        assert!(!rendered.contains("\\n"), "{rendered}");
+    }
+
+    #[test]
+    fn subagent_wait_truncated_children_surface_in_upfloat() {
+        let data = json!({ "settled": [{ "id": "child_1", "reason": "completed", "output": "partial..." }] });
+        let metadata = json!({
+            "truncated_children": [{
+                "id": "child_1",
+                "transcript": ".litecode/sessions/child_1.md",
+                "start_line": 12,
+                "end_line": 98
+            }]
+        });
+        let lines = reminders_for_call_with_metadata("subagent.wait", &data, Some(&metadata));
+        assert_eq!(
+            lines,
+            vec!["child_1 output truncated; read .litecode/sessions/child_1.md lines 12-98"]
+        );
+        assert!(reminders_for_call_with_metadata("subagent.wait", &data, None).is_empty());
     }
 
     #[test]

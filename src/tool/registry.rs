@@ -43,7 +43,6 @@ use crate::tools::{
     webfetch::WebFetchTool,
     websearch::WebSearchTool,
     write::WriteTool,
-    write_stdin::WriteStdinTool,
 };
 
 fn builtin_tool(
@@ -54,7 +53,6 @@ fn builtin_tool(
 ) -> Option<Arc<dyn Tool>> {
     let tool: Arc<dyn Tool> = match id {
         "exec_command" => Arc::new(ExecCommandTool::new(Arc::clone(&ide.terminal.jobs))),
-        "write_stdin" => Arc::new(WriteStdinTool::new(Arc::clone(&ide.terminal.jobs))),
         "read" => Arc::new(ReadTool::with_ide(Arc::clone(&ide))),
         "write" => Arc::new(WriteTool::with_ide(Arc::clone(&ide))),
         "apply_edits" => Arc::new(ApplyEditsTool::with_ide(Arc::clone(&ide))),
@@ -633,9 +631,6 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(ExecCommandTool::new(Arc::new(
             crate::terminal::AgentJobRegistry::new(),
         ))),
-        Arc::new(WriteStdinTool::new(Arc::new(
-            crate::terminal::AgentJobRegistry::new(),
-        ))),
         // WP-203: network tools are Code-only (cold stubs for settings admission).
         Arc::new(WebFetchTool::new(Arc::new(std::sync::RwLock::new(None)))),
         Arc::new(WebSearchTool::new(
@@ -1138,7 +1133,6 @@ mod tests {
         }
         for code in [
             "exec_command",
-            "write_stdin",
             "read",
             "glob",
             "grep",
@@ -1167,7 +1161,7 @@ mod tests {
             .transport_spec(&dummy_ctx())
             .unwrap()
             .description;
-        for needle in ["exec_command(args: {", "read(args: {", "upsert(args: {", "write_stdin(args: {"] {
+        for needle in ["exec_command(args: {", "read(args: {", "upsert(args: {"] {
             assert!(sdk.contains(needle), "missing {needle}");
         }
     }
@@ -1504,13 +1498,10 @@ mod tests {
             .unwrap()
             .description;
         assert!(child_sdk.contains("declare const tools"));
-        for needle in [
-            "exec_command(args: {",
-            "write_stdin(args: {",
-            "apply_edits(args: {",
-        ] {
+        for needle in ["exec_command(args: {", "apply_edits(args: {"] {
             assert!(child_sdk.contains(needle), "missing {needle}");
         }
+        assert!(!child_sdk.contains("write_stdin"));
         assert!(!child_sdk.contains("bash"));
         assert!(!child_sdk.contains("wait_shell"));
         assert!(!child_sdk.contains("kill_shell"));
@@ -1559,12 +1550,11 @@ mod tests {
                 "workspace.help",
                 "workspace.refresh",
                 "workspace.status",
-                "write",
-                "write_stdin"
+                "write"
             ]
         );
         assert!(narrow_sdk.contains("exec_command(args: {"));
-        assert!(narrow_sdk.contains("write_stdin(args: {"));
+        assert!(!narrow_sdk.contains("write_stdin"));
         assert!(narrow_sdk.contains("apply_edits(args: {"));
     }
 

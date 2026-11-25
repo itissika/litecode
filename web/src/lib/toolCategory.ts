@@ -2,7 +2,7 @@ type ProcessToolBucket = "bash" | "edit" | "tool";
 
 /** Classify a tool call for ProcessGroup header bucketing. */
 export function processToolBucket(name: string): ProcessToolBucket | null {
-  if (name === "exec_command" || name === "write_stdin") return "bash";
+  if (name === "exec_command") return "bash";
   if (name === "edit") return "edit";
   if (name === "todo" || name === "plan") return null;
   if (

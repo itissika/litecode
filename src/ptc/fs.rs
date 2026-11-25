@@ -1,9 +1,10 @@
 //! Read-only filesystem probes inside `run_code` (WP-210 I).
 //!
-//! `fs.ls(path)`, `fs.stat(path)` and `fs.exists(path)` are synchronous,
-//! workspace-confined, and never write. There is deliberately no `rm`, `mv`,
-//! or write: several agents share one workspace and `libs`/`fs` stay
-//! read-only by invariant. Writes go through `tools.write` / `tools.apply_edits`.
+//! `fs.ls(path)`, `fs.stat(path)` and `fs.exists(path)` are synchronous and
+//! never write. There is deliberately no `rm`, `mv`, or write: several agents
+//! share one workspace and `libs`/`fs` stay read-only by invariant. Path scope
+//! follows the caller's `read` permission mode (`SAFE` stays confined to the
+//! workspace; `ALL` permits read-only probes outside the workspace).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -12,10 +13,20 @@ use serde_json::{Map, Value, json};
 /// Entries returned by one `fs.ls` (Q12).
 pub const LS_CAP: usize = 500;
 
-/// Resolve `raw` under `root`. `..` may not climb out; absolute paths must
-/// already be inside `root`. Symlinks are followed only when the target is
-/// still inside `root`.
-fn confine(root: &Path, raw: &str) -> Result<PathBuf, (&'static str, String)> {
+/// Resolve `raw` under `root`.
+///
+/// When `allow_outside_workspace` is `false` (`SAFE`), `..` may not climb out,
+/// absolute paths must sit inside `root`, and symlinks must target inside `root`.
+/// When `allow_outside_workspace` is `true` (`ALL`), read-only paths outside
+/// `root` are allowed, matching `tools.read`.
+fn resolve_path(
+    root: &Path,
+    raw: &str,
+    allow_outside_workspace: bool,
+) -> Result<PathBuf, (&'static str, String)> {
+    if raw.trim().is_empty() {
+        return Err(("invalid_input", "path must be non-empty".into()));
+    }
     let candidate = Path::new(raw);
     let joined = if candidate.is_absolute() {
         candidate.to_path_buf()
@@ -26,13 +37,16 @@ fn confine(root: &Path, raw: &str) -> Result<PathBuf, (&'static str, String)> {
     for component in joined.components() {
         match component {
             Component::ParentDir => {
-                if !normal.pop() {
+                if !normal.pop() && !allow_outside_workspace {
                     return Err(("permission", format!("{raw} is outside the workspace")));
                 }
             }
             Component::CurDir => {}
             other => normal.push(other.as_os_str()),
         }
+    }
+    if allow_outside_workspace {
+        return Ok(normal);
     }
     let root_real = crate::config::path::canon_abs(root).unwrap_or_else(|_| root.to_path_buf());
     let inside = |path: &Path| path.starts_with(root) || path.starts_with(&root_real);
@@ -70,9 +84,15 @@ fn io_failure(raw: &str, error: std::io::Error) -> (&'static str, String) {
     }
 }
 
-/// `{entries:[{name,type,size}], truncated}` — one level, sorted by name, capped at `LS_CAP`.
-pub fn ls(root: &Path, raw: &str) -> Result<Value, (&'static str, String)> {
-    let path = confine(root, raw)?;
+/// `{entries:[{name,type,size}]}` — one level, sorted by name, capped at `LS_CAP`.
+/// Returns `(value, Some(total))` when more than `LS_CAP` entries existed so the
+/// host can surface a run warning instead of cluttering normal output.
+pub fn ls(
+    root: &Path,
+    raw: &str,
+    allow_outside_workspace: bool,
+) -> Result<(Value, Option<usize>), (&'static str, String)> {
+    let path = resolve_path(root, raw, allow_outside_workspace)?;
     let reader = std::fs::read_dir(&path).map_err(|error| io_failure(raw, error))?;
     let mut entries: Vec<(String, &'static str, u64)> = Vec::new();
     for entry in reader.flatten() {
@@ -96,13 +116,17 @@ pub fn ls(root: &Path, raw: &str) -> Result<Value, (&'static str, String)> {
                 .collect(),
         ),
     );
-    out.insert("truncated".into(), Value::Bool(total > LS_CAP));
-    Ok(Value::Object(out))
+    let truncated_total = (total > LS_CAP).then_some(total);
+    Ok((Value::Object(out), truncated_total))
 }
 
 /// `{type, size, mtime}` with `mtime` in ms since the Unix epoch.
-pub fn stat(root: &Path, raw: &str) -> Result<Value, (&'static str, String)> {
-    let path = confine(root, raw)?;
+pub fn stat(
+    root: &Path,
+    raw: &str,
+    allow_outside_workspace: bool,
+) -> Result<Value, (&'static str, String)> {
+    let path = resolve_path(root, raw, allow_outside_workspace)?;
     match std::fs::metadata(&path) {
         Ok(meta) => {
             let mtime = meta
@@ -117,9 +141,9 @@ pub fn stat(root: &Path, raw: &str) -> Result<Value, (&'static str, String)> {
     }
 }
 
-/// `true` only for an existing path inside the workspace.
-pub fn exists(root: &Path, raw: &str) -> bool {
-    confine(root, raw).is_ok_and(|path| path.exists())
+/// `true` for an existing path permitted under the active workspace scope.
+pub fn exists(root: &Path, raw: &str, allow_outside_workspace: bool) -> bool {
+    resolve_path(root, raw, allow_outside_workspace).is_ok_and(|path| path.exists())
 }
 
 #[cfg(test)]
@@ -134,7 +158,9 @@ mod tests {
         std::fs::write(root.join("src/a.rs"), "fn a() {}").unwrap();
         std::fs::write(root.join("b.txt"), "hi").unwrap();
 
-        let listed = ls(root, ".").expect("ls root");
+        let (listed, truncated) = ls(root, ".", false).expect("ls root");
+        assert_eq!(truncated, None);
+        assert!(listed.get("truncated").is_none());
         let names: Vec<&str> = listed["entries"]
             .as_array()
             .unwrap()
@@ -145,21 +171,31 @@ mod tests {
         assert_eq!(listed["entries"][0]["type"], "file");
         assert_eq!(listed["entries"][0]["size"], 2);
 
-        let info = stat(root, "src/a.rs").expect("stat file");
+        let info = stat(root, "src/a.rs", false).expect("stat file");
         assert_eq!(
             (info["type"].clone(), info["size"].clone()),
             (json!("file"), json!(9))
         );
         assert!(info["mtime"].as_u64().unwrap() > 0);
-        assert!(exists(root, "src"));
-        assert!(!exists(root, "nope"));
+        assert!(exists(root, "src", false));
+        assert!(!exists(root, "nope", false));
 
-        assert_eq!(stat(root, "nope").unwrap_err().0, "not_found");
-        assert_eq!(ls(root, "../").unwrap_err().0, "permission");
-        assert!(!exists(root, "../"));
+        assert_eq!(stat(root, "nope", false).unwrap_err().0, "not_found");
+        assert_eq!(ls(root, "../", false).unwrap_err().0, "permission");
+        assert!(!exists(root, "../", false));
 
         // Nothing was created or removed by the probes.
         assert_eq!(std::fs::read_dir(root).unwrap().count(), 2);
+
+        // ALL mode permits read-only probes outside the workspace.
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("ext.txt"), "ok").unwrap();
+        let outside_dir = outside.path().to_string_lossy().into_owned();
+        let outside_file = outside.path().join("ext.txt").to_string_lossy().into_owned();
+        assert_eq!(ls(root, &outside_dir, false).unwrap_err().0, "permission");
+        assert!(ls(root, &outside_dir, true).is_ok());
+        assert_eq!(stat(root, &outside_file, true).expect("stat ext")["size"], 2);
+        assert!(exists(root, &outside_file, true));
     }
 
     /// Top-level key names declared in the first object literal after `marker`.
@@ -230,14 +266,15 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("b.txt"), "hi").unwrap();
 
-        let listed = ls(root, ".").expect("ls");
+        let (listed, truncated) = ls(root, ".", false).expect("ls");
+        assert_eq!(truncated, None);
         assert_eq!(declared_keys("  ls(path: string): ", libs), runtime_keys(&listed));
         assert_eq!(
             declared_keys("entries: Array<", libs),
             runtime_keys(&listed["entries"][0]),
         );
 
-        let statted = stat(root, "b.txt").expect("stat");
+        let statted = stat(root, "b.txt", false).expect("stat");
         assert_eq!(declared_keys("  stat(path: string): ", libs), runtime_keys(&statted));
 
         assert!(libs.contains("  exists(path: string): boolean;"));

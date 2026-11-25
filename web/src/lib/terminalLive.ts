@@ -71,7 +71,7 @@ function hasFunctionCall(
  * Transcript target for the terminal panel's Reveal control.
  *
  * A nested `call_id` jumps to its parent `run_code` call; a top-level
- * `exec_command` / `write_stdin` call reveals that call card.
+ * `exec_command` call reveals that call card.
  */
 export function terminalRevealCallId(
   callId: string,
@@ -81,7 +81,7 @@ export function terminalRevealCallId(
   if (parent) {
     return hasFunctionCall(rows, parent, ["run_code"]) ? parent : undefined;
   }
-  return hasFunctionCall(rows, callId, ["exec_command", "write_stdin"])
+  return hasFunctionCall(rows, callId, ["exec_command"])
     ? callId
     : undefined;
 }

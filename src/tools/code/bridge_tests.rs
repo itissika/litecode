@@ -549,7 +549,7 @@ async fn a_tool_result_reaches_the_model_with_fields_and_a_reminder_line() {
     );
 }
 
-/// Facts must not depend on the program handing the result back.
+/// Boundary facts (such as a clamped limit) must not depend on the program handing the full result back.
 #[tokio::test]
 async fn a_slice_of_a_result_still_reaches_the_model() {
     let dir = tempfile::tempdir().unwrap();
@@ -558,12 +558,12 @@ async fn a_slice_of_a_result_still_reaches_the_model() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(crate::tools::read::ReadTool::default())],
-        r#"const r = await tools.read({ path: "a.txt", limit: 2 }); inspect(r.lines);"#,
+        r#"const r = await tools.read({ path: "a.txt", limit: 9999 }); inspect(r.lines.slice(0, 2));"#,
     )
     .await;
     let content = result.content;
     assert!(
-        content.contains("tools.read: showing lines 1-2 of 5; continue with start_line 3"),
+        content.contains("tools.read: limit 5000 used instead of 9999"),
         "{content}"
     );
 }
@@ -659,14 +659,12 @@ inspect(r.hits.length);"#,
     .await;
     let content = result.content;
     assert!(
-        content.contains(
-            "↳ #1 tools.grep: showing the first 5 matches; more exist — narrow the pattern/path or raise limit"
-        ),
+        content.contains("↳ #1 tools.grep: cut at 5 matches; more exist"),
         "{content}"
     );
 }
-/// The path risk is reminder metadata: the program only sees the path, while
-/// the model gets one line naming the resolved target.
+/// When ALL permission permits an outside-workspace write, the program sees only
+/// `path` and the renderer does not emit redundant post-allow safety chatter.
 #[tokio::test]
 async fn an_outside_write_reaches_the_model_as_a_field_and_a_line() {
     let dir = tempfile::tempdir().unwrap();
@@ -684,11 +682,7 @@ async fn an_outside_write_reaches_the_model_as_a_field_and_a_line() {
     .await;
     let content = result.content;
     assert!(content.contains("\"hasRisk\":false"), "{content}");
-    let expected = format!(
-        "↳ #1 tools.write: wrote (outside workspace): {}",
-        target.to_string_lossy()
-    );
-    assert!(content.contains(&expected), "{content}\n{expected}");
+    assert!(!content.contains("outside workspace"), "{content}");
 }
 
 /// Claims to be `workspace_symbol` and fails like a dead language server: the
@@ -1077,11 +1071,14 @@ async fn a_numeric_inspect_does_not_hide_the_facts() {
     let result = run_program(
         dir.path(),
         vec![Arc::new(crate::tools::read::ReadTool::default())],
-        r#"const r = await tools.read({ path: "a.txt", limit: 2 }); inspect(r.lines.length);"#,
+        r#"const r = await tools.read({ path: "a.txt", start_line: 99 }); inspect(r.lines.length);"#,
     )
     .await;
     let content = result.content;
-    assert!(content.contains("tools.read: showing lines 1-2 of 5"), "{content}");
+    assert!(
+        content.contains("tools.read: start_line 99 is past the end; the file has 5 lines"),
+        "{content}"
+    );
 }
 
 /// A failed nested call rejects instead of producing a platform envelope.

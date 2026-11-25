@@ -1,11 +1,19 @@
-//! Codex-compatible unified exec command.
+//! Shell command execution (`exec_command`).
 //!
-//! `exec_command` is deliberately not a second name for `run`: it starts a
-//! session, waits only for `yield_time_ms`, and returns either a final exit or
-//! a live session id that `write_stdin` can drive. A live session keeps running
-//! after the yield; unless `write_stdin` consumes its exit, it leaves a
-//! `bash_exit` notice in the session mailbox. The process registry owns the
-//! stdin, process-group signal, output cursor and cleanup.
+//! Runs a non-interactive shell command (`stdin` is closed via `/dev/null` and
+//! non-interactive env vars are set so accidental prompts fail fast with EOF
+//! while still returning all captured stdout/stderr).
+//!
+//! - Default (`background: false`): waits up to `timeout_ms` (default 60s,
+//!   clamped to `1_000..=300_000`) for exit. If still running at timeout,
+//!   auto-promotes to background without killing the process.
+//! - `background: true`: returns after a brief capture window (250ms) while
+//!   the command continues in the background.
+//!
+//! Background commands deliver a `bash_exit` notice when they exit and keep
+//! their log under `.litecode/run/`. Foreground commands that finish inline
+//! return `{ exit_code, output }` directly; output overflow spilling is owned
+//! solely by the outer `run_code` model view.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,8 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::terminal::{
-    AgentJobRegistry, PipeDecision, PipeDetach, PipeRequest, PtyRequest, supervise_pipe,
-    supervise_pty,
+    AgentJobRegistry, PipeDecision, PipeDetach, PipeRequest, supervise_pipe,
 };
 use crate::tool::Tool;
 use crate::tool::clamp::clamp_int;
@@ -26,84 +33,37 @@ use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::ResourceKey;
 use crate::tools::bash_safety::{is_destructive_command, is_readonly_command};
 use crate::tools::command_job;
-use crate::tools::file_path::coded_error;
+use crate::tools::file_path::{coded_error, tool_path_error};
 use crate::types::ToolCallResult;
+use crate::workspace::{ToolPathMode, resolve_tool_path_from};
 
-pub const MIN_YIELD_MS: u64 = 250;
-pub const MAX_YIELD_MS: u64 = 600_000;
-pub const DEFAULT_YIELD_MS: u64 = 10_000;
-pub const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
-pub const MAX_OUTPUT_TOKENS: usize = 200_000;
+pub const MIN_TIMEOUT_MS: u64 = 1_000;
+pub const MAX_TIMEOUT_MS: u64 = 300_000;
+pub const DEFAULT_TIMEOUT_MS: u64 = 60_000;
+pub const BACKGROUND_CAPTURE_MS: u64 = 250;
 pub(crate) const CODE_DEFAULT_MAX_OUTPUT_BYTES: usize = 1_048_576;
-
-pub(crate) fn resolve_output_max_bytes(
-    explicit_tokens: Option<usize>,
-    output_limit: usize,
-) -> usize {
-    if let Some(tokens) = explicit_tokens {
-        return tokens.saturating_mul(4).max(1024);
-    }
-    if output_limit == usize::MAX {
-        CODE_DEFAULT_MAX_OUTPUT_BYTES
-    } else {
-        DEFAULT_MAX_OUTPUT_TOKENS.saturating_mul(4)
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecCommandData {
-    pub session_id: Option<String>,
     pub exit_code: Option<i32>,
     pub output: String,
-    #[serde(default)]
-    pub output_file: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub truncated: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_bytes: Option<usize>,
+    /// Metadata-only fields moved out of `data` by `result_projection`:
+    /// only populated when the command is running in the background or an arg
+    /// was clamped. Never exposed to JS `exec_command` return objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_file: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clamped: Vec<crate::tool::clamp::Clamp>,
-}
-
-impl ExecCommandData {
-    pub fn from_delta(
-        session_id: Option<String>,
-        exit_code: Option<i32>,
-        delta: crate::terminal::OutputDelta,
-    ) -> Self {
-        let total_bytes = delta.total_file_bytes.max(delta.original_bytes);
-        let output = if delta.truncated {
-            let notice = crate::tool::output::full_output_notice(
-                total_bytes,
-                (!delta.output_file.is_empty()).then_some(delta.output_file.as_str()),
-            );
-            if delta.text.is_empty() {
-                notice
-            } else {
-                format!("{}\n{notice}", delta.text)
-            }
-        } else {
-            delta.text
-        };
-        Self {
-            session_id,
-            exit_code,
-            output,
-            output_file: delta.output_file,
-            truncated: delta.truncated.then_some(true),
-            total_bytes: delta.truncated.then_some(total_bytes),
-            clamped: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
 struct ParsedArgs {
     cmd: String,
     workdir: Option<String>,
-    tty: bool,
-    yield_ms: u64,
-    max_output_tokens: Option<usize>,
+    timeout_ms: u64,
+    background: bool,
     clamped: Vec<crate::tool::clamp::Clamp>,
 }
 
@@ -124,56 +84,50 @@ impl ExecCommandTool {
             Some(Value::String(_)) => None,
             Some(_) => return Err("parameter 'workdir' expected a string".into()),
         };
-        let tty = match input.get("tty") {
+        let background = match input.get("background") {
             None | Some(Value::Null) => false,
             Some(Value::Bool(value)) => *value,
-            Some(_) => return Err("parameter 'tty' expected a boolean".into()),
+            Some(_) => return Err("parameter 'background' expected a boolean".into()),
         };
         let mut clamped = Vec::new();
-        let yield_value =
-            clamp_int(input, "yield_time_ms", MIN_YIELD_MS, MAX_YIELD_MS, "ms")?;
-        if let Some(note) = yield_value.as_ref().and_then(|value| value.as_clamp("yield_time_ms")) {
-            clamped.push(note);
-        }
-        let yield_ms = yield_value.map_or(DEFAULT_YIELD_MS, |value| value.value);
-        let max_tokens_value = clamp_int(
-            input,
-            "max_output_tokens",
-            1,
-            MAX_OUTPUT_TOKENS as u64,
-            "tokens",
-        )?;
-        if let Some(note) = max_tokens_value
+        let timeout_value =
+            clamp_int(input, "timeout_ms", MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, "ms")?;
+        if let Some(note) = timeout_value
             .as_ref()
-            .and_then(|value| value.as_clamp("max_output_tokens"))
+            .and_then(|value| value.as_clamp("timeout_ms"))
         {
             clamped.push(note);
         }
-        let max_output_tokens = max_tokens_value.map(|value| value.value as usize);
+        let timeout_ms = timeout_value.map_or(DEFAULT_TIMEOUT_MS, |value| value.value);
         Ok(ParsedArgs {
             cmd,
             workdir,
-            tty,
-            yield_ms,
-            max_output_tokens,
+            timeout_ms,
+            background,
             clamped,
         })
     }
 
-    fn resolve_workdir(raw: Option<&str>, root: &Path) -> Result<PathBuf, String> {
+    fn resolve_workdir(
+        raw: Option<&str>,
+        root: &Path,
+        mode: ToolPathMode,
+    ) -> Result<PathBuf, ToolCallResult> {
         let Some(raw) = raw else {
             return Ok(root.to_path_buf());
         };
-        let requested = Path::new(raw);
-        let joined = if requested.is_absolute() {
-            requested.to_path_buf()
-        } else {
-            root.join(requested)
-        };
-        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        let resolved = joined.canonicalize().unwrap_or(joined);
-        if !resolved.starts_with(&root) {
-            return Err("workdir escapes the workspace root".into());
+        let resolved = resolve_tool_path_from(root, raw, mode).map_err(tool_path_error)?;
+        if !resolved.exists() {
+            return Err(coded_error(
+                "not_found",
+                format!("workdir '{raw}' does not exist"),
+            ));
+        }
+        if !resolved.is_dir() {
+            return Err(coded_error(
+                "invalid_input",
+                format!("workdir '{raw}' is not a directory"),
+            ));
         }
         Ok(resolved)
     }
@@ -183,9 +137,13 @@ impl ExecCommandTool {
             Ok(args) => args,
             Err(error) => return coded_error("invalid_input", error),
         };
-        let cwd = match Self::resolve_workdir(args.workdir.as_deref(), &execution.workspace_root) {
+        let cwd = match Self::resolve_workdir(
+            args.workdir.as_deref(),
+            &execution.workspace_root,
+            execution.path_mode,
+        ) {
             Ok(cwd) => cwd,
-            Err(error) => return coded_error("invalid_input", error),
+            Err(error) => return error,
         };
         if execution.cancel.is_cancelled() {
             return coded_error("cancelled", "exec_command cancelled before spawn");
@@ -193,73 +151,63 @@ impl ExecCommandTool {
         tracing::info!(
             tool = "exec_command",
             session_id = %execution.session_id,
-            tty = args.tty,
-            yield_ms = args.yield_ms,
-            max_output_tokens = ?args.max_output_tokens,
-            "unified exec start"
+            background = args.background,
+            timeout_ms = args.timeout_ms,
+            "exec_command start"
         );
         let scope = crate::tool::run_scope::current().unwrap_or_default();
         let (spawned_tx, spawned_rx) = tokio::sync::oneshot::channel();
-        let rx = if args.tty {
-            supervise_pty(
-                Arc::clone(&self.jobs),
-                PtyRequest {
-                    command: args.cmd,
-                    cwd,
-                    workspace_root: execution.workspace_root.clone(),
-                    session_id: execution.session_id.clone(),
-                    call_id: execution.call_id.clone(),
-                    yield_window: Duration::from_millis(args.yield_ms),
-                    cancel: execution.cancel.clone(),
-                    on_spawned: Some(spawned_tx),
-                },
-            )
+        let detach = if args.background {
+            PipeDetach::Background {
+                window: Duration::from_millis(BACKGROUND_CAPTURE_MS),
+            }
         } else {
-            supervise_pipe(
-                Arc::clone(&self.jobs),
-                PipeRequest {
-                    command: args.cmd,
-                    cwd,
-                    workspace_root: execution.workspace_root.clone(),
-                    session_id: execution.session_id.clone(),
-                    call_id: execution.call_id.clone(),
-                    cancel: execution.cancel.clone(),
-                    detach: PipeDetach::Background {
-                        window: Duration::from_millis(args.yield_ms),
-                    },
-                    open_stdin: true,
-                    merge_output: true,
-                    on_spawned: Some(spawned_tx),
-                },
-            )
+            PipeDetach::Foreground {
+                timeout: Duration::from_millis(args.timeout_ms),
+            }
         };
+        let rx = supervise_pipe(
+            Arc::clone(&self.jobs),
+            PipeRequest {
+                command: args.cmd,
+                cwd,
+                workspace_root: execution.workspace_root.clone(),
+                session_id: execution.session_id.clone(),
+                call_id: execution.call_id.clone(),
+                cancel: execution.cancel.clone(),
+                detach,
+                merge_output: true,
+                on_spawned: Some(spawned_tx),
+            },
+        );
         let _ = spawned_rx.await;
         scope.spawn_locks.release();
         let decision = match rx.await {
             Ok(decision) => decision,
             Err(_) => return coded_error("io", "exec supervisor dropped the result"),
         };
-        let max_bytes = resolve_output_max_bytes(args.max_output_tokens, execution.output_limit);
         match decision {
             PipeDecision::Exited { job_id, exit_code } => {
                 self.jobs
                     .wait_readers(&job_id, command_job::READER_GRACE)
                     .await;
-                let delta = self
+                let tee_path = self.jobs.get(&job_id).map(|(_, _, _, path)| path);
+                let output = self
                     .jobs
-                    .output_delta(&job_id, max_bytes)
-                    .unwrap_or_else(|| crate::terminal::OutputDelta {
-                        text: String::new(),
-                        original_bytes: 0,
-                        total_file_bytes: 0,
-                        output_file: String::new(),
-                        alive: false,
-                        exit_code: None,
-                        truncated: false,
-                    });
+                    .output_delta(&job_id, CODE_DEFAULT_MAX_OUTPUT_BYTES)
+                    .map(|delta| delta.text)
+                    .unwrap_or_default();
                 self.jobs.discard_finished(&job_id);
-                let mut data = ExecCommandData::from_delta(None, exit_code, delta);
-                data.clamped = args.clamped.clone();
+                if let Some(path) = tee_path {
+                    let _ = std::fs::remove_file(path);
+                }
+                let data = ExecCommandData {
+                    exit_code,
+                    output,
+                    session_id: None,
+                    output_file: None,
+                    clamped: args.clamped,
+                };
                 ToolOutcome::ok(data).into_call_result(format!(
                     "exit_code: {}\n",
                     exit_code
@@ -268,26 +216,27 @@ impl ExecCommandTool {
                 ))
             }
             PipeDecision::Background { job_id } | PipeDecision::Promoted { job_id } => {
-                let delta = self
-                    .jobs
-                    .output_delta(&job_id, max_bytes)
-                    .unwrap_or_else(|| crate::terminal::OutputDelta {
-                        text: String::new(),
-                        original_bytes: 0,
-                        total_file_bytes: 0,
-                        output_file: String::new(),
-                        alive: true,
-                        exit_code: None,
-                        truncated: false,
-                    });
-                let mut data = ExecCommandData::from_delta(Some(job_id.clone()), None, delta);
-                data.clamped = args.clamped.clone();
+                let delta = self.jobs.output_delta(&job_id, CODE_DEFAULT_MAX_OUTPUT_BYTES);
+                let (output, output_file) = match delta {
+                    Some(delta) => (
+                        delta.text,
+                        (!delta.output_file.is_empty()).then_some(delta.output_file),
+                    ),
+                    None => (String::new(), None),
+                };
+                let data = ExecCommandData {
+                    exit_code: None,
+                    output,
+                    session_id: Some(job_id.clone()),
+                    output_file,
+                    clamped: args.clamped,
+                };
                 tracing::info!(
                     tool = "exec_command",
                     session_id = %job_id,
-                    tty = args.tty,
-                    yield_ms = args.yield_ms,
-                    "unified exec yielded"
+                    background = args.background,
+                    timeout_ms = args.timeout_ms,
+                    "exec_command backgrounded"
                 );
                 ToolOutcome::ok(data).into_call_result(format!("session_id: {job_id}\n"))
             }
@@ -301,7 +250,6 @@ impl Tool for ExecCommandTool {
     fn name(&self) -> &str {
         "exec_command"
     }
-
 
     fn execute(
         &self,
@@ -372,117 +320,151 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use crate::tools::command_job::test_execution;
-    #[cfg(unix)]
-    use crate::tools::write_stdin::WriteStdinTool;
 
     #[cfg(unix)]
     fn data(result: &ToolCallResult) -> ExecCommandData {
         serde_json::from_value(result.data.clone().expect("data")).expect("exec data")
     }
 
+    #[test]
+    fn defaults_timeout_to_sixty_seconds_and_clamps_bounds() {
+        let parsed = ExecCommandTool::parse_args(&serde_json::json!({ "cmd": "true" }))
+            .expect("parse default");
+        assert_eq!(parsed.timeout_ms, DEFAULT_TIMEOUT_MS);
+        assert_eq!(parsed.timeout_ms, 60_000);
+        assert!(!parsed.background);
+        assert!(parsed.clamped.is_empty());
+
+        let low = ExecCommandTool::parse_args(&serde_json::json!({
+            "cmd": "true",
+            "timeout_ms": 100
+        }))
+        .expect("clamp low");
+        assert_eq!(low.timeout_ms, MIN_TIMEOUT_MS);
+        assert_eq!(low.clamped.len(), 1);
+
+        let high = ExecCommandTool::parse_args(&serde_json::json!({
+            "cmd": "true",
+            "timeout_ms": 999_999
+        }))
+        .expect("clamp high");
+        assert_eq!(high.timeout_ms, MAX_TIMEOUT_MS);
+        assert_eq!(high.clamped.len(), 1);
+    }
+
+    #[test]
+    fn resolve_workdir_respects_safe_vs_all_path_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let sub = root.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+
+        let in_ws = ExecCommandTool::resolve_workdir(Some("sub"), root.path(), ToolPathMode::Safe)
+            .expect("subdir allowed in SAFE");
+        assert!(in_ws.ends_with("sub"));
+
+        let outside_raw = outside.path().to_string_lossy().into_owned();
+        let denied =
+            ExecCommandTool::resolve_workdir(Some(&outside_raw), root.path(), ToolPathMode::Safe)
+                .expect_err("external workdir rejected in SAFE");
+        assert_eq!(denied.error_code.as_deref(), Some("invalid_input"));
+
+        let allowed =
+            ExecCommandTool::resolve_workdir(Some(&outside_raw), root.path(), ToolPathMode::All)
+                .expect("external workdir allowed in ALL");
+        assert_eq!(
+            allowed.canonicalize().unwrap(),
+            outside.path().canonicalize().unwrap()
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
-    async fn exec_command_yields_then_ctrl_c_runs_cleanup() {
+    async fn foreground_returns_exit_code_and_output_without_session_or_log_leak() {
         let dir = tempfile::tempdir().unwrap();
         let jobs = Arc::new(AgentJobRegistry::new());
         let exec = ExecCommandTool::new(Arc::clone(&jobs));
-        let stdin = WriteStdinTool::new(Arc::clone(&jobs));
         let execution = test_execution(dir.path(), "s1");
 
-        let started = exec
-            .execute(
-                serde_json::json!({
-                    "cmd": "trap 'echo CLEANED; exit 0' INT; while :; do sleep 1; done",
-                    "yield_time_ms": 250
-                }),
-                execution.clone(),
-            )
+        let ok = exec
+            .execute(serde_json::json!({ "cmd": "printf 'hello\\n'" }), execution.clone())
             .await;
-        assert!(started.error.is_none(), "{started:?}");
-        let started = data(&started);
-        let session_id = started.session_id.expect("session id");
-        assert!(started.exit_code.is_none());
+        assert!(ok.error.is_none(), "{ok:?}");
+        let ok_data = data(&ok);
+        assert_eq!(ok_data.exit_code, Some(0));
+        assert_eq!(ok_data.output, "hello\n");
+        assert!(ok_data.session_id.is_none());
+        assert!(ok_data.output_file.is_none());
 
-        let stopped = stdin
+        let fail = exec
             .execute(
-                serde_json::json!({
-                    "session_id": session_id,
-                    "chars": "\u{0003}",
-                    "yield_time_ms": 3000
-                }),
+                serde_json::json!({ "cmd": "printf 'boom\\n' >&2; exit 7" }),
                 execution,
             )
             .await;
-        assert!(stopped.error.is_none(), "{stopped:?}");
-        let stopped = data(&stopped);
-        assert!(stopped.output.contains("CLEANED"), "{stopped:?}");
-        assert!(stopped.session_id.is_none());
+        assert!(fail.error.is_none(), "{fail:?}");
+        let fail_data = data(&fail);
+        assert_eq!(fail_data.exit_code, Some(7));
+        assert_eq!(fail_data.output, "boom\n");
+
+        // Foreground temporary tee files must be cleaned up.
+        let run_dir = dir.path().join(".litecode").join("run");
+        if run_dir.exists() {
+            assert_eq!(std::fs::read_dir(&run_dir).unwrap().count(), 0);
+        }
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn exec_command_tty_yields_then_ctrl_c_runs_cleanup() {
+    async fn stdin_is_closed_so_interactive_prompts_fail_fast_with_output() {
         let dir = tempfile::tempdir().unwrap();
         let jobs = Arc::new(AgentJobRegistry::new());
         let exec = ExecCommandTool::new(Arc::clone(&jobs));
-        let stdin = WriteStdinTool::new(Arc::clone(&jobs));
-        let execution = test_execution(dir.path(), "s2");
+        let execution = test_execution(dir.path(), "s_eof");
 
-        let started = exec
+        let result = exec
             .execute(
                 serde_json::json!({
-                    "cmd": "trap 'echo PTY_CLEANED; exit 0' INT; while :; do sleep 1; done",
-                    "tty": true,
-                    "yield_time_ms": 250
-                }),
-                execution.clone(),
-            )
-            .await;
-        assert!(started.error.is_none(), "{started:?}");
-        let started = data(&started);
-        let session_id = started.session_id.expect("session id");
-
-        let stopped = stdin
-            .execute(
-                serde_json::json!({
-                    "session_id": session_id,
-                    "chars": "\u{0003}",
-                    "yield_time_ms": 3000
+                    "cmd": "printf 'Prompt: '; read line || exit 1",
+                    "timeout_ms": 5000
                 }),
                 execution,
             )
             .await;
-        assert!(stopped.error.is_none(), "{stopped:?}");
-        let stopped = data(&stopped);
-        assert!(stopped.output.contains("PTY_CLEANED"), "{stopped:?}");
+        assert!(result.error.is_none(), "{result:?}");
+        let d = data(&result);
+        assert_eq!(d.exit_code, Some(1), "read on closed stdin must hit EOF");
+        assert!(d.output.contains("Prompt:"), "prompt output preserved: {d:?}");
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn tty_background_exit_reaches_the_mailbox() {
+    async fn background_true_detaches_and_delivers_exit_notice() {
         let dir = tempfile::tempdir().unwrap();
         let jobs = Arc::new(AgentJobRegistry::new());
         let exec = ExecCommandTool::new(Arc::clone(&jobs));
-        let execution = test_execution(dir.path(), "s2b");
+        let execution = test_execution(dir.path(), "s_bg");
 
         let started = exec
             .execute(
                 serde_json::json!({
-                    "cmd": "sleep 0.5; printf PTY_DONE",
-                    "tty": true,
-                    "yield_time_ms": 250
+                    "cmd": "printf 'booting\\n'; sleep 0.5; printf 'done\\n'",
+                    "background": true
                 }),
                 execution,
             )
             .await;
         assert!(started.error.is_none(), "{started:?}");
-        let session_id = data(&started).session_id.expect("session id");
+        let started = data(&started);
+        assert!(started.exit_code.is_none(), "{started:?}");
+        let session_id = started.session_id.expect("background session_id");
+        assert!(started.output_file.is_some(), "background log path expected");
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while !jobs.mailbox_pending("s2b") && tokio::time::Instant::now() < deadline {
+        while !jobs.mailbox_pending("s_bg") && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let notices = jobs.take_mailbox("s2b");
+        let notices = jobs.take_mailbox("s_bg");
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert_eq!(notices[0].bash_id, session_id);
         assert_eq!(notices[0].exit_code, Some(0));
@@ -490,89 +472,35 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn write_stdin_empty_chars_polls_new_output() {
+    async fn foreground_timeout_auto_promotes_to_background_without_killing() {
         let dir = tempfile::tempdir().unwrap();
         let jobs = Arc::new(AgentJobRegistry::new());
         let exec = ExecCommandTool::new(Arc::clone(&jobs));
-        let stdin = WriteStdinTool::new(Arc::clone(&jobs));
-        let execution = test_execution(dir.path(), "s4");
+        let execution = test_execution(dir.path(), "s_promo");
 
-        let started = exec
+        let promoted = exec
             .execute(
                 serde_json::json!({
-                    "cmd": "printf first; sleep 0.3; printf second; sleep 30",
-                    "yield_time_ms": 250
-                }),
-                execution.clone(),
-            )
-            .await;
-        let started = data(&started);
-        let session_id = started.session_id.expect("session id");
-        let polled = stdin
-            .execute(
-                serde_json::json!({
-                    "session_id": session_id,
-                    "yield_time_ms": 2000
-                }),
-                execution.clone(),
-            )
-            .await;
-        assert!(polled.error.is_none(), "{polled:?}");
-        assert!(data(&polled).output.contains("second"));
-        let _ = stdin
-            .execute(
-                serde_json::json!({
-                    "session_id": session_id,
-                    "chars": "\u{0003}",
-                    "yield_time_ms": 1000
+                    "cmd": "printf 'step1\\n'; sleep 1.4; printf 'step2\\n'",
+                    "timeout_ms": 1000
                 }),
                 execution,
             )
             .await;
-    }
+        assert!(promoted.error.is_none(), "{promoted:?}");
+        let promoted = data(&promoted);
+        assert!(promoted.exit_code.is_none(), "{promoted:?}");
+        let session_id = promoted.session_id.expect("promoted session_id");
+        assert!(promoted.output.contains("step1"), "{promoted:?}");
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn write_stdin_empty_chars_waits_for_exit_or_yield_budget_past_early_output() {
-        let dir = tempfile::tempdir().unwrap();
-        let jobs = Arc::new(AgentJobRegistry::new());
-        let exec = ExecCommandTool::new(Arc::clone(&jobs));
-        let stdin = WriteStdinTool::new(Arc::clone(&jobs));
-        let execution = test_execution(dir.path(), "s4b");
-
-        let started = exec
-            .execute(
-                serde_json::json!({
-                    "cmd": "sleep 0.35; printf first; sleep 0.35; printf second",
-                    "yield_time_ms": 250
-                }),
-                execution.clone(),
-            )
-            .await;
-        let started = data(&started);
-        assert!(started.session_id.is_some());
-        assert!(started.exit_code.is_none());
-        let session_id = started.session_id.expect("session id");
-
-        // `first` arrives ~100ms in, `second` and exit follow ~450ms later; a
-        // 1500ms budget must wait until exit and return both chunks together.
-        let polled = stdin
-            .execute(
-                serde_json::json!({
-                    "session_id": session_id,
-                    "yield_time_ms": 1500
-                }),
-                execution,
-            )
-            .await;
-        assert!(polled.error.is_none(), "{polled:?}");
-        let polled = data(&polled);
-        assert!(polled.session_id.is_none(), "{polled:?}");
-        assert_eq!(polled.exit_code, Some(0), "{polled:?}");
-        assert!(
-            polled.output.contains("first") && polled.output.contains("second"),
-            "poll returned before command finished: {polled:?}"
-        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !jobs.mailbox_pending("s_promo") && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let notices = jobs.take_mailbox("s_promo");
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].bash_id, session_id);
+        assert_eq!(notices[0].exit_code, Some(0));
     }
 
     #[cfg(unix)]
@@ -583,14 +511,13 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         let jobs = Arc::new(AgentJobRegistry::new());
         let exec = ExecCommandTool::new(Arc::clone(&jobs));
-        let execution = test_execution(dir.path(), "s5");
+        let execution = test_execution(dir.path(), "s_wd");
 
         let result = exec
             .execute(
                 serde_json::json!({
                     "cmd": "pwd",
-                    "workdir": "sub",
-                    "yield_time_ms": 250
+                    "workdir": "sub"
                 }),
                 execution,
             )
@@ -598,137 +525,31 @@ mod tests {
         assert!(result.error.is_none(), "{result:?}");
         assert!(data(&result).output.contains("sub"), "{result:?}");
     }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn exec_command_truncates_to_output_budget() {
-        let dir = tempfile::tempdir().unwrap();
-        let jobs = Arc::new(AgentJobRegistry::new());
-        let exec = ExecCommandTool::new(Arc::clone(&jobs));
-        let execution = test_execution(dir.path(), "s6");
-
-        let result = exec
-            .execute(
-                serde_json::json!({
-                    "cmd": "printf '%02000d' 0",
-                    "max_output_tokens": 1,
-                    "yield_time_ms": 250
-                }),
-                execution,
-            )
-            .await;
-        assert!(result.error.is_none(), "{result:?}");
-        let result = data(&result);
-        assert_eq!(result.truncated, Some(true), "{result:?}");
-        assert!(result.output.len() < 1500, "{}", result.output.len());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn write_stdin_feeds_a_live_pipe_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let jobs = Arc::new(AgentJobRegistry::new());
-        let exec = ExecCommandTool::new(Arc::clone(&jobs));
-        let stdin = WriteStdinTool::new(Arc::clone(&jobs));
-        let execution = test_execution(dir.path(), "s3");
-
-        let started = exec
-            .execute(
-                serde_json::json!({"cmd": "cat", "yield_time_ms": 250}),
-                execution.clone(),
-            )
-            .await;
-        let started = data(&started);
-        let session_id = started.session_id.expect("session id");
-        let echoed = stdin
-            .execute(
-                serde_json::json!({
-                    "session_id": session_id,
-                    "chars": "hello from stdin\n",
-                    "yield_time_ms": 1000
-                }),
-                execution.clone(),
-            )
-            .await;
-        assert!(echoed.error.is_none(), "{echoed:?}");
-        assert!(data(&echoed).output.contains("hello from stdin"));
-
-        let _ = stdin
-            .execute(
-                serde_json::json!({
-                    "session_id": session_id,
-                    "chars": "\u{0003}",
-                    "yield_time_ms": 1000
-                }),
-                execution,
-            )
-            .await;
-    }
-
-    #[test]
-    fn exec_command_defaults_yield_ms_to_ten_seconds() {
-        let parsed = ExecCommandTool::parse_args(&serde_json::json!({ "cmd": "true" }))
-            .expect("parse default yield");
-        assert_eq!(parsed.yield_ms, DEFAULT_YIELD_MS);
-        assert_eq!(parsed.yield_ms, 10_000);
-    }
-
-    #[test]
-    fn from_delta_places_truncation_notice_on_last_line() {
-        let data = ExecCommandData::from_delta(
-            None,
-            Some(0),
-            crate::terminal::OutputDelta {
-                text: "line 1\nline 2".into(),
-                original_bytes: 512,
-                total_file_bytes: 1024,
-                output_file: ".litecode/run/bg_1.stdout".into(),
-                alive: false,
-                exit_code: Some(0),
-                truncated: true,
-            },
-        );
-        let lines: Vec<&str> = data.output.lines().collect();
-        assert_eq!(lines[0], "line 1");
-        assert_eq!(lines[1], "line 2");
-        assert!(
-            lines.last().unwrap().contains("1024 bytes total; full output: .litecode/run/bg_1.stdout"),
-            "{}",
-            data.output
-        );
-    }
 }
 
 #[cfg(test)]
 pub(crate) fn drift_cases() -> Vec<crate::tool::code_contract::DriftCase> {
     let full = ExecCommandData {
-        session_id: Some("bg_00000001".into()),
         exit_code: Some(0),
         output: "hello\n".into(),
-        output_file: ".litecode/run/bg_00000001.stdout".into(),
-        truncated: Some(true),
-        total_bytes: Some(2048),
+        session_id: Some("bg_00000001".into()),
+        output_file: Some(".litecode/run/bg_00000001.stdout".into()),
         clamped: vec![crate::tool::clamp::Clamp {
-            parameter: "yield_time_ms".into(),
+            parameter: "timeout_ms".into(),
             requested: serde_json::json!(900000),
-            applied: serde_json::json!(600000),
+            applied: serde_json::json!(300000),
         }],
     };
     let bare = ExecCommandData {
-        session_id: None,
         exit_code: None,
         output: String::new(),
-        output_file: String::new(),
-        truncated: None,
-        total_bytes: None,
+        session_id: None,
+        output_file: None,
         clamped: Vec::new(),
     };
-    ["exec_command", "write_stdin"]
-        .into_iter()
-        .map(|tool| crate::tool::code_contract::DriftCase {
-            tool,
-            all_optional_present: ToolOutcome::ok(full.clone()).into_call_result("full"),
-            all_optional_absent: ToolOutcome::ok(bare.clone()).into_call_result("bare"),
-        })
-        .collect()
+    vec![crate::tool::code_contract::DriftCase {
+        tool: "exec_command",
+        all_optional_present: ToolOutcome::ok(full).into_call_result("full"),
+        all_optional_absent: ToolOutcome::ok(bare).into_call_result("bare"),
+    }]
 }

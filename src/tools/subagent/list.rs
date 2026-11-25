@@ -77,18 +77,14 @@ impl SubagentListTool {
                 Value::String(meta.responsibility.clone()),
             );
             row.insert("state".into(), Value::String(status.as_str().to_string()));
-            // Live from session data (same reader status.rs/turn_result uses), not
-            // from the search index: the parent can `read` by these line numbers.
+            // Live from session data for human-facing content text.
             match service.transcript_file(&id) {
                 Ok(file) => {
                     out.push_str(&format!("  transcript: {}\n", file.virtual_path));
                     out.push_str(&format!("  transcript_lines: {}\n", file.lines.len()));
-                    row.insert("transcript".into(), Value::String(file.virtual_path));
-                    row.insert("transcript_lines".into(), json!(file.lines.len()));
                 }
                 Err(error) => {
                     out.push_str(&format!("  transcript: unavailable ({error})\n"));
-                    row.insert("transcript".into(), Value::String(String::new()));
                 }
             }
             if let Some(progress) = service.cached_progress(&id) {
@@ -98,19 +94,16 @@ impl SubagentListTool {
                     progress.step,
                     progress.step_max
                 ));
-                row.insert("step".into(), json!(progress.step));
-                row.insert("step_max".into(), json!(progress.step_max));
             } else if status == SessionStatus::Idle {
-                if let Ok(Some((_, reason))) = service.latest_turn_end_reason(&id) {
+                if let Ok(Some((_, reason, cancelled_by))) = service.latest_turn_end(&id) {
+                    let merged = super::status::merged_reason(&reason, false, cancelled_by);
                     out.push_str(&format!("  reason: {reason}\n"));
-                    row.insert("reason".into(), Value::String(reason));
+                    row.insert("reason".into(), Value::String(merged));
                 }
             }
             rows.push(Value::Object(row));
         }
-        let count = rows.len();
         ToolCallResult::ok(out).with_data(json!({
-            "count": count,
             "sessions": rows,
         }))
     }

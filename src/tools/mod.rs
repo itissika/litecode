@@ -26,7 +26,6 @@ pub mod todo;
 pub mod webfetch;
 pub mod websearch;
 pub mod write;
-pub mod write_stdin;
 
 #[cfg(test)]
 mod baseline;

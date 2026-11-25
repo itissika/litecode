@@ -81,13 +81,13 @@ async fn captured_with(build: impl FnOnce(&std::path::Path) -> Value) -> String 
 #[tokio::test(flavor = "current_thread")]
 async fn large_result_is_budgeted_in_the_request() {
     let text = captured_run_code(r#"inspect("START_SENTINEL" + "A".repeat(200000) + "END_SENTINEL");"#).await;
-    assert!(text.len() <= 65_536, "{}", text.len());
+    assert!(text.len() <= 20_480, "{}", text.len());
     assert!(!text.starts_with("[blob:"), "{text}");
     assert!(text.starts_with("run_code ok"), "{text}");
     assert!(text.contains("START_SENTINEL"), "{text}");
     assert!(text.contains("END_SENTINEL"), "{text}");
     assert!(
-        text.contains("bytes total; full output: .litecode/run/run_code_"),
+        text.contains("full output: .litecode/run/run_code_"),
         "{text}"
     );
 }

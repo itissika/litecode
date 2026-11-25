@@ -1,11 +1,10 @@
 {
   "version": 1,
-  "sdk_hash": "2064930d693920eded702bc0544c8c80b6a0b5e69879f85c05b5e8ddfb41c2e4",
-  "declarations": "/**\n * Emit one or more values into the `run_code` output stream; callable anywhere, any number of times.\n * Pass structured values (tool results, plain objects, uniform object arrays, multiline strings) directly rather than pre-stringifying so the host renders compact tables, line-numbered files, and raw multiline text.\n * Accepts any JS value (including `Error`, `Set`, `Map`, `Date`, `BigInt`, circular refs). `inspect(label, value)` labels a rendered block.\n * Media handles (`__litecode_media`) are attached to the turn only when emitted via `inspect(...)`.\n */\ndeclare function inspect(...values: unknown[]): void;",
-  "libs": "type CsvOptions = {\n  /** Field separator; one character. Default \",\". */\n  delimiter?: string;\n  /** Quote character; one character. Default is a double quote. */\n  quote?: string;\n  /** Trim fields while parsing. Default false. */\n  trim?: boolean;\n};\n\ntype HistogramBin = {\n  start: number;\n  end: number;\n  count: number;\n};\n\ntype DiffLine = {\n  kind: \"equal\" | \"insert\" | \"delete\";\n  text: string;\n};\n\ndeclare const libs: {\n  stats: {\n    sum(values: number[]): number;\n    mean(values: number[]): number;\n    median(values: number[]): number;\n    variance(values: number[], sample?: boolean): number;\n    stddev(values: number[], sample?: boolean): number;\n    quantile(values: number[], q: number): number;\n    histogram(values: number[], bins?: number): HistogramBin[];\n    min(values: number[]): number;\n    max(values: number[]): number;\n  };\n  csv: {\n    parse(text: string, options?: CsvOptions): string[][];\n    format(rows: Array<Array<unknown>>, options?: CsvOptions): string;\n  };\n  text: {\n    lines(text: string): string[];\n    words(text: string): string[];\n    count(text: string, needle: string): number;\n    normalizeNewlines(text: string): string;\n    truncate(text: string, maxChars: number, suffix?: string): string;\n    diffLines(left: string, right: string): DiffLine[];\n  };\n  data: {\n    groupBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, T[]>;\n    countBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, number>;\n    unique<T>(values: T[]): T[];\n    sortBy<T>(rows: T[], key: string | ((row: T) => unknown), direction?: \"asc\" | \"desc\"): T[];\n  };\n};\n\n/** Read-only workspace probes. Synchronous; paths are workspace-relative; throw Error on missing or out-of-workspace paths. */\ndeclare const fs: {\n  /** One level, sorted by name; more than 500 entries set `truncated`. */\n  ls(path: string): { entries: Array<{ name: string; type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number }>; truncated: boolean };\n  /** mtime is ms since the Unix epoch. */\n  stat(path: string): { type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number; mtime: number };\n  exists(path: string): boolean;\n};",
+  "sdk_hash": "5c1f1c41b7942ad31b2a485c54af081743345af2c7300e3fbc5e332fec4790d4",
+  "declarations": "/**\n * Emit values into the `run_code` output stream; callable anywhere, any number of times.\n * Accepts any JS value (`Error`, `Set`, `Map`, `Date`, `BigInt`, circular refs). `inspect(label, value)` labels a block.\n * Media handles (`__litecode_media`) are attached to the turn only when emitted via `inspect(...)`.\n */\ndeclare function inspect(...values: unknown[]): void;",
+  "libs": "type CsvOptions = {\n  /** Field separator; one character. Default \",\". */\n  delimiter?: string;\n  /** Quote character; one character. Default is a double quote. */\n  quote?: string;\n  /** Trim fields while parsing. Default false. */\n  trim?: boolean;\n};\n\ntype HistogramBin = {\n  start: number;\n  end: number;\n  count: number;\n};\n\ntype DiffLine = {\n  kind: \"equal\" | \"insert\" | \"delete\";\n  text: string;\n};\n\ndeclare const libs: {\n  stats: {\n    sum(values: number[]): number;\n    mean(values: number[]): number;\n    median(values: number[]): number;\n    variance(values: number[], sample?: boolean): number;\n    stddev(values: number[], sample?: boolean): number;\n    quantile(values: number[], q: number): number;\n    histogram(values: number[], bins?: number): HistogramBin[];\n    min(values: number[]): number;\n    max(values: number[]): number;\n  };\n  csv: {\n    parse(text: string, options?: CsvOptions): string[][];\n    format(rows: Array<Array<unknown>>, options?: CsvOptions): string;\n  };\n  text: {\n    lines(text: string): string[];\n    words(text: string): string[];\n    count(text: string, needle: string): number;\n    normalizeNewlines(text: string): string;\n    truncate(text: string, maxChars: number, suffix?: string): string;\n    diffLines(left: string, right: string): DiffLine[];\n  };\n  data: {\n    groupBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, T[]>;\n    countBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, number>;\n    unique<T>(values: T[]): T[];\n    sortBy<T>(rows: T[], key: string | ((row: T) => unknown), direction?: \"asc\" | \"desc\"): T[];\n  };\n};\n\n/** Read-only filesystem probes. Synchronous; path scope follows the active read permission mode. */\ndeclare const fs: {\n  /** One level, sorted by name (capped at 500 entries; truncation is surfaced as a run warning). */\n  ls(path: string): { entries: Array<{ name: string; type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number }> };\n  /** mtime is ms since the Unix epoch. */\n  stat(path: string): { type: \"file\" | \"dir\" | \"symlink\" | \"other\"; size: number; mtime: number };\n  exists(path: string): boolean;\n};",
   "types": {
     "BrowserPage": "type BrowserPage = {\n  active: boolean;\n  agentOwned: boolean;\n  id: string;\n  title: string;\n  url: string;\n  visible: boolean;\n};",
-    "ExecCommandData": "type ExecCommandData = {\n  /** Live session id; null once the session has exited. */\n  session_id: string | null;\n  /** Process exit code once the session has exited; null while it is live. */\n  exit_code: Integer | null;\n  /** Output since the previous call on this session; the first call returns output since spawn. */\n  output: string;\n  /** Workspace-relative path to the complete `.litecode/run/<job>.stdout` log (always full output on disk). */\n  output_file: string;\n};",
     "Integer": "/** Whole JSON number. The host rejects fractional values. @asType integer */\ntype Integer = number;",
     "KnowledgeIssueRow": "type KnowledgeIssueRow = {\n  key: string;\n  /** Workspace-relative path to the node file (usable directly with `read`/`write`/`apply_edits`). */\n  path: Path;\n  severity: \"error\" | \"warning\";\n  code: string;\n  ref_key: string | null;\n  message: string;\n};",
     "KnowledgeNodeStatus": "type KnowledgeNodeStatus = \"enabled\" | \"disabled\" | \"pending\" | \"invalid\";",
@@ -21,7 +20,6 @@
     "SymbolsData": "type SymbolsData = {\n  symbols: SymbolInfo[];\n};"
   },
   "type_suites": {
-    "ExecCommandData": "process",
     "BrowserPage": "browser",
     "PathInput": "lsp",
     "SymbolsData": "lsp",
@@ -51,7 +49,7 @@
         "glob"
       ],
       "suite": "file",
-      "doc": "Find files by path glob.",
+      "doc": "Find files by path glob. Pass directly to `inspect(r)`—renders `paths` one per line.",
       "signature": "glob(args: {\n  pattern: string; // Glob relative to path, or to the workspace root when path is omitted.\n  limit?: Integer; // Maximum paths to return. 1-5000. @default 1000\n  path?: Path; // Optional directory to search under.\n}): Promise<{\n  paths: string[]; // Matching paths, sorted by depth, then parent directory, then name.\n}>;",
       "type_deps": [
         "Integer",
@@ -63,7 +61,7 @@
         "grep"
       ],
       "suite": "file",
-      "doc": "Search file contents.",
+      "doc": "Search file contents. Pass directly to `inspect(r)`—renders `hits` as a compact table.",
       "signature": "grep(args: {\n  pattern: string; // Regular expression over file contents, unless literal is true.\n  before?: Integer; // Lines of context before each hit. 0-10. @default 0\n  after?: Integer; // Lines of context after each hit. 0-10. @default 0\n  glob?: string; // One glob or comma-separated globs. A leading ! excludes. Relative to path.\n  ignore_case?: boolean; // Ignore case when matching. @default false\n  limit?: Integer; // Maximum hits to return. 1-100. @default 40\n  literal?: boolean; // Search for pattern as plain text. @default false\n  path?: Path; // File or directory to search. Defaults to the workspace.\n}): Promise<{\n  hits: Array<{\n    path: string; // Source file path.\n    line: Integer; // 1-based match line.\n    text: string; // Matching line text, capped at 500 characters.\n  }>;\n}>;",
       "type_deps": [
         "Integer",
@@ -75,7 +73,7 @@
         "read"
       ],
       "suite": "file",
-      "doc": "Read lines from one file or archived session transcript.",
+      "doc": "Read lines from one file or archived session transcript. Pass directly to `inspect(r)`—renders `line: text` verbatim without `.lines.map(...)`.",
       "signature": "read(args: {\n  path: Path; // Prefer a workspace-relative path. Past session transcripts are readable at .litecode/sessions/<session_id>.md.\n  start_line?: Integer; // First line to read, 1-based, inclusive. @default 1\n  limit?: Integer; // Lines to return. 1-5000. @default 2000\n}): Promise<{\n  lines: Array<{\n    line: Integer; // 1-based line number.\n    text: string; // Line content.\n  }>; // Lines for this page, in file order.\n}>;",
       "type_deps": [
         "Integer",
@@ -120,22 +118,9 @@
         "exec_command"
       ],
       "suite": "process",
-      "doc": "Start a command. Waits up to yield_time_ms; a live session_id leaves it running in the background. Poll with write_stdin for output, or leave it and wait for the background-exit reminder (exit code + output_file).",
-      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the turn cwd and must stay inside it.\n  tty?: boolean; // True allocates a PTY; false or omitted uses plain pipes.\n  yield_time_ms?: Integer; // Initial wait only; 250-600000 ms; default 10000. It does not limit the process lifetime.\n  max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB.\n}): Promise<ExecCommandData>;",
+      "doc": "Run a non-interactive shell command (stdin closed). Waits up to timeout_ms; commands still running auto-promote to background and deliver an exit notice with log path when done. Pass directly to `inspect(r)`—prints raw output and prepends `exit_code` only when non-zero.",
+      "signature": "exec_command(args: {\n  cmd: string; // Shell command to execute.\n  workdir?: string; // Working directory; defaults to the workspace root (follows active exec permission mode).\n  timeout_ms?: Integer; // Wait timeout in ms before auto-promoting to background (1000-300000, default 60000).\n  background?: boolean; // True starts in the background and returns immediately after initial output capture.\n}): Promise<{\n  /** Process exit code once exited; null when still running in the background. */\n  exit_code: Integer | null;\n  /** Combined stdout/stderr captured before returning. */\n  output: string;\n}>;",
       "type_deps": [
-        "ExecCommandData",
-        "Integer"
-      ]
-    },
-    "write_stdin": {
-      "path": [
-        "write_stdin"
-      ],
-      "suite": "process",
-      "doc": "Poll, feed, or interrupt an existing exec session. Empty chars waits until the session exits or yield_time_ms expires, returning accumulated output; on exit, exit_code is set and session_id is null.",
-      "signature": "write_stdin(args: {\n  session_id: string; // Session id from exec_command.\n  chars?: string; // Bytes to write; empty polls. \"\\u0003\" sends SIGINT to the process group.\n  yield_time_ms?: Integer; // Wait before yielding. Both modes accept 250-600000 ms; empty polls default 5000, non-empty writes default 250. Waiting inside a call pauses the run_code JS timer; one run_code call still has a 1800000 ms wall-clock cap.\n  max_output_tokens?: Integer; // Output token budget for this call; defaults to 1 MiB.\n}): Promise<ExecCommandData>;",
-      "type_deps": [
-        "ExecCommandData",
         "Integer"
       ]
     },
@@ -473,7 +458,7 @@
       ],
       "suite": "workspace",
       "doc": "Validate `.litecode/{excludes,mcp,custom_tools,apps}.json` in one check.",
-      "signature": "refresh(args?: NoArgs): Promise<{\n  ok: boolean;\n  summary: string;\n  excludes_ok: boolean;\n  mcp_ok: boolean;\n  custom_tools_ok: boolean;\n  apps_ok: boolean;\n  issues: string[];\n}>;",
+      "signature": "refresh(args?: NoArgs): Promise<{\n  ok: boolean;\n  excludes_ok: boolean;\n  mcp_ok: boolean;\n  custom_tools_ok: boolean;\n  apps_ok: boolean;\n  issues: string[];\n}>;",
       "type_deps": [
         "NoArgs"
       ]
@@ -485,7 +470,7 @@
       ],
       "suite": "workspace",
       "doc": "Read live runtime workspace status: active excludes, loaded MCP servers, custom tools, and Apps.",
-      "signature": "status(args?: NoArgs): Promise<{\n  summary: string;\n  excludes: string;\n  mcp: {\n    id: string;\n    enabled: boolean;\n    origin: string;\n    state: string;\n    command: string;\n  }[];\n  custom_tools: {\n    id: string;\n    suite: string | null;\n    enabled: boolean;\n    origin: string;\n    timeout_secs: Integer;\n    command: string;\n  }[];\n  apps: {\n    id: string;\n    kind: string;\n    status: string;\n    url: string | null;\n    error: string | null;\n  }[];\n}>;",
+      "signature": "status(args?: NoArgs): Promise<{\n  excludes: string;\n  mcp: {\n    id: string;\n    enabled: boolean;\n    origin: string;\n    state: string;\n    command: string;\n  }[];\n  custom_tools: {\n    id: string;\n    suite: string | null;\n    enabled: boolean;\n    origin: string;\n    timeout_secs: Integer;\n    command: string;\n  }[];\n  apps: {\n    id: string;\n    kind: string;\n    status: string;\n    url: string | null;\n    error: string | null;\n  }[];\n}>;",
       "type_deps": [
         "Integer",
         "NoArgs"
@@ -498,7 +483,7 @@
       ],
       "suite": "subagent",
       "doc": "Launch a configured subagent child session asynchronously.",
-      "signature": "launch(args: {\n  /** Subagent id from allowed_subagents. */\n  agent: string;\n  /** Brief statement of the child's owned scope. */\n  responsibility: string;\n  /** Initial prompt delivered to the child session. */\n  prompt: string;\n}): Promise<{\n  child_session_id: string;\n  turn_id: string;\n  status: \"running\";\n  responsibility: string;\n}>;",
+      "signature": "launch(args: {\n  /** Subagent id from allowed_subagents. */\n  agent: string;\n  /** Brief statement of the child's owned scope. */\n  responsibility: string;\n  /** Initial prompt delivered to the child session. */\n  prompt: string;\n}): Promise<{\n  id: string;\n}>;",
       "type_deps": []
     },
     "subagent.list": {
@@ -507,10 +492,9 @@
         "list"
       ],
       "suite": "subagent",
-      "doc": "List all descendant child sessions of this session with current status and transcript metadata.",
-      "signature": "list(args?: NoArgs): Promise<{\n  count: Integer;\n  sessions: {\n    id: string;\n    agent: string;\n    responsibility: string;\n    state: string;\n    transcript: string;\n    transcript_lines?: Integer;\n    step?: Integer;\n    step_max?: Integer;\n    reason?: string;\n  }[];\n}>;",
+      "doc": "List all descendant child sessions of this session with current status. Past transcripts are readable at `.litecode/sessions/<id>.md`.",
+      "signature": "list(args?: NoArgs): Promise<{\n  sessions: {\n    id: string;\n    agent: string;\n    responsibility: string;\n    state: string;\n    reason?: string;\n  }[];\n}>;",
       "type_deps": [
-        "Integer",
         "NoArgs"
       ]
     },
@@ -521,7 +505,7 @@
       ],
       "suite": "subagent",
       "doc": "Queue, steer, or stop-and-send a follow-up message to a child subagent session.",
-      "signature": "send(args: {\n  id: string;\n  message: string;\n  mode?: \"queue\" | \"steer\" | \"stop_and_send\";\n}): Promise<{\n  child_session_id: string;\n  mode: string;\n  status: \"started\" | \"queued\" | \"steered\" | \"stopped_and_queued\";\n  turn_id?: string;\n  position?: Integer;\n  pending_id?: string;\n  message: string;\n}>;",
+      "signature": "send(args: {\n  id: string;\n  message: string;\n  mode?: \"queue\" | \"steer\" | \"stop_and_send\";\n}): Promise<{\n  status: \"queued\" | \"steered\" | \"started\";\n  position?: Integer;\n}>;",
       "type_deps": [
         "Integer"
       ]
@@ -533,7 +517,7 @@
       ],
       "suite": "subagent",
       "doc": "Stop the active running turn of a child subagent session.",
-      "signature": "stop(args: {\n  id: string;\n}): Promise<{\n  child_session_id: string;\n  status: \"stopped\" | \"nothing_running\";\n  turn_id?: string;\n  reason?: string;\n  output?: string;\n  transcript?: string;\n  message: string;\n}>;",
+      "signature": "stop(args: {\n  id: string;\n}): Promise<{\n  status: \"stopped\" | \"nothing_running\";\n  reason?: string;\n  output?: string;\n}>;",
       "type_deps": []
     },
     "subagent.wait": {
@@ -542,11 +526,9 @@
         "wait"
       ],
       "suite": "subagent",
-      "doc": "Wait for selected running subagent turns (or snapshot active children) to settle.",
-      "signature": "wait(args?: {\n  /** Optional child_session_ids; omit to await/snapshot all currently running children. */\n  ids?: string[];\n  /** Number of selected turns to settle before returning. */\n  count?: Integer;\n}): Promise<{\n  status: \"settled\" | \"nothing_to_wait_for\";\n  settled: {\n    child_session_id: string;\n    turn_id: string;\n    reason: string;\n    agent?: string;\n    responsibility?: string;\n    output: string;\n    output_truncated?: boolean;\n    cancelled_by?: string;\n    transcript: string;\n    start_line?: Integer;\n    end_line?: Integer;\n  }[];\n  skipped: {\n    id: string;\n    reason: string;\n  }[];\n  summary: string;\n}>;",
-      "type_deps": [
-        "Integer"
-      ]
+      "doc": "Wait for subagent children to finish. Pass `ids` to wait for specific children, or omit/pass empty to wait for all running children.",
+      "signature": "wait(args?: {\n  /** Child session ids to wait for; omit or pass `[]` to wait for all running children. */\n  ids?: string[];\n}): Promise<{\n  settled: {\n    id: string;\n    reason: string;\n    responsibility?: string;\n    output: string;\n  }[];\n  skipped?: {\n    id: string;\n    reason: string;\n  }[];\n}>;",
+      "type_deps": []
     },
     "bot.create": {
       "path": [

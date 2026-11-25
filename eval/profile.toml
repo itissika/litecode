@@ -5,7 +5,7 @@
 # `[tools]` classifies model-visible tool ids. A test walks the capability
 # catalog and fails when a tool the registry can bind is not classified here, so
 # a new tool cannot join a scored run unnoticed. Grouped cards (`exec` =
-# exec_command/write_stdin, `edit` = apply_edits, `lsp`, `browser`, `memory`,
+# exec_command, `edit` = apply_edits, `lsp`, `browser`, `memory`,
 # `subagent_tools`) are bound as a whole, so every member of a group has to sit
 # in the same list. `run_code` is the code transport itself: it is listed but it
 # is not a binding, and it cannot be switched off while code tools are bound.
@@ -26,8 +26,7 @@ on = [
   "glob",           # find files by name
   "write",          # create files
   "apply_edits",    # exact-string edits; single edit is an array of one
-  "exec_command",   # Codex-style unified exec session
-  "write_stdin",    # poll / feed / Ctrl-C an exec session
+  "exec_command",   # shell command execution (foreground / background)
   "run_code",       # the code transport: code tools are called through it
   "todo.write",     # structured multi-step progress tracking
 ]

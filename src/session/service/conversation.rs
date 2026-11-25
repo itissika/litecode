@@ -253,22 +253,13 @@ impl SessionService {
                 &state.in_progress,
                 &budget,
             ) {
-                let protected = crate::context_pipeline::protected_conversation_tokens_for_request(
-                    &compaction_request,
-                );
-                if !crate::context_pipeline::CompactPolicy::can_prune_sealed(
-                    &state.rows,
-                    &state.in_progress,
-                    protected,
-                ) {
-                    return Err(ManualCompactionError::NothingToCompact);
-                }
+                return Err(ManualCompactionError::NothingToCompact);
             }
             Ok((compaction_request, budget, data_root, preview))
         }
         .await;
 
-        let (compaction_request, budget, data_root, preview) = match prepared {
+        let (compaction_request, budget, data_root, _preview) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 let kind = if matches!(&error, ManualCompactionError::NothingToCompact) {

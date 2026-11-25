@@ -79,6 +79,7 @@ async fn run_with(
         grace,
         cancel,
         fs_root: None,
+        fs_allow_outside_workspace: false,
     })
     .await
 }
@@ -122,10 +123,10 @@ async fn a_proxy_of_a_plain_object_is_presented() {
     assert_eq!(value_of(&outcome), &json!({ "a": 1 }));
 }
 
-/// `fs` has no reminder channel, so `truncated` is the only way the model
-/// learns that entries were left out. The program must see it on the value.
+/// `fs.ls` keeps its value pure (`{ entries }`) and surfaces truncation via the
+/// run's upfloat warnings channel, matching `glob` / `grep` / `read`.
 #[tokio::test]
-async fn fs_ls_exposes_truncation_as_a_field() {
+async fn fs_ls_surfaces_truncation_as_upfloat_warning() {
     let dir = tempfile::tempdir().unwrap();
     for index in 0..(crate::ptc::fs::LS_CAP + 1) {
         std::fs::write(dir.path().join(format!("f{index:04}.txt")), "x").unwrap();
@@ -139,12 +140,20 @@ async fn fs_ls_exposes_truncation_as_a_field() {
         grace: Duration::from_millis(200),
         cancel: CancellationToken::new(),
         fs_root: Some(dir.path().to_path_buf()),
+        fs_allow_outside_workspace: false,
     })
     .await;
     let value = value_of(&outcome);
-    assert_eq!(value["truncated"].as_bool(), Some(true), "{value}");
+    assert!(value.get("truncated").is_none(), "{value}");
     assert_eq!(value["entries"].as_array().unwrap().len(), crate::ptc::fs::LS_CAP);
-    assert!(value.get("message").is_none(), "the prose field is gone: {value}");
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|w| w.contains("fs.ls(\".\")") && w.contains("showing first 500 of 501 entries")),
+        "warnings={:?}",
+        outcome.warnings
+    );
 }
 
 #[tokio::test]
@@ -165,6 +174,7 @@ async fn fs_ls_and_stat_throw_error_on_missing_or_outside() {
         grace: Duration::from_millis(200),
         cancel: CancellationToken::new(),
         fs_root: Some(dir.path().to_path_buf()),
+        fs_allow_outside_workspace: false,
     })
     .await;
     let value = value_of(&outcome);
@@ -917,6 +927,7 @@ async fn wall_budget_stops_paused_host_wait_while_active_budget_stays_frozen() {
         grace: Duration::from_millis(50),
         cancel: CancellationToken::new(),
         fs_root: None,
+        fs_allow_outside_workspace: false,
     })
     .await;
     let failure = outcome.failure.as_ref().expect("wall timeout");

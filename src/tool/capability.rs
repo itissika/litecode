@@ -329,7 +329,7 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
                 &mut catalog,
                 resolved,
                 "exec",
-                &["exec_command", "write_stdin"],
+                &["exec_command"],
                 CapabilityKind::Core,
                 ToolOrigin::Builtin,
             ),
@@ -585,11 +585,8 @@ mod tests {
             assert!(catalog.get(id).is_some(), "missing {id}");
         }
         let exec = catalog.get("exec").expect("exec");
-        assert_eq!(
-            exec.member_ids().collect::<Vec<_>>(),
-            ["exec_command", "write_stdin"]
-        );
-        assert_eq!(catalog.member_capability_id("write_stdin"), Some("exec"));
+        assert_eq!(exec.member_ids().collect::<Vec<_>>(), ["exec_command"]);
+        assert_eq!(catalog.member_capability_id("exec_command"), Some("exec"));
         assert_eq!(catalog.member_capability_id("apply_edits"), Some("edit"));
         let memory = catalog.get("memory").expect("memory");
         assert_eq!(
