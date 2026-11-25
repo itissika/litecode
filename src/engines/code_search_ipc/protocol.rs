@@ -8,10 +8,32 @@ use crate::engines::code_search::SearchHit;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
-    pub id: u64,
+    /// `None` for JSON-RPC 2.0 one-way notifications (no response written).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
     pub method: String,
     #[serde(default)]
     pub params: Value,
+}
+
+impl JsonRpcRequest {
+    pub fn request(id: u64, method: impl Into<String>, params: Value) -> Self {
+        Self {
+            jsonrpc: "2.0".into(),
+            id: Some(id),
+            method: method.into(),
+            params,
+        }
+    }
+
+    pub fn notification(method: impl Into<String>, params: Value) -> Self {
+        Self {
+            jsonrpc: "2.0".into(),
+            id: None,
+            method: method.into(),
+            params,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -65,7 +65,7 @@ function edgeVariant(
     (issue) =>
       issue.nodeId === sourceId &&
       issue.code === "inactive_target" &&
-      (issue.refKey != null ? issue.refKey === `node:${targetKey}` : issue.ref === targetKey),
+      (issue.args?.key === targetKey || issue.ref === targetKey),
   );
   if (inactive) return "inactive";
   return "solid";

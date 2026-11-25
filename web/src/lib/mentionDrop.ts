@@ -7,18 +7,18 @@ import {
   readLoosePaths,
   readTreePaths,
 } from "./dropPayload";
-import { fileMentionSource, formatLineSpan, symbolMentionSource } from "./knowledge/markers";
+import { citationMarkdown, formatLineSpan } from "./knowledge/markers";
 
 function chips(paths: string[], projectRoot: string): string | null {
   const sources = paths
     .map((path) => chipPath(path, projectRoot))
     .filter((path) => path.length > 0)
-    .map((path) => fileMentionSource(path));
+    .map((path) => citationMarkdown({ path }));
   return sources.length > 0 ? sources.join(" ") : null;
 }
 
 /**
- * Shortcodes to insert for a conversation drop.
+ * Standard Markdown citation links to insert for a conversation drop.
  * File-tree paths, a Monaco span, OS files, and loose path text — in that order.
  */
 export async function mentionTextForDrop(
@@ -35,10 +35,9 @@ export async function mentionTextForDrop(
     } catch {
       chain = "";
     }
+    if (chain) return citationMarkdown({ path: span.path, symbol: chain });
     const lines = formatLineSpan(span.start, span.end);
-    return chain
-      ? symbolMentionSource(span.path, { symbol: chain, lines })
-      : symbolMentionSource(span.path, { lines });
+    return citationMarkdown({ path: span.path, lines });
   }
 
   const tree = readTreePaths(dt);

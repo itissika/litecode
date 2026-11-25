@@ -700,7 +700,7 @@ describe("composer placeholder", () => {
         manualCompacting: false,
         queuing: false,
       }),
-    ).toBe("/ file · # symbol · @ knowledge");
+    ).toBe("@ file / knowledge · # symbol");
     expect(
       composerPlaceholder({
         connected: true,

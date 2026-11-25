@@ -2,7 +2,6 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { symbolMentionSource } from "../../lib/knowledge/markers";
 import { LITECODE_PATHS_MIME, LITECODE_SPAN_MIME } from "../../lib/dropPayload";
 import { useEditorStore } from "../../stores/editorStore";
 import { fakeTransfer } from "../../test/fakeTransfer";
@@ -26,7 +25,7 @@ const files = [
 
 const symbols = [
   {
-    chain: "fn test_run",
+    chain: "Store.test_run",
     kind: "function",
     name: "test_run",
     start_line: 4,
@@ -70,7 +69,13 @@ describe("MentionEditor popout document", () => {
       <MentionEditor
         label="正文"
         value=""
-        candidates={["alpha"]}
+        candidates={[
+          {
+            key: "alpha",
+            path: "knowledge/arch/alpha.md",
+            diskPath: "knowledge/arch/alpha.md",
+          },
+        ]}
         onChange={onChange}
         handle={handle}
       />,
@@ -104,48 +109,47 @@ describe("MentionEditor popout document", () => {
       fireEvent.click(option);
       await waitFor(() => {
         const written = onChange.mock.calls.map((call) => String(call[0])).join("\n");
-        expect(written).toContain("alpha");
+        expect(written).toContain("[alpha](knowledge/arch/alpha.md)");
       });
     } finally {
-      // React unmount removes the shell from the document that rendered it.
       if (shell.ownerDocument !== document) home.appendChild(shell);
       frame.remove();
     }
   });
 });
 
-describe("MentionEditor symbol mode", () => {
-  it("locks the highlighted file and inserts a symbol shortcode without lines", async () => {
+describe("MentionEditor unified @ + # mode", () => {
+  it("merges knowledge nodes and files under @ and deduplicates public knowledge files", async () => {
+    fetchMentionPaths.mockResolvedValue([
+      { path: "knowledge/arch/alpha.md", file: true },
+      { path: "src/alpha.rs", file: true },
+    ]);
     const onChange = vi.fn();
     const handle = editorHandle();
     render(
       <MentionEditor
         label="正文"
         value=""
-        candidates={[]}
-        symbolLines={false}
+        candidates={[
+          {
+            key: "alpha",
+            path: "knowledge/arch/alpha.md",
+            diskPath: "knowledge/arch/alpha.md",
+          },
+        ]}
         onChange={onChange}
         handle={handle}
       />,
     );
-    await typeQuery(handle, "/mang");
-    expect(await screen.findByText("src/a/manager.rs")).toBeTruthy();
-    const hashes = screen.getAllByRole("button", { name: "Pick a symbol in manager.rs" });
-    fireEvent.click(hashes[0]);
-    expect(fetchSymbols).toHaveBeenCalledWith("src/a/manager.rs");
-    const row = await screen.findByRole("option", { name: /fn test_run/ });
-    fireEvent.click(row);
-    const written = onChange.mock.calls.map((call) => String(call[0])).join("\n");
-    expect(written).toContain(
-      symbolMentionSource("src/a/manager.rs", {
-        symbol: "fn test_run",
-        label: "manager.rs fn test_run",
-      }),
-    );
-    expect(written).not.toContain('lines="');
+    await typeQuery(handle, "@alpha");
+    await screen.findByText("src/alpha.rs");
+    const options = screen.getAllByRole("option");
+    expect(options).toHaveLength(2);
+    expect(options[0]?.textContent).toContain("alpha");
+    expect(options[1]?.textContent).toContain("src/alpha.rs");
   });
 
-  it("uses the highlighted row when two files share a name and keeps lines in chat", async () => {
+  it("locks the highlighted file with # button and inserts a standard symbol link", async () => {
     const onChange = vi.fn();
     const handle = editorHandle();
     render(
@@ -153,38 +157,54 @@ describe("MentionEditor symbol mode", () => {
         label="正文"
         value=""
         candidates={[]}
-        symbolLines
         onChange={onChange}
         handle={handle}
       />,
     );
-    await typeQuery(handle, "/mang");
+    await typeQuery(handle, "@mang");
+    expect(await screen.findByText("src/a/manager.rs")).toBeTruthy();
+    const hashes = screen.getAllByRole("button", { name: "Pick a symbol in manager.rs" });
+    fireEvent.click(hashes[0]!);
+    expect(fetchSymbols).toHaveBeenCalledWith("src/a/manager.rs");
+    const row = await screen.findByRole("option", { name: /Store\.test_run/ });
+    fireEvent.click(row);
+    const written = onChange.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(written).toContain("[Store.test_run](src/a/manager.rs#Store.test_run)");
+  });
+
+  it("uses the highlighted row when two files share a name and locks with # key", async () => {
+    const onChange = vi.fn();
+    const handle = editorHandle();
+    render(
+      <MentionEditor
+        label="正文"
+        value=""
+        candidates={[]}
+        onChange={onChange}
+        handle={handle}
+      />,
+    );
+    await typeQuery(handle, "@mang");
     await screen.findByText("src/b/manager.rs");
     press("ArrowDown");
     press("#");
     expect(fetchSymbols).toHaveBeenCalledWith("src/b/manager.rs");
-    const row = await screen.findByRole("option", { name: /fn test_run/ });
+    const row = await screen.findByRole("option", { name: /Store\.test_run/ });
     fireEvent.click(row);
     const written = onChange.mock.calls.map((call) => String(call[0])).join("\n");
-    expect(written).toContain(
-      symbolMentionSource("src/b/manager.rs", {
-        symbol: "fn test_run",
-        lines: "4-9",
-        label: "manager.rs fn test_run",
-      }),
-    );
+    expect(written).toContain("[Store.test_run](src/b/manager.rs#Store.test_run)");
   });
 
-  it("renders a stored symbol shortcode as a cyan capsule", async () => {
+  it("renders a stored symbol markdown link as a cyan capsule", async () => {
     render(
       <MentionEditor
         label="正文"
-        value={symbolMentionSource("src/a.rs", { symbol: "fn save", label: "fn save" })}
+        value="[Store.save](src/a.rs#Store.save)"
         candidates={[]}
         onChange={() => undefined}
       />,
     );
-    const chip = await screen.findByRole("button", { name: "a.rs : fn save" });
+    const chip = await screen.findByRole("button", { name: "a.rs : save" });
     expect(chip.closest(".knowledge-token")?.classList.contains("is-symbol")).toBe(true);
   });
 });
@@ -241,7 +261,7 @@ describe("MentionEditor drops", () => {
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     await waitFor(() => {
       const written = onChange.mock.calls.map((call) => String(call[0])).join("\n");
-      expect(written).toContain('[@ file="src/a.rs"]');
+      expect(written).toContain("[a.rs](src/a.rs)");
     });
 
     cleanup();
@@ -255,7 +275,7 @@ describe("MentionEditor drops", () => {
   });
 
   it("inserts a symbol chip for a code span", async () => {
-    fetchSymbolAt.mockResolvedValue({ chain: "fn save" });
+    fetchSymbolAt.mockResolvedValue({ chain: "Store.save" });
     const span = fakeTransfer();
     span.setData(
       LITECODE_SPAN_MIME,
@@ -263,12 +283,10 @@ describe("MentionEditor drops", () => {
     );
     span.setData("text/plain", "fn save() {}");
     const onChange = await dropOnEditor(span);
-    expect(await screen.findByRole("button", { name: "a.rs : fn save" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "a.rs : save" })).toBeTruthy();
     await waitFor(() => {
       const written = onChange.mock.calls.map((call) => String(call[0])).join("\n");
-      expect(written).toContain('symbol="fn save"');
-      // KR-SYM-6: a symbol citation is written without lines.
-      expect(written).not.toContain("lines=");
+      expect(written).toContain("[Store.save](src/a.rs#Store.save)");
     });
   });
 });

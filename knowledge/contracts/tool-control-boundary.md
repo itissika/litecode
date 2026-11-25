@@ -18,6 +18,6 @@ h : 416
 
 后三点是应当区分的概念，不是问题清单；本文描述理解模型，不宣称每一项当前都已实现完备。
 
-上层：[@ key="tools"]。
-相关：[@ key="tool-call-contract"]、[@ key="tool-implementation-contract"]。
+上层：[tools](knowledge/framework/tools.md)。
+相关：[tool-call-contract](knowledge/contracts/tool-call-contract.md)、[tool-implementation-contract](knowledge/contracts/tool-implementation-contract.md)。
 - 理解模型节点：入口≠沙箱、提供上下文≠消费、取消≠已停 —— 与 authorization / execution-context / lifecycle 子节点一致；非完备性清单。

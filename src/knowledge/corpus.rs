@@ -1,12 +1,19 @@
 //! Load the knowledge directory into nodes and citation edges.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 
 use super::document::{self, ParsedFile, Status};
-use super::mentions::{is_knowledge_key, normalize_key};
+use super::mentions::{CiteKind, is_knowledge_key, is_workspace_file_ref, normalize_key};
 use super::root::{self, KnowledgeRoot};
+
+/// True when a declared node has a valid key matching its filename stem.
+/// Nodes that fail this check are bad nodes and cannot be cited as knowledge nodes.
+pub fn is_valid_node_identity(path: &str, key: &str) -> bool {
+    is_knowledge_key(key) && !path.is_empty() && document::file_stem(path) == key
+}
 
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -14,7 +21,10 @@ pub struct Node {
     pub key: String,
     pub value: String,
     pub summary: String,
+    /// Keys of valid knowledge nodes cited via bare-path links, in first-seen order.
     pub relations: Vec<String>,
+    /// Normalized paths under the knowledge root that failed to resolve to a valid node.
+    pub broken_knowledge_refs: Vec<String>,
     pub status: Status,
     pub invalid_status: Option<String>,
     pub path: String,
@@ -51,7 +61,7 @@ impl Corpus {
             .into_iter()
             .map(|(parsed, modified)| LoadedFile { parsed, modified })
             .collect();
-        let (nodes, unknown) = nodes_from_parsed(files);
+        let (nodes, unknown) = nodes_from_parsed(root.as_deref(), files);
         Self {
             root,
             nodes,
@@ -70,7 +80,7 @@ impl Corpus {
         let mut files = Vec::new();
         walk(workspace, &root, &root, &mut files);
         files.sort_by(|a, b| a.parsed.path.cmp(&b.parsed.path));
-        let (nodes, unknown) = nodes_from_parsed(files);
+        let (nodes, unknown) = nodes_from_parsed(Some(&root), files);
         Self {
             root: Some(root),
             nodes,
@@ -163,7 +173,7 @@ fn walk(workspace: &Path, root: &str, dir_rel: &str, out: &mut Vec<LoadedFile>) 
     }
 }
 
-fn nodes_from_parsed(files: Vec<LoadedFile>) -> (Vec<Node>, Vec<String>) {
+fn nodes_from_parsed(root: Option<&str>, files: Vec<LoadedFile>) -> (Vec<Node>, Vec<String>) {
     let mut unknown = Vec::new();
     let mut declared = Vec::new();
     for file in files {
@@ -173,15 +183,22 @@ fn nodes_from_parsed(files: Vec<LoadedFile>) -> (Vec<Node>, Vec<String>) {
             declared.push(file);
         }
     }
-    let mut key_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let unknown_set: HashSet<&str> = unknown.iter().map(String::as_str).collect();
+    let mut key_counts: HashMap<String, usize> = HashMap::new();
+    let mut valid_by_rel_path: HashMap<String, String> = HashMap::new();
+    let mut bad_by_rel_path: HashSet<String> = HashSet::new();
     for file in &declared {
         let key = normalize_key(&file.parsed.key);
-        if !is_knowledge_key(&key) {
-            continue;
+        if is_knowledge_key(&key) {
+            *key_counts.entry(key.clone()).or_insert(0) += 1;
         }
-        *key_counts.entry(key).or_insert(0) += 1;
+        if is_valid_node_identity(&file.parsed.path, &key) {
+            valid_by_rel_path.insert(file.parsed.path.clone(), key);
+        } else {
+            bad_by_rel_path.insert(file.parsed.path.clone());
+        }
     }
-    let mut used = std::collections::HashSet::new();
+    let mut used = HashSet::new();
     let nodes = declared
         .into_iter()
         .map(|file| {
@@ -196,12 +213,43 @@ fn nodes_from_parsed(files: Vec<LoadedFile>) -> (Vec<Node>, Vec<String>) {
                 id = file.parsed.path.clone();
             }
             used.insert(id.clone());
+
+            let mut relations = Vec::new();
+            let mut seen_rel = HashSet::new();
+            let mut broken_knowledge_refs = Vec::new();
+            let mut seen_broken = HashSet::new();
+            for cite in &file.parsed.cites {
+                if cite.kind != CiteKind::File {
+                    continue;
+                }
+                let norm = cite.norm_path();
+                if !is_workspace_file_ref(&norm) {
+                    continue;
+                }
+                let Some(rel) = root::strip_corpus_prefix(&norm, root) else {
+                    continue;
+                };
+                if !rel.to_ascii_lowercase().ends_with(".md") {
+                    continue;
+                }
+                if let Some(target_key) = valid_by_rel_path.get(rel) {
+                    if rel != file.parsed.path && seen_rel.insert(target_key.clone()) {
+                        relations.push(target_key.clone());
+                    }
+                } else if (bad_by_rel_path.contains(rel) || !unknown_set.contains(rel))
+                    && seen_broken.insert(norm.clone())
+                {
+                    broken_knowledge_refs.push(norm);
+                }
+            }
+
             Node {
                 id,
                 key,
                 value: file.parsed.body,
                 summary: file.parsed.summary,
-                relations: file.parsed.refs,
+                relations,
+                broken_knowledge_refs,
                 status: file.parsed.status,
                 invalid_status: file.parsed.invalid_status,
                 path: file.parsed.path,

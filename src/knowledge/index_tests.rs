@@ -53,8 +53,8 @@ fn every_file_is_parsed_once_per_stamp() {
         "src/a.rs",
         "fn alpha() {}\nfn beta() {}\nmod m { fn gamma() {} }\n",
     );
-    let body = "[@ file=\"src/a.rs\" symbol=\"fn alpha\"] [@ file=\"src/a.rs\" symbol=\"fn beta\"] \
-                [@ file=\"src/a.rs\" symbol=\"mod m › fn gamma\"] [@ file=\"src/a.rs\" lines=\"1-2\"]";
+    let body = "[alpha](src/a.rs#alpha) [beta](src/a.rs#beta) \
+                [gamma](src/a.rs#m.gamma) [a:1-2](src/a.rs#L1-L2)";
     write(ws, "knowledge/a.md", &node("a", body));
     write(ws, "knowledge/b.md", &node("b", body));
     let mut engine = Engine::new(ws);
@@ -89,7 +89,7 @@ impl Rng {
 }
 
 const SOURCES: [&str; 4] = ["src/a.rs", "src/b.rs", "lib/c.py", "notes.txt"];
-const CHAINS: [&str; 4] = ["fn alpha", "fn beta", "class C › fn hi", "fn new"];
+const CHAINS: [&str; 4] = ["alpha", "beta", "C.hi", "new"];
 
 fn source_text(rng: &mut Rng) -> String {
     let mut out = String::new();
@@ -110,22 +110,14 @@ fn node_body(rng: &mut Rng) -> String {
     for _ in 0..(1 + rng.pick(5)) {
         let file = SOURCES[rng.pick(SOURCES.len())];
         let part = match rng.pick(6) {
-            0 => format!("[@ file=\"{file}\"]"),
-            1 | 2 => format!(
-                "[@ file=\"{file}\" symbol=\"{}\"]",
-                CHAINS[rng.pick(CHAINS.len())]
+            0 => format!("[f]({file})"),
+            1 | 2 => format!("[s]({file}#{})", CHAINS[rng.pick(CHAINS.len())]),
+            3 => format!("[r]({file}#L{}-L{})", 1 + rng.pick(3), 3 + rng.pick(6)),
+            4 => format!(
+                "[n](knowledge/{}.md)",
+                ["a", "b", "c", "gone"][rng.pick(4)]
             ),
-            3 => format!(
-                "[@ file=\"{file}\" lines=\"{}-{}\"]",
-                1 + rng.pick(3),
-                3 + rng.pick(6)
-            ),
-            4 => format!("[@ key=\"{}\"]", ["a", "b", "c", "gone"][rng.pick(4)]),
-            _ => format!(
-                "[@ file=\"{}\" lines=\"+{}\"]",
-                file.to_uppercase(),
-                rng.pick(9)
-            ),
+            _ => format!("[bad]({}#L+{})", file.to_uppercase(), rng.pick(9)),
         };
         parts.push(part);
     }
@@ -217,7 +209,7 @@ fn the_turn_reads_the_snapshot_only() {
         "knowledge/n.md",
         &node(
             "n",
-            "[@ file=\"src/a.rs\" symbol=\"fn alpha\"] [@ key=\"gone\"]",
+            "[alpha](src/a.rs#alpha) [gone](knowledge/gone.md)",
         ),
     );
     let index = start(ws);

@@ -1,20 +1,21 @@
 //! Corpus resolution: declaration checks plus one result per cited reference.
 //!
 //! Pure: every disk / parse fact comes through [`Facts`], so the index,
-//! the tests and every caller share one set of rules
-//! (`docs/knowledge-references.md`). Codes are the wire codes of the
-//! knowledge API.
+//! the tests and every caller share one set of rules. Codes are the wire codes
+//! of the knowledge API.
 
 use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use super::corpus::is_valid_node_identity;
 use super::document::{self, Status};
 use super::mentions::{
     Cite, CiteKind, extract_cites, format_line_span, is_knowledge_key, is_workspace_file_ref,
     normalize_key,
 };
+use super::root;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -45,7 +46,7 @@ pub struct Issue {
     pub severity: Severity,
     pub code: String,
     pub message: String,
-    /// Key / path / chain the problem is about (legacy display field).
+    /// Key / path / anchor the problem is about (legacy display field).
     #[serde(skip)]
     pub reference: Option<String>,
     /// The citation this issue belongs to. `None` for declaration issues.
@@ -53,8 +54,7 @@ pub struct Issue {
     pub args: Args,
 }
 
-/// Every `status` a ref (and `code` an issue) can carry. The spec's status
-/// table lists exactly these (`spec_tests::status_table_matches_the_codes`).
+/// Every `status` a ref (and `code` an issue) can carry.
 pub const STATUS_CODES: &[&str] = &[
     "ok",
     "checking",
@@ -75,12 +75,9 @@ pub const STATUS_CODES: &[&str] = &[
     "filename_mismatch",
 ];
 
-/// `args.reason` of `invalid_lines` on a range citation: `lines` is not
-/// `A` or `A-B` (KR-SYN-5).
+/// `args.reason` of `invalid_lines` on a range citation: fragment is not
+/// `#L12`, `#L12-30`, or `#L12-L30`.
 pub const INVALID_LINES_FORMAT: &str = "invalid line span";
-/// `args.reason` of `invalid_lines` on a symbol citation: symbol citations
-/// never take `lines` (KR-SYM-6).
-pub const INVALID_LINES_ON_SYMBOL: &str = "lines not allowed on symbol reference";
 
 /// Facts about one cited path, supplied by the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,9 +123,7 @@ pub struct RefResult {
     pub key: Option<String>,
     pub path: Option<String>,
     pub symbol: Option<String>,
-    /// Range citations only: normalized span when valid, the raw attribute
-    /// text when not. Always `None` for node, file and symbol citations
-    /// (KR-SYM-6; stray text on a symbol is in `args.lines` and `raw`).
+    /// Range citations only: normalized span when valid, raw fragment when not.
     pub lines: Option<String>,
     pub raw: String,
     pub status: &'static str,
@@ -163,11 +158,20 @@ impl Resolution {
     }
 }
 
+struct TargetTables<'a> {
+    corpus_root: Option<&'a str>,
+    /// Valid citeable nodes: rel path -> (normalized key, status, rel path).
+    valid_by_path: HashMap<&'a str, (String, Status, &'a str)>,
+    /// Bad nodes (filename_mismatch or invalid_key): rel path -> (rel path, reason).
+    bad_by_path: HashMap<&'a str, (&'a str, &'static str)>,
+}
+
 /// Resolve every node. `cites` supplies the extracted citations per node
 /// (callers cache extraction); `None` extracts from `value`.
 pub fn resolve(
     nodes: &[CheckNode<'_>],
     cites: Option<&[std::sync::Arc<Vec<Cite>>]>,
+    corpus_root: Option<&str>,
     facts: &mut dyn Facts,
 ) -> Resolution {
     let mut key_counts: HashMap<String, usize> = HashMap::new();
@@ -177,14 +181,26 @@ pub fn resolve(
             *key_counts.entry(key).or_insert(0) += 1;
         }
     }
-    // KR-NODE-4: the first node by path wins; input is in path order.
-    let mut by_key: HashMap<String, (Status, &str)> = HashMap::new();
+    let mut valid_by_path: HashMap<&str, (String, Status, &str)> = HashMap::new();
+    let mut bad_by_path: HashMap<&str, (&str, &'static str)> = HashMap::new();
     for node in nodes {
         let key = normalize_key(node.key);
-        if is_knowledge_key(&key) {
-            by_key.entry(key).or_insert((node.status, node.path));
+        if is_valid_node_identity(node.path, &key) {
+            valid_by_path.insert(node.path, (key, node.status, node.path));
+        } else {
+            let reason = if key.is_empty() || !is_knowledge_key(&key) {
+                "invalid_key"
+            } else {
+                "filename_mismatch"
+            };
+            bad_by_path.insert(node.path, (node.path, reason));
         }
     }
+    let targets = TargetTables {
+        corpus_root,
+        valid_by_path,
+        bad_by_path,
+    };
 
     let mut out = Resolution::default();
     for (index, node) in nodes.iter().enumerate() {
@@ -202,10 +218,8 @@ pub fn resolve(
         let mut slot: HashMap<String, usize> = HashMap::new();
         for cite in node_cites {
             let ref_key = cite.ref_key();
-            let result = resolve_cite(cite, ref_key.clone(), node, &key, &by_key, facts);
+            let result = resolve_cite(cite, ref_key.clone(), node, &targets, facts);
             match slot.get(&ref_key) {
-                // KR-VAL-2: one result per ref_key; a later error replaces an
-                // earlier non-error (e.g. the same chain once with bad lines).
                 Some(&at) => {
                     if rank(&result) > rank(&refs[at]) {
                         refs[at] = result;
@@ -237,9 +251,13 @@ pub fn resolve(
     out
 }
 
-/// Flat issue list, the legacy shape (tests, tool).
-pub fn validate_with(nodes: &[CheckNode<'_>], facts: &mut dyn Facts) -> Vec<Issue> {
-    resolve(nodes, None, facts).flat_issues()
+/// Flat issue list helper (tests).
+pub fn validate_with(
+    nodes: &[CheckNode<'_>],
+    corpus_root: Option<&str>,
+    facts: &mut dyn Facts,
+) -> Vec<Issue> {
+    resolve(nodes, None, corpus_root, facts).flat_issues()
 }
 
 fn rank(result: &RefResult) -> u8 {
@@ -252,7 +270,7 @@ fn rank(result: &RefResult) -> u8 {
 
 fn issue_reference(result: &RefResult) -> Option<String> {
     match result.kind {
-        "node" => result.key.clone(),
+        "node" => result.key.clone().or_else(|| result.path.clone()),
         "symbol" if result.status != "missing_file" && result.status != "symlink_escape" => {
             result.symbol.clone()
         }
@@ -315,7 +333,7 @@ fn declaration_issues(
     } else if !node.path.is_empty() && document::file_stem(node.path) != key {
         let stem = document::file_stem(node.path);
         push(
-            Severity::Warning,
+            Severity::Error,
             "filename_mismatch",
             format!("Filename \"{stem}\" does not match declaration \"{key}\"."),
             Some(key.to_string()),
@@ -367,83 +385,113 @@ fn resolve_cite(
     cite: &Cite,
     ref_key: String,
     node: &CheckNode<'_>,
-    own_key: &str,
-    by_key: &HashMap<String, (Status, &str)>,
+    targets: &TargetTables<'_>,
     facts: &mut dyn Facts,
 ) -> RefResult {
-    let path = cite.norm_path();
-    // `lines` text as written: the span of a range, or the raw text that is
-    // not allowed (an invalid span, or any `lines` on a symbol, KR-SYM-6).
+    let norm_path = cite.norm_path();
     let lines_text = match (cite.lines, cite.bad_lines.as_deref()) {
         (Some(span), _) => Some(format_line_span(span)),
         (None, Some(raw)) => Some(raw.to_string()),
         (None, None) => None,
     };
-    // The `lines` field belongs to range citations only; a symbol citation
-    // never has one (the stray text stays in `args.lines` and `raw`).
     let lines_field = if cite.kind == CiteKind::Range {
         lines_text.clone()
     } else {
         None
     };
-    let mut base = Args::new();
-    let mut target_path = None;
-    let verdict = match cite.kind {
-        CiteKind::Node => {
-            let key = cite.key.clone().unwrap_or_default();
-            base.insert("key".into(), json!(key));
-            if key == own_key {
+
+    // Fold bare-path `.md` citations under the active knowledge root into node citations.
+    if cite.kind == CiteKind::File
+        && is_workspace_file_ref(&norm_path)
+        && let Some(rel) = root::strip_corpus_prefix(&norm_path, targets.corpus_root)
+        && rel.to_ascii_lowercase().ends_with(".md")
+    {
+        if let Some((target_key, target_status, target_rel)) = targets.valid_by_path.get(rel) {
+            let mut base = Args::new();
+            base.insert("key".into(), json!(target_key));
+            base.insert("path".into(), json!(norm_path));
+            let verdict = if *target_rel == node.path {
                 error("self_relation", "Citation points at itself.".into())
             } else {
-                match by_key.get(&key) {
-                    None => error(
-                        "dangling_relation",
-                        format!("Citation \"{key}\" does not exist."),
-                    ),
-                    Some((target, at)) => {
-                        target_path = Some(at.to_string());
-                        base.insert("target_status".into(), json!(target.as_str()));
-                        if node.status == Status::Enabled && *target != Status::Enabled {
-                            Verdict {
-                                status: "inactive_target",
-                                severity: Some(Severity::Warning),
-                                message: format!("Cites {} \"{key}\".", target.as_str()),
-                                extra: Args::new(),
-                            }
-                        } else {
-                            ok()
-                        }
+                base.insert("target_status".into(), json!(target_status.as_str()));
+                if node.status == Status::Enabled && *target_status != Status::Enabled {
+                    Verdict {
+                        status: "inactive_target",
+                        severity: Some(Severity::Warning),
+                        message: format!("Cites {} \"{target_key}\".", target_status.as_str()),
+                        extra: Args::new(),
                     }
+                } else {
+                    ok()
                 }
-            }
+            };
+            base.extend(verdict.extra);
+            return RefResult {
+                ref_key,
+                kind: CiteKind::Node.as_str(),
+                key: Some(target_key.clone()),
+                path: Some(norm_path),
+                symbol: None,
+                lines: None,
+                raw: cite.raw.clone(),
+                status: verdict.status,
+                severity: verdict.severity,
+                target_path: Some((*target_rel).to_string()),
+                args: base,
+                message: verdict.message,
+            };
         }
-        CiteKind::File | CiteKind::Symbol | CiteKind::Range => {
-            let path = path.clone().unwrap_or_default();
-            base.insert("path".into(), json!(path));
-            if let Some(chain) = &cite.symbol {
-                base.insert("symbol".into(), json!(chain));
-            }
-            if let Some(lines) = &lines_text {
-                base.insert("lines".into(), json!(lines));
-            }
-            target_path = Some(path.clone());
-            resolve_path_cite(cite, &path, facts)
+        if let Some((bad_rel, reason)) = targets.bad_by_path.get(rel) {
+            let mut base = Args::new();
+            base.insert("path".into(), json!(norm_path));
+            base.insert("reason".into(), json!(reason));
+            let message = if *reason == "filename_mismatch" {
+                format!(
+                    "Target \"{norm_path}\" is not a valid knowledge node (filename does not match declaration)."
+                )
+            } else {
+                format!("Target \"{norm_path}\" is not a valid knowledge node.")
+            };
+            return RefResult {
+                ref_key,
+                kind: CiteKind::Node.as_str(),
+                key: None,
+                path: Some(norm_path),
+                symbol: None,
+                lines: None,
+                raw: cite.raw.clone(),
+                status: "dangling_relation",
+                severity: Some(Severity::Error),
+                target_path: Some((*bad_rel).to_string()),
+                args: base,
+                message,
+            };
         }
-    };
-    let mut args = base;
-    args.extend(verdict.extra);
+    }
+
+    // Ordinary file / directory / symbol / line-range resolution.
+    let mut base = Args::new();
+    base.insert("path".into(), json!(norm_path));
+    if let Some(symbol) = &cite.symbol {
+        base.insert("symbol".into(), json!(symbol));
+    }
+    if let Some(lines) = &lines_text {
+        base.insert("lines".into(), json!(lines));
+    }
+    let verdict = resolve_path_cite(cite, &norm_path, facts);
+    base.extend(verdict.extra);
     RefResult {
         ref_key,
         kind: cite.kind.as_str(),
-        key: cite.key.clone(),
-        path,
+        key: None,
+        path: Some(norm_path.clone()),
         symbol: cite.symbol.clone(),
         lines: lines_field,
         raw: cite.raw.clone(),
         status: verdict.status,
         severity: verdict.severity,
-        target_path,
-        args,
+        target_path: Some(norm_path),
+        args: base,
         message: verdict.message,
     }
 }
@@ -469,28 +517,11 @@ fn resolve_path_cite(cite: &Cite, path: &str, facts: &mut dyn Facts) -> Verdict 
         FileFact::Dir | FileFact::File => {}
     }
     if let Some(raw) = &cite.bad_lines {
-        let mut verdict = if cite.kind == CiteKind::Symbol {
-            // KR-SYM-6: symbol citations locate by chain only.
-            error(
-                "invalid_lines",
-                format!(
-                    "Symbol citations do not take lines (lines=\"{raw}\"). Remove lines, or cite a line range as [@ file=\"{path}\" lines=\"A-B\"]."
-                ),
-            )
-        } else {
-            error(
-                "invalid_lines",
-                format!(
-                    "Lines \"{raw}\" are not valid. Write lines=\"A\" or lines=\"A-B\" (decimal, 1 <= A <= B)."
-                ),
-            )
-        };
-        let reason = if cite.kind == CiteKind::Symbol {
-            INVALID_LINES_ON_SYMBOL
-        } else {
-            INVALID_LINES_FORMAT
-        };
-        verdict.extra.insert("reason".into(), json!(reason));
+        let mut verdict = error(
+            "invalid_lines",
+            format!("Lines \"{raw}\" are not valid. Write #L12 or #L12-L30 (decimal, 1 <= A <= B)."),
+        );
+        verdict.extra.insert("reason".into(), json!(INVALID_LINES_FORMAT));
         return verdict;
     }
     if cite.kind == CiteKind::File {
@@ -508,8 +539,8 @@ fn resolve_path_cite(cite: &Cite, path: &str, facts: &mut dyn Facts) -> Verdict 
         }
         TextFact::Text { line_count } => line_count,
     };
-    if let Some(chain) = &cite.symbol {
-        return match facts.symbol(path, chain) {
+    if let Some(symbol) = &cite.symbol {
+        return match facts.symbol(path, symbol) {
             SymbolFact::Checking => checking(),
             SymbolFact::Unsupported => error(
                 "unsupported_language",
@@ -517,16 +548,15 @@ fn resolve_path_cite(cite: &Cite, path: &str, facts: &mut dyn Facts) -> Verdict 
             ),
             SymbolFact::Missing => error(
                 "missing_symbol",
-                format!("Symbol \"{chain}\" in \"{path}\" does not exist."),
+                format!("Symbol \"{symbol}\" in \"{path}\" does not exist."),
             ),
             SymbolFact::Ambiguous => error(
                 "ambiguous_symbol",
-                format!("Symbol \"{chain}\" in \"{path}\" is not unique."),
+                format!("Symbol \"{symbol}\" in \"{path}\" is not unique."),
             ),
             SymbolFact::Present => ok(),
         };
     }
-    // Range citation (KR-RANGE-2).
     let Some(span) = cite.lines else {
         return ok();
     };

@@ -604,7 +604,7 @@
     "imageLimit": "最多 {{count}} 张图片",
     "compacting": "正在压缩上下文…",
     "queueFollowUp": "排队后续消息…",
-    "mentionHint": "/ 文件 · # 符号 · @ 知识"
+    "mentionHint": "@ 文件 / 知识 · # 符号"
   },
   "permission": {
     "opinion": "意见（可选）",

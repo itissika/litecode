@@ -221,14 +221,33 @@ impl MemorySample {
 }
 
 pub fn sample_memory(embed_pids: &[u32], lsp_pids: &[u32]) -> MemorySample {
-    // Expand each tracked root into its full process subtree so wrapper
-    // processes (rustup shims etc.) do not hide the real server's memory.
-    let embed_tree = descendant_pids(embed_pids);
-    let lsp_tree = descendant_pids(lsp_pids);
+    let core_kb = read_rss_kb();
+    if embed_pids.is_empty() && lsp_pids.is_empty() {
+        return MemorySample {
+            core_kb,
+            embed_kb: Some(0),
+            lsp_kb: Some(0),
+        };
+    }
+    // Take ONE OS process-table snapshot and reuse it for both engine subtrees
+    // (avoids calling CreateToolhelp32Snapshot / walking /proc twice per tick).
+    let map = process_ppid_map();
+    let embed_kb = if embed_pids.is_empty() {
+        Some(0)
+    } else {
+        let embed_tree = descendants_from_ppid_map(&map, embed_pids);
+        sum_rss_kb_for_pids(&embed_tree)
+    };
+    let lsp_kb = if lsp_pids.is_empty() {
+        Some(0)
+    } else {
+        let lsp_tree = descendants_from_ppid_map(&map, lsp_pids);
+        sum_rss_kb_for_pids(&lsp_tree)
+    };
     MemorySample {
-        core_kb: read_rss_kb(),
-        embed_kb: sum_rss_kb_for_pids(&embed_tree),
-        lsp_kb: sum_rss_kb_for_pids(&lsp_tree),
+        core_kb,
+        embed_kb,
+        lsp_kb,
     }
 }
 

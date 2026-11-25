@@ -1,6 +1,12 @@
 import { defaultUrlTransform } from "react-markdown";
 
-import { isWorkspaceFileRef } from "./knowledge/markers";
+import {
+  isWorkspaceFileRef,
+  normalizeRefPath,
+  parseLineAnchor,
+  parseLineSpan,
+  parseWorkspaceDest,
+} from "./knowledge/markers";
 
 /** Workspace file, line, or symbol named by a `file:` markdown link. */
 export type CitationTarget =
@@ -13,8 +19,9 @@ const SYMBOL = /^[A-Za-z0-9_.$]+$/;
 const LINE = /^L(\d+)$/;
 
 /**
- * Keep `file:` destinations. react-markdown's default allowlist drops them,
- * which would erase the citation before the anchor renderer runs.
+ * Keep `file:` destinations and relative workspace links intact.
+ * react-markdown's default allowlist drops `file:`, which would erase citations
+ * before the anchor renderer runs.
  */
 export function citationUrlTransform(value: string): string {
   if (FILE_SCHEME.test(value)) return value;
@@ -85,59 +92,104 @@ function readFragment(fragment: string): { line?: number; symbol?: string } {
   return {};
 }
 
-/** Where a file-ish markdown link in assistant prose goes. */
-type WorkspaceLink =
-  | { action: "chip"; path: string; line: number | null; symbol: string | null }
+/** Where a markdown link in prose goes. */
+export type WorkspaceLink =
+  | {
+      action: "chip";
+      path: string;
+      line: number | null;
+      lines: string | null;
+      badLines: string | null;
+      symbol: string | null;
+    }
   | { action: "text" }
   | { action: "link" };
 
-const HAS_SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+const HAS_SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]+:/;
 const HAS_EXTENSION = /\.[A-Za-z0-9_-]+$/;
 
 /**
- * Classify a markdown link in assistant prose. `file:...` and a relative path
- * that names a workspace file become citation chips, so the link opens in the
- * editor. A file-ish target we cannot open becomes text: it never looks
- * clickable and never opens a browser. Anything else — a web link, an anchor,
- * a bare word — stays an ordinary link.
+ * Classify a Markdown link in prose or knowledge documents.
+ *
+ * - External URLs (`https://...`, `mailto:...`, `//...`) and `#anchors` stay links.
+ * - Workspace citations (`[a.rs](src/a.rs)`, `[a.rs:12-30](src/a.rs#L12-L30)`,
+ *   `[Store.save](src/a.rs#Store.save)`, `[seq](knowledge/contracts/seq.md)`)
+ *   become interactive chips.
+ * - When `knowledgeBody` is true (inside a knowledge node), even illegal paths
+ *   or bare directory names (like `[src](src)` or `[bad](../x)`) still render as
+ *   chips so the backend's authoritative verdict displays on them.
  */
-export function classifyWorkspaceLink(href: string | undefined): WorkspaceLink {
+export function classifyWorkspaceLink(
+  href: string | undefined,
+  options?: { knowledgeBody?: boolean },
+): WorkspaceLink {
   if (!href) return { action: "link" };
   if (FILE_SCHEME.test(href)) {
-    const target = parseFileCitation(href);
-    if (!target) return { action: "text" };
+    const parsed = parseWorkspaceDest(href);
+    if (!parsed) return { action: "text" };
+    const cleanPath = normalizeRefPath(parsed.path).replace(/^\/+/, "");
+    if (!isWorkspaceFileRef(cleanPath)) {
+      return options?.knowledgeBody
+        ? {
+            action: "chip",
+            path: normalizeRefPath(parsed.path),
+            line: null,
+            lines: parsed.lines,
+            badLines: parsed.badLines,
+            symbol: parsed.symbol,
+          }
+        : { action: "text" };
+    }
+    const span = parsed.lines ? (parseLineSpan(parsed.lines) ?? parseLineAnchor(parsed.lines)) : null;
     return {
       action: "chip",
-      path: target.path,
-      line: target.kind === "line" ? target.line : null,
-      symbol: target.kind === "symbol" ? target.symbol : null,
+      path: cleanPath,
+      line: span?.start ?? null,
+      lines: parsed.lines,
+      badLines: parsed.badLines,
+      symbol: parsed.symbol,
     };
   }
   if (HAS_SCHEME.test(href) || href.startsWith("//") || href.startsWith("#")) {
     return { action: "link" };
   }
 
-  const hashAt = href.indexOf("#");
-  const beforeHash = hashAt >= 0 ? href.slice(0, hashAt) : href;
-  const queryAt = beforeHash.indexOf("?");
-  const rawPath = queryAt >= 0 ? beforeHash.slice(0, queryAt) : beforeHash;
-  const fragment = hashAt >= 0 ? href.slice(hashAt + 1) : "";
-  const { line = null, symbol = null } = readFragment(fragment);
+  const parsed = parseWorkspaceDest(href);
+  if (!parsed) return { action: "link" };
 
-  let path: string;
-  try {
-    path = decodeURIComponent(rawPath).replace(/\\/g, "/").replace(/^\.\//, "");
-  } catch {
-    return { action: "text" };
+  const rawPath = parsed.path;
+  const normalized = normalizeRefPath(rawPath);
+  const stripped = options?.knowledgeBody
+    ? normalized
+    : normalized.replace(/^\.\//, "").replace(/\/+$/, "");
+
+  const span = parsed.lines ? parseLineSpan(parsed.lines) : null;
+  if (options?.knowledgeBody) {
+    return {
+      action: "chip",
+      path: normalized,
+      line: span?.start ?? null,
+      lines: parsed.lines,
+      badLines: parsed.badLines,
+      symbol: parsed.symbol,
+    };
   }
-  if (path.endsWith("/")) path = path.replace(/\/+$/, "");
 
   const pathLike =
     rawPath.includes("/") ||
+    rawPath.includes("\\") ||
     rawPath.endsWith("/") ||
-    HAS_EXTENSION.test(path) ||
-    line !== null;
+    HAS_EXTENSION.test(stripped) ||
+    span !== null ||
+    parsed.symbol !== null;
   if (!pathLike) return { action: "link" };
-  if (!isWorkspaceFileRef(path)) return { action: "text" };
-  return { action: "chip", path, line, symbol };
+  if (!isWorkspaceFileRef(stripped)) return { action: "text" };
+  return {
+    action: "chip",
+    path: stripped,
+    line: span?.start ?? null,
+    lines: parsed.lines,
+    badLines: parsed.badLines,
+    symbol: parsed.symbol,
+  };
 }

@@ -1,11 +1,8 @@
 # Citations
-In user-visible text, cite a knowledge node, workspace file, symbol, or line range with these forms. The citation syntax exists to improve the user's reading and usage experience; use it in the formal text of your answer.
+In user-visible text, cite workspace files, directories, knowledge nodes, lines, or symbols using standard Markdown links with workspace-relative paths. The UI turns them into interactive chips.
 
-- Node: [@ key="seq"]
-- File or directory: [@ file="src/a.rs"]. It is a workspace path, not a node.
-- Symbol: [@ file="src/a.rs" symbol="impl Store › fn save"]. `symbol` is the ancestor chain and takes no `lines`. To cite lines inside a symbol, cite the symbol and the range separately.
-- Lines: [@ file="src/a.rs" lines="4-9"] or [@ file="src/a.rs" lines="12"]. Ranges are 1-based, with `1 <= A <= B`.
+- File, directory, or knowledge node: `[validate.rs](src/auth/validate.rs)` or `[session-model](knowledge/contracts/session-model.md)`
+- Line or range: `[validate.rs:42-45](src/auth/validate.rs#L42-L45)` or `[validate.rs:42](src/auth/validate.rs#L42)` (1-based, `1 <= A <= B`)
+- Symbol: `[Store.save](src/store.rs#Store.save)` or `[resolve](src/knowledge/validate.rs#resolve)` (dot-separated identifier, no spaces)
 
-Web links stay ordinary markdown. A workspace file must use the bracket form above; Do not cite `..` or absolute paths. If you are unsure a path exists, write it as plain text.
-
-Example: The guard at [@ file="src/auth/validate.ts" lines="42-45"] returns 401 when the token is missing.
+Web links (`https://...`) stay ordinary links. Do not use `..` or absolute paths; wrap paths containing spaces in `<...>`. If you are unsure a path exists, write it as plain text.

@@ -1,8 +1,10 @@
 import {
-  extractMarkers,
+  extractNodeRelations,
   isKnowledgeKey,
+  isValidNodeIdentity,
+  logicalKnowledgePath,
   normalizeKey,
-  replaceMentionKey,
+  replaceCitationPath,
 } from "./markers";
 import type {
   KnowledgeFolder,
@@ -65,10 +67,6 @@ function parseCoord(value: string): number | null {
   if (!value) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function citedIds(body: string): string[] {
-  return extractMarkers(body);
 }
 
 /**
@@ -136,7 +134,7 @@ export function parseKnowledgeMarkdown(
     status,
     invalidStatus,
     summary,
-    refs: citedIds(body),
+    refs: [],
     body,
     folderId: folderIdOf(normalizedPath),
     x,
@@ -188,9 +186,9 @@ export function renderKnowledgeMarkdown(doc: {
   return lines.join("\n");
 }
 
-/** Rewrite mention ids. Declaration lines are left alone. */
-export function replaceKnowledgeKey(text: string, from: string, to: string): string {
-  return replaceMentionKey(text, from, to);
+/** Rewrite workspace citation links matching `fromPath` to `toPath`. */
+export function replaceKnowledgePath(text: string, fromPath: string, toPath: string): string {
+  return replaceCitationPath(text, fromPath, toPath);
 }
 
 function addFolderChain(ids: Set<string>, dir: string): void {
@@ -251,10 +249,15 @@ export function knowledgeFromFiles(
     }
   }
   const keyCounts = new Map<string, number>();
+  const validByLogical = new Map<string, { key: string; path: string }>();
   for (const file of declared) {
     const key = normalizeKey(file.key);
-    if (!isKnowledgeKey(key)) continue;
-    keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+    if (isKnowledgeKey(key)) {
+      keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+    }
+    if (isValidNodeIdentity(file.path, key)) {
+      validByLogical.set(logicalKnowledgePath(file.path), { key, path: file.path });
+    }
   }
 
   const usedIds = new Set<string>();
@@ -264,12 +267,17 @@ export function knowledgeFromFiles(
     let id = unique ? key : file.path;
     if (usedIds.has(id)) id = file.path;
     usedIds.add(id);
+    const relations = extractNodeRelations(
+      file.body,
+      (normPath) => validByLogical.get(normPath),
+      file.path,
+    );
     return {
       id,
       key,
       value: file.body,
       summary: file.summary,
-      relations: file.refs,
+      relations,
       status: file.status,
       invalidStatus: file.invalidStatus,
       folderId: file.folderId,

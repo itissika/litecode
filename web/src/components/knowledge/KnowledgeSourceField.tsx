@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 
+import type { KnowledgeMentionCandidate } from "../../lib/knowledge/flowProjection";
 import { KnowledgeBodyEditor } from "./KnowledgeBodyEditor";
 import i18n from "../../i18n";
 
@@ -23,7 +24,7 @@ export function KnowledgeSourceField({
   /** Card whose body this field edits. Mention clicks jump from here. */
   sourceId?: string;
   value: string;
-  candidates: string[];
+  candidates: readonly KnowledgeMentionCandidate[];
   onChange: (next: string) => void;
   onBlur?: () => void;
   rows: number;
@@ -145,7 +146,7 @@ function BodyField({
   label: string;
   sourceId: string;
   value: string;
-  candidates: string[];
+  candidates: readonly KnowledgeMentionCandidate[];
   onChange: (next: string) => void;
   onBlur?: () => void;
   rows: number;

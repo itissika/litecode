@@ -54,13 +54,13 @@ domain : harness-core
 
 ## 代码落点
 
-- **唯一压缩任务**：[@ file="src/session/manager.rs" lines="2552-2592"]
-- **普通输入的 sealed 边界**：[@ file="src/context_pipeline/compact.rs" lines="1665-1688"]
-- **一次压缩、提交和读回**：[@ file="src/context_pipeline/compact.rs" lines="1803-1917"]
-- **读回失败的分流**：[@ file="src/context_pipeline/compact.rs" lines="2336-2353"]
-- **等待线和发送上限**：[@ file="src/context_pipeline/context_meter.rs" lines="172-189"]、[@ file="src/runtime/exec.rs" lines="545-549"]
-- **回退/删除取消并等收尾**：[@ file="src/session/manager.rs" lines="2797-2817"]、[@ file="src/session/manager.rs" lines="3157-3163"]
-- **超限时未验证读回的处理**：[@ file="src/runtime/exec.rs" lines="355-393"]
+- **唯一压缩任务**：[manager.rs:2552-2592](src/session/manager.rs#L2552-L2592)
+- **普通输入的 sealed 边界**：[compact.rs:1665-1688](src/context_pipeline/compact.rs#L1665-L1688)
+- **一次压缩、提交和读回**：[compact.rs:1803-1917](src/context_pipeline/compact.rs#L1803-L1917)
+- **读回失败的分流**：[compact.rs:2336-2353](src/context_pipeline/compact.rs#L2336-L2353)
+- **等待线和发送上限**：[context_meter.rs:172-189](src/context_pipeline/context_meter.rs#L172-L189)、[exec.rs:545-549](src/runtime/exec.rs#L545-L549)
+- **回退/删除取消并等收尾**：[manager.rs:2797-2817](src/session/manager.rs#L2797-L2817)、[manager.rs:3157-3163](src/session/manager.rs#L3157-L3163)
+- **超限时未验证读回的处理**：[exec.rs:355-393](src/runtime/exec.rs#L355-L393)
 
-父节点：[@ key="context-compact"]。
-相关：[@ key="session-write-path"]、[@ key="turn-reservation"]。
+父节点：[context-compact](knowledge/contracts/context-compact.md)。
+相关：[session-write-path](knowledge/contracts/session/session-write-path.md)、[turn-reservation](knowledge/contracts/session/turn-reservation.md)。

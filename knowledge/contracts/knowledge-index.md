@@ -9,6 +9,6 @@ domain : knowledge
 
 **准入：** A3。`KnowledgeIndex` 按工作区注册常驻引擎；`snapshot` / `fresh_content` / `turn_note` / `query_symbols` 都读同一套解析结果，不允许入口各算各的。索引是派生物，可重建；真源仍是磁盘上的 knowledge/ 与被引用文件。
 
-依据：[@ file="src/knowledge/index.rs" symbol="fn start"]、[@ file="src/knowledge/index.rs" symbol="impl KnowledgeIndex › fn snapshot"]、[@ file="src/knowledge/index.rs" symbol="fn fresh_content"]、[@ file="src/knowledge/index.rs" symbol="fn turn_note"]。
-上层：[@ key="knowledge"]。
-相关：[@ key="knowledge-ref-authority"]。
+依据：[start](src/knowledge/index.rs#start)、[KnowledgeIndex.snapshot](src/knowledge/index.rs#KnowledgeIndex.snapshot)、[fresh_content](src/knowledge/index.rs#fresh_content)、[turn_note](src/knowledge/index.rs#turn_note)。
+上层：[knowledge](knowledge/framework/knowledge.md)。
+相关：[knowledge-ref-authority](knowledge/contracts/knowledge-ref-authority.md)。

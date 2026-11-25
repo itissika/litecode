@@ -32,9 +32,9 @@ afterEach(() => {
 });
 
 describe("onCitationCopy", () => {
-  it("copies a file range chip as its shortcode, not its label", () => {
+  it("copies a file range chip as its standard Markdown link, not its label", () => {
     const prose = selectAll(
-      'see <span class="knowledge-token" data-citation=\'[@ file="src/a.ts" lines="12-30"]\'>a.ts : 12-30</span> here',
+      'see <span class="knowledge-token" data-citation="[a.ts:12-30](src/a.ts#L12-L30)">a.ts : 12-30</span> here',
     );
     const { store, data } = clipboard();
     const preventDefault = vi.fn();
@@ -42,26 +42,26 @@ describe("onCitationCopy", () => {
     onCitationCopy({ clipboardData: data, target: prose, preventDefault });
 
     const text = store.get("text/plain") ?? "";
-    expect(text).toContain('[@ file="src/a.ts" lines="12-30"]');
+    expect(text).toContain("[a.ts:12-30](src/a.ts#L12-L30)");
     expect(text).not.toContain("a.ts : 12-30");
     expect(store.get("text/html") ?? "").toContain(
-      '[@ file="src/a.ts" lines="12-30"]',
+      "[a.ts:12-30](src/a.ts#L12-L30)",
     );
     expect(preventDefault).toHaveBeenCalled();
   });
 
   it("copies node and symbol chips in the same selection", () => {
     const prose = selectAll(
-      '<span class="knowledge-token" data-citation=\'[@ key="seq"]\'>seq</span>' +
-        '<span class="knowledge-token" data-citation=\'[@ file="src/a.rs" symbol="impl Store › fn save"]\'>a.rs : fn save</span>',
+      '<span class="knowledge-token" data-citation="[seq](knowledge/arch/seq.md)">seq</span>' +
+        '<span class="knowledge-token" data-citation="[Store.save](src/a.rs#Store.save)">a.rs : save</span>',
     );
     const { store, data } = clipboard();
 
     onCitationCopy({ clipboardData: data, target: prose, preventDefault: vi.fn() });
 
     const text = store.get("text/plain") ?? "";
-    expect(text).toContain('[@ key="seq"]');
-    expect(text).toContain('[@ file="src/a.rs" symbol="impl Store › fn save"]');
+    expect(text).toContain("[seq](knowledge/arch/seq.md)");
+    expect(text).toContain("[Store.save](src/a.rs#Store.save)");
   });
 
   it("leaves a selection without chips to the browser", () => {
@@ -77,7 +77,7 @@ describe("onCitationCopy", () => {
 
   it("leaves the editor alone: a mention there is a node, not text", () => {
     const editor = selectAll(
-      '<span class="knowledge-token" data-citation=\'[@ file="src/a.ts"]\'>a.ts</span>',
+      '<span class="knowledge-token" data-citation="[a.ts](src/a.ts)">a.ts</span>',
       "agent-markdown",
     );
     editor.setAttribute("contenteditable", "true");
@@ -92,9 +92,8 @@ describe("onCitationCopy", () => {
 
   it("rewrites a chip wherever the selection starts, even off the prose", () => {
     const prose = selectAll(
-      '<span class="knowledge-token" data-citation=\'[@ file="src/a.ts"]\'>a.ts</span>',
+      '<span class="knowledge-token" data-citation="[a.ts](src/a.ts)">a.ts</span>',
     );
-    // A select-all anchors at the document, not at a bubble.
     const range = document.createRange();
     range.selectNodeContents(document.body);
     const selection = window.getSelection();
@@ -106,7 +105,7 @@ describe("onCitationCopy", () => {
     onCitationCopy({ clipboardData: data, target: document.body, preventDefault });
 
     expect(prose).toBeTruthy();
-    expect(store.get("text/plain")).toContain('[@ file="src/a.ts"]');
+    expect(store.get("text/plain")).toContain("[a.ts](src/a.ts)");
     expect(preventDefault).toHaveBeenCalled();
   });
 });
@@ -123,15 +122,14 @@ describe("installCitationCopy", () => {
     const stop = installCitationCopy(document);
     try {
       const prose = selectAll(
-        '<span class="knowledge-token" data-citation=\'[@ key="seq"]\'>seq</span>',
+        '<span class="knowledge-token" data-citation="[seq](knowledge/arch/seq.md)">seq</span>',
       );
       const { store, data } = clipboard();
 
-      // Aimed at `body`, as a select-all plus Ctrl+C is.
       const event = copyEvent(document.body, data);
 
       expect(event.defaultPrevented).toBe(true);
-      expect(store.get("text/plain")).toContain('[@ key="seq"]');
+      expect(store.get("text/plain")).toContain("[seq](knowledge/arch/seq.md)");
       expect(prose).toBeTruthy();
     } finally {
       stop();
@@ -141,7 +139,7 @@ describe("installCitationCopy", () => {
   it("can be removed again", () => {
     installCitationCopy(document)();
     selectAll(
-      '<span class="knowledge-token" data-citation=\'[@ key="seq"]\'>seq</span>',
+      '<span class="knowledge-token" data-citation="[seq](knowledge/arch/seq.md)">seq</span>',
     );
     const { store, data } = clipboard();
 

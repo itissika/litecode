@@ -138,7 +138,7 @@ interface PlanTools {
 }
 
 interface KnowledgeTools {
-  /** List workspace knowledge nodes as flat summary rows with workspace-relative `path` (omit filters to list all); nodes use a `node` fence and `[@ key="..."]` / `[@ file="..."]` citations. The corpus root and node count are shown in the run view, not returned here. @tool knowledge.list @suite knowledge */
+  /** List workspace knowledge nodes as flat summary rows with workspace-relative `path` (omit filters to list all); nodes use a `node` fence (filename stem must match `node` key) and standard Markdown links `[label](path)`, `[label](path#L12-L30)`, or `[label](path#Symbol)`. The corpus root and node count are shown in the run view, not returned here. @tool knowledge.list @suite knowledge */
   list(args?: KnowledgeScope): Promise<{
     nodes: {
       key: string;

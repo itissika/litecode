@@ -78,6 +78,9 @@ export class AgentWsClient {
   private inboundSeq = 0;
   /** Pending grace window before replacing a silent OPEN socket. */
   private staleRecheckTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Active `server/ping` probe request ids swallowed silently on reply. */
+  private activeProbeIds = new Set<string>();
+  private nextProbeId = 0;
   private lineBuffer = "";
 
   /** In-flight JSON-RPC 2.0 promises keyed by request id. */
@@ -102,6 +105,7 @@ export class AgentWsClient {
     this.socketOpened = false;
     this.handshakeTimedOut = false;
     this.lineBuffer = "";
+    this.activeProbeIds.clear();
     this.clearStaleRecheck();
     this.clearReconnectTimer();
     this.clearHandshakeTimer();
@@ -173,6 +177,7 @@ export class AgentWsClient {
     ws.onclose = () => {
       if (!current()) return;
       this.clearStaleRecheck();
+      this.activeProbeIds.clear();
       this.rejectAllPendingRpc("WebSocket closed");
       this.ws = null;
       this.lineBuffer = "";
@@ -252,6 +257,7 @@ export class AgentWsClient {
     this.clearReconnectTimer();
     this.clearHandshakeTimer();
     this.clearStaleRecheck();
+    this.activeProbeIds.clear();
     const ws = this.ws;
     this.ws = null;
     this.generation += 1;
@@ -416,6 +422,13 @@ export class AgentWsClient {
 
         // RPC Response (has id): resolve pending promise
         if (id != null) {
+          // Swallow responses (result OR legacy -32601 error) to our internal
+          // `server/ping` liveness probe; `ws.onmessage` already bumped
+          // `inboundSeq` and cancelled the stale reconnect timer.
+          if (typeof id === "string" && this.activeProbeIds.has(id)) {
+            this.activeProbeIds.delete(id);
+            return;
+          }
           if (this.pendingRpc.has(id)) {
             const { resolve, reject } = this.pendingRpc.get(id)!;
             this.pendingRpc.delete(id);
@@ -479,10 +492,27 @@ export class AgentWsClient {
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 
-  /** Give queued frames a chance before declaring a silent socket dead. */
+  /** Actively probe a silent OPEN socket and give it a grace window before declaring it dead. */
   private scheduleStaleRecheck(): void {
     if (this.staleRecheckTimer) return;
     const seen = this.inboundSeq;
+    const ws = this.ws;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      const probeId = `ws-ping-${++this.nextProbeId}`;
+      this.activeProbeIds.add(probeId);
+      try {
+        ws.send(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: probeId,
+            method: "server/ping",
+            params: {},
+          }),
+        );
+      } catch {
+        this.activeProbeIds.delete(probeId);
+      }
+    }
     this.staleRecheckTimer = setTimeout(() => {
       this.staleRecheckTimer = null;
       if (this.stopped || this.intentionalClose) return;

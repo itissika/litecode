@@ -29,19 +29,19 @@ import {
 } from "react";
 
 import { trackEditorView } from "../../lib/editorRoot";
-
-import { citationFact, formatLineSpan } from "../../lib/knowledge/markers";
+import type { KnowledgeMentionCandidate } from "../../lib/knowledge/flowProjection";
 import { dragCarriesMention, dropCarriesMention } from "../../lib/dropPayload";
 import { mentionTextForDrop } from "../../lib/mentionDrop";
 import { useSessionStore } from "../../stores/sessionStore";
 import { MentionChipView } from "./chips";
-import { bodyToContent, fileMentionOptions, knowledgeMentionOptions, mentionInlineContent } from "./serialize";
+import { bodyToContent, citationMentionOptions, mentionInlineContent } from "./serialize";
 import {
+  dedupeFileCandidates,
   fileCandidates,
   fileDisplayName,
   filterSymbols,
+  knowledgeItems,
   lockedQuery,
-  mentionItems,
   phaseForQuery,
   symbolCandidate,
   symbolsFor,
@@ -56,7 +56,7 @@ export interface MentionEditorHandle {
 }
 
 type MenuItem =
-  | { kind: "node"; id: string }
+  | ({ kind: "node" } & KnowledgeMentionCandidate)
   | ({ kind: "file" } & FileCandidate)
   | ({ kind: "symbol" } & SymbolCandidate);
 
@@ -65,6 +65,7 @@ type MentionAttrs = {
   label: string;
   symbol?: string | null;
   lines?: string | null;
+  badLines?: string | null;
 };
 
 type MentionListHandle = {
@@ -73,7 +74,6 @@ type MentionListHandle = {
 
 type MentionListProps = SuggestionProps<MenuItem, MentionAttrs> & {
   wide?: boolean;
-  includeLinesRef?: { current: boolean };
   onHighlight?: (path: string | null) => void;
   onLock?: (path: string) => void;
 };
@@ -152,12 +152,11 @@ interface MentionEditorProps {
   label: string;
   sourceId?: string;
   value: string;
-  candidates: readonly string[];
+  candidates: readonly KnowledgeMentionCandidate[];
   rows?: number;
   placeholder?: string;
   className?: string;
   style?: CSSProperties;
-  symbolLines?: boolean;
   submitOnEnter?: boolean;
   onChange: (next: string) => void;
   onBlur?: () => void;
@@ -181,13 +180,11 @@ function MentionList({
   command,
   loading,
   wide,
-  includeLinesRef,
   onHighlight,
   onLock,
 }: SuggestionProps<MenuItem, MentionAttrs> & {
   ref?: Ref<MentionListHandle>;
   wide?: boolean;
-  includeLinesRef?: { current: boolean };
   onHighlight?: (path: string | null) => void;
   onLock?: (path: string) => void;
 }) {
@@ -206,23 +203,25 @@ function MentionList({
     const item = items[index];
     if (!item) return;
     if (item.kind === "node") {
-      command({ id: item.id, label: item.id });
+      command({ id: item.path, label: item.key, symbol: null, lines: null, badLines: null });
       return;
     }
     if (item.kind === "file") {
-      command({ id: item.path, label: item.path });
+      command({
+        id: item.path,
+        label: fileDisplayName(item.path),
+        symbol: null,
+        lines: null,
+        badLines: null,
+      });
       return;
     }
-    // A symbol citation never carries lines (KR-SYM-6); only a range does.
-    const lines =
-      includeLinesRef?.current && !item.chain && item.start > 0
-        ? formatLineSpan(item.start, item.end)
-        : null;
     command({
       id: item.path,
-      label: citationFact(item.path, item.chain, lines),
+      label: item.chain,
       symbol: item.chain,
-      lines,
+      lines: null,
+      badLines: null,
     });
   }
 
@@ -308,7 +307,7 @@ function MentionList({
               role="option"
               aria-selected={active}
               className={`${className} knowledge-mention-file`}
-              key={item.path}
+              key={`file:${item.path}`}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => selectItem(index)}
             >
@@ -335,12 +334,13 @@ function MentionList({
             type="button"
             role="option"
             aria-selected={active}
-            className={className}
-            key={item.id}
+            className={`${className} knowledge-mention-node`}
+            key={`node:${item.path}`}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => selectItem(index)}
           >
-            {item.id}
+            <span className="knowledge-mention-node-key">{item.key}</span>
+            <span className="knowledge-mention-node-path">{item.path}</span>
           </button>
         );
       })}
@@ -348,57 +348,39 @@ function MentionList({
   );
 }
 
-function nodeSuggestion(candidatesRef: { current: readonly string[] }, pluginKey: PluginKey) {
-  return {
-    char: "@",
-    pluginKey,
-    items: ({ query }: { query: string }) =>
-      mentionItems(candidatesRef.current, query).map((id) => ({ kind: "node" as const, id })),
-    render: () => {
-      let menu: MentionMenu | null = null;
-      return {
-        onStart: (props: SuggestionProps<MenuItem, MentionAttrs>) => {
-          menu = mountMentionList(props, pluginKey);
-        },
-        onUpdate(props: SuggestionProps<MenuItem, MentionAttrs>) {
-          menu?.update(props);
-        },
-        onKeyDown(props: { event: KeyboardEvent }) {
-          return menu?.onKeyDown(props) ?? false;
-        },
-        onExit() {
-          menu?.destroy();
-          menu = null;
-        },
-      };
-    },
-  };
-}
-
-function fileSuggestion(
+function unifiedSuggestion(
+  candidatesRef: { current: readonly KnowledgeMentionCandidate[] },
   pluginKey: PluginKey,
-  includeLinesRef: { current: boolean },
 ) {
   const locked: { current: LockedFile | null } = { current: null };
   const highlighted: { current: string | null } = { current: null };
   return {
-    char: "/",
+    char: "@",
     pluginKey,
     items: async ({ query, signal }: { query: string; signal?: AbortSignal }) => {
       const phase = phaseForQuery(query, locked.current);
-      if (phase.mode === "file") {
-        const paths = await fileCandidates(phase.filter, signal);
-        return paths.map((item) => ({ kind: "file" as const, ...item }));
+      if (phase.mode === "symbol") {
+        try {
+          const symbols = filterSymbols(await symbolsFor(phase.locked.path), phase.filter);
+          return symbols.map((item) => ({
+            kind: "symbol" as const,
+            ...symbolCandidate(phase.locked.path, item),
+          }));
+        } catch {
+          return [];
+        }
       }
-      try {
-        const symbols = filterSymbols(await symbolsFor(phase.locked.path), phase.filter);
-        return symbols.map((item) => ({
-          kind: "symbol" as const,
-          ...symbolCandidate(phase.locked.path, item),
-        }));
-      } catch {
-        return [];
-      }
+      const allKnowledge = candidatesRef.current;
+      const matchedNodes: MenuItem[] = knowledgeItems(allKnowledge, phase.filter).map(
+        (item) => ({ kind: "node" as const, ...item }),
+      );
+      const rawFiles = phase.filter.trim()
+        ? await fileCandidates(phase.filter, signal)
+        : [];
+      const matchedFiles: MenuItem[] = dedupeFileCandidates(rawFiles, allKnowledge).map(
+        (item) => ({ kind: "file" as const, ...item }),
+      );
+      return [...matchedNodes, ...matchedFiles];
     },
     render: () => {
       let menu: MentionMenu | null = null;
@@ -417,7 +399,6 @@ function fileSuggestion(
         return {
           ...props,
           wide,
-          includeLinesRef,
           onHighlight: (path: string | null) => {
             highlighted.current = path;
           },
@@ -434,7 +415,9 @@ function fileSuggestion(
         onUpdate(props: SuggestionProps<MenuItem, MentionAttrs>) {
           editor = props.editor;
           range = props.range;
-          if (phaseForQuery(props.query, locked.current).mode === "file") locked.current = null;
+          if (phaseForQuery(props.query, locked.current).mode === "unified") {
+            locked.current = null;
+          }
           menu?.update(listProps(props));
         },
         onKeyDown(props: { event: KeyboardEvent; range: Range }) {
@@ -466,7 +449,6 @@ export function MentionEditor({
   placeholder = "",
   className,
   style,
-  symbolLines = false,
   submitOnEnter = false,
   onChange,
   onBlur,
@@ -500,15 +482,12 @@ export function MentionEditor({
   onEscapeRef.current = onEscape;
   const placeholderRef = useRef(placeholder);
   placeholderRef.current = placeholder;
-  const includeLinesRef = useRef(symbolLines);
-  includeLinesRef.current = symbolLines;
   const submitRef = useRef(submitOnEnter);
   submitRef.current = submitOnEnter;
   const emitted = useRef(value);
   const initialContent = useRef(bodyToContent(value));
   const insertChips = useRef<((pos: number, text: string) => void) | null>(null);
-  const nodeKey = useMemo(() => new PluginKey("knowledgeNodeMention"), []);
-  const fileKey = useMemo(() => new PluginKey("knowledgeFileMention"), []);
+  const mentionKey = useMemo(() => new PluginKey("unifiedMention"), []);
 
   const extensions = useMemo(
     () => [
@@ -520,35 +499,23 @@ export function MentionEditor({
         placeholder: () => placeholderRef.current,
       }),
       Mention.extend({
-        addNodeView() {
-          return ReactNodeViewRenderer(
-            (props) => (
-              <MentionChipView {...props} sourceIdRef={sourceIdRef} mode="node" />
-            ),
-            { as: "span" },
-          );
-        },
-      }).configure(knowledgeMentionOptions(nodeSuggestion(candidatesRef, nodeKey))),
-      Mention.extend({
-        name: "fileMention",
         addAttributes() {
           return {
             ...this.parent?.(),
             symbol: { default: null },
             lines: { default: null },
+            badLines: { default: null },
           };
         },
         addNodeView() {
           return ReactNodeViewRenderer(
-            (props) => (
-              <MentionChipView {...props} sourceIdRef={sourceIdRef} mode="file" />
-            ),
+            (props) => <MentionChipView {...props} sourceIdRef={sourceIdRef} />,
             { as: "span" },
           );
         },
-      }).configure(fileMentionOptions(fileSuggestion(fileKey, includeLinesRef))),
+      }).configure(citationMentionOptions(unifiedSuggestion(candidatesRef, mentionKey))),
     ],
-    [fileKey, nodeKey],
+    [mentionKey],
   );
 
   const editorProps = useMemo(
@@ -559,8 +526,7 @@ export function MentionEditor({
         "aria-label": label,
       },
       handleKeyDown: (view: EditorView, event: KeyboardEvent) => {
-        const suggesting =
-          nodeKey.getState(view.state)?.active || fileKey.getState(view.state)?.active;
+        const suggesting = Boolean(mentionKey.getState(view.state)?.active);
         if (event.key === "Escape" && onEscapeRef.current && !suggesting) {
           event.preventDefault();
           onEscapeRef.current();
@@ -619,7 +585,7 @@ export function MentionEditor({
         },
       },
     }),
-    [fileKey, label, nodeKey],
+    [label, mentionKey],
   );
 
   const editor = useEditor({
@@ -638,10 +604,9 @@ export function MentionEditor({
   useLayoutEffect(() => {
     if (!editor) return;
     return trackEditorView(editor.view, () => {
-      exitSuggestion(editor.view, nodeKey);
-      exitSuggestion(editor.view, fileKey);
+      exitSuggestion(editor.view, mentionKey);
     });
-  }, [editor, fileKey, nodeKey]);
+  }, [editor, mentionKey]);
 
   insertChips.current = (pos, text) => {
     if (!editor || editor.isDestroyed) return;

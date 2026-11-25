@@ -17,7 +17,7 @@ h : 449
 - 投影纪律：客户端只做投影，不发明第二套对话语义（死亡清单测试封禁旧方言）；流式平滑只是显示缓冲。
 - 人类握有控制权：可打断、可回退、可授权；交互不止「看」。
 
-契约展开：[@ key="ask-surface"]。
-上层：[@ key="ux-design"]。
-相关：[@ key="ux"]、[@ key="client-projection"]、[@ key="tool-pipeline"]。
-依据：[@ file="web/src/components/PermissionModal.tsx"]、[@ file="web/src/components/SessionStatusLine.tsx"]、[@ file="web/src/stores/connectionStore.ts"]。
+契约展开：[ask-surface](knowledge/contracts/ask-surface.md)。
+上层：[ux-design](knowledge/design/ux-design.md)。
+相关：[ux](knowledge/framework/ux.md)、[client-projection](knowledge/contracts/client-projection.md)、[tool-pipeline](knowledge/contracts/tool-pipeline.md)。
+依据：[PermissionModal.tsx](web/src/components/PermissionModal.tsx)、[SessionStatusLine.tsx](web/src/components/SessionStatusLine.tsx)、[connectionStore.ts](web/src/stores/connectionStore.ts)。

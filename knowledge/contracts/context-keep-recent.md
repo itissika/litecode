@@ -9,5 +9,5 @@ domain : harness-core
 
 **准入：** A1。compact 的可丢弃前缀由 keep-recent 切割决定：切割必须保持 FunctionCall 与其 Output 同窗、assistant 段完整，且不得切到 leading summary 之前；切不出可丢弃前缀则本次不 compact。切坏会使模型侧工具配对断裂或摘要吞掉未提交语义。
 
-依据：[@ file="src/context_pipeline/keep_recent.rs" symbol="fn find_keep_recent_cut"]、[@ file="src/context_pipeline/keep_recent.rs" symbol="mod tests › fn tool_pair_not_split"]。
-父节点：[@ key="context-view"]。
+依据：[find_keep_recent_cut](src/context_pipeline/keep_recent.rs#find_keep_recent_cut)、[tests.tool_pair_not_split](src/context_pipeline/keep_recent.rs#tests.tool_pair_not_split)。
+父节点：[context-view](knowledge/contracts/context-view.md)。

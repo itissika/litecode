@@ -1,23 +1,22 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  extractFileRefs,
-  extractMarkers,
-  fileMentionSource,
+  citationMarkdown,
+  extractNodeRelations,
+  extractRefs,
   humanFileLabel,
   humanRangeLabel,
   humanSymbolLabel,
+  isValidNodeIdentity,
   isWorkspaceFileRef,
-  leafSymbol,
-  symbolMentionSource,
   knowledgePreview,
-  mentionSource,
+  knowledgeRefKey,
+  leafSymbol,
+  parseLineAnchor,
+  replaceCitationPath,
+  replaceCitationPathPrefix,
   splitBodyRefs,
-  splitKnowledgeRefs,
 } from "./markers";
-import { remarkKnowledgeRef } from "./remarkKnowledgeRef";
-
-const seq = mentionSource("seq");
 
 describe("human chip labels", () => {
   it("keeps the file name and leaves the path to the title", () => {
@@ -27,11 +26,14 @@ describe("human chip labels", () => {
   });
 
   it("shows a symbol as the file name and the leaf segment", () => {
-    expect(humanSymbolLabel("src/session/manager.rs", "impl Store › fn save")).toBe(
-      "manager.rs : fn save",
+    expect(humanSymbolLabel("src/session/manager.rs", "Store.save")).toBe(
+      "manager.rs : save",
     );
-    expect(leafSymbol("impl Store › fn save")).toBe("fn save");
-    expect(leafSymbol("fn save")).toBe("fn save");
+    expect(humanSymbolLabel("src/session/manager.rs", "Store::save")).toBe(
+      "manager.rs : save",
+    );
+    expect(leafSymbol("Store.save")).toBe("save");
+    expect(leafSymbol("save")).toBe("save");
   });
 
   it("shows a line range as file : span", () => {
@@ -41,191 +43,130 @@ describe("human chip labels", () => {
   });
 });
 
-describe("splitKnowledgeRefs", () => {
-  it("splits a mention and keeps id and label", () => {
-    expect(splitKnowledgeRefs(`see ${mentionSource("seq", "序号")} now`)).toEqual([
-      { type: "text", value: "see " },
-      { type: "ref", id: "seq", label: "seq" },
-      { type: "text", value: " now" },
-    ]);
-  });
-
-  it("leaves plain @text and old brackets as text", () => {
-    expect(splitKnowledgeRefs("@seq and [[node : seq]] and [[seq]]")).toEqual([
-      { type: "text", value: "@seq and [[node : seq]] and [[seq]]" },
-    ]);
-  });
-});
-
-describe("extractMarkers", () => {
-  it("reads every prose mention once, in order", () => {
-    expect(
-      extractMarkers(`${mentionSource("session")} and ${mentionSource("seq")} and ${seq}`),
-    ).toEqual(["session", "seq"]);
-  });
-
-  it("ignores fenced blocks, tilde fences, inline code, and plain text", () => {
-    const markdown = [
-      `keep ${mentionSource("session")}`,
-      "```ts",
-      seq,
-      "```",
-      `also \`${mentionSource("revert")}\` stays code`,
-      "~~~",
-      mentionSource("compact"),
-      "~~~",
-      `end ${mentionSource("item")}`,
-      "not @providers",
-    ].join("\n");
-    expect(extractMarkers(markdown)).toEqual(["session", "item"]);
-  });
-});
-
-describe("knowledgePreview", () => {
-  it("drops fences and shows the label", () => {
-    const value = `alpha ${mentionSource("seq", "序号")}\n\n\`\`\`\n${seq}\n\`\`\`\nbeta`;
-    expect(knowledgePreview(value, 2)).toBe("alpha seq\nbeta");
-  });
-
-  it("keeps inline code and still ignores a citation inside it or a fence", () => {
-    const hidden = mentionSource("hidden");
-    const value = `see \`node : seq\` and ${mentionSource("seq", "序号")}\n\`\`\`\n${hidden}\n\`\`\`\n`;
-    expect(knowledgePreview(value, 3)).toBe("see `node : seq` and seq");
-    expect(extractMarkers(value)).toEqual(["seq"]);
-    expect(extractMarkers(`\`${hidden}\``)).toEqual([]);
-    expect(knowledgePreview(`\`${hidden}\``, 1)).toContain('key="hidden"');
-  });
-
-  it("clips inline code past 24 characters", () => {
-    const long = "a".repeat(30);
-    expect(knowledgePreview(`\`${long}\``, 1)).toBe(`\`${"a".repeat(24)}…\``);
-  });
-});
-
-describe("remarkKnowledgeRef", () => {
-  it("turns prose mentions into knowledge links and leaves code nodes", () => {
-    const tree = {
-      type: "root",
-      children: [
-        {
-          type: "paragraph",
-          children: [{ type: "text", value: `see ${seq}` }],
-        },
-        { type: "code", value: seq },
-        {
-          type: "paragraph",
-          children: [{ type: "inlineCode", value: mentionSource("revert") }],
-        },
-      ],
-    };
-    remarkKnowledgeRef()(tree);
-    expect(tree.children[0]?.children).toEqual([
-      { type: "text", value: "see " },
-      {
-        type: "link",
-        url: "knowledge:seq",
-        children: [{ type: "text", value: "seq" }],
-      },
-    ]);
-    expect(tree.children[1]).toEqual({ type: "code", value: seq });
-    expect(tree.children[2]?.children?.[0]).toEqual({
-      type: "inlineCode",
-      value: mentionSource("revert"),
-    });
-  });
-
-  it("turns a file citation into a location link and a line range into its start line", () => {
-    const tree = {
-      type: "root",
-      children: [
-        {
-          type: "paragraph",
-          children: [
-            {
-              type: "text",
-              value: `${fileMentionSource("src/a.rs")} ${symbolMentionSource("src/a.rs", { lines: "4-9" })}`,
-            },
-          ],
-        },
-      ],
-    };
-    remarkKnowledgeRef()(tree);
-    expect(tree.children[0]?.children).toEqual([
-      {
-        type: "link",
-        url: "loc:src%2Fa.rs",
-        children: [{ type: "text", value: "a.rs" }],
-      },
-      { type: "text", value: " " },
-      {
-        type: "link",
-        url: "loc:src%2Fa.rs?lines=4-9#L4",
-        children: [{ type: "text", value: "a.rs : 4-9" }],
-      },
-    ]);
-  });
-});
-
-describe("file citations", () => {
-  it("keeps a file citation out of node markers and out of code", () => {
-    const file = fileMentionSource("src/a.rs");
-    const markdown = [
-      `see ${file} and ${mentionSource("seq")}`,
-      "```",
-      fileMentionSource("skip.rs"),
-      "```",
-      `\`${fileMentionSource("nope.rs")}\``,
-    ].join("\n");
-    expect(extractMarkers(markdown)).toEqual(["seq"]);
-    expect(extractFileRefs(markdown)).toEqual(["src/a.rs"]);
-    expect(splitBodyRefs(`see ${file}`)).toEqual([
-      { type: "text", value: "see " },
-      { type: "file", path: "src/a.rs", label: "src/a.rs" },
-    ]);
-    expect(knowledgePreview(file, 1)).toBe("src/a.rs");
-  });
-
-  it("reads a symbol citation in order and skips code", () => {
-    const symbol = symbolMentionSource("src/session/manager.rs", {
-      symbol: "impl SessionManager › fn append_reminder",
-      lines: "2148-2165",
-      label: "fn append_reminder",
-    });
-    const range = symbolMentionSource("src/a.rs", { lines: "4-9", label: "a.rs" });
-    const markdown = [
-      `see ${symbol} and ${mentionSource("seq")}`,
-      "```",
-      symbolMentionSource("skip.rs", { symbol: "fn hidden", label: "fn hidden" }),
-      "```",
-      range,
-    ].join("\n");
-    expect(extractFileRefs(markdown)).toEqual(["src/session/manager.rs", "src/a.rs"]);
-    expect(extractMarkers(markdown)).toEqual(["seq"]);
-    expect(splitBodyRefs(`see ${symbol} then ${range}`)).toEqual([
-      { type: "text", value: "see " },
-      {
-        type: "symbol",
-        path: "src/session/manager.rs",
-        symbol: "impl SessionManager › fn append_reminder",
-        lines: null,
-        label: "src/session/manager.rs : impl SessionManager › fn append_reminder",
-      },
-      { type: "text", value: " then " },
-      {
-        type: "symbol",
-        path: "src/a.rs",
-        symbol: null,
-        lines: "4-9",
-        rawLines: "4-9",
-        label: "src/a.rs : 4-9",
-      },
-    ]);
-    expect(knowledgePreview(symbol, 1)).toBe(
-      "src/session/manager.rs : impl SessionManager › fn append_reminder",
+describe("standard Markdown link citations", () => {
+  it("formats canonical links including angle-bracket paths with spaces", () => {
+    expect(citationMarkdown({ path: "src/a.rs" })).toBe("[a.rs](src/a.rs)");
+    expect(citationMarkdown({ path: "src/a.rs", lines: "4-9" })).toBe(
+      "[a.rs:4-9](src/a.rs#L4-L9)",
+    );
+    expect(citationMarkdown({ path: "src/a.rs", symbol: "Store::save" })).toBe(
+      "[Store.save](src/a.rs#Store.save)",
+    );
+    expect(citationMarkdown({ path: "docs/my note.md" })).toBe(
+      "[my note.md](<docs/my note.md>)",
     );
   });
 
-  it("rejects a parent segment and an absolute path", () => {
+  it("splits workspace links and skips web URLs, images, and inline code", () => {
+    const line =
+      "see [seq](knowledge/seq.md), [web](https://example.com), ![img](a.png), `[c](src/skip.rs)`, and [save](src/a.rs#Store.save)";
+    expect(splitBodyRefs(line)).toEqual([
+      { type: "text", value: "see " },
+      {
+        type: "cite",
+        label: "seq",
+        path: "knowledge/seq.md",
+        symbol: null,
+        lines: null,
+        badLines: null,
+        raw: "[seq](knowledge/seq.md)",
+      },
+      {
+        type: "text",
+        value: ", [web](https://example.com), ![img](a.png), `[c](src/skip.rs)`, and ",
+      },
+      {
+        type: "cite",
+        label: "save",
+        path: "src/a.rs",
+        symbol: "Store.save",
+        lines: null,
+        badLines: null,
+        raw: "[save](src/a.rs#Store.save)",
+      },
+    ]);
+  });
+
+  it("extracts refs in order, skips code fences, and flags bare #12 as bad_lines", () => {
+    const markdown = [
+      "see [a](src/a.rs#L4-9) and [b](src/b.rs#12-30)",
+      "```rs",
+      "[skip](src/skip.rs)",
+      "```",
+      "~~~",
+      "[skip2](src/skip2.rs)",
+      "~~~",
+      "end [Store.save](src/a.rs#Store::save)",
+    ].join("\n");
+    expect(extractRefs(markdown)).toEqual([
+      { kind: "range", path: "src/a.rs", lines: "4-9", ref_key: "range:src/a.rs\x004-9" },
+      {
+        kind: "range",
+        path: "src/b.rs",
+        lines: null,
+        bad_lines: "12-30",
+        ref_key: "range:src/b.rs\x0012-30",
+      },
+      {
+        kind: "symbol",
+        path: "src/a.rs",
+        symbol: "Store.save",
+        ref_key: "sym:src/a.rs\x00Store.save",
+      },
+    ]);
+    expect(parseLineAnchor("L12")).toEqual({ start: 12, end: 12 });
+    expect(parseLineAnchor("L12-30")).toEqual({ start: 12, end: 30 });
+    expect(parseLineAnchor("L12-L30")).toEqual({ start: 12, end: 30 });
+    expect(parseLineAnchor("12-30")).toBeNull();
+  });
+
+  it("folds valid bare-path knowledge links into relations and skips self", () => {
+    const valid = new Map([
+      ["knowledge/arch/seq.md", { key: "seq", path: "arch/seq.md" }],
+      ["knowledge/arch/self.md", { key: "self", path: "arch/self.md" }],
+    ]);
+    const body =
+      "[seq](knowledge/arch/seq.md) [self](knowledge/arch/self.md) [seq2](knowledge/arch/seq.md#L1) [code](src/a.rs)";
+    expect(
+      extractNodeRelations(body, (p) => valid.get(p), "arch/self.md"),
+    ).toEqual(["seq"]);
+  });
+
+  it("rewrites citation paths and folder prefixes outside code", () => {
+    const body = [
+      "see [seq](knowledge/arch/seq.md) and [custom](knowledge/arch/seq.md)",
+      "```",
+      "[seq](knowledge/arch/seq.md)",
+      "```",
+      "`[seq](knowledge/arch/seq.md)`",
+    ].join("\n");
+    expect(replaceCitationPath(body, "knowledge/arch/seq.md", "knowledge/core/order.md")).toBe(
+      [
+        "see [order](knowledge/core/order.md) and [custom](knowledge/core/order.md)",
+        "```",
+        "[seq](knowledge/arch/seq.md)",
+        "```",
+        "`[seq](knowledge/arch/seq.md)`",
+      ].join("\n"),
+    );
+    expect(replaceCitationPathPrefix(body, "knowledge/arch", "knowledge/moved")).toBe(
+      [
+        "see [seq](knowledge/moved/seq.md) and [custom](knowledge/moved/seq.md)",
+        "```",
+        "[seq](knowledge/arch/seq.md)",
+        "```",
+        "`[seq](knowledge/arch/seq.md)`",
+      ].join("\n"),
+    );
+  });
+
+  it("checks node identity (filename stem === key)", () => {
+    expect(isValidNodeIdentity("arch/seq.md", "seq")).toBe(true);
+    expect(isValidNodeIdentity("arch/other.md", "seq")).toBe(false);
+    expect(isValidNodeIdentity("arch/bad.md", "")).toBe(false);
+  });
+
+  it("rejects parent segments and absolute paths", () => {
     expect(isWorkspaceFileRef("src/a.rs")).toBe(true);
     expect(isWorkspaceFileRef("src")).toBe(true);
     expect(isWorkspaceFileRef("../secret")).toBe(false);
@@ -236,37 +177,22 @@ describe("file citations", () => {
     expect(isWorkspaceFileRef("文".repeat(513))).toBe(false);
   });
 
-  it("never shows or follows lines on a symbol citation (KR-SYM-6)", () => {
-    expect(
-      symbolMentionSource("src/a.rs", { symbol: "fn save", lines: "4-9" }),
-    ).toBe('[@ file="src/a.rs" symbol="fn save"]');
-    const written = '[@ file="src/a.rs" symbol="fn save" lines="4-9"]';
-    expect(splitBodyRefs(written)).toEqual([
-      {
-        type: "symbol",
-        path: "src/a.rs",
-        symbol: "fn save",
-        lines: null,
-        rawLines: "4-9",
-        label: "src/a.rs : fn save",
-      },
-    ]);
-    // An editor round-trip keeps what the body says; the backend reports it.
-    expect(
-      symbolMentionSource("src/a.rs", { symbol: "fn save", lines: "4-9", asWritten: true }),
-    ).toBe(written);
+  it("computes syntax-only ref_keys", () => {
+    expect(knowledgeRefKey({ path: "src\\a.rs" })).toBe("path:src/a.rs");
+    expect(knowledgeRefKey({ path: "src/a.rs", lines: "7-7" })).toBe("range:src/a.rs\x007");
+    expect(knowledgeRefKey({ path: "src/a.rs", badLines: "12" })).toBe("range:src/a.rs\x0012");
+    expect(knowledgeRefKey({ path: "src/a.rs", symbol: "Store::save" })).toBe(
+      "sym:src/a.rs\x00Store.save",
+    );
   });
+});
 
-  it("shows the path and the full chain, and ignores a stored label", () => {
-    const source = `[@ file="src/a.rs" symbol="impl Store › fn save"]`;
-    expect(splitBodyRefs(source)).toEqual([
-      {
-        type: "symbol",
-        path: "src/a.rs",
-        symbol: "impl Store › fn save",
-        lines: null,
-        label: "src/a.rs : impl Store › fn save",
-      },
-    ]);
+describe("knowledgePreview", () => {
+  it("drops fences, reduces workspace links to labels, and clips long inline code", () => {
+    const value =
+      "alpha [序号](knowledge/seq.md)\n\n```\n[hidden](knowledge/hidden.md)\n```\nbeta `node : seq`";
+    expect(knowledgePreview(value, 2)).toBe("alpha 序号\nbeta `node : seq`");
+    const long = "a".repeat(30);
+    expect(knowledgePreview(`\`${long}\``, 1)).toBe(`\`${"a".repeat(24)}…\``);
   });
 });

@@ -18,5 +18,5 @@ h : 432
 - 分阶段语义：保存成功与应用成功是两件事；跨介质（文件 + 数据库）写入不是事务，不承诺「错误必无变更」。
 - 目录是构建事实：provider / model 目录随构建内嵌，不是可写设置文档。
 
-上层：[@ key="config"]。
-依据：[@ file="src/config/settings_writer.rs" symbol="impl SettingsWriter › fn commit_partial"]、[@ file="src/config/settings_writer.rs" symbol="impl SettingsWriter › fn commit_mixed"]、[@ file="src/config/turn_guard.rs" symbol="impl TurnGuard › fn is_turn_in_progress"]、[@ file="src/config/gate/mod.rs"]、[@ key="provider-catalog"]。
+上层：[config](knowledge/framework/config.md)。
+依据：[SettingsWriter.commit_partial](src/config/settings_writer.rs#SettingsWriter.commit_partial)、[SettingsWriter.commit_mixed](src/config/settings_writer.rs#SettingsWriter.commit_mixed)、[TurnGuard.is_turn_in_progress](src/config/turn_guard.rs#TurnGuard.is_turn_in_progress)、[mod.rs](src/config/gate/mod.rs)、[provider-catalog](knowledge/framework/provider-catalog.md)。

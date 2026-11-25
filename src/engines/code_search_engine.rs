@@ -1,58 +1,184 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use crate::engines::code_search::SearchHit;
 use crate::engines::code_search_ipc::CodeSearchWorkerClient;
 use crate::engines::code_search_ipc::protocol::{RefreshResult, RefreshScope};
 use crate::types::{LitecodeError, Result};
 
-/// A code or session read found the worker client lock already held.
-///
-/// Refresh/embed keeps that lock for the whole pass. Callers must return
-/// immediately; blocking here stalls the agent turn until embedding finishes.
+/// A code or session read found the worker busy (e.g. session index mutating
+/// or a test gate held). Callers may degrade to text or report busy.
 pub const SEARCH_WORKER_BUSY: &str = "code_search worker is busy; semantic search was skipped";
 /// Bounded wait for a search already inside the code tool. Cancellation is
 /// checked between polls, so a run_code deadline never waits for this budget.
 pub const SEARCH_QUEUE_WAIT: Duration = Duration::from_secs(20);
 const SEARCH_QUEUE_POLL: Duration = Duration::from_millis(20);
-/// Returned when the execution token fires while waiting for the worker lock.
+/// Returned when the execution token fires while waiting for search.
 pub const SEARCH_CANCELLED: &str = "code_search cancelled";
 
 const WORKER_NOT_RUNNING: &str = "code_search worker is not running; enable the retrieval engine or restart litecode with this workspace";
+/// Coalescing window for parent-side FS dirty notifications before pushing a
+/// single one-way batch to the worker.
+const DIRTY_FLUSH_DEBOUNCE: Duration = Duration::from_millis(80);
+/// Cap on buffered discrete FS paths before collapsing into a single
+/// `reconcile_disk` notification (protects RAM and pipe during huge FS storms).
+const MAX_DIRTY_FS_PATHS: usize = 4096;
 
 pub fn is_search_worker_busy(err: &LitecodeError) -> bool {
     matches!(err, LitecodeError::ToolExecution(msg) if msg == SEARCH_WORKER_BUSY)
 }
 
+#[derive(Default)]
+struct DirtyFsQueue {
+    paths: HashSet<(String, bool)>,
+    reconcile: bool,
+    stop: bool,
+}
+
+impl DirtyFsQueue {
+    fn is_empty(&self) -> bool {
+        self.paths.is_empty() && !self.reconcile
+    }
+
+    fn record_paths(&mut self, paths: &[String], deleted: bool) {
+        if self.reconcile {
+            return;
+        }
+        for p in paths {
+            self.paths.insert((p.clone(), deleted));
+        }
+        if self.paths.len() > MAX_DIRTY_FS_PATHS {
+            self.paths.clear();
+            self.reconcile = true;
+        }
+    }
+
+    fn record_reconcile(&mut self) {
+        self.paths.clear();
+        self.reconcile = true;
+    }
+
+    fn clear(&mut self) {
+        self.paths.clear();
+        self.reconcile = false;
+    }
+}
+
+struct DirtyFsDispatcher {
+    state: Mutex<DirtyFsQueue>,
+    cv: Condvar,
+}
+
+impl DirtyFsDispatcher {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(DirtyFsQueue::default()),
+            cv: Condvar::new(),
+        }
+    }
+
+    fn record_paths(&self, paths: &[String], deleted: bool) {
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.record_paths(paths, deleted);
+        self.cv.notify_one();
+    }
+
+    fn record_reconcile(&self) {
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.record_reconcile();
+        self.cv.notify_one();
+    }
+
+    fn wake(&self) {
+        self.cv.notify_one();
+    }
+
+    fn clear(&self) {
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clear();
+    }
+
+    fn stop(&self) {
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.stop = true;
+        guard.clear();
+        self.cv.notify_all();
+    }
+}
+
 pub struct CodeSearchEngine {
-    client: Mutex<Option<CodeSearchWorkerClient>>,
+    /// Multiplexed worker handle. The RwLock is ONLY held for nanoseconds to
+    /// clone the `Arc` or install/remove a client — NEVER across IPC I/O.
+    client: Arc<RwLock<Option<Arc<CodeSearchWorkerClient>>>>,
     workspace_root: Arc<RwLock<Option<PathBuf>>>,
     session_db_path: Arc<RwLock<Option<PathBuf>>>,
     warmup_epoch: AtomicU64,
     /// OS PID of the worker child. Set at spawn (before warmup finishes) so
     /// status-bar RSS can attribute embed memory while indexing is in progress.
     worker_os_pid: AtomicU32,
-    on_worker_failed: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    /// FS events received before the worker is warm; flushed after warmup.
-    pending_fs: Mutex<HashSet<(String, bool)>>,
+    on_worker_failed: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+    /// Coalesced parent-side dirty set, flushed asynchronously off caller threads.
+    dirty_fs: Arc<DirtyFsDispatcher>,
+    flusher_started: AtomicBool,
+    flusher_handle: Mutex<Option<JoinHandle<()>>>,
     /// Last ping-reported inference device (`cuda-ort` / `cpu-ort` / `hash`).
     embed_device: Mutex<String>,
+    /// Test-only gate preserving `hold_client_for_test` semantics without
+    /// bringing back a coarse IPC mutex.
+    #[cfg(test)]
+    search_test_gate: Mutex<()>,
 }
 
 impl CodeSearchEngine {
     pub fn new() -> Self {
         Self {
-            client: Mutex::new(None),
+            client: Arc::new(RwLock::new(None)),
             workspace_root: Arc::new(RwLock::new(None)),
             session_db_path: Arc::new(RwLock::new(None)),
             warmup_epoch: AtomicU64::new(0),
             worker_os_pid: AtomicU32::new(0),
-            on_worker_failed: Mutex::new(None),
-            pending_fs: Mutex::new(HashSet::new()),
+            on_worker_failed: Arc::new(Mutex::new(None)),
+            dirty_fs: Arc::new(DirtyFsDispatcher::new()),
+            flusher_started: AtomicBool::new(false),
+            flusher_handle: Mutex::new(None),
             embed_device: Mutex::new(String::new()),
+            #[cfg(test)]
+            search_test_gate: Mutex::new(()),
+        }
+    }
+
+    fn live_client(&self) -> Option<Arc<CodeSearchWorkerClient>> {
+        self.client
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().cloned())
+            .filter(|c| c.is_alive())
+    }
+
+    fn ensure_flusher_started(&self) {
+        if self
+            .flusher_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        let dirty_fs = Arc::clone(&self.dirty_fs);
+        let client_slot = Arc::clone(&self.client);
+        let handle = thread::Builder::new()
+            .name("code-search-fs-flush".into())
+            .spawn(move || run_dirty_flusher(dirty_fs, client_slot))
+            .ok();
+        if let Some(handle) = handle
+            && let Ok(mut slot) = self.flusher_handle.lock()
+        {
+            *slot = Some(handle);
         }
     }
 
@@ -66,7 +192,7 @@ impl CodeSearchEngine {
         self.set_embed_device("");
     }
 
-    fn capture_embed_device(&self, client: &mut CodeSearchWorkerClient) {
+    fn capture_embed_device(&self, client: &CodeSearchWorkerClient) {
         match client.ping() {
             Ok(ping) => self.set_embed_device(&ping.embed_device),
             Err(e) => tracing::debug!(error = %e, "code_search ping embed_device skipped"),
@@ -121,18 +247,15 @@ impl CodeSearchEngine {
         self.workspace_root.read().ok().and_then(|g| g.clone())
     }
 
-    /// SessionData nod: store path and push it to a live worker without restarting.
+    /// SessionData nod: store path and push it to a live worker without blocking.
     pub fn inject_session_db(&self, session_db_path: &std::path::Path) {
         if let Ok(mut guard) = self.session_db_path.write() {
             *guard = Some(session_db_path.to_path_buf());
         }
-        let Ok(mut guard) = self.client.lock() else {
+        let Some(client) = self.live_client() else {
             return;
         };
-        let Some(client) = guard.as_mut() else {
-            return;
-        };
-        if let Err(e) = client.set_session_db(session_db_path) {
+        if let Err(e) = client.set_session_db_async(session_db_path) {
             tracing::warn!(error = %e, "code_search set_session_db failed");
         }
     }
@@ -144,19 +267,21 @@ impl CodeSearchEngine {
     fn kill_client(&self) {
         // Kill by OS pid first. Warmup holds the Child locally until the
         // worker RPC returns, so `client` is often still None while the
-        // embedder is burning CPU. A graceful shutdown RPC also cannot run
-        // until that in-flight request finishes — wait and the process leaks.
+        // embedder is burning CPU.
         self.clear_embed_device();
         let pid = self.worker_os_pid.swap(0, Ordering::AcqRel);
         crate::serve::shutdown::kill_process(pid);
-        if let Ok(mut guard) = self.client.try_lock()
-            && let Some(mut client) = guard.take()
-        {
+        let prev = self
+            .client
+            .write()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        if let Some(client) = prev {
             client.kill();
         }
     }
 
-    /// Code-corpus semantic search. Compatibility/direct form: never waits.
+    /// Code-corpus semantic search. Compatibility/direct form: never waits on test gate.
     pub fn search(
         &self,
         query: &str,
@@ -166,10 +291,8 @@ impl CodeSearchEngine {
         self.search_with_queue(query, glob_filter, top_k, Duration::ZERO, None)
     }
 
-    /// Agent code-surface form. A silent refresh holds the client lock for its
-    /// whole pass, so wait for it in short cancellable slices instead of
-    /// failing immediately. The actual tool runs this on `spawn_blocking`; the
-    /// async runtime is never parked here.
+    /// Agent code-surface form. Runs over the multiplexed IPC pipe so it never
+    /// waits behind an entire refresh pass; still respects cancellation tokens.
     pub fn search_cancellable(
         &self,
         query: &str,
@@ -180,21 +303,19 @@ impl CodeSearchEngine {
         self.search_with_queue(query, glob_filter, top_k, SEARCH_QUEUE_WAIT, Some(cancel))
     }
 
-    fn search_with_queue(
+    #[cfg(test)]
+    fn acquire_search_test_gate(
         &self,
-        query: &str,
-        glob_filter: Option<&str>,
-        top_k: usize,
         wait: Duration,
         cancel: Option<&tokio_util::sync::CancellationToken>,
-    ) -> Result<Vec<SearchHit>> {
+    ) -> Result<std::sync::MutexGuard<'_, ()>> {
         let deadline = Instant::now().checked_add(wait);
-        let mut guard = loop {
+        loop {
             if cancel.is_some_and(|token| token.is_cancelled()) {
                 return Err(LitecodeError::ToolExecution(SEARCH_CANCELLED.into()));
             }
-            match self.client.try_lock() {
-                Ok(guard) => break guard,
+            match self.search_test_gate.try_lock() {
+                Ok(guard) => return Ok(guard),
                 Err(std::sync::TryLockError::WouldBlock) => {
                     let now = Instant::now();
                     let Some(deadline) = deadline.filter(|deadline| now < *deadline) else {
@@ -208,27 +329,42 @@ impl CodeSearchEngine {
                 }
                 Err(std::sync::TryLockError::Poisoned(err)) => {
                     return Err(LitecodeError::Config(format!(
-                        "code_search client lock: {err}"
+                        "code_search test gate lock: {err}"
                     )));
                 }
             }
-        };
-        let Some(client) = guard.as_mut() else {
-            drop(guard);
-            self.notify_worker_failed();
-            return Err(LitecodeError::ToolExecution(WORKER_NOT_RUNNING.into()));
-        };
-        if !matches!(client.try_wait(), Ok(None)) {
-            drop(guard);
-            self.notify_worker_failed();
-            return Err(LitecodeError::ToolExecution(WORKER_NOT_RUNNING.into()));
         }
-        match client.search(query, glob_filter, top_k) {
+    }
+
+    fn search_with_queue(
+        &self,
+        query: &str,
+        glob_filter: Option<&str>,
+        top_k: usize,
+        wait: Duration,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<Vec<SearchHit>> {
+        #[cfg(test)]
+        let _test_guard = self.acquire_search_test_gate(wait, cancel)?;
+
+        if cancel.is_some_and(|token| token.is_cancelled()) {
+            return Err(LitecodeError::ToolExecution(SEARCH_CANCELLED.into()));
+        }
+
+        let Some(client) = self.live_client() else {
+            self.notify_worker_failed();
+            return Err(LitecodeError::ToolExecution(WORKER_NOT_RUNNING.into()));
+        };
+
+        let timeout = if wait.is_zero() { None } else { Some(wait) };
+        match client.search_cancellable(query, glob_filter, top_k, cancel, timeout) {
             Ok(hits) => Ok(hits),
             Err(e) => {
+                if cancel.is_some_and(|t| t.is_cancelled()) {
+                    return Err(e);
+                }
                 tracing::warn!(tool = "code_search", error = %e, "worker search failed");
-                drop(guard);
-                if self.worker_gone_try() {
+                if !client.is_alive() {
                     self.notify_worker_failed();
                 }
                 Err(e)
@@ -238,20 +374,20 @@ impl CodeSearchEngine {
 
     /// Session corpus ANN-only search (requires warmed worker; same lifecycle as code search).
     ///
-    /// Reads never wait on the worker: a refresh holds the client lock for its
-    /// whole pass, and a search queued behind one would be the very stall this
-    /// lane avoids. When the lock is taken the lane is skipped and the caller
-    /// degrades to text — the same answer a cold worker gets.
+    /// Multiplexed onto the worker's Query lane — never blocked by code refresh.
     pub fn search_sessions(
         &self,
         query: &str,
         top_k: usize,
         session_id: Option<&str>,
     ) -> Result<Vec<crate::engines::session_search::SessionTextHit>> {
-        let Ok(mut guard) = self.client.try_lock() else {
-            return Err(LitecodeError::ToolExecution(SEARCH_WORKER_BUSY.into()));
+        #[cfg(test)]
+        let _test_guard = match self.search_test_gate.try_lock() {
+            Ok(g) => g,
+            Err(_) => return Err(LitecodeError::ToolExecution(SEARCH_WORKER_BUSY.into())),
         };
-        let Some(client) = guard.as_mut() else {
+
+        let Some(client) = self.live_client() else {
             return Err(LitecodeError::Config(
                 "code_search engine not warmed".into(),
             ));
@@ -260,8 +396,7 @@ impl CodeSearchEngine {
             Ok(hits) => Ok(hits),
             Err(e) => {
                 tracing::warn!(tool = "session_search", error = %e, "worker session_search failed");
-                drop(guard);
-                if self.worker_gone_try() {
+                if !client.is_alive() {
                     self.notify_worker_failed();
                 }
                 Err(e)
@@ -269,38 +404,20 @@ impl CodeSearchEngine {
         }
     }
 
-    /// Whether the worker child is known to be gone, answered without waiting on
-    /// the client lock: a held lock means a call is in flight (the refresh that
-    /// must not stall us), not a dead worker.
-    fn worker_gone_try(&self) -> bool {
-        let Ok(mut guard) = self.client.try_lock() else {
-            return false;
-        };
-        guard
-            .as_mut()
-            .is_some_and(|client| !matches!(client.try_wait(), Ok(None)))
-    }
-
     /// True when the worker child process is still running.
+    ///
+    /// O(1) lock-free atomic check — safe to call from any async or sync path
+    /// without ever stalling behind a running refresh.
     pub fn worker_alive(&self) -> bool {
-        let Ok(mut guard) = self.client.lock() else {
-            return false;
-        };
-        let Some(client) = guard.as_mut() else {
-            return false;
-        };
-        match client.try_wait() {
-            Ok(None) => true,
-            _ => false,
-        }
+        self.live_client().is_some()
     }
 
-    /// Test-only: hold the worker client lock so a search must return busy.
+    /// Test-only: hold the search test gate so a search waits or returns busy.
     #[cfg(test)]
-    pub fn hold_client_for_test(
-        &self,
-    ) -> std::sync::MutexGuard<'_, Option<CodeSearchWorkerClient>> {
-        self.client.lock().expect("code_search client lock")
+    pub fn hold_client_for_test(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.search_test_gate
+            .lock()
+            .expect("code_search test gate lock")
     }
 
     /// PID of the code-search worker child, if running.
@@ -319,95 +436,143 @@ impl CodeSearchEngine {
     }
 
     pub fn refresh_scope(&self, scope: RefreshScope) -> Result<RefreshResult> {
-        if !self.worker_alive() {
+        let Some(client) = self.live_client() else {
             self.notify_worker_failed();
             return Err(LitecodeError::ToolExecution(
                 "code_search worker is not running; start the retrieval engine first".into(),
             ));
-        }
-
-        let mut guard = self
-            .client
-            .lock()
-            .map_err(|e| LitecodeError::Config(format!("code_search client lock: {e}")))?;
-        let client = guard
-            .as_mut()
-            .ok_or_else(|| LitecodeError::Config("code_search engine not warmed".into()))?;
+        };
         match client.refresh_scope(scope) {
             Ok(result) => Ok(result),
             Err(e) => {
                 tracing::warn!(tool = "code_search", error = %e, "worker refresh failed");
-                // Do not kill on refresh errors — index may still be usable.
+                if !client.is_alive() {
+                    self.notify_worker_failed();
+                }
+                // Do not kill on non-fatal refresh errors — index may still be usable.
                 Err(e)
             }
         }
     }
 
-    /// Best-effort forward of workspace FS events to the worker Index queue.
+    /// Non-blocking, coalesced forward of workspace FS events to the worker.
     ///
-    /// If the worker is not yet warm, paths are buffered and flushed after warmup.
+    /// Records paths in a local dirty set and wakes the background flusher
+    /// thread. Never blocks the caller (safe on Tokio async worker threads),
+    /// never waits for `refresh`, and collapses extreme bursts into a single
+    /// `reconcile_disk` notification.
     pub fn notify_fs_changes(&self, paths: &[String], deleted: bool) {
         if paths.is_empty() {
             return;
         }
-        if !self.worker_alive() {
-            if let Ok(mut pending) = self.pending_fs.lock() {
-                for p in paths {
-                    pending.insert((p.clone(), deleted));
-                }
-            }
-            return;
-        }
-        let Ok(mut guard) = self.client.lock() else {
-            return;
-        };
-        let Some(client) = guard.as_mut() else {
-            return;
-        };
-        if let Err(e) = client.notify_fs_changes(paths, deleted) {
-            tracing::debug!(error = %e, "code_search notify_fs_changes failed");
-            // Buffer on transport failure so a later reconcile/warmup can recover.
-            drop(guard);
-            if let Ok(mut pending) = self.pending_fs.lock() {
-                for p in paths {
-                    pending.insert((p.clone(), deleted));
-                }
-            }
-        }
+        self.ensure_flusher_started();
+        self.dirty_fs.record_paths(paths, deleted);
     }
 
-    /// After broadcast lag, force a disk↔index reconcile on the worker.
+    /// Non-blocking fire-and-forget disk↔index reconcile trigger (used after
+    /// watcher lag, rescan, or excludes update).
     pub fn request_reconcile(&self) {
-        if !self.worker_alive() {
-            return;
-        }
-        let Ok(mut guard) = self.client.lock() else {
-            return;
-        };
-        let Some(client) = guard.as_mut() else {
+        self.ensure_flusher_started();
+        self.dirty_fs.record_reconcile();
+    }
+
+    /// Blocking disk↔index reconcile over the multiplexed pipe (used only from
+    /// `spawn_blocking` inside `code_index_tick` so `queue.json` reflects disk
+    /// before deciding whether to spawn an incremental refresh).
+    pub fn reconcile_disk_blocking(&self) {
+        let Some(client) = self.live_client() else {
             return;
         };
         if let Err(e) = client.reconcile_disk() {
             tracing::debug!(error = %e, "code_search reconcile_disk failed");
         }
     }
+}
 
-    fn flush_pending_fs(&self, client: &mut CodeSearchWorkerClient) {
-        let pending: Vec<(String, bool)> = match self.pending_fs.lock() {
-            Ok(mut g) => g.drain().collect(),
-            Err(_) => return,
-        };
-        if pending.is_empty() {
-            return;
+fn run_dirty_flusher(
+    dirty_fs: Arc<DirtyFsDispatcher>,
+    client_slot: Arc<RwLock<Option<Arc<CodeSearchWorkerClient>>>>,
+) {
+    loop {
+        // Wait until there is dirty work (or shutdown).
+        {
+            let mut guard = dirty_fs.state.lock().unwrap_or_else(|e| e.into_inner());
+            while !guard.stop && guard.is_empty() {
+                guard = dirty_fs.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+            }
+            if guard.stop {
+                return;
+            }
         }
-        let (deleted, modified): (Vec<_>, Vec<_>) = pending.into_iter().partition(|(_, d)| *d);
+
+        // Short coalescing window so rapid FS bursts (e.g. Unity asset imports)
+        // merge into a single one-way IPC frame.
+        {
+            let guard = dirty_fs.state.lock().unwrap_or_else(|e| e.into_inner());
+            if !guard.stop && !guard.reconcile {
+                let _ = dirty_fs
+                    .cv
+                    .wait_timeout(guard, DIRTY_FLUSH_DEBOUNCE)
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+        }
+
+        let client = client_slot
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().cloned())
+            .filter(|c| c.is_alive());
+
+        let Some(client) = client else {
+            // Worker not warm yet: keep paths buffered and wait until warmup
+            // wakes us (or more events arrive / engine stops).
+            let guard = dirty_fs.state.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.stop {
+                return;
+            }
+            let _ = dirty_fs
+                .cv
+                .wait_timeout(guard, Duration::from_millis(250))
+                .unwrap_or_else(|e| e.into_inner());
+            continue;
+        };
+
+        let (reconcile, drained): (bool, Vec<(String, bool)>) = {
+            let mut guard = dirty_fs.state.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.stop {
+                return;
+            }
+            let reconcile = guard.reconcile;
+            guard.reconcile = false;
+            let drained = guard.paths.drain().collect();
+            (reconcile, drained)
+        };
+
+        if reconcile {
+            if let Err(e) = client.reconcile_disk_async() {
+                tracing::debug!(error = %e, "code_search async reconcile_disk failed");
+                dirty_fs.record_reconcile();
+            }
+            continue;
+        }
+
+        if drained.is_empty() {
+            continue;
+        }
+        let (deleted, modified): (Vec<_>, Vec<_>) = drained.into_iter().partition(|(_, d)| *d);
         if !deleted.is_empty() {
             let paths: Vec<String> = deleted.into_iter().map(|(p, _)| p).collect();
-            let _ = client.notify_fs_changes(&paths, true);
+            if let Err(e) = client.notify_fs_changes_async(&paths, true) {
+                tracing::debug!(error = %e, "code_search async notify_fs_changes (del) failed");
+                dirty_fs.record_paths(&paths, true);
+            }
         }
         if !modified.is_empty() {
             let paths: Vec<String> = modified.into_iter().map(|(p, _)| p).collect();
-            let _ = client.notify_fs_changes(&paths, false);
+            if let Err(e) = client.notify_fs_changes_async(&paths, false) {
+                tracing::debug!(error = %e, "code_search async notify_fs_changes (mod) failed");
+                dirty_fs.record_paths(&paths, false);
+            }
         }
     }
 }
@@ -438,7 +603,7 @@ impl CodeSearchEngine {
             return Ok(());
         }
 
-        let Some(mut client) = self.spawn_ready_worker(&root, session_db_path.as_deref(), epoch)?
+        let Some(client) = self.spawn_ready_worker(&root, session_db_path.as_deref(), epoch)?
         else {
             return Ok(());
         };
@@ -448,8 +613,6 @@ impl CodeSearchEngine {
             return Ok(());
         }
 
-        self.flush_pending_fs(&mut client);
-
         // SessionData may have nodded during warmup (client not installed yet).
         let inject_path = self.session_db_path.read().ok().and_then(|g| g.clone());
         if let Some(ref path) = inject_path
@@ -458,7 +621,44 @@ impl CodeSearchEngine {
             tracing::warn!(error = %e, "code_search set_session_db after warmup skipped");
         }
 
-        if let Ok(mut guard) = self.client.lock() {
+        let client = Arc::new(client);
+        // Wire asynchronous worker-death detection so external kills flip state
+        // immediately without polling under a mutex.
+        {
+            let client_slot = Arc::clone(&self.client);
+            let on_failed = Arc::clone(&self.on_worker_failed);
+            let installed = Arc::downgrade(&client);
+            client.set_on_exit(Arc::new(move || {
+                let still_current = client_slot
+                    .read()
+                    .ok()
+                    .and_then(|g| g.as_ref().cloned())
+                    .is_some_and(|cur| {
+                        installed
+                            .upgrade()
+                            .is_some_and(|inst| Arc::ptr_eq(&cur, &inst))
+                    });
+                if !still_current {
+                    return;
+                }
+                if let Ok(mut guard) = client_slot.write()
+                    && guard.as_ref().is_some_and(|cur| {
+                        installed
+                            .upgrade()
+                            .is_some_and(|inst| Arc::ptr_eq(cur, &inst))
+                    })
+                {
+                    *guard = None;
+                }
+                if let Ok(guard) = on_failed.lock()
+                    && let Some(handler) = guard.as_ref()
+                {
+                    handler();
+                }
+            }));
+        }
+
+        if let Ok(mut guard) = self.client.write() {
             // Slot-time epoch re-check: `stop()` may have bumped the epoch and
             // killed the old client between our last check and acquiring this
             // lock. Never install a client that belongs to a stale warmup.
@@ -472,14 +672,19 @@ impl CodeSearchEngine {
         } else {
             client.kill();
             self.set_worker_os_pid(None);
+            return Ok(());
         }
+
+        // Wake the dirty flusher so any FS events buffered before warmup drain now.
+        self.ensure_flusher_started();
+        self.dirty_fs.wake();
 
         Ok(())
     }
 
     fn handshake_worker(
         &self,
-        client: &mut CodeSearchWorkerClient,
+        client: &CodeSearchWorkerClient,
         root: &std::path::Path,
         session_db_path: Option<&std::path::Path>,
         epoch: u64,
@@ -504,7 +709,7 @@ impl CodeSearchEngine {
     ) -> Result<Option<CodeSearchWorkerClient>> {
         let mut force_cpu_ort = false;
         loop {
-            let mut client = if force_cpu_ort {
+            let client = if force_cpu_ort {
                 CodeSearchWorkerClient::spawn_cpu_ort()?
             } else {
                 CodeSearchWorkerClient::spawn()?
@@ -515,7 +720,7 @@ impl CodeSearchEngine {
                 self.set_worker_os_pid(None);
                 return Ok(None);
             }
-            match self.handshake_worker(&mut client, root, session_db_path, epoch) {
+            match self.handshake_worker(&client, root, session_db_path, epoch) {
                 Ok(true) => {
                     if force_cpu_ort {
                         tracing::info!("code_search worker recovered on CPU EP");
@@ -528,7 +733,7 @@ impl CodeSearchEngine {
                     return Ok(None);
                 }
                 Err(e) => {
-                    let died = handshake_failure_is_worker_death(&mut client, &e);
+                    let died = handshake_failure_is_worker_death(&client, &e);
                     client.kill();
                     self.set_worker_os_pid(None);
                     if died && !force_cpu_ort && self.warmup_still_valid(epoch) {
@@ -548,9 +753,7 @@ impl CodeSearchEngine {
     pub fn stop(&self) {
         self.warmup_epoch.fetch_add(1, Ordering::SeqCst);
         self.kill_client();
-        if let Ok(mut pending) = self.pending_fs.lock() {
-            pending.clear();
-        }
+        self.dirty_fs.clear();
         if let Ok(mut root) = self.workspace_root.write() {
             *root = None;
         }
@@ -558,13 +761,24 @@ impl CodeSearchEngine {
     }
 }
 
+impl Drop for CodeSearchEngine {
+    fn drop(&mut self) {
+        self.dirty_fs.stop();
+        if let Ok(mut slot) = self.flusher_handle.lock()
+            && let Some(handle) = slot.take()
+        {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// True when warmup IPC failed because the child is gone (CUDA native abort,
 /// delay-load crash, stdout EOF). JSON-RPC errors from a live worker are false.
 fn handshake_failure_is_worker_death(
-    client: &mut CodeSearchWorkerClient,
+    client: &CodeSearchWorkerClient,
     err: &LitecodeError,
 ) -> bool {
-    if !matches!(client.try_wait(), Ok(None)) {
+    if !client.is_alive() || !matches!(client.try_wait(), Ok(None)) {
         return true;
     }
     handshake_error_looks_like_death(err)
@@ -590,4 +804,39 @@ impl Default for CodeSearchEngine {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dirty_fs_queue_coalesces_duplicates_and_collapses_overflow_to_reconcile() {
+        let mut q = DirtyFsQueue::default();
+        q.record_paths(&["a.rs".into(), "a.rs".into(), "b.rs".into()], false);
+        assert_eq!(q.paths.len(), 2);
+        assert!(!q.reconcile);
+
+        let burst: Vec<String> = (0..=MAX_DIRTY_FS_PATHS)
+            .map(|i| format!("f{i}.rs"))
+            .collect();
+        q.record_paths(&burst, false);
+        assert!(q.reconcile, "overflow must collapse to reconcile");
+        assert!(q.paths.is_empty(), "paths cleared after collapse");
+
+        // Subsequent paths remain folded under reconcile.
+        q.record_paths(&["after.rs".into()], false);
+        assert!(q.reconcile);
+        assert!(q.paths.is_empty());
+    }
+
+    #[test]
+    fn notify_and_worker_alive_never_block_without_worker() {
+        let engine = CodeSearchEngine::new();
+        let started = Instant::now();
+        assert!(!engine.worker_alive());
+        engine.notify_fs_changes(&["a.rs".into(), "b.rs".into()], false);
+        engine.request_reconcile();
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "notify and worker_alive must be O(1) non-blocking"
+        );
+    }
+}

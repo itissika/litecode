@@ -11,5 +11,5 @@ h : 362
 - 什么是最有价值的？不是所谓的 harness 系统的花哨复杂的功能堆砌，而是你一次次疑问、一次次追问、一次次拍板、一笔笔写下的每一个设计愿望、想法、目标、痛点……
 - agent 无法帮你实现你的梦想——如果你自己都不懂自己的梦想的话。每一次消息发送前的反复斟酌、知识库中沉淀的每一句都反复打磨————我知道这很累，但这是唯一对的路。
 
-向下展开：[@ key="product-brief"]。
-理念的落点：[@ key="featured-tools"]。
+向下展开：[product-brief](knowledge/product-brief.md)。
+理念的落点：[featured-tools](knowledge/framework/featured-tools.md)。

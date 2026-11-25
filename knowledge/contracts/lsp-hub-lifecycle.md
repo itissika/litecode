@@ -9,5 +9,5 @@ domain : ide-substrate
 
 **准入：** A2/A4。`LspHub` 状态机与引擎 `EngineState` 配合但不等价：`activate` 元数据就绪且不 spawn，语言服务按路径懒启动；`stop` 置 inactive、排空 servers 并逐个 shutdown。人类编辑与 agent 工具消费同一 hub 实例（经 `LspEngine`/`IdeBaseHandle`）。坏了会出现双写文档、幽灵语言服务或 configured 被当成 Warm。
 
-依据：[@ file="src/lsp/hub.rs" symbol="impl LspHub › fn activate"]、[@ file="src/lsp/hub.rs" symbol="impl LspHub › fn stop"]、[@ file="src/engines/lsp_engine.rs" symbol="impl LspEngine › fn stop"]、[@ file="src/engines/lsp_engine.rs" symbol="impl LspEngine › fn warmup"]。
-上层：[@ key="engine-lifecycle"]。
+依据：[LspHub.activate](src/lsp/hub.rs#LspHub.activate)、[LspHub.stop](src/lsp/hub.rs#LspHub.stop)、[LspEngine.stop](src/engines/lsp_engine.rs#LspEngine.stop)、[LspEngine.warmup](src/engines/lsp_engine.rs#LspEngine.warmup)。
+上层：[engine-lifecycle](knowledge/contracts/engine-lifecycle.md)。

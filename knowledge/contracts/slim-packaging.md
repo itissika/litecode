@@ -9,5 +9,5 @@ domain : release-desktop
 
 **准入：** A1。`package_win.ps1` / `assemble_product` / `desktop/package.json` 默认 slim；`-Full` 只许本地离线。DirectML 因 sidecar 启动硬依赖可留在包内。坏了是安装包再次膨胀，或 CI 把不该嵌入的资源打回去。
 
-依据：[@ file="scripts/package_win.ps1"]、[@ file="desktop/package.json"]、[@ file="scripts/assemble_product.ps1"]。
-上层：[@ key="desktop-shell"]。
+依据：[package_win.ps1](scripts/package_win.ps1)、[package.json](desktop/package.json)、[assemble_product.ps1](scripts/assemble_product.ps1)。
+上层：[desktop-shell](knowledge/framework/desktop-shell.md)。

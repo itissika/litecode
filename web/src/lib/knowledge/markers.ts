@@ -1,24 +1,15 @@
-type KnowledgeSegment =
-  | { type: "text"; value: string }
-  | { type: "ref"; id: string; label: string };
-
 /**
- * Declaration keys may include letters, numbers, `_`, `-`, and single spaces:
- * `seq`, `knowledge 概念概述`. Quotes and brackets stay out so the key can be
- * a path segment and a Mention shortcode attribute.
+ * Standard CommonMark Markdown link citations:
+ * - File / directory / knowledge node: `[validate.rs](src/a.rs)` or `[seq](knowledge/contracts/seq.md)`
+ * - Line / range: `[a.rs:4-9](src/a.rs#L4-L9)` (also accepts `#L4-9` and `#L4`)
+ * - Symbol: `[Store.save](src/a.rs#Store.save)` (dot-separated identifier, `::` accepted)
+ *
+ * Rules match `src/knowledge/mentions.rs` and `tests/fixtures/knowledge_refs/cases.json` v3.
  */
+
 const KNOWLEDGE_KEY = /^[\p{L}\p{N}_][\p{L}\p{N}_-]*(?: [\p{L}\p{N}_-]+)*$/u;
+const MAX_LINE = 4294967295;
 
-/** Node citation. Only `key` is recognized. */
-const SHORTCODE_SOURCE = String.raw`\[@ key="([^"]*)"\]`;
-
-/**
- * File, symbol, or line-range citation.
- * Attribute order is `file`, optional `symbol`, optional `lines`.
- */
-const FILE_ATTR_SOURCE = String.raw`\[@ file="([^"]*)"(?: symbol="([^"]*)")?(?: lines="([^"]*)")?\]`;
-
-/** Compare and look up keys after trimming. The stored key is left unchanged. */
 export function normalizeKey(key: string): string {
   return key.trim();
 }
@@ -27,78 +18,47 @@ export function isKnowledgeKey(key: string): boolean {
   return KNOWLEDGE_KEY.test(key);
 }
 
-/** One node citation. A second argument is ignored; display text is not stored. */
-export function mentionSource(id: string, _label = id): string {
-  return `[@ key="${id}"]`;
+/** Filename stem without `.md` (case-insensitive), matching `document::file_stem` in Rust. */
+export function fileStem(path: string): string {
+  const norm = path.replaceAll("\\", "/");
+  const base = norm.slice(norm.lastIndexOf("/") + 1);
+  return base.toLowerCase().endsWith(".md") ? base.slice(0, -3) : base;
+}
+
+/** True when a node's declaration key is valid and matches its filename stem. */
+export function isValidNodeIdentity(path: string, key: string): boolean {
+  const normalized = normalizeKey(key);
+  return Boolean(path) && isKnowledgeKey(normalized) && fileStem(path) === normalized;
+}
+
+/** Canonical logical knowledge path (`knowledge/<rel>`). */
+export function logicalKnowledgePath(relPath: string): string {
+  const clean = relPath.replaceAll("\\", "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  return clean ? `knowledge/${clean}` : "knowledge";
+}
+
+/** KR-PATH-2 path form used for identity and lookups. */
+export function normalizeRefPath(path: string): string {
+  return path.trim().replaceAll("\\", "/");
+}
+
+/** Normalize a symbol anchor query: trim and treat `::` as `.`. */
+export function normalizeSymbolQuery(raw: string): string {
+  return raw.trim().replaceAll("::", ".");
 }
 
 /**
- * Words shown for a file, symbol, or range citation. A node shows its key.
- * A symbol citation never shows lines: symbol and line-range citations do not mix.
+ * A workspace-relative path. `..`, `.`, an empty segment, and an absolute path
+ * (leading slash or drive letter) are not legal workspace citation paths.
  */
-export function citationFact(
-  path: string,
-  symbol?: string | null,
-  lines?: string | null,
-): string {
-  let out = path;
-  const chain = symbol?.trim() ?? "";
-  if (chain) return `${out} : ${chain}`;
-  const raw = lines?.trim() ?? "";
-  const span = raw ? parseLineSpan(raw) : null;
-  if (span) out += ` : ${formatLineSpan(span.start, span.end)}`;
-  return out;
+export function isWorkspaceFileRef(path: string): boolean {
+  const slash = path.replaceAll("\\", "/");
+  if (!slash || Array.from(slash).length > 512) return false;
+  if (slash.startsWith("/")) return false;
+  if (slash.charAt(1) === ":") return false;
+  return slash.split("/").every((part) => part.length > 0 && part !== "." && part !== "..");
 }
 
-/** Visible text for a workspace path: the last segment. */
-export function fileLabel(path: string): string {
-  const parts = pathParts(path);
-  return parts[parts.length - 1] || path;
-}
-
-/**
- * Final segment of a symbol chain: `impl Store › fn save` → `fn save`. The same
- * leaf the backend reports (`leaf_label` in `src/workspace/symbols.rs`), so chip
- * text and backend messages agree.
- */
-export function leafSymbol(chain: string): string {
-  const parts = chain.trim().split(" › ");
-  return parts[parts.length - 1] ?? "";
-}
-
-/** Blue chip: the file name. The full path lives on the chip hover. */
-export function humanFileLabel(path: string): string {
-  return fileLabel(path);
-}
-
-/** Cyan chip: `file : leaf`. Only the final chain segment shows; the hover keeps the chain. */
-export function humanSymbolLabel(path: string, symbol: string): string {
-  return `${fileLabel(path)} : ${leafSymbol(symbol) || symbol.trim()}`;
-}
-
-/** Amber chip for a line range: `file : 12-20`. Malformed spans fall back to the file. */
-export function humanRangeLabel(path: string, lines: string): string {
-  const raw = lines.trim();
-  const span = raw ? parseLineSpan(raw) : null;
-  if (!span) return fileLabel(path);
-  return `${fileLabel(path)} : ${formatLineSpan(span.start, span.end)}`;
-}
-
-function pathParts(path: string): string[] {
-  return path.replaceAll("\\", "/").split("/").filter((part) => part.length > 0);
-}
-
-/** One file citation. A label argument is ignored. */
-export function fileMentionSource(path: string, _label = fileLabel(path)): string {
-  return `[@ file="${path}"]`;
-}
-
-const MAX_LINE = 4294967295;
-
-/**
- * `12` or `2148-2165` (KR-SYN-5): ASCII digits, no leading zero, no sign, no
- * spaces, at most u32::MAX, start <= end. Anything else is not a span.
- */
 export function parseLineSpan(raw: string): { start: number; end: number } | null {
   const match = /^([1-9][0-9]*)(?:-([1-9][0-9]*))?$/.exec(raw);
   if (!match) return null;
@@ -108,74 +68,250 @@ export function parseLineSpan(raw: string): { start: number; end: number } | nul
   return { start, end };
 }
 
+/**
+ * Parse a `#L...` line anchor (`L12`, `L12-30`, `L12-L30`).
+ * Bare digits (`12`, `12-30`) without `L` are rejected.
+ */
+export function parseLineAnchor(raw: string): { start: number; end: number } | null {
+  const match = /^L([1-9][0-9]*)(?:-L?([1-9][0-9]*))?$/.exec(raw);
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = match[2] ? Number(match[2]) : start;
+  if (start > MAX_LINE || end > MAX_LINE || end < start) return null;
+  return { start, end };
+}
+
+/**
+ * True when a `#fragment` looks like an attempted line range that failed
+ * `parseLineAnchor` (so it reports `invalid_lines` instead of `missing_symbol`).
+ */
+export function isLineLikeAnchor(raw: string): boolean {
+  if (!raw) return false;
+  if (raw.startsWith("L")) {
+    const rest = raw.slice(1);
+    if (!rest) return false;
+    const first = rest[0]!;
+    return /[\p{Nd}\-+\s]/u.test(first);
+  }
+  let hasDigit = false;
+  for (const ch of raw) {
+    if (/\p{Nd}/u.test(ch)) {
+      hasDigit = true;
+    } else if (ch === "-" || ch === "+" || ch === " " || ch === "\t") {
+      continue;
+    } else {
+      return false;
+    }
+  }
+  return hasDigit;
+}
+
 export function formatLineSpan(start: number, end: number): string {
   return start === end ? String(start) : `${start}-${end}`;
 }
 
-/**
- * One symbol or range mention as TipTap writes it.
- * Omit `symbol` for a line range. Omit `lines` for a knowledge-body citation.
- * A symbol citation never gets `lines` (KR-SYM-6): new insertions drop them.
- * `asWritten` re-emits existing text unchanged (an editor round-trip), so a
- * symbol written with lines keeps them and the backend keeps reporting
- * `invalid_lines` instead of the frontend silently rewriting the file.
- */
-export function symbolMentionSource(
+export function formatLineAnchor(start: number, end: number): string {
+  return start === end ? `L${start}` : `L${start}-L${end}`;
+}
+
+function pathParts(path: string): string[] {
+  return path.replaceAll("\\", "/").split("/").filter((part) => part.length > 0);
+}
+
+/** Visible text for a workspace path: the last segment. */
+export function fileLabel(path: string): string {
+  const parts = pathParts(path);
+  return parts[parts.length - 1] || path;
+}
+
+/** Final segment of a dot-separated symbol anchor (`Store.save` → `save`). */
+export function leafSymbol(anchor: string): string {
+  const norm = normalizeSymbolQuery(anchor);
+  const parts = norm.split(".").filter((p) => p.length > 0);
+  return parts[parts.length - 1] ?? norm;
+}
+
+export function humanFileLabel(path: string): string {
+  return fileLabel(path);
+}
+
+export function humanSymbolLabel(path: string, symbol: string): string {
+  return `${fileLabel(path)} : ${leafSymbol(symbol) || symbol.trim()}`;
+}
+
+export function humanRangeLabel(path: string, lines: string): string {
+  const raw = lines.trim();
+  const span = raw ? (parseLineSpan(raw) ?? parseLineAnchor(raw)) : null;
+  if (!span) return fileLabel(path);
+  return `${fileLabel(path)} : ${formatLineSpan(span.start, span.end)}`;
+}
+
+export function citationFact(
   path: string,
-  options: { symbol?: string; lines?: string; label?: string; asWritten?: boolean } = {},
+  symbol?: string | null,
+  lines?: string | null,
 ): string {
-  const symbol = options.symbol?.trim() ?? "";
-  const lines = options.asWritten ? (options.lines ?? "") : (options.lines?.trim() ?? "");
-  let out = `[@ file="${path}"`;
-  if (symbol) out += ` symbol="${symbol}"`;
-  if (lines && (!symbol || options.asWritten)) out += ` lines="${lines}"`;
-  out += "]";
+  let out = path;
+  const sym = symbol ? normalizeSymbolQuery(symbol) : "";
+  if (sym) return `${out} : ${sym}`;
+  const raw = lines?.trim() ?? "";
+  const span = raw ? (parseLineSpan(raw) ?? parseLineAnchor(raw)) : null;
+  if (span) out += ` : ${formatLineSpan(span.start, span.end)}`;
   return out;
 }
 
+export function formatLinkDest(dest: string): string {
+  if (/[\s()<>]/.test(dest)) return `<${dest}>`;
+  return dest;
+}
+
+/** Format one citation as a standard CommonMark inline link `[label](dest)`. */
+export function citationMarkdown(input: {
+  label?: string | null;
+  path: string;
+  symbol?: string | null;
+  lines?: string | null;
+  badLines?: string | null;
+}): string {
+  const path = normalizeRefPath(input.path);
+  const symbol = input.symbol ? normalizeSymbolQuery(input.symbol) : "";
+  const span =
+    !symbol && input.lines ? (parseLineSpan(input.lines.trim()) ?? parseLineAnchor(input.lines.trim())) : null;
+  const bad = !symbol && !span ? (input.badLines?.trim() ?? "") : "";
+
+  let dest = path;
+  if (symbol) dest += `#${symbol}`;
+  else if (span) dest += `#${formatLineAnchor(span.start, span.end)}`;
+  else if (bad) dest += `#${bad}`;
+
+  const explicitLabel = input.label?.trim();
+  const label =
+    explicitLabel ||
+    (symbol
+      ? symbol
+      : span
+        ? `${fileLabel(path)}:${formatLineSpan(span.start, span.end)}`
+        : fileLabel(path));
+
+  return `[${label}](${formatLinkDest(dest)})`;
+}
+
 /**
- * A workspace-relative path. `..`, `.`, an empty segment, and an absolute path
- * (leading slash or a drive letter) are not paths this library can check.
+ * `ref_key` (KR-KEY-1), the syntax-derived identity shared by frontend, backend,
+ * and `cases.json` v3:
+ * - `path:<norm_path>`
+ * - `sym:<norm_path>\0<symbol>`
+ * - `range:<norm_path>\0<lines_or_bad_lines>`
  */
-export function isWorkspaceFileRef(path: string): boolean {
-  const slash = path.replaceAll("\\", "/");
-  if (!slash || Array.from(slash).length > 512) return false;
-  if (slash.startsWith("/")) return false;
-  if (slash.charAt(1) === ":") return false;
-  const parts = slash.split("/");
-  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
-}
-
-function shortcodePattern(): RegExp {
-  return new RegExp(SHORTCODE_SOURCE, "g");
-}
-
-function fileAttrPattern(): RegExp {
-  return new RegExp(FILE_ATTR_SOURCE, "g");
-}
-
-/**
- * Split one text run into literal pieces and Mention shortcodes.
- * Plain `@seq` and any other bracket form stay literal text.
- */
-export function splitKnowledgeRefs(text: string): KnowledgeSegment[] {
-  const out: KnowledgeSegment[] = [];
-  let last = 0;
-  for (const match of text.matchAll(shortcodePattern())) {
-    const id = normalizeKey(match[1] ?? "");
-    const start = match.index ?? 0;
-    if (!id || !isKnowledgeKey(id)) continue;
-    if (start > last) out.push({ type: "text", value: text.slice(last, start) });
-    out.push({ type: "ref", id, label: id });
-    last = start + match[0].length;
+export function knowledgeRefKey(ref: {
+  path: string;
+  symbol?: string | null;
+  lines?: string | null;
+  badLines?: string | null;
+}): string {
+  const path = normalizeRefPath(ref.path);
+  const symbol = ref.symbol ? normalizeSymbolQuery(ref.symbol) : "";
+  if (symbol) return `sym:${path}\0${symbol}`;
+  const rawLines = (ref.lines ?? "").trim();
+  if (rawLines) {
+    const span = parseLineSpan(rawLines) ?? parseLineAnchor(rawLines);
+    const normalized = span ? formatLineSpan(span.start, span.end) : rawLines;
+    return `range:${path}\0${normalized}`;
   }
-  if (last < text.length) out.push({ type: "text", value: text.slice(last) });
-  if (out.length === 0) out.push({ type: "text", value: text });
-  return out;
+  const bad = (ref.badLines ?? "").trim();
+  if (bad) return `range:${path}\0${bad}`;
+  return `path:${path}`;
 }
 
-/** Replace an inline code span with spaces so shortcodes inside it disappear. */
-function maskInlineCode(line: string): string {
+// ------------------------------------------------------------ link destination parsing
+
+export interface ParsedWorkspaceDest {
+  kind: "file" | "symbol" | "range";
+  path: string;
+  symbol: string | null;
+  /** Normalized range span (`12` or `12-30`), or null. */
+  lines: string | null;
+  /** Raw malformed line fragment, or null. */
+  badLines: string | null;
+}
+
+function schemeColonIndex(s: string): number {
+  if (!s || !/^[A-Za-z]/.test(s)) return -1;
+  for (let i = 1; i < s.length; i += 1) {
+    const ch = s[i]!;
+    if (ch === ":") return i;
+    if (!/[A-Za-z0-9+.-]/.test(ch)) return -1;
+  }
+  return -1;
+}
+
+function safeDecodeURI(raw: string): string {
+  if (!raw.includes("%")) return raw;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Parse a Markdown link destination into a workspace citation target.
+ * Returns `null` for web URLs (`https://`, `mailto:`, `//`), in-page `#anchors`,
+ * and empty destinations.
+ */
+export function parseWorkspaceDest(destRaw: string): ParsedWorkspaceDest | null {
+  let dest = destRaw.trim();
+  if (!dest || dest.startsWith("//") || dest.startsWith("#")) return null;
+  const colon = schemeColonIndex(dest);
+  if (colon >= 0) {
+    const scheme = dest.slice(0, colon);
+    if (scheme.toLowerCase() === "file") {
+      dest = dest.slice(colon + 1);
+    } else if (scheme.length >= 2) {
+      return null;
+    }
+    // Single-letter scheme (`C:/...`) stays so workspace path validation flags it.
+  }
+
+  const hashAt = dest.indexOf("#");
+  const beforeHash = hashAt >= 0 ? dest.slice(0, hashAt) : dest;
+  const fragRaw = hashAt >= 0 ? dest.slice(hashAt + 1) : null;
+  const queryAt = beforeHash.indexOf("?");
+  const pathRaw = queryAt >= 0 ? beforeHash.slice(0, queryAt) : beforeHash;
+
+  const path = safeDecodeURI(pathRaw).trim();
+  if (!path) return null;
+
+  const frag = fragRaw != null ? safeDecodeURI(fragRaw).trim() : "";
+  if (!frag) {
+    return { kind: "file", path, symbol: null, lines: null, badLines: null };
+  }
+
+  const span = parseLineAnchor(frag);
+  if (span) {
+    return {
+      kind: "range",
+      path,
+      symbol: null,
+      lines: formatLineSpan(span.start, span.end),
+      badLines: null,
+    };
+  }
+  if (isLineLikeAnchor(frag)) {
+    return { kind: "range", path, symbol: null, lines: null, badLines: frag };
+  }
+  return {
+    kind: "symbol",
+    path,
+    symbol: normalizeSymbolQuery(frag),
+    lines: null,
+    badLines: null,
+  };
+}
+
+// ------------------------------------------------------------ CommonMark inline link scanner
+
+function maskInlineCodeSameLen(line: string): string {
   let out = "";
   let i = 0;
   while (i < line.length) {
@@ -198,21 +334,165 @@ function maskInlineCode(line: string): string {
   return out;
 }
 
-interface FenceScan {
-  /** Prose lines, with inline code masked out. Fence lines are omitted. */
-  prose: string[];
+function isEscaped(text: string, pos: number): boolean {
+  let backslashes = 0;
+  let k = pos;
+  while (k > 0 && text[k - 1] === "\\") {
+    backslashes += 1;
+    k -= 1;
+  }
+  return backslashes % 2 === 1;
 }
 
-/** Walk markdown line by line, dropping fenced blocks (``` and ~~~). */
-function scanProse(markdown: string): FenceScan {
-  const prose: string[] = [];
+function findClosingBracket(text: string, from: number): number {
+  let depth = 1;
+  let i = from;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (ch === "\\" && i + 1 < text.length) {
+      i += 2;
+      continue;
+    }
+    if (ch === "[") depth += 1;
+    else if (ch === "]") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+function parseLinkDestination(
+  text: string,
+  from: number,
+): { destStart: number; destEnd: number; closeParen: number } | null {
+  let i = from;
+  while (i < text.length && (text[i] === " " || text[i] === "\t")) i += 1;
+  if (i >= text.length || text[i] === ")") return null;
+
+  let destStart: number;
+  let destEnd: number;
+  let afterDest: number;
+
+  if (text[i] === "<") {
+    destStart = i + 1;
+    let j = destStart;
+    while (j < text.length) {
+      if (text[j] === "\\" && j + 1 < text.length) {
+        j += 2;
+        continue;
+      }
+      if (text[j] === "<") return null;
+      if (text[j] === ">") break;
+      j += 1;
+    }
+    if (j >= text.length || text[j] !== ">") return null;
+    destEnd = j;
+    afterDest = j + 1;
+  } else {
+    destStart = i;
+    let j = destStart;
+    let parenDepth = 0;
+    while (j < text.length) {
+      const ch = text[j]!;
+      if (ch === "\\" && j + 1 < text.length) {
+        j += 2;
+        continue;
+      }
+      if (ch === " " || ch === "\t") break;
+      if (ch === "(") parenDepth += 1;
+      else if (ch === ")") {
+        if (parenDepth === 0) break;
+        parenDepth -= 1;
+      }
+      j += 1;
+    }
+    destEnd = j;
+    afterDest = j;
+  }
+
+  if (destEnd <= destStart) return null;
+  while (afterDest < text.length && (text[afterDest] === " " || text[afterDest] === "\t")) {
+    afterDest += 1;
+  }
+  if (afterDest < text.length && (text[afterDest] === '"' || text[afterDest] === "'")) {
+    const quote = text[afterDest]!;
+    afterDest += 1;
+    while (afterDest < text.length) {
+      if (text[afterDest] === "\\" && afterDest + 1 < text.length) {
+        afterDest += 2;
+        continue;
+      }
+      if (text[afterDest] === quote) {
+        afterDest += 1;
+        break;
+      }
+      afterDest += 1;
+    }
+    while (afterDest < text.length && (text[afterDest] === " " || text[afterDest] === "\t")) {
+      afterDest += 1;
+    }
+  }
+  if (afterDest < text.length && text[afterDest] === ")") {
+    return { destStart, destEnd, closeParen: afterDest };
+  }
+  return null;
+}
+
+interface ScannedLink {
+  start: number;
+  end: number;
+  label: string;
+  raw: string;
+  parsed: ParsedWorkspaceDest | null;
+}
+
+function scanLinksInLine(line: string, prose: string): ScannedLink[] {
+  const hits: ScannedLink[] = [];
+  let i = 0;
+  while (i < prose.length) {
+    if (prose[i] !== "[") {
+      i += 1;
+      continue;
+    }
+    if ((i > 0 && prose[i - 1] === "!") || isEscaped(prose, i)) {
+      i += 1;
+      continue;
+    }
+    const closeBracket = findClosingBracket(prose, i + 1);
+    if (closeBracket < 0 || prose[closeBracket + 1] !== "(") {
+      i += 1;
+      continue;
+    }
+    const dest = parseLinkDestination(prose, closeBracket + 2);
+    if (!dest) {
+      i += 1;
+      continue;
+    }
+    const label = line.slice(i + 1, closeBracket);
+    const destRaw = line.slice(dest.destStart, dest.destEnd);
+    const raw = line.slice(i, dest.closeParen + 1);
+    hits.push({
+      start: i,
+      end: dest.closeParen + 1,
+      label,
+      raw,
+      parsed: parseWorkspaceDest(destRaw),
+    });
+    i = dest.closeParen + 1;
+  }
+  return hits;
+}
+
+function scanProseWithSource(markdown: string): Array<{ line: string; prose: string }> {
+  const out: Array<{ line: string; prose: string }> = [];
   let fenceChar = "";
   let fenceLen = 0;
-  for (const line of markdown.split("\n")) {
+  for (const raw of markdown.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (fenceLen > 0) {
-      const closed = new RegExp(
-        `^ {0,3}${fenceChar}{${fenceLen},}\\s*$`,
-      ).test(line);
+      const closed = new RegExp(`^ {0,3}${fenceChar}{${fenceLen},}\\s*$`).test(line);
       if (closed) fenceLen = 0;
       continue;
     }
@@ -222,103 +502,41 @@ function scanProse(markdown: string): FenceScan {
       fenceLen = open[1]!.length;
       continue;
     }
-    prose.push(maskInlineCode(line));
+    out.push({ line, prose: maskInlineCodeSameLen(line) });
   }
-  return { prose };
+  return out;
 }
 
 export type BodySegment =
   | { type: "text"; value: string }
-  | { type: "ref"; id: string; label: string }
   | {
-      type: "file";
-      path: string;
+      type: "cite";
       label: string;
-      /** `lines` attribute exactly as written (a malformed span), or null. */
-      rawLines?: string | null;
-    }
-  | {
-      type: "symbol";
       path: string;
-      /** Chain for a symbol citation; null for a line range. */
       symbol: string | null;
-      /** Valid span of a line range. Always null on a symbol citation. */
       lines: string | null;
-      label: string;
-      /** `lines` attribute exactly as written, or null. */
-      rawLines?: string | null;
+      badLines: string | null;
+      raw: string;
     };
 
-/** Split one text run into prose, node mentions, and file mentions, in order. */
+/** Split one line of prose into literal pieces and workspace Markdown links. */
 export function splitBodyRefs(text: string): BodySegment[] {
-  const hits: Array<{
-    start: number;
-    end: number;
-    kind: "ref" | "file" | "symbol";
-    a: string;
-    b: string;
-    symbol?: string | null;
-    lines?: string | null;
-    rawLines?: string | null;
-  }> = [];
-  for (const match of text.matchAll(shortcodePattern())) {
-    const id = normalizeKey(match[1] ?? "");
-    if (!id || !isKnowledgeKey(id)) continue;
-    const start = match.index ?? 0;
-    hits.push({
-      start,
-      end: start + match[0].length,
-      kind: "ref",
-      a: id,
-      b: id,
-    });
-  }
-  for (const match of text.matchAll(fileAttrPattern())) {
-    const path = (match[1] ?? "").trim();
-    if (!path) continue;
-    const symbol = (match[2] ?? "").trim();
-    const rawLines = match[3] ?? null;
-    const lines = (rawLines ?? "").trim();
-    // A symbol citation takes no lines; only a line range carries a span.
-    const parsedLines = !symbol && lines ? parseLineSpan(lines) : null;
-    const start = match.index ?? 0;
-    const isSymbol = Boolean(symbol) || parsedLines !== null;
-    const label = citationFact(path, symbol, parsedLines ? lines : null);
-    hits.push({
-      start,
-      end: start + match[0].length,
-      kind: isSymbol ? "symbol" : "file",
-      a: path,
-      b: label,
-      symbol: symbol || null,
-      lines: parsedLines ? lines : null,
-      rawLines: rawLines === "" ? null : rawLines,
-    });
-  }
-  hits.sort((left, right) => left.start - right.start || left.end - right.end);
+  const prose = maskInlineCodeSameLen(text);
+  const hits = scanLinksInLine(text, prose);
   const out: BodySegment[] = [];
   let last = 0;
   for (const hit of hits) {
-    if (hit.start < last) continue;
+    if (!hit.parsed) continue;
     if (hit.start > last) out.push({ type: "text", value: text.slice(last, hit.start) });
-    if (hit.kind === "ref") out.push({ type: "ref", id: hit.a, label: hit.b });
-    else if (hit.kind === "symbol") {
-      out.push({
-        type: "symbol",
-        path: hit.a,
-        symbol: hit.symbol ?? null,
-        lines: hit.lines ?? null,
-        label: hit.b,
-        ...(hit.rawLines != null ? { rawLines: hit.rawLines } : {}),
-      });
-    } else {
-      out.push({
-        type: "file",
-        path: hit.a,
-        label: hit.b,
-        ...(hit.rawLines != null ? { rawLines: hit.rawLines } : {}),
-      });
-    }
+    out.push({
+      type: "cite",
+      label: hit.label,
+      path: hit.parsed.path,
+      symbol: hit.parsed.symbol,
+      lines: hit.parsed.lines,
+      badLines: hit.parsed.badLines,
+      raw: hit.raw,
+    });
     last = hit.end;
   }
   if (last < text.length) out.push({ type: "text", value: text.slice(last) });
@@ -326,155 +544,168 @@ export function splitBodyRefs(text: string): BodySegment[] {
   return out;
 }
 
-/** File paths cited in prose. Fenced blocks and inline code are not citations. */
-export function extractFileRefs(markdown: string): string[] {
-  const paths: string[] = [];
-  const seen = new Set<string>();
-  for (const line of scanProse(markdown).prose) {
-    for (const match of line.matchAll(fileAttrPattern())) {
-      const path = (match[1] ?? "").trim();
-      if (!path || seen.has(path)) continue;
-      seen.add(path);
-      paths.push(path);
-    }
-  }
-  return paths;
-}
-
-/** Path part of a `ref_key` (KR-KEY-1): trimmed, `\\` as `/`, nothing else. */
-function normalizeRefPath(path: string): string {
-  return path.trim().replaceAll("\\", "/");
-}
-
-/** One citation as the reference identity needs it. `lines` is the raw attribute. */
-type RefKeyInput =
-  | { kind: "node"; key: string }
-  | { kind: "file"; path: string; symbol?: string | null; lines?: string | null };
-
-/**
- * `ref_key` (KR-KEY-1), the one identity frontend, backend, and contract table share:
- * `node:<key>`, `file:<path>`, `sym:<path>\0<chain>`, `range:<path>\0<lines>`.
- * A symbol key never includes lines. A valid span is normalized (`5-5` → `5`);
- * a malformed one stays as written.
- */
-export function knowledgeRefKey(ref: RefKeyInput): string {
-  if (ref.kind === "node") return `node:${normalizeKey(ref.key)}`;
-  const path = normalizeRefPath(ref.path);
-  const chain = ref.symbol?.trim() ?? "";
-  if (chain) return `sym:${path}\0${chain}`;
-  const raw = ref.lines ?? "";
-  if (raw.length > 0) {
-    const span = parseLineSpan(raw);
-    const lines = span ? formatLineSpan(span.start, span.end) : raw;
-    return `range:${path}\0${lines}`;
-  }
-  return `file:${path}`;
-}
-
-interface ExtractedRef {
-  kind: "node" | "file" | "symbol" | "range";
-  key?: string;
-  path?: string;
+export interface ExtractedRef {
+  kind: "file" | "symbol" | "range";
+  path: string;
   symbol?: string;
-  /** Normalized span of a valid range. Null on a symbol and on a malformed range. */
   lines?: string | null;
-  /** Malformed `lines` text as written; on a symbol, any `lines` at all (KR-SYM-6). */
   bad_lines?: string;
   ref_key: string;
 }
 
 /**
- * Every citation in prose, in document order, repeats kept (KR-SYN-8).
- * Fenced blocks and inline code are not citations. Shapes match
- * `cases.json` `extract[].refs`.
+ * Every workspace citation in prose, in document order, repeats kept (KR-SYN-8).
+ * Shapes match `tests/fixtures/knowledge_refs/cases.json` v3 `extract[].refs`.
  */
 export function extractRefs(markdown: string): ExtractedRef[] {
   const out: ExtractedRef[] = [];
-  for (const line of scanProse(markdown).prose) {
-    const hits: Array<{ start: number; ref: ExtractedRef }> = [];
-    for (const match of line.matchAll(shortcodePattern())) {
-      const key = normalizeKey(match[1] ?? "");
-      if (!key || !isKnowledgeKey(key)) continue;
-      hits.push({
-        start: match.index ?? 0,
-        ref: { kind: "node", key, ref_key: knowledgeRefKey({ kind: "node", key }) },
+  for (const { line, prose } of scanProseWithSource(markdown)) {
+    for (const hit of scanLinksInLine(line, prose)) {
+      const p = hit.parsed;
+      if (!p) continue;
+      const path = normalizeRefPath(p.path);
+      const ref_key = knowledgeRefKey({
+        path,
+        symbol: p.symbol,
+        lines: p.lines,
+        badLines: p.badLines,
       });
-    }
-    for (const match of line.matchAll(fileAttrPattern())) {
-      const path = normalizeRefPath(match[1] ?? "");
-      if (!path) continue;
-      const symbol = (match[2] ?? "").trim();
-      const rawLines = match[3] ?? "";
-      const ref_key = knowledgeRefKey({ kind: "file", path, symbol, lines: rawLines });
-      let ref: ExtractedRef;
-      if (symbol) {
-        // KR-SYM-6: lines on a symbol are a format error whatever they say.
-        ref = rawLines
-          ? { kind: "symbol", path, symbol, lines: null, bad_lines: rawLines, ref_key }
-          : { kind: "symbol", path, symbol, lines: null, ref_key };
-      } else if (rawLines) {
-        const span = parseLineSpan(rawLines);
-        ref = span
-          ? { kind: "range", path, lines: formatLineSpan(span.start, span.end), ref_key }
-          : { kind: "range", path, lines: null, bad_lines: rawLines, ref_key };
+      if (p.kind === "symbol" && p.symbol) {
+        out.push({ kind: "symbol", path, symbol: p.symbol, ref_key });
+      } else if (p.kind === "range") {
+        out.push(
+          p.badLines != null
+            ? { kind: "range", path, lines: null, bad_lines: p.badLines, ref_key }
+            : { kind: "range", path, lines: p.lines, ref_key },
+        );
       } else {
-        ref = { kind: "file", path, ref_key };
+        out.push({ kind: "file", path, ref_key });
       }
-      hits.push({ start: match.index ?? 0, ref });
     }
-    hits.sort((left, right) => left.start - right.start);
-    for (const hit of hits) out.push(hit.ref);
   }
   return out;
 }
 
-interface KnowledgeMention {
-  id: string;
-  label: string;
-}
-
-/** Mentions in prose, first id wins. Fenced blocks and inline code are not mentions. */
-export function extractMentions(markdown: string): KnowledgeMention[] {
-  const mentions: KnowledgeMention[] = [];
-  const seen = new Set<string>();
-  for (const line of scanProse(markdown).prose) {
-    for (const segment of splitKnowledgeRefs(line)) {
-      if (segment.type !== "ref" || seen.has(segment.id)) continue;
-      seen.add(segment.id);
-      mentions.push({ id: segment.id, label: segment.label });
-    }
-  }
-  return mentions;
-}
-
-/** Ids cited in prose, first-seen order. */
-export function extractMarkers(markdown: string): string[] {
-  return extractMentions(markdown).map((mention) => mention.id);
-}
-
 /**
- * Rewrite mention ids that equal `from`. A label equal to the old id is
- * rewritten too. The `node :` declaration is not a shortcode, so it stays.
+ * Fold bare-path citations in `markdown` to valid target node keys (first-seen order, deduped).
+ * Excludes self-relations when `ownPath` is provided.
  */
-export function replaceMentionKey(text: string, from: string, to: string): string {
-  const source = normalizeKey(from);
-  const target = normalizeKey(to);
-  if (!source || source === target) return text;
-  return text.replace(shortcodePattern(), (full, id: string) => {
-    const idKey = normalizeKey(id);
-    if (!isKnowledgeKey(idKey) || idKey !== source) return full;
-    return mentionSource(target);
+export function extractNodeRelations(
+  markdown: string,
+  lookupNode: (normPath: string) => { key: string; path: string } | undefined,
+  ownPath?: string,
+): string[] {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  for (const ref of extractRefs(markdown)) {
+    if (ref.kind !== "file") continue;
+    const target = lookupNode(ref.path);
+    if (!target) continue;
+    if (ownPath && target.path === ownPath) continue;
+    const key = normalizeKey(target.key);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  return keys;
+}
+
+/** Rewrite workspace links targeting `fromPath` to `toPath`, skipping fenced & inline code. */
+export function replaceCitationPath(
+  markdown: string,
+  fromPath: string,
+  toPath: string,
+): string {
+  const fromNorm = normalizeRefPath(fromPath);
+  const toNorm = normalizeRefPath(toPath);
+  if (!fromNorm || fromNorm === toNorm) return markdown;
+  const oldStem = fileStem(fromNorm);
+  const newStem = fileStem(toNorm);
+  const oldBase = fileLabel(fromNorm);
+  const newBase = fileLabel(toNorm);
+  return rewriteProseLinks(markdown, (hit) => {
+    const p = hit.parsed;
+    if (!p || normalizeRefPath(p.path) !== fromNorm) return null;
+    const nextLabel =
+      hit.label === oldStem ? newStem : hit.label === oldBase ? newBase : hit.label;
+    return citationMarkdown({
+      label: nextLabel,
+      path: toNorm,
+      symbol: p.symbol,
+      lines: p.lines,
+      badLines: p.badLines,
+    });
   });
 }
 
-/** First non-empty prose line as literal/ref segments (for one-line summaries). */
-export function knowledgeFirstLineSegments(value: string): KnowledgeSegment[] {
-  for (const line of scanProse(value).prose) {
-    if (!line.trim()) continue;
-    return splitKnowledgeRefs(line);
-  }
-  return [{ type: "text", value: "" }];
+/** Rewrite workspace links under `fromPrefix/` to `toPrefix/`, skipping fenced & inline code. */
+export function replaceCitationPathPrefix(
+  markdown: string,
+  fromPrefix: string,
+  toPrefix: string,
+): string {
+  const fromClean = normalizeRefPath(fromPrefix).replace(/\/+$/, "");
+  const toClean = normalizeRefPath(toPrefix).replace(/\/+$/, "");
+  if (!fromClean || fromClean === toClean) return markdown;
+  const prefixSlash = `${fromClean}/`;
+  return rewriteProseLinks(markdown, (hit) => {
+    const p = hit.parsed;
+    if (!p) return null;
+    const norm = normalizeRefPath(p.path);
+    if (!norm.startsWith(prefixSlash)) return null;
+    const rest = norm.slice(prefixSlash.length);
+    const nextPath = toClean ? `${toClean}/${rest}` : rest;
+    return citationMarkdown({
+      label: hit.label,
+      path: nextPath,
+      symbol: p.symbol,
+      lines: p.lines,
+      badLines: p.badLines,
+    });
+  });
 }
+
+function rewriteProseLinks(
+  markdown: string,
+  rewrite: (hit: ScannedLink) => string | null,
+): string {
+  const lines = markdown.split("\n");
+  let fenceChar = "";
+  let fenceLen = 0;
+  const out: string[] = [];
+  for (const raw of lines) {
+    const hasCr = raw.endsWith("\r");
+    const line = hasCr ? raw.slice(0, -1) : raw;
+    if (fenceLen > 0) {
+      const closed = new RegExp(`^ {0,3}${fenceChar}{${fenceLen},}\\s*$`).test(line);
+      if (closed) fenceLen = 0;
+      out.push(raw);
+      continue;
+    }
+    const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (open) {
+      fenceChar = open[1]![0]!;
+      fenceLen = open[1]!.length;
+      out.push(raw);
+      continue;
+    }
+    const prose = maskInlineCodeSameLen(line);
+    const hits = scanLinksInLine(line, prose);
+    let rebuilt = "";
+    let last = 0;
+    for (const hit of hits) {
+      const replacement = rewrite(hit);
+      if (replacement == null) continue;
+      rebuilt += line.slice(last, hit.start) + replacement;
+      last = hit.end;
+    }
+    rebuilt += line.slice(last);
+    out.push(hasCr ? `${rebuilt}\r` : rebuilt);
+  }
+  return out.join("\n");
+}
+
+// ------------------------------------------------------------ preview
 
 const PREVIEW_CODE_CHARS = 24;
 
@@ -484,32 +715,36 @@ function clipChars(value: string, max: number): string {
   return `${chars.slice(0, max).join("")}…`;
 }
 
-function replaceShortcodesWithLabels(text: string): string {
-  const nodes = text.replace(shortcodePattern(), (full, id: string) => {
-    const key = normalizeKey(id);
-    if (!isKnowledgeKey(key)) return full;
-    return key;
-  });
-  return nodes.replace(
-    fileAttrPattern(),
-    (full, path: string, symbol: string, lines: string) => {
-      const cleaned = path.trim();
-      if (!cleaned) return full;
-      const chain = symbol?.trim() ?? "";
-      const raw = lines?.trim() ?? "";
-      return citationFact(cleaned, chain, raw ? raw : null);
-    },
-  );
+function replaceLinksWithLabels(text: string): string {
+  const prose = maskInlineCodeSameLen(text);
+  const hits = scanLinksInLine(text, prose);
+  if (hits.length === 0) return text;
+  let out = "";
+  let last = 0;
+  for (const hit of hits) {
+    if (!hit.parsed) continue;
+    out += text.slice(last, hit.start);
+    const label = hit.label.trim();
+    out +=
+      label ||
+      citationFact(
+        normalizeRefPath(hit.parsed.path),
+        hit.parsed.symbol,
+        hit.parsed.lines,
+      );
+    last = hit.end;
+  }
+  out += text.slice(last);
+  return out;
 }
 
-/** Show inline code, clipped. Shortcodes are replaced only outside code spans. */
 function showInlineCode(line: string): string {
   let out = "";
   let text = "";
   let i = 0;
   const flush = () => {
     if (!text) return;
-    out += replaceShortcodesWithLabels(text);
+    out += replaceLinksWithLabels(text);
     text = "";
   };
   while (i < line.length) {
@@ -534,15 +769,15 @@ function showInlineCode(line: string): string {
   return out;
 }
 
-function previewLines(markdown: string): string[] {
+/** First lines of a body, with workspace links reduced to their labels, for card previews. */
+export function knowledgePreview(value: string, lines = 3): string {
   const prose: string[] = [];
   let fenceChar = "";
   let fenceLen = 0;
-  for (const line of markdown.split("\n")) {
+  for (const raw of value.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     if (fenceLen > 0) {
-      const closed = new RegExp(
-        `^ {0,3}${fenceChar}{${fenceLen},}\\s*$`,
-      ).test(line);
+      const closed = new RegExp(`^ {0,3}${fenceChar}{${fenceLen},}\\s*$`).test(line);
       if (closed) fenceLen = 0;
       continue;
     }
@@ -554,12 +789,7 @@ function previewLines(markdown: string): string[] {
     }
     prose.push(showInlineCode(line));
   }
-  return prose;
-}
-
-/** First lines of a value, with mentions reduced to their label, for card previews. */
-export function knowledgePreview(value: string, lines = 3): string {
-  return previewLines(value)
+  return prose
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .slice(0, lines)

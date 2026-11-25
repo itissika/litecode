@@ -9,5 +9,5 @@ domain : client-ux
 
 **准入：** A6。这是全局唯一的 serve 认证与绑定门：非 loopback 绑定必须 `--require-auth` 且 `LITECODE_TOKEN` 非空；`/api/*` 禁止 query token（防进访问日志），`/ws` 因握手限制保留 query；`/health` 与静态页放行。绕过即整机暴露，对应 issue 分级 B3。
 
-依据：[@ file="src/serve/run.rs" symbol="fn validate_serve_bind"]、[@ file="src/serve/auth.rs" symbol="fn middleware"]、[@ file="src/serve/auth.rs" symbol="fn extract_token"]、[@ file="src/serve/auth.rs" symbol="fn extract_query_token"]、[@ file="tests/serve_bind_auth.rs" symbol="fn bind_auth_matrix"]。
-上层：[@ key="ux"]。
+依据：[validate_serve_bind](src/serve/run.rs#validate_serve_bind)、[middleware](src/serve/auth.rs#middleware)、[extract_token](src/serve/auth.rs#extract_token)、[extract_query_token](src/serve/auth.rs#extract_query_token)、[bind_auth_matrix](tests/serve_bind_auth.rs#bind_auth_matrix)。
+上层：[ux](knowledge/framework/ux.md)。

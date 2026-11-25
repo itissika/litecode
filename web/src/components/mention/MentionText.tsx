@@ -8,16 +8,14 @@ import { AgentMarkdown } from "../AgentMarkdown";
 import { CitationChip } from "../CitationChip";
 
 function citationFor(segment: Exclude<BodySegment, { type: "text" }>): Citation {
-  if (segment.type === "ref") return { kind: "node", key: segment.id };
-  const symbol = segment.type === "symbol" ? segment.symbol : null;
-  const lines = segment.type === "symbol" && !symbol ? segment.lines : null;
-  const span = lines ? parseLineSpan(lines) : null;
+  const span = segment.lines ? parseLineSpan(segment.lines) : null;
   return {
-    kind: "file",
     path: segment.path,
-    symbol,
+    symbol: segment.symbol,
     line: span?.start ?? null,
-    lines: symbol ? null : (segment.rawLines ?? null),
+    lines: segment.lines,
+    badLines: segment.badLines,
+    label: segment.label || null,
   };
 }
 
@@ -57,10 +55,10 @@ function SegmentView({ segment }: { segment: BodySegment }) {
       </>
     );
   }
-  return <CitationChip citation={citationFor(segment)} />;
+  return <CitationChip citation={citationFor(segment)} label={segment.label || undefined} />;
 }
 
-/** User prose with mention shortcodes drawn as read-only capsules. */
+/** User prose with workspace Markdown links drawn as read-only capsules. */
 export function MentionText({ text }: { text: string }) {
   const segments = splitBodyRefs(text);
   if (!segments.some((segment) => segment.type !== "text")) {

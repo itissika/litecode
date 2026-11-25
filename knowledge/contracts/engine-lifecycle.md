@@ -17,6 +17,6 @@ h : 414
 - 两类语料各自独立：code 与 session 的执行门解耦——code 门同时要运行与索引可用；session 语义门只要求共享 worker Warm，滞后只损召回，命中仍回真源水合。
 - 多消费者共享：人类界面与 agent 消费同一 owner 的状态与数据；界面只能读投影，不能回写意图或伪造生命周期。
 
-契约展开：[@ key="lsp-hub-lifecycle"]、[@ key="process-lifetime"]。
-上层：[@ key="config"]、[@ key="engine-design"]。
-依据：[@ file="src/engines/mod.rs"]、[@ file="src/engines/status_view.rs"]。
+契约展开：[lsp-hub-lifecycle](knowledge/contracts/lsp-hub-lifecycle.md)、[process-lifetime](knowledge/contracts/process-lifetime.md)。
+上层：[config](knowledge/framework/config.md)、[engine-design](knowledge/design/engine-design.md)。
+依据：[mod.rs](src/engines/mod.rs)、[status_view.rs](src/engines/status_view.rs)。

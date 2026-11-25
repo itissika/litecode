@@ -173,7 +173,12 @@ impl Engine {
         self.reload_corpus();
         let resolution = {
             let checks = checks_of(&self.corpus);
-            validate::resolve(&checks, Some(self.cites.as_slice()), &mut Pending)
+            validate::resolve(
+                &checks,
+                Some(self.cites.as_slice()),
+                self.corpus.root.as_deref(),
+                &mut Pending,
+            )
         };
         self.content(resolution, false)
     }
@@ -197,7 +202,12 @@ impl Engine {
         let resolution = {
             let checks = checks_of(&corpus);
             let mut facts = EngineFacts { engine: self };
-            validate::resolve(&checks, Some(cites.as_slice()), &mut facts)
+            validate::resolve(
+                &checks,
+                Some(cites.as_slice()),
+                corpus.root.as_deref(),
+                &mut facts,
+            )
         };
         self.corpus = corpus;
         self.cites = cites;
@@ -307,7 +317,7 @@ impl Engine {
             };
             self.counters.md_parses += 1;
             let parsed = document::parse_knowledge_markdown(&child, &markdown);
-            let cites = Arc::new(extract_cites(&parsed.body));
+            let cites = Arc::new(parsed.cites.clone());
             seen.insert(child.clone());
             self.md.insert(
                 child,
@@ -327,10 +337,10 @@ impl Engine {
         let mut out = HashSet::new();
         for cites in &self.cites {
             for cite in cites.iter() {
-                if let Some(path) = cite.norm_path()
-                    && is_workspace_file_ref(&path)
-                {
-                    out.insert(path);
+                let norm = cite.norm_path();
+                if is_workspace_file_ref(&norm) {
+                    let disk = root::resolve_disk_path(&norm, self.kroot.as_deref());
+                    out.insert(disk);
                 }
             }
         }
@@ -678,7 +688,8 @@ struct EngineFacts<'a> {
 
 impl Facts for EngineFacts<'_> {
     fn file(&mut self, path: &str) -> FileFact {
-        match self.engine.ensure_stat(path).kind {
+        let disk = root::resolve_disk_path(path, self.engine.kroot.as_deref());
+        match self.engine.ensure_stat(&disk).kind {
             Kind::Missing => FileFact::Missing,
             Kind::Escape => FileFact::Escape,
             Kind::Dir => FileFact::Dir,
@@ -687,7 +698,8 @@ impl Facts for EngineFacts<'_> {
     }
 
     fn text(&mut self, path: &str) -> TextFact {
-        match self.engine.loaded(path) {
+        let disk = root::resolve_disk_path(path, self.engine.kroot.as_deref());
+        match self.engine.loaded(&disk) {
             Some(Loaded::Text(text)) => TextFact::Text {
                 line_count: text.line_count,
             },
@@ -697,7 +709,8 @@ impl Facts for EngineFacts<'_> {
     }
 
     fn symbol(&mut self, path: &str, chain: &str) -> SymbolFact {
-        self.engine.symbol_detail(path, chain).fact
+        let disk = root::resolve_disk_path(path, self.engine.kroot.as_deref());
+        self.engine.symbol_detail(&disk, chain).fact
     }
 }
 
@@ -962,13 +975,16 @@ impl KnowledgeIndex {
     }
 
     fn publish(&self, content: Content) -> Arc<Snapshot> {
-        let cited: HashSet<String> = content
-            .nodes
-            .iter()
-            .flat_map(|node| node.refs.iter())
-            .filter_map(|r| r.path.as_ref())
-            .map(|p| p.to_lowercase())
-            .collect();
+        let mut cited: HashSet<String> = HashSet::new();
+        for node in &content.nodes {
+            for r in &node.refs {
+                if let Some(p) = &r.path {
+                    cited.insert(p.to_lowercase());
+                    let disk = root::resolve_disk_path(p, content.root.as_deref());
+                    cited.insert(disk.to_lowercase());
+                }
+            }
+        }
         *self.cited.write().expect("cited lock") = Arc::new(cited);
         let mut current = self.current.write().expect("knowledge snapshot lock");
         if *current.content == content {

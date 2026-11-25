@@ -11,11 +11,11 @@ domain : tools-permission
 
 **主张：** 每个调用都以 call_id 配对拿到一条结果，并按模型给出的调用顺序交付；模型看不到悬空调用。
 
-- 配对顺序：结果先入 `call_id → ToolCallResult` 映射，再按原始调用顺序回放——不是完成先后（[@ file="src/tool/executor.rs" symbol="fn outputs_from_tool_results"]）。
-- 补位两层：step 级对取消/不完整调用整组补中断输出（[@ file="src/agent/core.rs" symbol="fn interrupted_outputs"]）；编码级把缺失结果降级为错误文本（[@ file="src/tool/executor.rs" symbol="fn outputs_from_tool_results"]）。
-- 媒体兜底：媒体编码失败在此降级为错误文本，fail closed（[@ file="src/tool/executor.rs" symbol="fn function_call_output_item"]）。
+- 配对顺序：结果先入 `call_id → ToolCallResult` 映射，再按原始调用顺序回放——不是完成先后（[outputs_from_tool_results](src/tool/executor.rs#outputs_from_tool_results)）。
+- 补位两层：step 级对取消/不完整调用整组补中断输出（[interrupted_outputs](src/agent/core.rs#interrupted_outputs)）；编码级把缺失结果降级为错误文本（[outputs_from_tool_results](src/tool/executor.rs#outputs_from_tool_results)）。
+- 媒体兜底：媒体编码失败在此降级为错误文本，fail closed（[function_call_output_item](src/tool/executor.rs#function_call_output_item)）。
 - 落地：FunctionCall 已由模型输出在 transcript，管线只追加 FunctionCallOutput，由 agent 循环持久化（持久化路径不在本节点展开）。
-- 持久化防线：提交时丢弃无对应 FunctionCall 的输出（[@ file="src/session/data/sqlite/session.rs" symbol="impl Session › fn commit_turn_delta_with_orphan_cleanup"]）；会话恢复分两层——临时视图由 `pad_unanswered_calls` 补齐（不写盘）[@ file="src/session/data/sqlite/session.rs" symbol="impl Session › fn pad_unanswered_calls"]；未回答调用仍是日志尾部时，启动由 `seal_tail_unanswered_calls` 追加落盘封口（同文案、append-only）[@ file="src/session/data/sqlite/session.rs" symbol="impl Session › fn seal_tail_unanswered_calls"]、[@ file="src/session/data/writer.rs" symbol="fn seal_tail_unanswered_calls"]。
+- 持久化防线：提交时丢弃无对应 FunctionCall 的输出（[Session.commit_turn_delta_with_orphan_cleanup](src/session/data/sqlite/session.rs#Session.commit_turn_delta_with_orphan_cleanup)）；会话恢复分两层——临时视图由 `pad_unanswered_calls` 补齐（不写盘）[Session.pad_unanswered_calls](src/session/data/sqlite/session.rs#Session.pad_unanswered_calls)；未回答调用仍是日志尾部时，启动由 `seal_tail_unanswered_calls` 追加落盘封口（同文案、append-only）[Session.seal_tail_unanswered_calls](src/session/data/sqlite/session.rs#Session.seal_tail_unanswered_calls)、[seal_tail_unanswered_calls](src/session/data/writer.rs#seal_tail_unanswered_calls)。
 
-父节点：[@ key="tool-call-contract"]。
-相关：[@ key="tool-call-lifecycle"]、[@ key="tool-identity"]。
+父节点：[tool-call-contract](knowledge/contracts/tool-call-contract.md)。
+相关：[tool-call-lifecycle](knowledge/contracts/tools/tool-call-lifecycle.md)、[tool-identity](knowledge/contracts/tools/tool-identity.md)。

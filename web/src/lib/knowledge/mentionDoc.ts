@@ -1,5 +1,4 @@
 export {
   bodyToContent,
-  fileMentionOptions,
-  knowledgeMentionOptions,
+  citationMentionOptions,
 } from "../../components/mention/serialize";

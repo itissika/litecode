@@ -17,5 +17,5 @@ h : 378
 - 滞后是允许的：索引更新不阻塞查询，滞后只许少召回；已删除或已剔除的行不得成为有效证据。
 - 预算是视图：输出是 token 预算内的证据视图，不承诺穷尽全量历史。
 
-上层：[@ key="featured-tools"]、[@ key="engine-design"]。
-依据：[@ file="src/engines/session_search/echo.rs"]、[@ file="src/engines/session_search/ranking.rs"]。
+上层：[featured-tools](knowledge/framework/featured-tools.md)、[engine-design](knowledge/design/engine-design.md)。
+依据：[echo.rs](src/engines/session_search/echo.rs)、[ranking.rs](src/engines/session_search/ranking.rs)。

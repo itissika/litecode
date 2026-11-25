@@ -1,113 +1,74 @@
 import { refStateText } from "./issueText";
 import {
   citationFact,
-  extractMentions,
+  citationMarkdown,
   humanFileLabel,
   humanRangeLabel,
   humanSymbolLabel,
   isWorkspaceFileRef,
   knowledgeRefKey,
-  mentionSource,
+  logicalKnowledgePath,
   normalizeKey,
-  symbolMentionSource,
+  normalizeRefPath,
+  normalizeSymbolQuery,
 } from "./markers";
 import type { KnowledgeNode, KnowledgeRefState, KnowledgeRefStatus } from "./types";
 
-type RefChipTone = "normal" | "disabled" | "warning" | "error";
-
-interface RefChipModel {
-  key: string;
-  label: string;
-  targetId: string | null;
-  tone: RefChipTone;
-  jumpable: boolean;
-}
-
-/** Chip state for one mention. `id` is the lookup key; `label` is the visible text. */
-export function chipForMarker(
-  source: KnowledgeNode,
-  marker: string,
-  byKey: Map<string, KnowledgeNode>,
-  label = marker,
-): RefChipModel {
-  const key = normalizeKey(marker);
-  const target = byKey.get(key);
-  if (!target) {
-    return { key, label, targetId: null, tone: "error", jumpable: false };
-  }
-  if (normalizeKey(target.key) === normalizeKey(source.key)) {
-    return { key, label, targetId: target.id, tone: "error", jumpable: false };
-  }
-  if (target.status === "disabled") {
-    return { key, label, targetId: target.id, tone: "disabled", jumpable: true };
-  }
-  if (target.status === "pending") {
-    return { key, label, targetId: target.id, tone: "warning", jumpable: true };
-  }
-  return { key, label, targetId: target.id, tone: "normal", jumpable: true };
-}
-
-/** One chip per body mention, labeled by the shortcode. */
-export function relationStripChips(
-  source: KnowledgeNode,
-  byId: Map<string, KnowledgeNode>,
-): RefChipModel[] {
-  const byKey = new Map<string, KnowledgeNode>();
-  for (const node of byId.values()) {
-    const key = normalizeKey(node.key);
-    if (key && !byKey.has(key)) byKey.set(key, node);
-  }
-  return extractMentions(source.value).map((mention) =>
-    chipForMarker(source, mention.id, byKey, mention.label),
-  );
-}
-
 /**
- * A citation the chip can render. `line` is the start line of a line range, used
- * only to open the file. `lines` is the raw `lines` attribute, used only for the
- * reference identity (`ref_key`). A symbol citation carries neither.
+ * Unified path-based citation rendered by `CitationChip`.
+ * Whether it displays as a knowledge node chip or a file/symbol/range chip
+ * is determined automatically from the path, `knowledgeStore`, and backend verdict.
  */
-export type Citation =
-  | { kind: "node"; key: string }
-  | {
-      kind: "file";
-      path: string;
-      symbol?: string | null;
-      line?: number | null;
-      lines?: string | null;
-    };
+export interface Citation {
+  path: string;
+  symbol?: string | null;
+  /** 1-based start line for jumping in the editor. */
+  line?: number | null;
+  /** Normalized line span (`12` or `12-30`), when valid. */
+  lines?: string | null;
+  /** Raw malformed line fragment, when invalid. */
+  badLines?: string | null;
+  /** Optional link label preserved for round-trip copy. */
+  label?: string | null;
+}
 
-/** `ref_key` of one citation, the same formula the backend uses (KR-KEY-1). */
+/** `ref_key` of one citation, matching Rust `Cite::ref_key` (KR-KEY-1). */
 export function citationRefKey(citation: Citation): string {
-  if (citation.kind === "node") return knowledgeRefKey({ kind: "node", key: citation.key });
   return knowledgeRefKey({
-    kind: "file",
     path: citation.path,
     symbol: citation.symbol,
-    lines: citation.symbol?.trim() ? null : citation.lines,
+    lines: citation.symbol?.trim() ? null : rangeAttribute(citation) || null,
+    badLines: citation.symbol?.trim() ? null : citation.badLines,
   });
 }
 
 /**
- * The citation as the text a source writes: the shortcode form, which is what
- * pastes back into a mention field as the same reference (KR-SYN). A chip carries
- * this for copy, because the label alone (a file name, a leaf symbol) does not
- * say where it points.
+ * Standard CommonMark Markdown link representation for clipboard copy.
+ * Pastes back into MentionEditor as the exact same chip and stays valid Markdown
+ * anywhere else (GitHub, VS Code, Obsidian).
  */
-export function citationSource(citation: Citation): string {
-  if (citation.kind === "node") return mentionSource(normalizeKey(citation.key));
-  return symbolMentionSource(citation.path, {
-    symbol: citation.symbol?.trim() ?? "",
-    lines: rangeAttribute(citation),
+export function citationSource(
+  citation: Citation,
+  targetNode?: Pick<KnowledgeNode, "key" | "path"> | null,
+): string {
+  const path = normalizeRefPath(citation.path);
+  const symbol = citation.symbol ? normalizeSymbolQuery(citation.symbol) : "";
+  const lines = symbol ? "" : rangeAttribute(citation);
+  const badLines = symbol || lines ? "" : (citation.badLines?.trim() ?? "");
+  const label =
+    citation.label?.trim() ||
+    (!symbol && !lines && !badLines && targetNode ? normalizeKey(targetNode.key) : "");
+  return citationMarkdown({
+    label: label || undefined,
+    path: targetNode && !symbol && !lines && !badLines ? logicalKnowledgePath(targetNode.path) : path,
+    symbol: symbol || null,
+    lines: lines || null,
+    badLines: badLines || null,
   });
 }
 
 type CitationTone = "normal" | "disabled" | "warning" | "drift" | "error";
 
-/**
- * How a backend status draws on a chip. A status missing here (a code added
- * after this build) falls back to its severity, so a new error code is still red.
- */
 const STATUS_TONE: Record<KnowledgeRefStatus, "ok" | "checking" | "error" | "drift"> = {
   ok: "ok",
   checking: "checking",
@@ -125,7 +86,7 @@ const STATUS_TONE: Record<KnowledgeRefStatus, "ok" | "checking" | "error" | "dri
   duplicate_key: "error",
   empty_key: "error",
   invalid_status: "error",
-  filename_mismatch: "drift",
+  filename_mismatch: "error",
 };
 
 export function refStatusTone(
@@ -142,7 +103,7 @@ export function refStatusTone(
 
 export interface CitationChipModel {
   label: string;
-  /** Full reference — path, range, or chain — shown on chip hover. */
+  /** Full reference — path, range, or symbol — shown on chip hover. */
   detail?: string;
   resolvable: boolean;
   tone: CitationTone;
@@ -154,115 +115,113 @@ export interface CitationChipModel {
 
 interface CitationResolveInput {
   source: KnowledgeNode | null;
-  /** Node looked up by key. Null when the key is not in the corpus. */
+  /** Valid knowledge node matched by path (bare-path citations only). */
   target: KnowledgeNode | null;
-  /**
-   * Backend verdict for this citation inside `source`, found by `ref_key`.
-   * Null when the snapshot does not have it yet: the chip stays neutral
-   * ("checking"), except node citations, which derive from the corpus at once.
-   */
+  /** Backend verdict for this citation inside `source`, looked up by `ref_key`. */
   ref?: KnowledgeRefState | null;
   /** Snapshot `ready`. False: no citation shows an error yet. Default true. */
   ready?: boolean;
-  /**
-   * The editor already has a preview tab for this external path.
-   * A path outside the workspace is resolvable only when this is true.
-   */
+  /** The editor already has a preview tab for this external path. */
   externalOpen: boolean;
   label?: string;
 }
 
 /**
- * One resolution for every chip.
- * A resolvable citation can be followed. Anything else stays a capsule so the
- * shortcode still round-trips, and the label does not navigate.
+ * Single resolution for every chip.
+ * Automatically folds bare-path citations pointing at a valid knowledge node (or
+ * marked `kind === "node"` by the backend) into a knowledge node chip; everything
+ * else renders as a file, symbol, or line-range chip.
  */
 export function resolveCitation(
   citation: Citation,
   input: CitationResolveInput,
 ): CitationChipModel {
-  if (citation.kind === "node") return resolveNode(citation.key, input);
+  const symbol = citation.symbol ? normalizeSymbolQuery(citation.symbol) : "";
+  const range = symbol ? "" : rangeAttribute(citation);
+  const bad = symbol || range ? "" : (citation.badLines?.trim() ?? "");
+  const isBarePath = !symbol && !range && !bad;
+  if (isBarePath && (input.target || input.ref?.kind === "node")) {
+    return resolveNode(citation.path, input);
+  }
   return resolveFile(citation, input);
 }
 
-function resolveNode(marker: string, input: CitationResolveInput): CitationChipModel {
-  const label = input.label?.trim() || normalizeKey(marker) || marker;
-  const key = normalizeKey(marker);
+function resolveNode(rawPath: string, input: CitationResolveInput): CitationChipModel {
+  const normPath = normalizeRefPath(rawPath);
+  const target = input.target;
   const ready = input.ready ?? true;
-  if (input.source) {
-    const byKey = new Map<string, KnowledgeNode>();
-    if (key && input.target) byKey.set(key, input.target);
-    const chip = chipForMarker(input.source, marker, byKey, label);
-    const base = {
-      label: chip.label,
-      detail: input.target?.path,
-      targetId: chip.targetId,
-      file: false,
-      symbol: false,
-    };
-    const ref = ready ? (input.ref ?? null) : null;
-    if (ref && refStatusTone(ref) === "error") {
-      return {
-        ...base,
-        resolvable: false,
-        tone: "error",
-        title: refStateText(ref) || undefined,
-      };
-    }
-    if (chip.tone === "error" && (ref || !ready)) {
-      // The backend says the citation holds (or has not judged it yet):
-      // never show a local error the final verdict does not have.
-      return { ...base, resolvable: chip.targetId != null, tone: "normal" };
-    }
-    return {
-      ...base,
-      resolvable: chip.jumpable && chip.targetId != null,
-      tone: chip.tone === "error" ? "error" : chip.tone,
-    };
-  }
-  if (!input.target) {
-    return {
-      label,
-      resolvable: false,
-      tone: "error",
-      targetId: null,
-      file: false,
-      symbol: false,
-    };
-  }
-  const tone: CitationTone =
-    input.target.status === "disabled"
-      ? "disabled"
-      : input.target.status === "pending"
-        ? "warning"
-        : "normal";
-  return {
+  const ref = ready ? (input.ref ?? null) : null;
+  const defaultKey =
+    (target ? normalizeKey(target.key) : "") ||
+    (ref?.key ? normalizeKey(ref.key) : "");
+  const rawLabel = input.label?.trim() ?? "";
+  const isPathLikeLabel =
+    rawLabel === normPath ||
+    rawLabel === humanFileLabel(normPath) ||
+    (target != null && rawLabel === logicalKnowledgePath(target.path));
+  const label =
+    (rawLabel && !isPathLikeLabel ? rawLabel : "") ||
+    defaultKey ||
+    humanFileLabel(normPath);
+  const detail = target ? logicalKnowledgePath(target.path) : normPath;
+  const base = {
     label,
-    detail: input.target.path,
-    resolvable: true,
-    tone,
-    targetId: input.target.id,
+    detail,
+    targetId: target?.id ?? null,
     file: false,
     symbol: false,
   };
+
+  if (ref && refStatusTone(ref) === "error") {
+    return {
+      ...base,
+      resolvable: false,
+      tone: "error",
+      title: refStateText(ref) || undefined,
+    };
+  }
+  if (!target) {
+    if (!ready) return { ...base, resolvable: false, tone: "normal" };
+    return {
+      ...base,
+      resolvable: false,
+      tone: "error",
+      title: ref ? refStateText(ref) || undefined : undefined,
+    };
+  }
+  if (input.source && target.path === input.source.path) {
+    if (ref && refStatusTone(ref) !== "error") {
+      return { ...base, resolvable: true, tone: "normal" };
+    }
+    return {
+      ...base,
+      resolvable: false,
+      tone: "error",
+      title: ref ? refStateText(ref) || undefined : "Citation points at itself.",
+    };
+  }
+  const tone: CitationTone =
+    target.status === "disabled"
+      ? "disabled"
+      : target.status === "pending"
+        ? "warning"
+        : "normal";
+  return {
+    ...base,
+    resolvable: true,
+    tone,
+  };
 }
 
-function resolveFile(
-  citation: Extract<Citation, { kind: "file" }>,
-  input: CitationResolveInput,
-): CitationChipModel {
-  const path = citation.path;
-  const symbol = citation.symbol?.trim() || "";
-  // A symbol never shows lines; a range does. `line` alone (a plain `file:…`
-  // link) is a one-line range.
+function resolveFile(citation: Citation, input: CitationResolveInput): CitationChipModel {
+  const path = normalizeRefPath(citation.path);
+  const symbol = citation.symbol ? normalizeSymbolQuery(citation.symbol) : "";
   const range = symbol ? "" : rangeAttribute(citation);
-  const label =
-    input.label?.trim() ||
-    (symbol
-      ? humanSymbolLabel(path, symbol)
-      : range
-        ? humanRangeLabel(path, range)
-        : humanFileLabel(path));
+  const label = symbol
+    ? humanSymbolLabel(path, symbol)
+    : range
+      ? humanRangeLabel(path, range)
+      : humanFileLabel(path);
   const base = {
     label,
     detail: citationFact(path, symbol || null, range || null),
@@ -276,8 +235,6 @@ function resolveFile(
   if (ref && tone === "error") {
     return { ...base, resolvable: false, tone: "error", title: refStateText(ref) || undefined };
   }
-  // The editor can read a workspace path. An outside path is openable only
-  // when a preview tab already holds the bytes.
   const resolvable = isWorkspaceFileRef(path) || input.externalOpen;
   if (!resolvable) return { ...base, resolvable: false, tone: "error" };
   if (ref && tone === "drift") {
@@ -291,7 +248,6 @@ function resolveFile(
   return { ...base, resolvable: true, tone: "normal" };
 }
 
-/** Raw `lines` attribute, or the single start line of a `file:` link. */
 function rangeAttribute(citation: {
   line?: number | null;
   lines?: string | null;

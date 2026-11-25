@@ -18,5 +18,5 @@ h : 396
 - 完成靠事实与唤醒：结果来自 child 的持久记录；父邮箱每个 child 只留最新一条结果；运行中的父在请求缝隙收到完成提醒，空闲父满足条件时被唤醒消费，不靠隐形注入。
 - 停止只告知不唤醒：被停 turn 的结果只进邮箱；用户停/删以 `stopped by user` / `deleted by user` 通知父；父自己停/删不给自己发通知。
 
-上层：[@ key="featured-tools"]。
-依据：[@ file="src/tools/subagent/turn.rs"]、[@ file="src/tools/subagent/hub.rs"]、[@ file="src/session/service/conversation.rs" symbol="impl SessionService › fn start_turn"]、[@ key="session-service"]。
+上层：[featured-tools](knowledge/framework/featured-tools.md)。
+依据：[turn.rs](src/tools/subagent/turn.rs)、[hub.rs](src/tools/subagent/hub.rs)、[SessionService.start_turn](src/session/service/conversation.rs#SessionService.start_turn)、[session-service](knowledge/contracts/session/session-service.md)。

@@ -1,7 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fileMentionSource, symbolMentionSource } from "../lib/knowledge/markers";
 import { useEditorStore } from "../stores/editorStore";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { loadImageChipPreview } from "./mention/imageChipHover";
@@ -60,23 +59,20 @@ describe("markdown file preview images", () => {
   it("draws a whole-file image chip and keeps symbol and line chips as text", async () => {
     const openFile = vi.fn(async () => {});
     useEditorStore.setState({ openFile } as never);
-    const symbol = symbolMentionSource("docs/shot.gif", { symbol: "Icon" });
-    const lines = symbolMentionSource("docs/shot.gif", { lines: "1-2" });
     render(
       <AgentMarkdown
         preview={preview}
-        text={`${fileMentionSource("docs/shot.gif")} ${symbol} ${lines}`}
+        text="[shot.gif](docs/shot.gif) [Icon](docs/shot.gif#Icon) [shot.gif:1-2](docs/shot.gif#L1-L2)"
       />,
     );
 
-    const chip = screen.getByRole("button", { name: "shot.gif" });
+    const chip = screen.getAllByRole("button", { name: "shot.gif" })[0]!;
     expect(screen.getByRole("button", { name: "shot.gif : Icon" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "shot.gif : 1-2" })).toBeTruthy();
     await waitFor(() => {
       expect(screen.getByRole("img", { name: "shot.gif" })).toBeTruthy();
     });
     expect(screen.getAllByRole("img")).toHaveLength(1);
-    // The picture is a button too; the chip comes first.
     expect(screen.getAllByRole("button", { name: "shot.gif" })).toHaveLength(2);
     fireEvent.click(chip);
     expect(openFile).toHaveBeenCalledWith("docs/shot.gif");
@@ -84,22 +80,21 @@ describe("markdown file preview images", () => {
     expect(loadImageChipPreview).toHaveBeenCalledWith("docs/shot.gif");
   });
 
-  it("keeps an ordinary markdown link as a link", () => {
+  it("keeps an external markdown link as a link", () => {
     render(
-      <AgentMarkdown preview={preview} text={"[guide](./guide.md)"} />,
+      <AgentMarkdown preview={preview} text={"[guide](https://example.com/guide)"} />,
     );
     const link = screen.getByRole("link", { name: "guide" });
-    expect(link.getAttribute("href")).toBe("./guide.md");
+    expect(link.getAttribute("href")).toBe("https://example.com/guide");
     expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("does not load image bytes when preview is off", async () => {
     const { container } = render(
       <AgentMarkdown
-        text={`${fileMentionSource("docs/shot.gif")}\n\n![wave](./shot.gif)`}
+        text={"[shot.gif](docs/shot.gif)\n\n![wave](./shot.gif)"}
       />,
     );
-    expect(container.textContent).toContain('[@ file="docs/shot.gif"]');
     expect(screen.queryByRole("button")).toBeNull();
     const img = container.querySelector("img");
     expect(img?.getAttribute("src")).toBe("./shot.gif");

@@ -1,7 +1,9 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use axum::extract::FromRef;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 
 use crate::apps::AppService;
 use crate::config::settings_writer::SettingsChangedEvent;
@@ -38,6 +40,10 @@ pub struct ServeState {
     pub watcher: Arc<Mutex<Option<Arc<WorkspaceWatcher>>>>,
     /// Cross-process exclusive write lease held for the lifetime of this serve process.
     pub workspace_lock: Arc<std::sync::Mutex<WorkspaceWriteLease>>,
+    /// Process-level shared memory telemetry stream (1 background sampler per
+    /// serve process on `spawn_blocking`, fanned out to all WS connections).
+    stats_tx: Arc<watch::Sender<Option<crate::telemetry::MemorySample>>>,
+    stats_sampler_started: Arc<AtomicBool>,
 }
 
 impl ServeState {
@@ -215,6 +221,7 @@ impl ServeState {
                     );
                 }));
         }
+        let (stats_tx, _stats_rx) = watch::channel(None);
         Ok(Self {
             ide,
             runtime,
@@ -232,7 +239,64 @@ impl ServeState {
             bots,
             watcher: Arc::new(Mutex::new(None)),
             workspace_lock: Arc::new(std::sync::Mutex::new(workspace_lock)),
+            stats_tx: Arc::new(stats_tx),
+            stats_sampler_started: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Subscribe to the process-wide shared memory telemetry stream.
+    ///
+    /// Lazily starts a single background sampler task (offloaded to
+    /// `spawn_blocking` every 2s only while at least one WS subscriber is
+    /// connected). Exits automatically when `ServeState` is dropped.
+    pub fn subscribe_stats(&self) -> watch::Receiver<Option<crate::telemetry::MemorySample>> {
+        let rx = self.stats_tx.subscribe();
+        self.ensure_stats_sampler();
+        rx
+    }
+
+    fn ensure_stats_sampler(&self) {
+        if self
+            .stats_sampler_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            self.stats_sampler_started.store(false, Ordering::SeqCst);
+            return;
+        };
+        let weak_tx = Arc::downgrade(&self.stats_tx);
+        let engines = Arc::clone(&self.workspace_engines);
+        handle.spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(2));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                let Some(tx) = weak_tx.upgrade() else {
+                    break;
+                };
+                if tx.receiver_count() == 0 {
+                    continue;
+                }
+                let engines = Arc::clone(&engines);
+                let started = Instant::now();
+                let Ok(sample) =
+                    tokio::task::spawn_blocking(move || engines.memory_sample()).await
+                else {
+                    continue;
+                };
+                let elapsed = started.elapsed();
+                if elapsed > Duration::from_millis(500) {
+                    tracing::warn!(
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        "shared memory_sample took longer than 500ms"
+                    );
+                }
+                let _ = tx.send(Some(sample));
+            }
+        });
     }
 
     pub fn settings_revision(&self) -> u64 {

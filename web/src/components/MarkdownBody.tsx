@@ -7,11 +7,6 @@ import { fileKindFromPath } from "../lib/fileKind";
 import { isWorkspaceFileRef } from "../lib/knowledge/markers";
 import { followCitation } from "../lib/knowledge/panel";
 import { resolveMarkdownImage } from "../lib/markdownImagePath";
-import {
-  parseKnowledgeRef,
-  parseLocationRef,
-  remarkKnowledgeRef,
-} from "../lib/knowledge/remarkKnowledgeRef";
 import type { Citation } from "../lib/knowledge/refDisplay";
 import { isMermaidLang } from "../lib/mermaid";
 import { CitationChip } from "./CitationChip";
@@ -40,10 +35,12 @@ function wholeFileImagePath(located: {
   symbol: string | null;
   line: number | null;
   lines?: string | null;
+  badLines?: string | null;
 }): string | null {
   if (located.symbol?.trim()) return null;
   if (located.line != null) return null;
   if (located.lines?.trim()) return null;
+  if (located.badLines?.trim()) return null;
   if (!isWorkspaceFileRef(located.path)) return null;
   if (fileKindFromPath(located.path) !== "image") return null;
   return located.path;
@@ -53,14 +50,16 @@ function FileCitation({
   citation,
   imagePath,
   sourceId,
+  label,
 }: {
   citation: Citation;
   imagePath: string | null;
   sourceId?: string;
+  label?: string;
 }) {
   return (
     <>
-      <CitationChip citation={citation} sourceId={sourceId} />
+      <CitationChip citation={citation} sourceId={sourceId} label={label} />
       {imagePath ? (
         <WorkspacePicture path={imagePath} onOpen={() => followCitation(citation)} />
       ) : null}
@@ -71,13 +70,13 @@ function FileCitation({
 export interface MarkdownBodyProps {
   text: string;
   streaming?: boolean;
-  /** Assistant prose only. Other callers keep ordinary links. */
+  /** Assistant prose or knowledge bodies. Other callers keep ordinary links. */
   citations?: boolean;
   /** Sit in the surrounding line. Used when a mention capsule shares the sentence. */
   inline?: boolean;
   /**
-   * Markdown file preview. Turns on shortcode chips, workspace images, and
-   * pictures for whole-file image chips. Ordinary markdown links stay links.
+   * Markdown file preview. Turns on workspace image rendering and whole-file
+   * image preview pictures for image citations.
    */
   preview?: MarkdownPreview;
   /**
@@ -88,6 +87,8 @@ export interface MarkdownBodyProps {
   sourceId?: string;
 }
 
+const REMARK_PLUGINS = [remarkGfm];
+
 export const MarkdownBody = memo(function MarkdownBody({
   text,
   streaming = false,
@@ -97,18 +98,7 @@ export const MarkdownBody = memo(function MarkdownBody({
   preview,
 }: MarkdownBodyProps) {
   const basePath = preview?.basePath;
-  const shortcodes = citations || basePath != null;
-  const remarkPlugins = useMemo(
-    () => (shortcodes ? [remarkGfm, remarkKnowledgeRef] : [remarkGfm]),
-    [shortcodes],
-  );
-  const transformUrl = useMemo(
-    () => (value: string) => {
-      if (shortcodes && (parseKnowledgeRef(value) || parseLocationRef(value))) return value;
-      return citationUrlTransform(value);
-    },
-    [shortcodes],
-  );
+  const enableChips = citations || basePath != null;
   const components = useMemo(
     () => ({
       p: ({ children }: { children?: ReactNode }) =>
@@ -135,44 +125,34 @@ export const MarkdownBody = memo(function MarkdownBody({
         <em className="italic">{children}</em>
       ),
       a: ({ href, children }: { href?: string; children?: ReactNode }) => {
-        const nodeKey = shortcodes ? parseKnowledgeRef(href) : null;
-        if (nodeKey) {
+        const workspaceLink = enableChips
+          ? classifyWorkspaceLink(href, { knowledgeBody: sourceId != null })
+          : null;
+        if (workspaceLink?.action === "chip") {
+          const textLabel = linkLabel(children).trim() || undefined;
+          const citation: Citation = {
+            path: workspaceLink.path,
+            symbol: workspaceLink.symbol,
+            line: workspaceLink.line,
+            lines: workspaceLink.lines,
+            badLines: workspaceLink.badLines,
+            label: textLabel,
+          };
+          if (basePath != null) {
+            return (
+              <FileCitation
+                citation={citation}
+                sourceId={sourceId}
+                label={textLabel}
+                imagePath={wholeFileImagePath(workspaceLink)}
+              />
+            );
+          }
           return (
             <CitationChip
-              citation={{ kind: "node", key: nodeKey }}
-              sourceId={sourceId}
-              label={linkLabel(children) || nodeKey}
-            />
-          );
-        }
-        const located = shortcodes ? parseLocationRef(href) : null;
-        if (located) {
-          const citation: Citation = {
-            kind: "file",
-            path: located.path,
-            symbol: located.symbol,
-            line: located.line,
-            lines: located.lines,
-          };
-          return (
-            <FileCitation
               citation={citation}
               sourceId={sourceId}
-              imagePath={basePath != null ? wholeFileImagePath(located) : null}
-            />
-          );
-        }
-        const workspaceLink = citations ? classifyWorkspaceLink(href) : null;
-        if (workspaceLink?.action === "chip") {
-          return (
-            <CitationChip
-              citation={{
-                kind: "file",
-                path: workspaceLink.path,
-                symbol: workspaceLink.symbol,
-                line: workspaceLink.line,
-              }}
-              sourceId={sourceId}
+              label={textLabel}
             />
           );
         }
@@ -266,7 +246,7 @@ export const MarkdownBody = memo(function MarkdownBody({
           }
         : {}),
     }),
-    [basePath, citations, inline, shortcodes, sourceId, streaming],
+    [basePath, enableChips, inline, sourceId, streaming],
   );
 
   const Tag = inline ? "span" : "div";
@@ -274,8 +254,8 @@ export const MarkdownBody = memo(function MarkdownBody({
   return (
     <Tag className={inline ? "agent-markdown is-inline" : "agent-markdown"}>
       <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        urlTransform={transformUrl}
+        remarkPlugins={REMARK_PLUGINS}
+        urlTransform={citationUrlTransform}
         components={components}
       >
         {text}

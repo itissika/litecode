@@ -18,6 +18,6 @@ h : 430
 - 幂等先于版本：操作重试（operation_id）取回原回执、不重复执行；版本预期（expected_revision）冲突显式失败，不静默合并。
 - 提交边界：错误回复不等于未提交——COMMIT 后收信失败仍可能已落库，只能凭操作身份查回；已封口的正文不可覆写，回退是删行不是覆写。
 
-契约展开：[@ key="session-write-path"]、[@ key="session-log-envelope"]。
-上层：[@ key="session"]。相关：[@ key="turn-lifecycle"]、[@ key="client-projection"]。
-依据：[@ file="src/session/data/sqlite/session.rs"]、[@ file="src/session/data/writer.rs"]。
+契约展开：[session-write-path](knowledge/contracts/session/session-write-path.md)、[session-log-envelope](knowledge/contracts/session/session-log-envelope.md)。
+上层：[session](knowledge/framework/session.md)。相关：[turn-lifecycle](knowledge/contracts/turn-lifecycle.md)、[client-projection](knowledge/contracts/client-projection.md)。
+依据：[session.rs](src/session/data/sqlite/session.rs)、[writer.rs](src/session/data/writer.rs)。

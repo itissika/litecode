@@ -970,3 +970,48 @@ async fn agents_commit_reprojects_the_picker_without_reconnect() {
         "the rest of the list must survive the push: {changed}"
     );
 }
+
+/// Liveness stratification: `server/ping` is answered directly on the priority
+/// control lane even while the serial session loop is parked inside a subscribe
+/// replay, and shared `server/stats` still arrives on open sockets.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_ping_answers_immediately_while_subscribe_is_parked() {
+    let env = env().await;
+    let sid = seeded_session(&env.state, "ping target");
+    let gate = resume_gate_for_test::install(&sid);
+    let mut ws = connect(&env.url).await;
+    let _ = until_method(&mut ws, "server/hello").await;
+
+    send(&mut ws, 1, "session/subscribe", json!({"session_id": sid})).await;
+    gate_entered(&gate).await;
+
+    let started = std::time::Instant::now();
+    send(&mut ws, 99, "server/ping", json!({})).await;
+    let (pong, before_pong) = until_reply(&mut ws, 99).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "server/ping stalled: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        pong.pointer("/result/ts_ms").and_then(Value::as_i64).is_some(),
+        "server/ping must return ts_ms: {pong}"
+    );
+    assert!(
+        before_pong.iter().all(|f| reply_id(f) != Some(1)),
+        "ping must overtake parked subscribe"
+    );
+
+    // Shared stats sampler pushes `server/stats` without per-socket blocking.
+    let stats = tokio::time::timeout(Duration::from_secs(4), until_method(&mut ws, "server/stats"))
+        .await
+        .expect("server/stats must arrive from shared sampler");
+    assert!(
+        stats.pointer("/params/ts_ms").and_then(Value::as_i64).is_some(),
+        "server/stats payload: {stats}"
+    );
+
+    gate.release.add_permits(1);
+    let (sub, _) = until_reply(&mut ws, 1).await;
+    assert!(sub.get("error").is_none(), "subscribe ok: {sub}");
+}

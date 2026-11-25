@@ -7,7 +7,10 @@ import {
   draftTooLong,
   messageTooLong,
 } from "../lib/composerLimits";
-import { mentionKeysOf } from "../lib/knowledge/flowProjection";
+import {
+  mentionNodesSignature,
+  parseMentionCandidates,
+} from "../lib/knowledge/flowProjection";
 import { useKnowledgeStore } from "../stores/knowledgeStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { useToastStore } from "../stores/toastStore";
@@ -48,11 +51,8 @@ export function MiniChatInput({
 }) {
   const primaryAgents = useSessionStore((s) => s.primaryAgents);
   const editorRef = useRef<MentionEditorHandle>(null);
-  const mentionKeys = useKnowledgeStore((s) => mentionKeysOf(s.nodes));
-  const candidates = useMemo(
-    () => mentionKeys.split("\n").filter((key) => key.length > 0),
-    [mentionKeys],
-  );
+  const mentionSig = useKnowledgeStore((s) => mentionNodesSignature(s.nodes, s.root));
+  const candidates = useMemo(() => parseMentionCandidates(mentionSig), [mentionSig]);
 
   useEffect(() => {
     editorRef.current?.focus();
@@ -153,7 +153,6 @@ export function MiniChatInput({
             candidates={candidates}
             placeholder="Revert and resend…"
             className="mention-composer-input w-full px-3 py-2 pr-12 text-sm text-(--_dk-text-primary)"
-            symbolLines
             submitOnEnter={!disabled}
             onChange={change}
             onSubmit={() => submit()}

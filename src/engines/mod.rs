@@ -1043,10 +1043,11 @@ impl WorkspaceEngines {
             return CodeIndexTick::Skipped(Skip::NotDesired);
         }
         // WP-141: the periodic stat-only scan rides this tick (no timer of its
-        // own). Worker up → IPC stat scan (works with a cooled RAM index).
-        // Otherwise the serve process stats `stamps.v1` into queue.json.
+        // own). Worker up → multiplexed IPC stat scan (works with a cooled RAM
+        // index, and never blocks queries or notifications). Otherwise the
+        // serve process stats `stamps.v1` into queue.json.
         if self.code_search.worker_alive() {
-            self.code_search.request_reconcile();
+            self.code_search.reconcile_disk_blocking();
         } else {
             code_search::queue_reconcile_from_stamps(&root);
         }
@@ -1080,16 +1081,16 @@ impl WorkspaceEngines {
         }
     }
 
-    /// Reconcile dirty paths on a Warm worker. Does not embed or enable retrieval.
+    /// Reconcile dirty paths on a Warm worker. Non-blocking; does not embed or enable retrieval.
     pub fn request_index_sync(&self, workspace_root: &Path) {
-        if !crate::config::workspace::workspace_engine_desired(workspace_root, "code_search") {
-            return;
-        }
         let state = self.state("code_search");
         if self.refresh_busy.load(Ordering::SeqCst)
-            || matches!(state, Some(EngineState::Warming))
             || !matches!(state, Some(EngineState::Warm))
+            || !self.code_search.worker_alive()
         {
+            return;
+        }
+        if !crate::config::workspace::workspace_engine_desired(workspace_root, "code_search") {
             return;
         }
         self.code_search.request_reconcile();

@@ -4,4 +4,4 @@ status : enabled
 summary : 会话
 
 ```
-见 [@ key="seq"]
+见 [seq](knowledge/内核/seq.md)

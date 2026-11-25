@@ -9,5 +9,5 @@ domain : harness-core
 
 **准入：** A2。同一 session 同时只允许一个忙碌活动；预占与 config `TurnGuard` 成对增减。Spawn 失败不释放会永久堵死会话；收尾不核 turn_id 会误关别人的轮次。取消/回退可进 Exclusive，与 RunningTurn 互斥。
 
-依据：[@ file="src/session/manager.rs" symbol="enum SessionActivity"]、[@ file="src/session/manager.rs" symbol="impl SessionManager › fn reserve_turn"]、[@ file="src/session/manager.rs" symbol="impl SessionManager › fn release_turn_reservation"]、[@ file="src/session/manager.rs" symbol="impl SessionManager › fn start_turn"]、[@ file="src/session/manager.rs" symbol="impl SessionManager › fn finish_turn"]、[@ file="src/config/turn_guard.rs" symbol="impl TurnGuard › fn begin_turn"]。
-父节点：[@ key="turn-lifecycle"]。
+依据：[SessionActivity](src/session/manager.rs#SessionActivity)、[SessionManager.reserve_turn](src/session/manager.rs#SessionManager.reserve_turn)、[SessionManager.release_turn_reservation](src/session/manager.rs#SessionManager.release_turn_reservation)、[SessionManager.start_turn](src/session/manager.rs#SessionManager.start_turn)、[SessionManager.finish_turn](src/session/manager.rs#SessionManager.finish_turn)、[TurnGuard.begin_turn](src/config/turn_guard.rs#TurnGuard.begin_turn)。
+父节点：[turn-lifecycle](knowledge/contracts/turn-lifecycle.md)。

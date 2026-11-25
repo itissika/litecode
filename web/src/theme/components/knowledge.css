@@ -1285,6 +1285,31 @@ button.knowledge-token-label {
   max-width: min(40rem, 90vw);
 }
 
+.knowledge-mention-node {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  max-width: min(40rem, 90vw);
+}
+
+.knowledge-mention-node-key {
+  flex: 0 0 auto;
+  color: var(--_dk-cat-purple, var(--_dk-accent-hover));
+  font-weight: 500;
+}
+
+.knowledge-mention-node-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--_dk-text-muted);
+  font-size: 0.9em;
+  text-align: right;
+}
+
 .knowledge-mention-path {
   flex: 1 1 auto;
   min-width: 0;

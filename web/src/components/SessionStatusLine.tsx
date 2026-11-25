@@ -1071,7 +1071,7 @@ function PlanHeader({
 /** Plan panel body: the active plan file's markdown, read from the workspace.
  *  The row naming that file is the panel's chrome (PlanHeader); a
  *  missing/unreadable file collapses to a "lost" state instead of dead
- *  content. Rendered as a file preview so a plan's [@ file="…"] citations
+ *  content. Rendered as a file preview so a plan's workspace Markdown links
  *  become chips, the same as the plan opened in the editor. */
 type PlanDoc =
   | { status: "loading" }

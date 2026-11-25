@@ -1,7 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { symbolMentionSource } from "../lib/knowledge/markers";
 import { useSessionStore } from "../stores/sessionStore";
 import { MiniChatInput } from "./MiniChatInput";
 import { composerText, pressComposerKey, setComposerText } from "./mention/composerDom";
@@ -123,11 +122,7 @@ describe("MiniChatInput", () => {
 
   it("restores a symbol capsule and submits on Enter", async () => {
     const onSubmit = vi.fn();
-    const source = symbolMentionSource("src/a.rs", {
-      symbol: "fn save",
-      lines: "4-9",
-      label: "fn save",
-    });
+    const source = "[Store.save](src/a.rs#Store.save)";
     render(
       <MiniChatInput
         sessionId="session-1"
@@ -143,7 +138,7 @@ describe("MiniChatInput", () => {
         onSubmit={onSubmit}
       />,
     );
-    const chip = await screen.findByRole("button", { name: "a.rs : fn save" });
+    const chip = await screen.findByRole("button", { name: "a.rs : save" });
     expect(chip.closest(".knowledge-token")?.classList.contains("is-symbol")).toBe(true);
     pressComposerKey(REPLAY, "Enter", true);
     expect(onSubmit).not.toHaveBeenCalled();

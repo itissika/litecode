@@ -6,8 +6,16 @@ import {
   type WireKnowledgeNode,
   type WireKnowledgeSnapshot,
 } from "../api/knowledge";
-import { replaceKnowledgeKey } from "../lib/knowledge/document";
-import { extractRefs, isKnowledgeKey, normalizeKey } from "../lib/knowledge/markers";
+import {
+  extractRefs,
+  isKnowledgeKey,
+  isValidNodeIdentity,
+  logicalKnowledgePath,
+  normalizeKey,
+  normalizeRefPath,
+  replaceCitationPath,
+  replaceCitationPathPrefix,
+} from "../lib/knowledge/markers";
 import {
   createKnowledgeFolder,
   createKnowledgeNode,
@@ -55,12 +63,17 @@ const NO_REFS: ReadonlyMap<string, KnowledgeRefState> = new Map();
 function indexNodes(nodes: KnowledgeNode[], issues: KnowledgeIssue[]) {
   const byId = new Map<string, KnowledgeNode>();
   const byKey = new Map<string, KnowledgeNode>();
+  const byLogicalPath = new Map<string, KnowledgeNode>();
   for (const node of nodes) {
     if (!byId.has(node.id)) byId.set(node.id, node);
     const key = normalizeKey(node.key);
     if (key && !byKey.has(key)) byKey.set(key, node);
+    if (isValidNodeIdentity(node.path, node.key)) {
+      const logical = logicalKnowledgePath(node.path);
+      if (!byLogicalPath.has(logical)) byLogicalPath.set(logical, node);
+    }
   }
-  return { nodes, byId, byKey, issues, issuesByNode: groupIssues(issues) };
+  return { nodes, byId, byKey, byLogicalPath, issues, issuesByNode: groupIssues(issues) };
 }
 
 function indexFolders(folders: KnowledgeFolder[]) {
@@ -166,6 +179,8 @@ interface KnowledgeStore {
   nodes: KnowledgeNode[];
   byId: Map<string, KnowledgeNode>;
   byKey: Map<string, KnowledgeNode>;
+  /** Valid-identity nodes indexed by canonical logical path (`knowledge/<rel>`). */
+  byLogicalPath: Map<string, KnowledgeNode>;
   folders: KnowledgeFolder[];
   folderById: Map<string, KnowledgeFolder>;
   issues: KnowledgeIssue[];
@@ -751,24 +766,52 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
     if (!current) return "invalid";
     const nextKey = normalizeKey(rawKey);
     const from = normalizeKey(current.key);
-    if (nextKey === from) return "ok";
-    if (!isKnowledgeKey(nextKey)) return "invalid";
-    const taken = state.nodes.some(
-      (node) => node.id !== id && normalizeKey(node.key) === nextKey,
-    );
+    const nextPath = knowledgeNodeRel(current.folderId ?? null, nextKey);
+    if (!isKnowledgeKey(nextKey) || !nextPath) return "invalid";
+    if (nextKey === from && nextPath === current.path) return "ok";
+    const others = state.nodes.filter((node) => node.id !== id);
+    const taken =
+      others.some((node) => normalizeKey(node.key) === nextKey) ||
+      (nextPath !== current.path && pathTaken(nextPath, others, state.folders));
     if (taken) return "duplicate";
+
+    const fromLogical = logicalKnowledgePath(current.path);
+    const toLogical = logicalKnowledgePath(nextPath);
+    const fromPrivate = `${KNOWLEDGE_PRIVATE_ROOT}/${current.path}`;
+    const rewriteBody = (body: string) =>
+      replaceCitationPath(
+        replaceCitationPath(body, fromLogical, toLogical),
+        fromPrivate,
+        toLogical,
+      );
+
+    if (nextPath !== current.path) {
+      try {
+        await moveKnowledgeEntry(state.root, current.path, nextPath);
+      } catch (err) {
+        if (isConflict(err)) return "duplicate";
+        set({ error: diskError(err) });
+        return "invalid";
+      }
+    }
+
     const nextId = current.id === from ? nextKey : current.id;
     const nodes = state.nodes.map((node) => {
       const renamed = node.id === id;
       const relations = node.relations.map((ref) => (ref === from ? nextKey : ref));
-      const value = replaceKnowledgeKey(node.value, from, nextKey);
-      if (!renamed && relations.join("\0") === node.relations.join("\0") && value === node.value) {
+      const value = rewriteBody(node.value);
+      if (
+        !renamed &&
+        relations.join("\0") === node.relations.join("\0") &&
+        value === node.value
+      ) {
         return node;
       }
       return {
         ...node,
         id: renamed ? nextId : node.id,
         key: renamed ? nextKey : node.key,
+        path: renamed ? nextPath : node.path,
         relations,
         value,
       };
@@ -797,6 +840,16 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       await Promise.all(
         changed.map((node) => writeKnowledgeNode(node, get().root)),
       );
+      if (nextPath !== current.path) {
+        const { useEditorStore } = await import("./editorStore");
+        useEditorStore
+          .getState()
+          .remapTabs(
+            knowledgeDiskPath(state.root, current.path),
+            knowledgeDiskPath(state.root, nextPath),
+          );
+        await refreshExplorer(nextPath).catch(() => undefined);
+      }
     } catch (err) {
       for (const node of changed) dropPendingWrite(node.path, node);
       const message = err instanceof Error ? err.message : i18n.t("knowledge.writeFailed");
@@ -890,12 +943,36 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
     const dest = knowledgeMoveDestination(current.path, folderId);
     if (dest === current.path) return "ok";
     if (pathTaken(dest, state.nodes, state.folders)) return "duplicate";
+    const fromLogical = logicalKnowledgePath(current.path);
+    const toLogical = logicalKnowledgePath(dest);
+    const fromPrivate = `${KNOWLEDGE_PRIVATE_ROOT}/${current.path}`;
+    const rewriteBody = (body: string) =>
+      replaceCitationPath(
+        replaceCitationPath(body, fromLogical, toLogical),
+        fromPrivate,
+        toLogical,
+      );
     try {
       await moveKnowledgeEntry(state.root, current.path, dest);
-      await writeKnowledgeNode(
-        { ...current, path: dest, folderId, x: null, y: null },
-        state.root,
-      );
+      const movedNode: KnowledgeNode = {
+        ...current,
+        path: dest,
+        folderId,
+        x: null,
+        y: null,
+        value: rewriteBody(current.value),
+      };
+      const citingRewrites = state.nodes
+        .filter((node) => node.id !== id)
+        .map((node) => {
+          const nextValue = rewriteBody(node.value);
+          return nextValue !== node.value ? { ...node, value: nextValue } : null;
+        })
+        .filter((node): node is KnowledgeNode => node !== null);
+      await Promise.all([
+        writeKnowledgeNode(movedNode, state.root),
+        ...citingRewrites.map((node) => writeKnowledgeNode(node, state.root)),
+      ]);
       const { useEditorStore } = await import("./editorStore");
       useEditorStore
         .getState()
@@ -922,8 +999,32 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
     const dest = knowledgeMoveDestination(id, parentId);
     if (dest === id) return "ok";
     if (pathTaken(dest, state.nodes, state.folders)) return "duplicate";
+    const fromPrefix = logicalKnowledgePath(id);
+    const toPrefix = logicalKnowledgePath(dest);
+    const fromPrivatePrefix = `${KNOWLEDGE_PRIVATE_ROOT}/${id}`;
+    const rewriteBody = (body: string) =>
+      replaceCitationPathPrefix(
+        replaceCitationPathPrefix(body, fromPrefix, toPrefix),
+        fromPrivatePrefix,
+        toPrefix,
+      );
     try {
       await moveKnowledgeEntry(state.root, id, dest);
+      const rewrittenNodes = state.nodes
+        .map((node) => {
+          const nextValue = rewriteBody(node.value);
+          if (nextValue === node.value) return null;
+          const nextPath = node.path.startsWith(`${id}/`)
+            ? `${dest}${node.path.slice(id.length)}`
+            : node.path;
+          return { ...node, path: nextPath, value: nextValue };
+        })
+        .filter((node): node is KnowledgeNode => node !== null);
+      if (rewrittenNodes.length > 0) {
+        await Promise.all(
+          rewrittenNodes.map((node) => writeKnowledgeNode(node, state.root)),
+        );
+      }
       const { useEditorStore } = await import("./editorStore");
       useEditorStore
         .getState()
@@ -1108,6 +1209,54 @@ export function knowledgeRefState(
 ): KnowledgeRefState | undefined {
   if (!nodeId) return undefined;
   return (state.refsByNode.get(nodeId) ?? NO_REFS).get(refKey);
+}
+
+/**
+ * Look up a valid-identity knowledge node from a workspace citation path.
+ * Recognizes `knowledge/<rel>` in both modes, plus `.litecode/knowledge/<rel>`
+ * when the active corpus root is private (mirroring `root::strip_corpus_prefix`).
+ */
+export function lookupKnowledgeNodeByPath(
+  state: Pick<KnowledgeStore, "byLogicalPath" | "visibility">,
+  rawPath: string,
+): KnowledgeNode | undefined {
+  const norm = normalizeRefPath(rawPath);
+  if (norm.startsWith(`${KNOWLEDGE_PUBLIC_ROOT}/`)) {
+    return state.byLogicalPath.get(norm);
+  }
+  if (
+    state.visibility === "private" &&
+    norm.startsWith(`${KNOWLEDGE_PRIVATE_ROOT}/`)
+  ) {
+    const rest = norm.slice(`${KNOWLEDGE_PRIVATE_ROOT}/`.length);
+    return state.byLogicalPath.get(`${KNOWLEDGE_PUBLIC_ROOT}/${rest}`);
+  }
+  return undefined;
+}
+
+/**
+ * Map a logical knowledge path (`knowledge/<rest>`) to its physical workspace
+ * disk path when the corpus is private. Non-knowledge paths return unchanged.
+ */
+export function resolveKnowledgeDiskPath(
+  state: Pick<KnowledgeStore, "visibility">,
+  rawPath: string,
+): string {
+  const norm = normalizeRefPath(rawPath);
+  if (
+    state.visibility === "private" &&
+    norm.startsWith(`${KNOWLEDGE_PUBLIC_ROOT}/`)
+  ) {
+    return `${KNOWLEDGE_PRIVATE_ROOT}/${norm.slice(`${KNOWLEDGE_PUBLIC_ROOT}/`.length)}`;
+  }
+  return norm;
+}
+
+/** Lazy one-shot hydration for chat chips that cite `knowledge/...` before the panel opens. */
+export function ensureKnowledgeLoaded(): void {
+  if (!hydrated && !loadInflight) {
+    void useKnowledgeStore.getState().load();
+  }
 }
 
 /** Test hook: forget hydration, overlays, and timers between cases. */

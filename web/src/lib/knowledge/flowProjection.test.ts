@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 
-import { mentionSource } from "./markers";
 import type { KnowledgeIssue, KnowledgeNode } from "./types";
 import {
   canvasAlertKey,
@@ -216,7 +215,7 @@ describe("corpus scope", () => {
 
   it("keeps the other node and its issue list when one summary changes", () => {
     const broken = node("a", {
-      value: mentionSource("missing"),
+      value: "[missing](knowledge/missing.md)",
       relations: ["missing"],
     });
     const other = node("b", { summary: "kept" });
@@ -225,10 +224,10 @@ describe("corpus scope", () => {
         nodeId: "a",
         severity: "error",
         code: "dangling_relation",
-        message: 'Citation "missing" does not exist.',
-        ref: "missing",
-        refKey: "node:missing",
-        args: { key: "missing" },
+        message: 'Citation "knowledge/missing.md" does not exist.',
+        ref: "knowledge/missing.md",
+        refKey: "path:knowledge/missing.md",
+        args: { key: "missing", path: "knowledge/missing.md" },
       },
     ];
     const first = projectListedNodes(

@@ -73,6 +73,8 @@ pub mod methods {
     pub const BASH_KILL: &str = "bash/kill";
     pub const SUBSCRIBE_LOGS: &str = "subscribe_logs";
     pub const UNSUBSCRIBE_LOGS: &str = "unsubscribe_logs";
+    /// Lightweight zero-lock liveness probe answered immediately on the WS control lane.
+    pub const SERVER_PING: &str = "server/ping";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -2,7 +2,6 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { knowledgeFixture, knowledgeFolderFixture } from "../../test/fixtures/knowledge";
-import { fileMentionSource, mentionSource } from "../../lib/knowledge/markers";
 import { useEditorStore } from "../../stores/editorStore";
 import { knowledgeSnapshot, useKnowledgeStore } from "../../stores/knowledgeStore";
 import { KnowledgeBodyEditor } from "./KnowledgeBodyEditor";
@@ -26,15 +25,21 @@ afterEach(() => {
 });
 
 describe("KnowledgeBodyEditor mention chip", () => {
-  it("jumps to the cited card and keeps the shortcode", async () => {
+  it("jumps to the cited card and keeps the standard Markdown link", async () => {
     const onChange = vi.fn();
-    const source = `见 ${mentionSource("seq")}`;
+    const source = "见 [seq](knowledge/内核/seq.md)";
     render(
       <KnowledgeBodyEditor
         label="正文"
         sourceId="session"
         value={source}
-        candidates={["seq"]}
+        candidates={[
+          {
+            key: "seq",
+            path: "knowledge/内核/seq.md",
+            diskPath: ".litecode/knowledge/内核/seq.md",
+          },
+        ]}
         rows={3}
         onChange={onChange}
       />,
@@ -46,12 +51,39 @@ describe("KnowledgeBodyEditor mention chip", () => {
     expect(screen.getByRole("button", { name: "seq" })).toBeTruthy();
   });
 
-  it("does not jump when the id is missing", async () => {
+  it("does not jump when the backend marks a knowledge path dangling", async () => {
+    useKnowledgeStore.setState({
+      ready: true,
+      refsByNode: new Map([
+        [
+          "broken-marker",
+          new Map([
+            [
+              "path:knowledge/not-a-node.md",
+              {
+                refKey: "path:knowledge/not-a-node.md",
+                kind: "node" as const,
+                key: "not-a-node",
+                path: "knowledge/not-a-node.md",
+                symbol: null,
+                lines: null,
+                raw: "[not-a-node](knowledge/not-a-node.md)",
+                status: "dangling_relation" as const,
+                severity: "error" as const,
+                targetPath: null,
+                args: { path: "knowledge/not-a-node.md", reason: "missing" },
+                message: 'Citation "knowledge/not-a-node.md" does not exist.',
+              },
+            ],
+          ]),
+        ],
+      ]),
+    });
     render(
       <KnowledgeBodyEditor
         label="正文"
         sourceId="broken-marker"
-        value={mentionSource("not-a-node")}
+        value="[not-a-node](knowledge/not-a-node.md)"
         candidates={[]}
         rows={3}
         onChange={() => undefined}
@@ -70,7 +102,7 @@ describe("KnowledgeBodyEditor mention chip", () => {
       <KnowledgeBodyEditor
         label="正文"
         sourceId="session"
-        value={fileMentionSource("src/a.rs")}
+        value="[a.rs](src/a.rs)"
         candidates={[]}
         rows={3}
         onChange={() => undefined}
@@ -80,7 +112,6 @@ describe("KnowledgeBodyEditor mention chip", () => {
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     unmount();
 
-    // The red state is the backend's verdict for this ref_key.
     useKnowledgeStore.setState({
       ready: true,
       refsByNode: new Map([
@@ -88,15 +119,15 @@ describe("KnowledgeBodyEditor mention chip", () => {
           "session",
           new Map([
             [
-              "file:src/a.rs",
+              "path:src/a.rs",
               {
-                refKey: "file:src/a.rs",
+                refKey: "path:src/a.rs",
                 kind: "file" as const,
                 key: null,
                 path: "src/a.rs",
                 symbol: null,
                 lines: null,
-                raw: '[@ file="src/a.rs"]',
+                raw: "[a.rs](src/a.rs)",
                 status: "missing_file" as const,
                 severity: "error" as const,
                 targetPath: "src/a.rs",
@@ -112,7 +143,7 @@ describe("KnowledgeBodyEditor mention chip", () => {
       <KnowledgeBodyEditor
         label="正文"
         sourceId="session"
-        value={fileMentionSource("src/a.rs")}
+        value="[a.rs](src/a.rs)"
         candidates={[]}
         rows={3}
         onChange={() => undefined}

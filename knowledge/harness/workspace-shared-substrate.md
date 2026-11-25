@@ -17,6 +17,6 @@ h : 408
 - 入口分立、实例共享：同一能力为人类与 agent 各自塑形入口，底层同一实现；Git 由人类面板与 agent 终端共同消费。
 - 进程与位置：内核独立进程（桌面 sidecar / 远程 SSH）、单端口收敛服务；一个进程一个工作区，跨进程独占锁保证同一工作区唯一持有者。
 
-向下展开：[@ key="workspace-sandbox"]、[@ key="workspace-watcher"]、[@ key="terminal-pty"]。
-上层：[@ key="product-brief"]、[@ key="ux-design"]。
-依据：[@ file="src/workspace/sandbox.rs"]、[@ file="src/workspace/watcher.rs"]、[@ file="src/session/workspace_lock.rs"]、[@ file="src/workspace/sandbox.rs" symbol="impl Sandbox › fn resolve"]、[@ file="src/workspace/watcher.rs" symbol="impl WorkspaceWatcher › fn start"]、[@ file="src/session/workspace_lock.rs" symbol="impl WorkspaceLock › fn acquire"]。
+向下展开：[workspace-sandbox](knowledge/contracts/workspace-sandbox.md)、[workspace-watcher](knowledge/contracts/workspace-watcher.md)、[terminal-pty](knowledge/contracts/terminal-pty.md)。
+上层：[product-brief](knowledge/product-brief.md)、[ux-design](knowledge/design/ux-design.md)。
+依据：[sandbox.rs](src/workspace/sandbox.rs)、[watcher.rs](src/workspace/watcher.rs)、[workspace_lock.rs](src/session/workspace_lock.rs)、[Sandbox.resolve](src/workspace/sandbox.rs#Sandbox.resolve)、[WorkspaceWatcher.start](src/workspace/watcher.rs#WorkspaceWatcher.start)、[WorkspaceLock.acquire](src/session/workspace_lock.rs#WorkspaceLock.acquire)。

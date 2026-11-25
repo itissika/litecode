@@ -50,9 +50,9 @@ impl SymbolAtHit {
     }
 
     fn from_entry(entry: ScopeEntry) -> Self {
-        let label = leaf_label(&entry.chain);
+        let label = leaf_label(&entry.anchor);
         Self {
-            chain: Some(entry.chain),
+            chain: Some(entry.anchor),
             kind: Some(entry.kind),
             name: Some(entry.name),
             start_line: Some(entry.start_line),
@@ -91,7 +91,7 @@ pub fn list_file_symbols(path: &str, content: &str) -> Vec<ListedSymbol> {
         .map(|entry| {
             let summary = scope_summary(content, entry.start_line);
             ListedSymbol {
-                chain: entry.chain,
+                chain: entry.anchor,
                 kind: entry.kind,
                 name: entry.name,
                 start_line: entry.start_line,
@@ -164,8 +164,8 @@ pub fn scope_summary(content: &str, start_line: u32) -> String {
     kept.join("\n")
 }
 
-fn leaf_label(chain: &str) -> String {
-    chain.rsplit(" › ").next().unwrap_or(chain).to_string()
+fn leaf_label(anchor: &str) -> String {
+    anchor.rsplit('.').next().unwrap_or(anchor).to_string()
 }
 
 #[cfg(test)]

@@ -343,13 +343,13 @@ fn oversized_and_binary_files_are_unreadable_everywhere() {
     fs::write(ws.join("src/cap.txt"), &at_cap).unwrap();
     node_file(
         ws,
-        "[@ file=\"src/big.rs\"] [@ file=\"src/big.rs\" symbol=\"fn alpha\"] \
-         [@ file=\"src/big.rs\" lines=\"1\"] [@ file=\"src/bin.rs\" lines=\"1\"] \
-         [@ file=\"src/cap.txt\" lines=\"5\"]",
+        "[big](src/big.rs) [alpha](src/big.rs#alpha) \
+         [big:1](src/big.rs#L1) [bin:1](src/bin.rs#L1) \
+         [cap:5](src/cap.txt#L5)",
     );
     let content = index::compute_once(ws);
-    assert_eq!(ref_status(&content, "file:src/big.rs").0, "ok");
-    let (status, args) = ref_status(&content, "sym:src/big.rs\0fn alpha");
+    assert_eq!(ref_status(&content, "path:src/big.rs").0, "ok");
+    let (status, args) = ref_status(&content, "sym:src/big.rs\0alpha");
     assert_eq!(status, "unreadable_file");
     assert_eq!(args["reason"], "larger than 10 MiB");
     assert_eq!(
@@ -367,8 +367,7 @@ fn oversized_and_binary_files_are_unreadable_everywhere() {
 }
 
 /// B5: a directory exists for file refs, and symbol/range refs on it are
-/// `unreadable_file (directory)` in the index, the mention text and
-/// `/symbol-refs`.
+/// `unreadable_file (directory)` in the index and `/symbol-refs`.
 #[test]
 fn directory_texts_match_the_status() {
     let dir = tempfile::tempdir().unwrap();
@@ -376,60 +375,116 @@ fn directory_texts_match_the_status() {
     fs::create_dir_all(ws.join("src/inner")).unwrap();
     node_file(
         ws,
-        "[@ file=\"src\"] [@ file=\"src\" lines=\"1\"] [@ file=\"src\" symbol=\"fn a\"]",
+        "[src](src) [src:1](src#L1) [a](src#a)",
     );
     let content = index::compute_once(ws);
-    assert_eq!(ref_status(&content, "file:src").0, "ok");
+    assert_eq!(ref_status(&content, "path:src").0, "ok");
     assert_eq!(
         ref_status(&content, "range:src\x001").1["reason"],
         "directory"
     );
-    assert_eq!(ref_status(&content, "sym:src\0fn a").0, "unreadable_file");
-    // WP-050 T8: directory reason already asserted; skip duplicate mention text.
-    let hits = index::query_symbols(ws, &[("src".into(), Some("fn a".into()))]);
+    assert_eq!(ref_status(&content, "sym:src\0a").0, "unreadable_file");
+    let hits = index::query_symbols(ws, &[("src".into(), Some("a".into()))]);
     assert_eq!(hits[0].status, "unreadable_file");
     assert!(hits[0].file_exists);
 }
 
-/// KR-SYM-6: a symbol citation takes no `lines`. In the snapshot it is
-/// `invalid_lines` with `args.reason` naming the rule, its `lines` field is
-/// `null` and its key has no lines; a range keeps its span and its own reason.
+/// Private root (`.litecode/knowledge`) resolves logical `knowledge/...` paths
+/// (both node folding and line ranges) and tolerates `.litecode/knowledge/...`.
+/// When a public `knowledge/` root exists, `.litecode/knowledge/...` is never folded.
 #[test]
-fn lines_on_a_symbol_are_invalid_lines_in_the_snapshot() {
+fn private_and_public_roots_fold_correctly() {
+    let priv_dir = tempfile::tempdir().unwrap();
+    let ws = priv_dir.path();
+    fs::create_dir_all(ws.join(".litecode/knowledge/arch")).unwrap();
+    fs::write(
+        ws.join(".litecode/knowledge/arch/seq.md"),
+        "```node\nnode : seq\nstatus : enabled\nsummary : seq\n```\nline one\n",
+    )
+    .unwrap();
+    fs::write(
+        ws.join(".litecode/knowledge/a.md"),
+        "```node\nnode : a\nstatus : enabled\nsummary : a\n```\n\
+         [seq](knowledge/arch/seq.md) [disk](.litecode/knowledge/arch/seq.md) \
+         [line](knowledge/arch/seq.md#L1)\n",
+    )
+    .unwrap();
+    let content = index::compute_once(ws);
+    assert_eq!(content.visibility, "private");
+    let a = content.nodes.iter().find(|n| n.key == "a").unwrap();
+    assert_eq!(a.relations, vec!["seq"]);
+    assert!(a.issues.is_empty(), "{:?}", a.issues);
+    let logical = a
+        .refs
+        .iter()
+        .find(|r| r.ref_key == "path:knowledge/arch/seq.md")
+        .unwrap();
+    assert_eq!((logical.kind, logical.status), ("node", "ok"));
+    let disk = a
+        .refs
+        .iter()
+        .find(|r| r.ref_key == "path:.litecode/knowledge/arch/seq.md")
+        .unwrap();
+    assert_eq!((disk.kind, disk.status), ("node", "ok"));
+    let range = a
+        .refs
+        .iter()
+        .find(|r| r.ref_key == "range:knowledge/arch/seq.md\x001")
+        .unwrap();
+    assert_eq!((range.kind, range.status), ("range", "ok"));
+
+    // Public root hides `.litecode/knowledge/...` from node folding.
+    let pub_dir = tempfile::tempdir().unwrap();
+    let ws = pub_dir.path();
+    fs::create_dir_all(ws.join("knowledge")).unwrap();
+    fs::create_dir_all(ws.join(".litecode/knowledge")).unwrap();
+    fs::write(
+        ws.join(".litecode/knowledge/secret.md"),
+        "```node\nnode : secret\nstatus : enabled\nsummary : secret\n```\n",
+    )
+    .unwrap();
+    fs::write(
+        ws.join("knowledge/a.md"),
+        "```node\nnode : a\nstatus : enabled\nsummary : a\n```\n[s](.litecode/knowledge/secret.md)\n",
+    )
+    .unwrap();
+    let content = index::compute_once(ws);
+    assert_eq!(content.visibility, "public");
+    let a = content.nodes.iter().find(|n| n.key == "a").unwrap();
+    assert!(a.relations.is_empty());
+    let r = a
+        .refs
+        .iter()
+        .find(|r| r.ref_key == "path:.litecode/knowledge/secret.md")
+        .unwrap();
+    assert_eq!(r.kind, "file");
+}
+
+/// Filename mismatch is an Error and prevents the bad node from being cited.
+#[test]
+fn filename_mismatch_is_error_and_unciteable() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
-    fs::create_dir_all(ws.join("src")).unwrap();
-    fs::write(ws.join("src/a.rs"), "fn alpha() {}\nfn beta() {}\n").unwrap();
-    node_file(
-        ws,
-        "[@ file=\"src/a.rs\" symbol=\"fn alpha\" lines=\"1\"] [@ file=\"src/a.rs\" symbol=\"fn beta\"] \
-         [@ file=\"src/a.rs\" lines=\"2\"] [@ file=\"src/a.rs\" lines=\"x\"]",
-    );
+    fs::create_dir_all(ws.join("knowledge")).unwrap();
+    fs::write(
+        ws.join("knowledge/wrong.md"),
+        "```node\nnode : right\nstatus : enabled\nsummary : bad\n```\n",
+    )
+    .unwrap();
+    fs::write(
+        ws.join("knowledge/a.md"),
+        "```node\nnode : a\nstatus : enabled\nsummary : a\n```\n[bad](knowledge/wrong.md)\n",
+    )
+    .unwrap();
     let content = index::compute_once(ws);
-    let refs = &content.nodes[0].refs;
-    let alpha = refs
-        .iter()
-        .find(|r| r.ref_key == "sym:src/a.rs\0fn alpha")
-        .expect("symbol key has no lines");
-    assert_eq!(alpha.status, "invalid_lines");
-    assert_eq!(alpha.lines, None);
-    assert_eq!(
-        alpha.args["reason"],
-        super::validate::INVALID_LINES_ON_SYMBOL
-    );
-    assert_eq!(alpha.args["lines"], "1");
-    // WP-050 T8: reason covers this branch; skip duplicate message/mention text.
-    let beta = refs
-        .iter()
-        .find(|r| r.ref_key == "sym:src/a.rs\0fn beta")
-        .unwrap();
-    assert_eq!((beta.status, beta.lines.clone()), ("ok", None));
-    let range = refs
-        .iter()
-        .find(|r| r.ref_key == "range:src/a.rs\x002")
-        .unwrap();
-    assert_eq!((range.status, range.lines.as_deref()), ("ok", Some("2")));
-    let (status, args) = ref_status(&content, "range:src/a.rs\0x");
-    assert_eq!(status, "invalid_lines");
-    assert_eq!(args["reason"], super::validate::INVALID_LINES_FORMAT);
+    let wrong = content.nodes.iter().find(|n| n.path == "wrong.md").unwrap();
+    assert_eq!(wrong.severity, Some(super::validate::Severity::Error));
+    assert!(wrong.issues.iter().any(|i| i.code == "filename_mismatch" && i.severity == super::validate::Severity::Error));
+    let a = content.nodes.iter().find(|n| n.path == "a.md").unwrap();
+    assert!(a.relations.is_empty());
+    let cite = a.refs.iter().find(|r| r.ref_key == "path:knowledge/wrong.md").unwrap();
+    assert_eq!(cite.kind, "node");
+    assert_eq!(cite.status, "dangling_relation");
+    assert_eq!(cite.severity, Some(super::validate::Severity::Error));
+    assert_eq!(cite.args["reason"], "filename_mismatch");
 }

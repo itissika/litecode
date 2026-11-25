@@ -388,18 +388,31 @@ async fn post_retrieval_refresh(State(state): State<ServeState>) -> Response {
             .into_response();
     }
 
-    let accepted = {
-        let mut runtime = state.runtime.write().expect("runtime lock");
-        match state.workspace_engines.request_refresh(&runtime.resolved) {
-            Ok(accepted) => {
-                runtime.sync_workspace_tool_readiness();
-                accepted
-            }
-            Err(error) => {
-                return open_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
-            }
+    // Never hold `state.runtime.write()` across disk/IPC work (`request_refresh`),
+    // otherwise `/health` and WS handlers reading `state.runtime` can stall.
+    let resolved = state.runtime.read().expect("runtime lock").resolved.clone();
+    let engines = state.workspace_engines.clone();
+    let accepted = match tokio::task::spawn_blocking(move || engines.request_refresh(&resolved))
+        .await
+    {
+        Ok(Ok(accepted)) => accepted,
+        Ok(Err(error)) => {
+            return open_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+        }
+        Err(error) => {
+            return open_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("refresh task join: {error}"),
+            );
         }
     };
+    let rt = state.runtime.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        rt.write()
+            .expect("runtime lock")
+            .sync_workspace_tool_readiness();
+    })
+    .await;
     Json(ApiOk {
         ok: true,
         data: RefreshData {
@@ -428,8 +441,9 @@ async fn post_retrieval_search(
     if body.query.trim().is_empty() {
         return open_error(StatusCode::BAD_REQUEST, "query is required".into());
     }
-    match state.workspace_engines.human_search(&root, &body) {
-        Ok(mut data) => {
+    let engines = state.workspace_engines.clone();
+    match tokio::task::spawn_blocking(move || engines.human_search(&root, &body)).await {
+        Ok(Ok(mut data)) => {
             if let Some(page) = data.session_page.as_mut() {
                 for group in &mut page.groups {
                     group.bot_name = state
@@ -440,7 +454,11 @@ async fn post_retrieval_search(
             }
             Json(ApiOk { ok: true, data }).into_response()
         }
-        Err(e) => open_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Ok(Err(e)) => open_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("search task join: {e}"),
+        ),
     }
 }
 
@@ -907,10 +925,16 @@ async fn put_file(
     Query(query): Query<PathQuery>,
     Json(body): Json<FileBody>,
 ) -> Response {
-    match state.workspace.write_file(&query.path, &body.content) {
-        Ok(path) => {
+    let workspace = state.workspace.clone();
+    let path_arg = query.path;
+    let content = body.content;
+    let content_for_write = content.clone();
+    match tokio::task::spawn_blocking(move || workspace.write_file(&path_arg, &content_for_write))
+        .await
+    {
+        Ok(Ok(path)) => {
             if let Ok(abs) = state.workspace.sandbox().resolve(&path) {
-                state.ide.apply_document_if_ready(&abs, &body.content).await;
+                state.ide.apply_document_if_ready(&abs, &content).await;
             }
             Json(ApiOk {
                 ok: true,
@@ -918,15 +942,25 @@ async fn put_file(
             })
             .into_response()
         }
-        Err(e) => workspace_error(e),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("put_file task join: {e}"),
+        ),
     }
 }
 
 async fn post_file(State(state): State<ServeState>, Json(body): Json<CreateFileBody>) -> Response {
-    match state.workspace.create_file(&body.path, &body.content) {
-        Ok(path) => {
+    let workspace = state.workspace.clone();
+    let path_arg = body.path;
+    let content = body.content;
+    let content_for_write = content.clone();
+    match tokio::task::spawn_blocking(move || workspace.create_file(&path_arg, &content_for_write))
+        .await
+    {
+        Ok(Ok(path)) => {
             if let Ok(abs) = state.workspace.sandbox().resolve(&path) {
-                state.ide.apply_document_if_ready(&abs, &body.content).await;
+                state.ide.apply_document_if_ready(&abs, &content).await;
             }
             (
                 StatusCode::CREATED,
@@ -937,14 +971,26 @@ async fn post_file(State(state): State<ServeState>, Json(body): Json<CreateFileB
             )
                 .into_response()
         }
-        Err(e) => workspace_error(e),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("post_file task join: {e}"),
+        ),
     }
 }
 
 async fn delete_file(State(state): State<ServeState>, Query(query): Query<PathQuery>) -> Response {
-    let abs = state.workspace.sandbox().resolve(&query.path).ok();
-    match state.workspace.delete_path(&query.path, query.recursive) {
-        Ok(path) => {
+    let workspace = state.workspace.clone();
+    let path_arg = query.path;
+    let recursive = query.recursive;
+    match tokio::task::spawn_blocking(move || {
+        let abs = workspace.sandbox().resolve(&path_arg).ok();
+        let path = workspace.delete_path(&path_arg, recursive)?;
+        Ok::<_, WorkspaceError>((path, abs))
+    })
+    .await
+    {
+        Ok(Ok((path, abs))) => {
             if let Some(abs) = abs {
                 state.ide.sync_document_if_ready(&abs).await;
             }
@@ -954,13 +1000,19 @@ async fn delete_file(State(state): State<ServeState>, Query(query): Query<PathQu
             })
             .into_response()
         }
-        Err(e) => workspace_error(e),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("delete_file task join: {e}"),
+        ),
     }
 }
 
 async fn post_mkdir(State(state): State<ServeState>, Json(body): Json<MkdirBody>) -> Response {
-    match state.workspace.mkdir(&body.path) {
-        Ok(path) => (
+    let workspace = state.workspace.clone();
+    let path_arg = body.path;
+    match tokio::task::spawn_blocking(move || workspace.mkdir(&path_arg)).await {
+        Ok(Ok(path)) => (
             StatusCode::CREATED,
             Json(ApiOk {
                 ok: true,
@@ -968,16 +1020,21 @@ async fn post_mkdir(State(state): State<ServeState>, Json(body): Json<MkdirBody>
             }),
         )
             .into_response(),
-        Err(e) => workspace_error(e),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("mkdir task join: {e}"),
+        ),
     }
 }
 
 async fn post_rename(State(state): State<ServeState>, Json(body): Json<RenameBody>) -> Response {
-    match state
-        .workspace
-        .rename_path(&body.from, &body.to, body.overwrite)
-    {
-        Ok((from, to)) => {
+    let workspace = state.workspace.clone();
+    let from = body.from;
+    let to = body.to;
+    let overwrite = body.overwrite;
+    match tokio::task::spawn_blocking(move || workspace.rename_path(&from, &to, overwrite)).await {
+        Ok(Ok((from, to))) => {
             if let Ok(abs) = state.workspace.sandbox().resolve(&from) {
                 state.ide.sync_document_if_ready(&abs).await;
             }
@@ -990,16 +1047,21 @@ async fn post_rename(State(state): State<ServeState>, Json(body): Json<RenameBod
             })
             .into_response()
         }
-        Err(e) => workspace_error(e),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("rename task join: {e}"),
+        ),
     }
 }
 
 async fn post_copy(State(state): State<ServeState>, Json(body): Json<CopyBody>) -> Response {
-    match state
-        .workspace
-        .copy_path(&body.from, &body.to, body.overwrite)
-    {
-        Ok(path) => {
+    let workspace = state.workspace.clone();
+    let from = body.from;
+    let to = body.to;
+    let overwrite = body.overwrite;
+    match tokio::task::spawn_blocking(move || workspace.copy_path(&from, &to, overwrite)).await {
+        Ok(Ok(path)) => {
             if let Ok(abs) = state.workspace.sandbox().resolve(&path) {
                 state.ide.sync_document_if_ready(&abs).await;
             }
@@ -1012,7 +1074,11 @@ async fn post_copy(State(state): State<ServeState>, Json(body): Json<CopyBody>) 
             )
                 .into_response()
         }
-        Err(e) => workspace_error(e),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("copy task join: {e}"),
+        ),
     }
 }
 
@@ -1141,8 +1207,15 @@ async fn post_git_push(State(state): State<ServeState>) -> Response {
 }
 
 async fn write_blob(state: ServeState, path: &str, body: &Bytes, overwrite: bool) -> Response {
-    match state.workspace.write_file_bytes(path, body, overwrite) {
-        Ok(path) => {
+    let workspace = state.workspace.clone();
+    let path_owned = path.to_string();
+    let bytes = body.clone();
+    match tokio::task::spawn_blocking(move || {
+        workspace.write_file_bytes(&path_owned, &bytes, overwrite)
+    })
+    .await
+    {
+        Ok(Ok(path)) => {
             if let Ok(abs) = state.workspace.sandbox().resolve(&path) {
                 if let Ok(text) = std::str::from_utf8(body) {
                     state.ide.apply_document_if_ready(&abs, text).await;
@@ -1164,7 +1237,11 @@ async fn write_blob(state: ServeState, path: &str, body: &Bytes, overwrite: bool
             )
                 .into_response()
         }
-        Err(e) => workspace_error(e),
+        Ok(Err(e)) => workspace_error(e),
+        Err(e) => open_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("write_blob task join: {e}"),
+        ),
     }
 }
 

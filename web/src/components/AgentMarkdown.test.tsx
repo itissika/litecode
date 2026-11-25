@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveCitations } from "../api/workspace";
 import { resetCitationCacheForTests } from "../lib/citationResolve";
-import { fileMentionSource, mentionSource, symbolMentionSource } from "../lib/knowledge/markers";
 import { useEditorStore } from "../stores/editorStore";
 import { useKnowledgeStore } from "../stores/knowledgeStore";
 import { useSessionStore } from "../stores/sessionStore";
@@ -32,6 +31,8 @@ afterEach(() => {
   useKnowledgeStore.setState({
     byId: new Map(),
     byKey: new Map(),
+    byLogicalPath: new Map(),
+    refsByNode: new Map(),
     focusedId: null,
   });
   vi.mocked(resolveCitations).mockReset();
@@ -164,22 +165,20 @@ describe("AgentMarkdown citations", () => {
     expect(resolveCitations).not.toHaveBeenCalled();
   });
 
-  it("opens a file shortcode at the start line and a markdown file link as a chip", () => {
+  it("renders standard markdown file and range links as interactive chips", () => {
     const openFile = vi.fn(async () => {});
     const openFileAt = vi.fn(async () => {});
     useEditorStore.setState({ openFile, openFileAt } as never);
-    const range = symbolMentionSource("src/a.rs", { lines: "4-9" });
     const { container } = render(
       <AgentMarkdown
         citations
-        text={`See ${fileMentionSource("src/a.rs")} and ${range} and [validate.ts](file:src/auth/validate.ts)`}
+        text="See [a.rs](src/a.rs) and [a.rs:4-9](src/a.rs#L4-L9) and [validate.ts](file:src/auth/validate.ts)"
       />,
     );
 
     expect(container.textContent).toContain("a.rs : 4-9");
     expect(container.textContent).toContain("validate.ts");
     expect(container.textContent).not.toContain("src/a.rs");
-    expect(container.textContent).not.toContain('[@ file="src/a.rs"]');
     expect(resolveCitations).not.toHaveBeenCalled();
 
     const file = screen.getByRole("button", { name: "a.rs" });
@@ -187,19 +186,17 @@ describe("AgentMarkdown citations", () => {
     expect(file.parentElement?.className).toContain("is-file");
     expect(file.parentElement?.className).not.toContain("is-symbol");
     expect(file.parentElement?.getAttribute("title")).toBeNull();
-    // Copy hands over the reference, not the label the capsule shows.
-    expect(file.parentElement?.getAttribute("data-citation")).toBe(
-      '[@ file="src/a.rs"]',
-    );
+    expect(file.parentElement?.getAttribute("data-citation")).toBe("[a.rs](src/a.rs)");
     fireEvent.mouseEnter(file.parentElement!);
     expect(screen.getByRole("tooltip").textContent).toBe("src/a.rs");
     fireEvent.mouseLeave(file.parentElement!);
     fireEvent.click(file);
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
+
     const rangeChip = screen.getByRole("button", { name: "a.rs : 4-9" });
     expect(rangeChip.parentElement?.className).not.toContain("is-symbol");
     expect(rangeChip.parentElement?.getAttribute("data-citation")).toBe(
-      '[@ file="src/a.rs" lines="4-9"]',
+      "[a.rs:4-9](src/a.rs#L4-L9)",
     );
     fireEvent.mouseEnter(rangeChip.parentElement!);
     expect(screen.getByRole("tooltip").textContent).toBe("src/a.rs : 4-9");
@@ -211,26 +208,31 @@ describe("AgentMarkdown citations", () => {
     expect(openFile).toHaveBeenCalledWith("src/auth/validate.ts");
   });
 
-  it("opens a relative file link at its line or symbol", () => {
+  it("opens a relative file link at its line or dot-anchored symbol", () => {
     const openFile = vi.fn(async () => {});
     const openFileAt = vi.fn(async () => {});
     useEditorStore.setState({ openFile, openFileAt } as never);
     render(
       <AgentMarkdown
         citations
-        text={"See [validate](src/auth/validate.ts#L42) and [user](src/session.rs#Session.user)"}
+        text="See [validate](src/auth/validate.ts#L42) and [Session.user](src/session.rs#Session.user)"
       />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "validate.ts : 42" }));
     expect(openFileAt).toHaveBeenCalledWith("src/auth/validate.ts", 42);
-    fireEvent.click(screen.getByRole("button", { name: "session.rs : Session.user" }));
+    const symBtn = screen.getByRole("button", { name: "session.rs : user" });
+    expect(symBtn.parentElement?.className).toContain("is-symbol");
+    fireEvent.mouseEnter(symBtn.parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toBe("src/session.rs : Session.user");
+    fireEvent.mouseLeave(symBtn.parentElement!);
+    fireEvent.click(symBtn);
     expect(openFile).toHaveBeenCalledWith("src/session.rs");
   });
 
   it("renders a file-ish link we cannot open as plain text", () => {
     const { container } = render(
-      <AgentMarkdown citations text={"[secret](../secret) and [hosts](/etc/hosts)"} />,
+      <AgentMarkdown citations text="[secret](../secret) and [hosts](/etc/hosts)" />,
     );
 
     expect(container.textContent).toContain("secret");
@@ -240,64 +242,36 @@ describe("AgentMarkdown citations", () => {
   });
 
   it("does not turn a markdown file link inside inline code into a chip", () => {
-    render(<AgentMarkdown citations text={"`[a](src/a.ts)`"} />);
+    render(<AgentMarkdown citations text="`[a](src/a.ts)`" />);
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("opens a symbol citation at the file and ignores lines written on it (KR-SYM-6)", () => {
-    const openFile = vi.fn(async () => {});
-    const openFileAt = vi.fn(async () => {});
-    useEditorStore.setState({ openFile, openFileAt } as never);
-    const symbol = symbolMentionSource("src/a.rs", {
-      symbol: "impl Store › fn save",
-    });
-    const ranged = '[@ file="src/a.rs" symbol="impl Store › fn save" lines="2148-2165"]';
-    const { container } = render(
-      <AgentMarkdown citations text={`${symbol} ${ranged}`} />,
-    );
-    expect(container.textContent).toContain("a.rs : fn save");
-    expect(container.textContent).not.toContain("2148-2165");
-    expect(container.textContent).not.toContain("impl Store › fn save");
-    const symbolChips = screen.getAllByRole("button", {
-      name: "a.rs : fn save",
-    });
-    expect(symbolChips).toHaveLength(2);
-    expect(symbolChips[0]?.parentElement?.className).toContain("is-symbol");
-    fireEvent.mouseEnter(symbolChips[0]!.parentElement!);
-    expect(screen.getByRole("tooltip").textContent).toBe(
-      "src/a.rs : impl Store › fn save",
-    );
-    fireEvent.mouseLeave(symbolChips[0]!.parentElement!);
-    fireEvent.click(symbolChips[0]!);
-    expect(openFile).toHaveBeenCalledWith("src/a.rs");
-    fireEvent.click(symbolChips[1]!);
-    expect(openFile).toHaveBeenCalledTimes(2);
-    expect(openFileAt).not.toHaveBeenCalled();
-  });
-
-  it("renders a knowledge node shortcode as a capsule beside a file citation", () => {
+  it("automatically folds a valid knowledge .md link into a knowledge node chip", () => {
+    const seqNode = { id: "seq", key: "seq", path: "arch/seq.md", status: "enabled" };
     useKnowledgeStore.setState({
-      byKey: new Map([["seq", { id: "seq", key: "seq" }]]),
-      byId: new Map([["seq", { id: "seq", key: "seq" }]]),
+      byKey: new Map([["seq", seqNode]]),
+      byId: new Map([["seq", seqNode]]),
+      byLogicalPath: new Map([["knowledge/arch/seq.md", seqNode]]),
+      visibility: "public",
     } as never);
-    const fileShortcode = fileMentionSource("src/a.rs");
     const { container } = render(
       <AgentMarkdown
         citations
-        text={`See ${mentionSource("seq", "序号")} and [a.ts](file:src/a.ts) plus ${fileShortcode}`}
+        text="See [序号](knowledge/arch/seq.md) and [a.ts](file:src/a.ts) plus [a.rs](src/a.rs)"
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "seq" }));
+    const nodeBtn = screen.getByRole("button", { name: "序号" });
+    expect(nodeBtn.parentElement?.className).not.toContain("is-file");
+    fireEvent.click(nodeBtn);
     expect(useKnowledgeStore.getState().focusedId).toBe("seq");
     expect(screen.getByRole("button", { name: "a.rs" }).parentElement?.className).toContain(
       "is-file",
     );
     expect(screen.getAllByRole("button")).toHaveLength(3);
     expect(container.textContent).toContain("a.ts");
-    expect(container.textContent).not.toContain(fileShortcode);
   });
 
-  it("takes a chip's state from the source node's snapshot", async () => {
+  it("takes a chip's state from the source node's snapshot by syntax ref_key", async () => {
     useKnowledgeStore.setState({
       ready: true,
       refsByNode: new Map([
@@ -305,15 +279,15 @@ describe("AgentMarkdown citations", () => {
           "session",
           new Map([
             [
-              "file:src/a.rs",
+              "path:src/a.rs",
               {
-                refKey: "file:src/a.rs",
+                refKey: "path:src/a.rs",
                 kind: "file" as const,
                 key: null,
                 path: "src/a.rs",
                 symbol: null,
                 lines: null,
-                raw: '[@ file="src/a.rs"]',
+                raw: "[a.rs](src/a.rs)",
                 status: "missing_file" as const,
                 severity: "error" as const,
                 targetPath: "src/a.rs",
@@ -322,19 +296,19 @@ describe("AgentMarkdown citations", () => {
               },
             ],
             [
-              "sym:src/a.rs\u0000impl Store › fn save",
+              "sym:src/a.rs\u0000Store.save",
               {
-                refKey: "sym:src/a.rs\u0000impl Store › fn save",
+                refKey: "sym:src/a.rs\u0000Store.save",
                 kind: "symbol" as const,
                 key: null,
                 path: "src/a.rs",
-                symbol: "impl Store › fn save",
+                symbol: "Store.save",
                 lines: null,
-                raw: '[@ file="src/a.rs" symbol="impl Store › fn save"]',
-                status: "filename_mismatch" as const,
-                severity: "warning" as const,
+                raw: "[Store.save](src/a.rs#Store.save)",
+                status: "missing_symbol" as const,
+                severity: "error" as const,
                 targetPath: "src/a.rs",
-                args: { key: "impl Store › fn save", filename: "a.rs" },
+                args: { path: "src/a.rs", symbol: "Store.save" },
                 message: "",
               },
             ],
@@ -346,7 +320,7 @@ describe("AgentMarkdown citations", () => {
       <AgentMarkdown
         citations
         sourceId="session"
-        text={`see ${fileMentionSource("src/a.rs")} and ${symbolMentionSource("src/a.rs", { symbol: "impl Store › fn save" })}`}
+        text="see [a.rs](src/a.rs) and [Store.save](src/a.rs#Store.save)"
       />,
     );
 
@@ -358,36 +332,28 @@ describe("AgentMarkdown citations", () => {
     fireEvent.mouseLeave(missingChip!);
     expect(screen.queryByRole("button", { name: "a.rs" })).toBeNull();
 
-    const driftChip = screen.getByText("a.rs : fn save").closest(".knowledge-token");
-    expect(driftChip?.classList.contains("is-drift")).toBe(true);
-    fireEvent.mouseEnter(driftChip!);
-    expect(screen.getByRole("tooltip").textContent).toBe(
-      'src/a.rs : impl Store › fn save\nFilename "a.rs" does not match declaration "impl Store › fn save".',
-    );
+    const badSym = screen.getByText("a.rs : save").closest(".knowledge-token");
+    expect(badSym?.classList.contains("is-missing")).toBe(true);
+    fireEvent.mouseEnter(badSym!);
+    expect(screen.getByRole("tooltip").textContent).toContain('Symbol "Store.save"');
   });
 
-  it("leaves a node shortcode as text when citations are off, and marks an unknown key", () => {
-    const { rerender, container } = render(
-      <AgentMarkdown text={`see ${mentionSource("seq")}`} />,
-    );
-    expect(screen.queryByRole("button")).toBeNull();
-    expect(container.textContent).toContain('[@ key="seq"]');
-
-    rerender(<AgentMarkdown citations text={`see ${mentionSource("missing")}`} />);
-    expect(screen.queryByRole("button")).toBeNull();
-    expect(container.textContent).toContain("missing");
-    expect(container.querySelector(".knowledge-token.is-invalid")).not.toBeNull();
-  });
-
-  it("does not turn a node shortcode inside a code block into a capsule", () => {
+  it("does not turn a citation inside a code block into a capsule", () => {
+    const seqNode = { id: "seq", key: "seq", path: "arch/seq.md", status: "enabled" };
     useKnowledgeStore.setState({
-      byKey: new Map([["seq", { id: "seq", key: "seq" }]]),
-      byId: new Map([["seq", { id: "seq", key: "seq" }]]),
+      byKey: new Map([["seq", seqNode]]),
+      byId: new Map([["seq", seqNode]]),
+      byLogicalPath: new Map([["knowledge/arch/seq.md", seqNode]]),
+      visibility: "public",
     } as never);
     render(
-      <AgentMarkdown citations text={`\`\`\`\n${mentionSource("seq")}\n\`\`\``} />,
+      <AgentMarkdown
+        citations
+        text={"```\n[seq](knowledge/arch/seq.md)\n[a.rs](src/a.rs)\n```"}
+      />,
     );
     expect(screen.queryByRole("button", { name: "seq" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "a.rs" })).toBeNull();
   });
 
   it("renders a web link as an ordinary link", () => {
@@ -397,15 +363,5 @@ describe("AgentMarkdown citations", () => {
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.className).not.toContain("agent-citation");
     expect(resolveCitations).not.toHaveBeenCalled();
-  });
-
-  it("does not open a file citation written inside a code block", () => {
-    render(
-      <AgentMarkdown
-        citations
-        text={`\`\`\`\n${fileMentionSource("src/a.rs")}\n\`\`\``}
-      />,
-    );
-    expect(screen.queryByRole("button", { name: "a.rs" })).toBeNull();
   });
 });

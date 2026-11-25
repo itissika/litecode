@@ -6,6 +6,6 @@ summary : 坏引用
 ```
 正文
 ```text
-[@ key="hidden"]
+[hidden](knowledge/内核/hidden.md)
 ```
-[@ key="missing"]
+[missing](knowledge/missing.md)

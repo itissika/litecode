@@ -6,9 +6,6 @@ import type {
 } from "./types";
 import i18n from "../../i18n";
 
-/** `args.reason` of `invalid_lines` on a symbol citation written with `lines` (KR-SYM-6). */
-const SYMBOL_LINES_REASON = "lines not allowed on symbol reference";
-
 type Template = (args: KnowledgeIssueArgs) => string | null;
 
 function str(args: KnowledgeIssueArgs, name: string): string | null {
@@ -21,7 +18,6 @@ function str(args: KnowledgeIssueArgs, name: string): string | null {
 /**
  * Display text per code, built from structured `args`. A template returns
  * null when an argument it needs is missing; the backend `message` is the fallback.
- * Codes are the spec's status table (`docs/knowledge-references.md` §5).
  */
 const TEMPLATES: Record<KnowledgeIssueCode, Template> = {
   duplicate_key: (a) => {
@@ -47,6 +43,14 @@ const TEMPLATES: Record<KnowledgeIssueCode, Template> = {
   },
   self_relation: () => "Citation points at itself.",
   dangling_relation: (a) => {
+    const path = str(a, "path");
+    const reason = str(a, "reason");
+    if (path && reason === "filename_mismatch") {
+      return `Target "${path}" is not a valid knowledge node (filename does not match declaration).`;
+    }
+    if (path) {
+      return `Target "${path}" is not a valid knowledge node.`;
+    }
     const key = str(a, "key");
     return key == null ? null : `Citation "${key}" does not exist.`;
   },
@@ -66,14 +70,7 @@ const TEMPLATES: Record<KnowledgeIssueCode, Template> = {
   invalid_lines: (a) => {
     const lines = str(a, "lines");
     if (lines == null) return null;
-    // KR-SYM-6: same code, told apart by args.reason.
-    if (str(a, "reason") === SYMBOL_LINES_REASON) {
-      const path = str(a, "path");
-      return path == null
-        ? null
-        : `Symbol citations do not take lines (lines="${lines}"). Remove lines, or cite a line range as [@ file="${path}" lines="A-B"].`;
-    }
-    return `Lines "${lines}" are not valid. Write lines="A" or lines="A-B" (decimal, 1 <= A <= B).`;
+    return `Lines "${lines}" are not valid. Write #L12 or #L12-L30 (decimal, 1 <= A <= B).`;
   },
   unreadable_file: (a) => {
     const path = str(a, "path");
@@ -114,7 +111,6 @@ export function isKnowledgeIssueCode(code: string): code is KnowledgeIssueCode {
   return Object.prototype.hasOwnProperty.call(TEMPLATES, code);
 }
 
-/** Text for one code. Unknown code or missing args → the backend message. */
 function knowledgeProblemText(
   code: string,
   args: KnowledgeIssueArgs | undefined,

@@ -282,7 +282,7 @@ fn run_refs(input: &Value, workspace: &Path) -> ToolCallResult {
         .map(|edge| ref_edge(&root, edge))
         .collect();
     let mut outgoing: Vec<Value> = Vec::new();
-    let mut missing: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = node.broken_knowledge_refs.clone();
     for rel in &node.relations {
         match corpus.by_key(rel) {
             Some(target) => outgoing.push(ref_edge(&root, target)),
@@ -666,12 +666,12 @@ mod tests {
         std::fs::create_dir_all(root.join("beta")).unwrap();
         std::fs::write(
             root.join("alpha/a.md"),
-            "```node\nnode : a\nstatus : enabled\nsummary : Alpha A\n```\n\nSee [@ key=\"missing_ref\"].\n",
+            "```node\nnode : a\nstatus : enabled\nsummary : Alpha A\n```\n\nSee [missing_ref](knowledge/missing_ref.md).\n",
         )
         .unwrap();
         std::fs::write(
             root.join("beta/b.md"),
-            "```node\nnode : b\nstatus : pending\nsummary : Beta B\n```\n\nLinks [@ key=\"a\"].\n",
+            "```node\nnode : b\nstatus : pending\nsummary : Beta B\n```\n\nLinks [a](knowledge/alpha/a.md).\n",
         )
         .unwrap();
 
@@ -698,12 +698,12 @@ mod tests {
         std::fs::create_dir_all(root.join("arch")).unwrap();
         std::fs::write(
             root.join("overview.md"),
-            "```node\nnode : overview\nstatus : enabled\nsummary : Overview\n```\n\nSee [@ key=\"auth-flow\"].\n",
+            "```node\nnode : overview\nstatus : enabled\nsummary : Overview\n```\n\nSee [auth-flow](knowledge/contracts/auth-flow.md).\n",
         )
         .unwrap();
         std::fs::write(
             root.join("contracts/auth-flow.md"),
-            "```node\nnode : auth-flow\nstatus : enabled\nsummary : Auth\n```\n\nCites [@ key=\"missing\"] and [@ key=\"session-store\"].\n",
+            "```node\nnode : auth-flow\nstatus : enabled\nsummary : Auth\n```\n\nCites [missing](knowledge/contracts/missing.md) and [session-store](knowledge/arch/session-store.md).\n",
         )
         .unwrap();
         std::fs::write(

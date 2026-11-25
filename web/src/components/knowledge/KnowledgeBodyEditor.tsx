@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 
+import type { KnowledgeMentionCandidate } from "../../lib/knowledge/flowProjection";
 import { MentionEditor } from "../mention/MentionEditor";
 
 export function KnowledgeBodyEditor({
@@ -14,7 +15,7 @@ export function KnowledgeBodyEditor({
   label: string;
   sourceId: string;
   value: string;
-  candidates: readonly string[];
+  candidates: readonly KnowledgeMentionCandidate[];
   rows: number;
   onChange: (next: string) => void;
   onBlur?: () => void;
@@ -28,7 +29,6 @@ export function KnowledgeBodyEditor({
       candidates={candidates}
       className="knowledge-source-input knowledge-source-body"
       style={style}
-      symbolLines={false}
       onChange={onChange}
       onBlur={onBlur}
     />

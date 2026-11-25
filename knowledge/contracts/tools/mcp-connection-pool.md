@@ -9,6 +9,6 @@ domain : tools-permission
 
 **准入：** A2/A4。MCP 进程生命周期（Stopped/…）与 `tools/list`、`tools/call` 都归 `McpConnectionPool`；agent 面工具只是带前缀的薄适配。池坏了会出现「目录里有 MCP、执行时无连接」或绕过握手直调。适配差异见 tool-adapters，此处只钉连接与调用出口。
 
-依据：[@ file="src/mcp/pool.rs" symbol="impl McpConnectionPool › fn get_or_create"]、[@ file="src/mcp/pool.rs" symbol="impl McpConnectionPool › fn start"]、[@ file="src/mcp/pool.rs" symbol="impl McpConnectionPool › fn stop"]、[@ file="src/mcp/client.rs" symbol="impl McpStdioClient › fn call_tool"]、[@ file="src/tools/mcp_tool.rs" symbol="fn hub_call"]。
-父节点：[@ key="tool-adapters"]。
-相关：[@ key="tool-request-entry"]。
+依据：[McpConnectionPool.get_or_create](src/mcp/pool.rs#McpConnectionPool.get_or_create)、[McpConnectionPool.start](src/mcp/pool.rs#McpConnectionPool.start)、[McpConnectionPool.stop](src/mcp/pool.rs#McpConnectionPool.stop)、[McpStdioClient.call_tool](src/mcp/client.rs#McpStdioClient.call_tool)、[hub_call](src/tools/mcp_tool.rs#hub_call)。
+父节点：[tool-adapters](knowledge/contracts/tools/tool-adapters.md)。
+相关：[tool-request-entry](knowledge/contracts/tools/tool-request-entry.md)。

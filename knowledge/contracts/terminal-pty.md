@@ -9,5 +9,5 @@ domain : ide-substrate
 
 **准入：** A1/A7。PTY 实现只存在于 `src/terminal`；死亡清单禁止 desktop/web 再拉 `node-pty` 或在别处出现 ConPTY/winpty。`TerminalHub` 聚合会话，`PtySession` Drop/kill 必须回收子进程与 reader，避免线程与进程泄漏。坏了会出现第二套终端语义或关闭路径挂死。
 
-依据：[@ file="src/terminal/pty.rs" symbol="impl PtySession › fn spawn_interactive"]、[@ file="src/terminal/pty.rs" symbol="impl Drop for PtySession"]、[@ file="src/terminal/mod.rs" symbol="fn install_hub"]、[@ file="tests/terminal_bypass_death_list.rs" symbol="fn death_list_src_pty_symbols_only_in_terminal_module"]。
-上层：[@ key="workspace-shared-substrate"]。
+依据：[PtySession.spawn_interactive](src/terminal/pty.rs#PtySession.spawn_interactive)、[PtySession.Drop](src/terminal/pty.rs#PtySession.Drop)、[install_hub](src/terminal/mod.rs#install_hub)、[death_list_src_pty_symbols_only_in_terminal_module](tests/terminal_bypass_death_list.rs#death_list_src_pty_symbols_only_in_terminal_module)。
+上层：[workspace-shared-substrate](knowledge/harness/workspace-shared-substrate.md)。

@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fileCandidates, filterSymbols, lockedQuery, phaseForQuery } from "./suggestions";
+import {
+  dedupeFileCandidates,
+  fileCandidates,
+  filterSymbols,
+  knowledgeItems,
+  lockedQuery,
+  phaseForQuery,
+} from "./suggestions";
 
 const fetchMentionPaths = vi.hoisted(() => vi.fn());
 
@@ -9,7 +16,7 @@ vi.mock("../../api/workspace", () => ({
   fetchSymbols: vi.fn(),
 }));
 
-describe("file suggestion phase", () => {
+describe("unified @ + # suggestion phase", () => {
   beforeEach(() => {
     fetchMentionPaths.mockReset();
   });
@@ -39,9 +46,9 @@ describe("file suggestion phase", () => {
   const first = { path: "src/a/manager.rs", name: "manager.rs" };
   const second = { path: "src/b/manager.rs", name: "manager.rs" };
 
-  it("stays on files until a path is locked", () => {
-    expect(phaseForQuery("mang", null)).toEqual({ mode: "file", filter: "mang" });
-    expect(lockedQuery(first.name)).toBe("/manager.rs#");
+  it("stays in unified mode until a path is locked", () => {
+    expect(phaseForQuery("mang", null)).toEqual({ mode: "unified", filter: "mang" });
+    expect(lockedQuery(first.name)).toBe("@manager.rs#");
   });
 
   it("locks the highlighted path when two files share a name", () => {
@@ -55,16 +62,31 @@ describe("file suggestion phase", () => {
   });
 
   it("unlocks when the hash is deleted", () => {
-    expect(phaseForQuery("manager.rs", second)).toEqual({ mode: "file", filter: "manager.rs" });
-    expect(phaseForQuery("manager", second).mode).toBe("file");
+    expect(phaseForQuery("manager.rs", second)).toEqual({ mode: "unified", filter: "manager.rs" });
+    expect(phaseForQuery("manager", second).mode).toBe("unified");
   });
 
-  it("filters symbols by chain or name", () => {
+  it("filters symbols by dot anchor or name", () => {
     const symbols = [
-      { chain: "impl Store › fn save", kind: "function", name: "save", start_line: 1, end_line: 3, summary: "" },
-      { chain: "fn test_run", kind: "function", name: "test_run", start_line: 4, end_line: 8, summary: "" },
+      { chain: "Store.save", kind: "function", name: "save", start_line: 1, end_line: 3, summary: "" },
+      { chain: "test_run", kind: "function", name: "test_run", start_line: 4, end_line: 8, summary: "" },
     ];
     expect(filterSymbols(symbols, "tes").map((item) => item.name)).toEqual(["test_run"]);
     expect(filterSymbols(symbols, "").map((item) => item.name)).toEqual(["save", "test_run"]);
+  });
+
+  it("matches knowledge nodes by key or path and deduplicates workspace files", () => {
+    const nodes = [
+      { key: "seq", path: "knowledge/arch/seq.md", diskPath: "knowledge/arch/seq.md" },
+      { key: "session", path: "knowledge/core/session.md", diskPath: ".litecode/knowledge/core/session.md" },
+    ];
+    expect(knowledgeItems(nodes, "se").map((n) => n.key)).toEqual(["seq", "session"]);
+    expect(knowledgeItems(nodes, "arch/seq").map((n) => n.key)).toEqual(["seq"]);
+    const files = [
+      { path: "knowledge/arch/seq.md", file: true },
+      { path: ".litecode/knowledge/core/session.md", file: true },
+      { path: "src/seq.rs", file: true },
+    ];
+    expect(dedupeFileCandidates(files, nodes)).toEqual([{ path: "src/seq.rs", file: true }]);
   });
 });

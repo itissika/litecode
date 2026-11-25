@@ -119,9 +119,12 @@ describe("followCitation", () => {
   });
 
   it("focuses the card and does not add a panel while the graph is showing", () => {
+    const seqNode = { id: "seq", key: "seq", path: "arch/seq.md" };
     useKnowledgeStore.setState({
-      byId: new Map([["seq", { id: "seq", key: "seq" }]]),
-      byKey: new Map([["seq", { id: "seq", key: "seq" }]]),
+      byId: new Map([["seq", seqNode]]),
+      byKey: new Map([["seq", seqNode]]),
+      byLogicalPath: new Map([["knowledge/arch/seq.md", seqNode]]),
+      visibility: "public",
     } as never);
     const addPanel = vi.fn();
     bindDockview({
@@ -131,7 +134,7 @@ describe("followCitation", () => {
       groups: [gridGroup("graph")],
       activeGroup: gridGroup("graph"),
     } as never);
-    followCitation({ kind: "node", key: "seq" });
+    followCitation({ path: "knowledge/arch/seq.md" });
     expect(addPanel).not.toHaveBeenCalled();
     expect(useKnowledgeStore.getState().focusedId).toBe("seq");
   });
@@ -148,7 +151,7 @@ describe("followCitation", () => {
       getPanel: () => undefined,
       addPanel,
     } as never);
-    followCitation({ kind: "file", path: "src/a.rs", line: 4 });
+    followCitation({ path: "src/a.rs", line: 4 });
     expect(openFileAt).toHaveBeenCalledWith("src/a.rs", 4);
     expect(openFile).not.toHaveBeenCalled();
     expect(addPanel).not.toHaveBeenCalled();
@@ -171,7 +174,7 @@ describe("followCitation", () => {
       groups: [gridGroup("src")],
       activeGroup: gridGroup("src"),
     } as never);
-    followCitation({ kind: "file", path: "C:/outside/a.ts" });
+    followCitation({ path: "C:/outside/a.ts" });
     expect(setActive).toHaveBeenCalled();
     expect(addPanel).not.toHaveBeenCalled();
     expect(openFile).not.toHaveBeenCalled();
@@ -187,7 +190,7 @@ describe("followCitation", () => {
       groups: [gridGroup("src")],
       activeGroup: gridGroup("src"),
     } as never);
-    followCitation({ kind: "file", path: "C:/outside/a.ts" });
+    followCitation({ path: "C:/outside/a.ts" });
     expect(addPanel).not.toHaveBeenCalled();
     expect(openFile).not.toHaveBeenCalled();
   });

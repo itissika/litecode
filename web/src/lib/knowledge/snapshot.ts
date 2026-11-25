@@ -74,7 +74,7 @@ function legacyRef(refKey: string | null, args: Record<string, unknown>): string
     const value = args[name];
     return typeof value === "string" ? value : undefined;
   };
-  if (refKey?.startsWith("node:")) return pick("key") ?? refKey.slice(5);
+  if (refKey?.startsWith("path:")) return pick("key") ?? pick("path") ?? refKey.slice(5);
   if (refKey?.startsWith("sym:")) return pick("symbol");
   if (refKey) return pick("path");
   return pick("key") ?? pick("status");

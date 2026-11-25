@@ -62,6 +62,12 @@ impl Embedder for HashEmbedder {
     }
 
     fn embed_batch(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if let Ok(raw) = std::env::var("LITECODE_TEST_HASH_EMBED_DELAY_MS")
+            && let Ok(ms) = raw.trim().parse::<u64>()
+            && ms > 0
+        {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         Ok(texts.iter().map(|t| hash_vector(t)).collect())
     }
 }

@@ -267,6 +267,72 @@ describe("AgentWsClient liveness", () => {
     expect(socketsCreated).toBe(2);
   });
 
+  it("actively probes a silent socket with server/ping and swallows the reply without reconnecting", () => {
+    const onEnvelope = vi.fn();
+    const onError = vi.fn();
+    const client = new AgentWsClient({
+      url: "ws://127.0.0.1:7483/ws",
+      onEnvelope,
+      onError,
+    });
+    const ws = openAndHello(client);
+    const sent: string[] = [];
+    ws.send = (payload: string) => {
+      sent.push(payload);
+    };
+    onEnvelope.mockClear();
+
+    vi.advanceTimersByTime(10_001);
+    client.ensureLive(false);
+    expect(sent).toHaveLength(1);
+    const probe = JSON.parse(sent[0]!) as { id: string; method: string };
+    expect(probe.method).toBe("server/ping");
+
+    // Server replies on the priority control lane within the grace window.
+    ws.onmessage?.({
+      data: JSON.stringify({
+        jsonrpc: "2.0",
+        id: probe.id,
+        result: { ts_ms: 12345 },
+      }),
+    });
+    vi.advanceTimersByTime(2_500);
+    expect(socketsCreated).toBe(1);
+    expect(onEnvelope).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("treats a legacy server/ping method-not-found reply as alive without toasting", () => {
+    const onEnvelope = vi.fn();
+    const onError = vi.fn();
+    const client = new AgentWsClient({
+      url: "ws://127.0.0.1:7483/ws",
+      onEnvelope,
+      onError,
+    });
+    const ws = openAndHello(client);
+    const sent: string[] = [];
+    ws.send = (payload: string) => {
+      sent.push(payload);
+    };
+    onEnvelope.mockClear();
+
+    vi.advanceTimersByTime(10_001);
+    client.ensureLive(false);
+    const probe = JSON.parse(sent[0]!) as { id: string };
+    ws.onmessage?.({
+      data: JSON.stringify({
+        jsonrpc: "2.0",
+        id: probe.id,
+        error: { code: -32601, message: "Method not found" },
+      }),
+    });
+    vi.advanceTimersByTime(2_500);
+    expect(socketsCreated).toBe(1);
+    expect(onEnvelope).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it("retries when hello does not arrive, without an auth error", () => {
     const onError = vi.fn();
     const client = clientWith(onError);

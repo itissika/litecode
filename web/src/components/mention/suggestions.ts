@@ -3,15 +3,16 @@ import {
   fetchSymbols,
   type WorkspaceSymbol,
 } from "../../api/workspace";
-import { fileLabel } from "../../lib/knowledge/markers";
+import type { KnowledgeMentionCandidate } from "../../lib/knowledge/flowProjection";
+import { fileLabel, normalizeRefPath } from "../../lib/knowledge/markers";
 
 export interface LockedFile {
   path: string;
   name: string;
 }
 
-type FilePhase =
-  | { mode: "file"; filter: string }
+type MentionPhase =
+  | { mode: "unified"; filter: string }
   | { mode: "symbol"; filter: string; locked: LockedFile };
 
 export interface FileCandidate {
@@ -27,8 +28,8 @@ export interface SymbolCandidate {
   end: number;
 }
 
-/** `/` query after the trigger. `#` locks the highlighted file and filters its symbols. */
-export function phaseForQuery(query: string, locked: LockedFile | null): FilePhase {
+/** `@` query after the trigger. `#` locks the highlighted file and filters its symbols. */
+export function phaseForQuery(query: string, locked: LockedFile | null): MentionPhase {
   if (locked && query.startsWith(`${locked.name}#`)) {
     return {
       mode: "symbol",
@@ -36,12 +37,12 @@ export function phaseForQuery(query: string, locked: LockedFile | null): FilePha
       locked,
     };
   }
-  return { mode: "file", filter: query };
+  return { mode: "unified", filter: query };
 }
 
 /** Text written into the editor when `#` locks a file. The full path stays in plugin state. */
 export function lockedQuery(name: string): string {
-  return `/${name}#`;
+  return `@${name}#`;
 }
 
 export function filterSymbols(symbols: readonly WorkspaceSymbol[], filter: string): WorkspaceSymbol[] {
@@ -103,10 +104,42 @@ export async function symbolsFor(path: string): Promise<WorkspaceSymbol[]> {
   return items;
 }
 
-export function mentionItems(candidates: readonly string[], query: string, limit = 8): string[] {
-  const q = query.trim();
-  const matched = q ? candidates.filter((key) => key.startsWith(q)) : candidates;
-  return matched.slice(0, limit);
+/** Match valid knowledge node candidates by key prefix, key substring, or path substring. */
+export function knowledgeItems(
+  candidates: readonly KnowledgeMentionCandidate[],
+  query: string,
+  limit = 6,
+): KnowledgeMentionCandidate[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return candidates.slice(0, limit);
+  const prefix: KnowledgeMentionCandidate[] = [];
+  const contains: KnowledgeMentionCandidate[] = [];
+  for (const item of candidates) {
+    const keyLower = item.key.toLowerCase();
+    if (keyLower.startsWith(q)) {
+      prefix.push(item);
+    } else if (
+      keyLower.includes(q) ||
+      item.path.toLowerCase().includes(q)
+    ) {
+      contains.push(item);
+    }
+  }
+  return [...prefix, ...contains].slice(0, limit);
+}
+
+/** Exclude workspace files that are already represented as valid knowledge nodes. */
+export function dedupeFileCandidates(
+  files: readonly FileCandidate[],
+  knowledge: readonly KnowledgeMentionCandidate[],
+): FileCandidate[] {
+  if (knowledge.length === 0) return [...files];
+  const hidden = new Set<string>();
+  for (const item of knowledge) {
+    hidden.add(normalizeRefPath(item.path));
+    hidden.add(normalizeRefPath(item.diskPath));
+  }
+  return files.filter((entry) => !hidden.has(normalizeRefPath(entry.path)));
 }
 
 export function fileDisplayName(path: string): string {

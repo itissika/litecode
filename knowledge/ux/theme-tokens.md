@@ -11,6 +11,6 @@ domain : client-ux
 
 **准入：** A1。主题与磨砂玻璃必须只有一处定义（`tokens.css` / `composerCard`），业务组件只消费 token；否则 agent 卡、权限卡、Engines 下载卡会各长一副面孔，违背 ux-design 的克制美学。坏了是视觉分裂，不是功能错，但会毁掉「安静克制」承诺。
 
-依据：[@ file="web/src/theme/tokens.ts"]、[@ file="web/src/components/composerCard.ts"]、[@ file="web/src/theme/tokens.css"]。
-上层：[@ key="ux"]。
-相关：[@ key="ux-design"]。
+依据：[tokens.ts](web/src/theme/tokens.ts)、[composerCard.ts](web/src/components/composerCard.ts)、[tokens.css](web/src/theme/tokens.css)。
+上层：[ux](knowledge/framework/ux.md)。
+相关：[ux-design](knowledge/design/ux-design.md)。

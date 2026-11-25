@@ -2,22 +2,25 @@ import { describe, expect, it } from "vitest";
 
 import {
   renderKnowledgeMarkdown,
-  replaceKnowledgeKey,
+  replaceKnowledgePath,
 } from "./document";
-import { mentionSource } from "./markers";
 
-describe("replaceKnowledgeKey", () => {
-  it("rewrites a matching key and leaves a different key", () => {
+describe("replaceKnowledgePath", () => {
+  it("rewrites a matching knowledge path and leaves other links alone", () => {
     const markdown = renderKnowledgeMarkdown({
       key: "session",
       status: "enabled",
       summary: "",
-      body: `见 ${mentionSource("seq")} 与 ${mentionSource("other")}。`,
+      body: "见 [seq](knowledge/arch/seq.md) 与 [other](knowledge/arch/other.md)。",
     });
-    const next = replaceKnowledgeKey(markdown, "seq", "sequence");
+    const next = replaceKnowledgePath(
+      markdown,
+      "knowledge/arch/seq.md",
+      "knowledge/arch/sequence.md",
+    );
     expect(next).toContain("node : session");
-    expect(next).toContain(mentionSource("sequence"));
-    expect(next).toContain(mentionSource("other"));
-    expect(next).not.toContain('key="seq"');
+    expect(next).toContain("[sequence](knowledge/arch/sequence.md)");
+    expect(next).toContain("[other](knowledge/arch/other.md)");
+    expect(next).not.toContain("knowledge/arch/seq.md");
   });
 });

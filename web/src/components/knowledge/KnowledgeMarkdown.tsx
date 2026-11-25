@@ -1,23 +1,12 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
-import ReactMarkdown, {
-  defaultUrlTransform,
-  type Components,
-} from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import {
-  parseKnowledgeRef,
-  parseLocationRef,
-  remarkKnowledgeRef,
-} from "../../lib/knowledge/remarkKnowledgeRef";
+import { citationUrlTransform, classifyWorkspaceLink } from "../../lib/citationRef";
+import type { Citation } from "../../lib/knowledge/refDisplay";
 import { CitationChip } from "../CitationChip";
 
 const KnowledgeSourceContext = createContext<string | null>(null);
-
-function knowledgeUrlTransform(url: string): string {
-  if (parseKnowledgeRef(url) || parseLocationRef(url)) return url;
-  return defaultUrlTransform(url);
-}
 
 function inlineText(children: ReactNode): string {
   if (typeof children === "string" || typeof children === "number") return String(children);
@@ -29,40 +18,27 @@ function inlineText(children: ReactNode): string {
   return "";
 }
 
-function BodyRefChip({ marker, label }: { marker: string; label: string }) {
-  const sourceId = useContext(KnowledgeSourceContext);
-  if (!sourceId) return <span>{marker}</span>;
-  return (
-    <CitationChip
-      citation={{ kind: "node", key: marker }}
-      sourceId={sourceId}
-      label={label}
-    />
-  );
-}
-
-function FileRefChip({
+function WorkspaceRefChip({
   path,
   symbol,
   line,
   lines,
+  badLines,
+  label,
 }: {
   path: string;
   symbol: string | null;
   line: number | null;
   lines: string | null;
+  badLines: string | null;
+  label?: string;
 }) {
   const sourceId = useContext(KnowledgeSourceContext) ?? undefined;
-  const citation = useMemo(
-    () => ({ kind: "file" as const, path, symbol, line, lines }),
-    [path, symbol, line, lines],
+  const citation: Citation = useMemo(
+    () => ({ path, symbol, line, lines, badLines, label }),
+    [path, symbol, line, lines, badLines, label],
   );
-  return (
-    <CitationChip
-      citation={citation}
-      sourceId={sourceId}
-    />
-  );
+  return <CitationChip citation={citation} sourceId={sourceId} label={label} />;
 }
 
 const components: Components = {
@@ -73,19 +49,21 @@ const components: Components = {
   strong: ({ children }) => <strong>{children}</strong>,
   em: ({ children }) => <em>{children}</em>,
   a: ({ href, children }) => {
-    const key = parseKnowledgeRef(href);
-    if (key) return <BodyRefChip marker={key} label={inlineText(children) || key} />;
-    const located = parseLocationRef(href);
-    if (located) {
+    const classified = classifyWorkspaceLink(href, { knowledgeBody: true });
+    if (classified.action === "chip") {
+      const label = inlineText(children).trim() || undefined;
       return (
-        <FileRefChip
-          path={located.path}
-          symbol={located.symbol}
-          line={located.line}
-          lines={located.lines ?? null}
+        <WorkspaceRefChip
+          path={classified.path}
+          symbol={classified.symbol}
+          line={classified.line}
+          lines={classified.lines}
+          badLines={classified.badLines}
+          label={label}
         />
       );
     }
+    if (classified.action === "text") return <>{children}</>;
     return (
       <a href={href} target="_blank" rel="noreferrer">
         {children}
@@ -106,6 +84,8 @@ const components: Components = {
   },
 };
 
+const REMARK_PLUGINS = [remarkGfm];
+
 export function KnowledgeMarkdown({
   sourceId,
   text,
@@ -117,8 +97,8 @@ export function KnowledgeMarkdown({
     <KnowledgeSourceContext.Provider value={sourceId}>
       <div className="knowledge-markdown">
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkKnowledgeRef]}
-          urlTransform={knowledgeUrlTransform}
+          remarkPlugins={REMARK_PLUGINS}
+          urlTransform={citationUrlTransform}
           components={components}
         >
           {text}

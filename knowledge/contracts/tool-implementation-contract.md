@@ -17,7 +17,7 @@ domain : tools-permission
 - 结果返回：按共同结果契约返回业务结果与信号，不自造方言。
 - 接入方式：内置、Custom、MCP 只是接入方式不同，不构成绕过公共契约的理由。
 
-上层：[@ key="tools"]。
-相关：[@ key="tool-call-contract"]。
-契约展开：[@ key="webfetch-ssrf"]、[@ key="websearch"]。
+上层：[tools](knowledge/framework/tools.md)。
+相关：[tool-call-contract](knowledge/contracts/tool-call-contract.md)。
+契约展开：[webfetch-ssrf](knowledge/contracts/tools/webfetch-ssrf.md)、[websearch](knowledge/contracts/tools/websearch.md)。
 - 实现契约由 adapters / identity / webfetch-ssrf / websearch 展开；挂树完整。

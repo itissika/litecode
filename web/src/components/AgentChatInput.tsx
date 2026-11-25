@@ -17,7 +17,10 @@ import {
   messageTooLong,
 } from "../lib/composerLimits";
 import { paintDragCursor, viewOf } from "../lib/domView";
-import { mentionKeysOf } from "../lib/knowledge/flowProjection";
+import {
+  mentionNodesSignature,
+  parseMentionCandidates,
+} from "../lib/knowledge/flowProjection";
 import { useBotStore } from "../stores/botStore";
 import { useBotForSession, useSessionBotIdentity } from "../lib/botIdentity";
 import { useConnectionStore } from "../stores/connectionStore";
@@ -80,7 +83,7 @@ export function composerPlaceholder(input: {
   if (!input.hasModel) return "Add a model in Settings";
   if (input.manualCompacting) return "Compacting context…";
   if (input.queuing) return "Queue a follow-up…";
-  return "/ file · # symbol · @ knowledge";
+  return "@ file / knowledge · # symbol";
 }
 
 export function AgentPicker({
@@ -427,11 +430,8 @@ export function AgentChatInput({
 
   const boxRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<MentionEditorHandle>(null);
-  const mentionKeys = useKnowledgeStore((s) => mentionKeysOf(s.nodes));
-  const candidates = useMemo(
-    () => mentionKeys.split("\n").filter((key) => key.length > 0),
-    [mentionKeys],
-  );
+  const mentionSig = useKnowledgeStore((s) => mentionNodesSignature(s.nodes, s.root));
+  const candidates = useMemo(() => parseMentionCandidates(mentionSig), [mentionSig]);
   const loadKnowledge = useKnowledgeStore((s) => s.load);
   const knowledgeAsked = useRef(false);
   const sendBtnRef = useRef<HTMLButtonElement>(null);
@@ -849,7 +849,6 @@ export function AgentChatInput({
             placeholder={placeholder}
             candidates={candidates}
             className="mention-composer-input w-full px-3 pt-2 pb-11 text-sm text-(--_dk-text-primary)"
-            symbolLines
             submitOnEnter
             onChange={applyDraft}
             onSubmit={submitFromKeys}

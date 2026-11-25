@@ -1,5 +1,6 @@
 import type { LaidOutEdge } from "./layoutGraph";
-import { normalizeKey } from "./markers";
+import { KNOWLEDGE_PRIVATE_ROOT, knowledgeDiskPath } from "./load";
+import { isValidNodeIdentity, logicalKnowledgePath, normalizeKey } from "./markers";
 import type { KnowledgeIssue } from "./types";
 
 /** Membership and parentage. Summary, body, and coordinates stay out. */
@@ -28,10 +29,54 @@ export function relationSignature(
   return key;
 }
 
-/** Declaration keys, in corpus order. Used as `@` candidates. */
-export function mentionKeysOf(nodes: readonly { key: string }[]): string {
+export interface KnowledgeMentionCandidate {
+  key: string;
+  /** Canonical logical path (`knowledge/<rel>`). */
+  path: string;
+  /** Physical workspace path on disk (for deduplicating `@` file results). */
+  diskPath: string;
+}
+
+/** Valid-identity knowledge nodes serialized into a stable Zustand selector string. */
+export function mentionNodesSignature(
+  nodes: readonly { key: string; path: string }[],
+  root = KNOWLEDGE_PRIVATE_ROOT,
+): string {
+  let out = "";
+  for (const node of nodes) {
+    if (!isValidNodeIdentity(node.path, node.key)) continue;
+    const key = normalizeKey(node.key);
+    const logical = logicalKnowledgePath(node.path);
+    const disk = knowledgeDiskPath(root, node.path);
+    if (out) out += "\n";
+    out += `${key}\t${logical}\t${disk}`;
+  }
+  return out;
+}
+
+/** Parse `mentionNodesSignature` back into structured candidates, optionally excluding one key. */
+export function parseMentionCandidates(
+  signature: string,
+  excludeKey?: string,
+): KnowledgeMentionCandidate[] {
+  if (!signature) return [];
+  const skip = excludeKey ? normalizeKey(excludeKey) : "";
+  const out: KnowledgeMentionCandidate[] = [];
+  for (const line of signature.split("\n")) {
+    if (!line) continue;
+    const [key = "", path = "", diskPath = path] = line.split("\t");
+    if (!key || !path) continue;
+    if (skip && key === skip) continue;
+    out.push({ key, path, diskPath });
+  }
+  return out;
+}
+
+/** Declaration keys, in corpus order (valid-identity nodes when `path` is provided). */
+export function mentionKeysOf(nodes: readonly { key: string; path?: string }[]): string {
   let key = "";
   for (const node of nodes) {
+    if (node.path !== undefined && !isValidNodeIdentity(node.path, node.key)) continue;
     const normalized = normalizeKey(node.key);
     if (!normalized) continue;
     if (key) key += "\n";

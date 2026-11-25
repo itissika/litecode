@@ -159,15 +159,17 @@ pub fn syntax_ancestor_snippet(
 /// One named scope in a file, outer chain first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeEntry {
-    /// `format_breadcrumb` of this scope and its named ancestors.
+    /// Human-readable breadcrumb (`impl Store › fn save`), kept for grep snippets.
     pub chain: String,
+    /// Space-free canonical dot-separated symbol anchor (`Store.save`, `resolve`, `Store.Greet.hi`).
+    pub anchor: String,
     pub kind: String,
     pub name: String,
     pub start_line: u32,
     pub end_line: u32,
 }
 
-/// Lookup of one ancestor chain inside a file.
+/// Lookup of one symbol anchor inside a file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScopeMatch {
     Unique(ScopeEntry),
@@ -186,42 +188,53 @@ pub fn list_scopes(path: &str, content: &str) -> Vec<ScopeEntry> {
     out
 }
 
-/// Find `chain` (`impl Store › fn save`). More than one hit is ambiguous.
-///
-/// A trait impl is listed as `impl Trait for Type`. An older note that still
-/// says `impl Type` resolves only when exactly one current trait impl matches.
-pub fn find_scope(path: &str, content: &str, chain: &str) -> ScopeMatch {
-    let chain = chain.trim();
-    if chain.is_empty() {
+/// Normalize a symbol anchor query: trim and treat `::` as `.`.
+pub fn normalize_symbol_query(raw: &str) -> String {
+    raw.trim().replace("::", ".")
+}
+
+/// Find `anchor` (`resolve`, `Store.save`, `Store::save`, `Store.Greet.hi`).
+/// More than one hit is ambiguous.
+pub fn find_scope(path: &str, content: &str, anchor: &str) -> ScopeMatch {
+    let anchor = normalize_symbol_query(anchor);
+    if anchor.is_empty() {
         return ScopeMatch::Missing;
     }
-    match_scopes(&list_scopes(path, content), chain)
+    match_scopes(&list_scopes(path, content), &anchor)
 }
 
 /// [`find_scope`] over a scope list that was already parsed, so one parse can
-/// answer many chains.
-pub fn match_scopes(scopes: &[ScopeEntry], chain: &str) -> ScopeMatch {
-    let chain = chain.trim();
-    if chain.is_empty() {
+/// answer many anchors.
+pub fn match_scopes(scopes: &[ScopeEntry], query: &str) -> ScopeMatch {
+    let norm = normalize_symbol_query(query);
+    if norm.is_empty() || norm.chars().any(char::is_whitespace) {
         return ScopeMatch::Missing;
     }
-    let hits: Vec<ScopeEntry> = scopes
-        .iter()
-        .filter(|entry| entry.chain == chain)
-        .cloned()
-        .collect();
-    if !hits.is_empty() {
-        return scope_hits(hits);
-    }
-    let Some((ty, rest)) = legacy_impl_type(chain) else {
+    let q_segs: Vec<&str> = norm.split('.').collect();
+    if q_segs.iter().any(|s| s.is_empty()) {
         return ScopeMatch::Missing;
-    };
-    let hits: Vec<ScopeEntry> = scopes
+    }
+
+    // Pass 1: exact match on canonical anchor segments.
+    let exact: Vec<ScopeEntry> = scopes
         .iter()
-        .filter(|entry| legacy_trait_impl(&entry.chain, ty, rest))
+        .filter(|entry| {
+            let parts: Vec<&str> = entry.anchor.split('.').collect();
+            parts == q_segs
+        })
         .cloned()
         .collect();
-    scope_hits(hits)
+    if !exact.is_empty() {
+        return scope_hits(prefer_definitions(exact));
+    }
+
+    // Pass 2: segment-boundary suffix match on canonical anchor or trait-impl aliases.
+    let relaxed: Vec<ScopeEntry> = scopes
+        .iter()
+        .filter(|entry| entry_matches_relaxed(entry, &q_segs))
+        .cloned()
+        .collect();
+    scope_hits(prefer_definitions(relaxed))
 }
 
 /// True when the file extension has a tree-sitter grammar, i.e. symbol
@@ -238,29 +251,110 @@ fn scope_hits(hits: Vec<ScopeEntry>) -> ScopeMatch {
     }
 }
 
-/// `impl Type › rest` from a note written before trait impls included the trait.
-/// A chain that already says `for` is the current form and is not an alias.
-fn legacy_impl_type(chain: &str) -> Option<(&str, &str)> {
-    let (head, rest) = chain.split_once(" › ").unwrap_or((chain, ""));
-    let ty = head.trim().strip_prefix("impl ")?.trim();
-    if ty.is_empty() || ty.contains(" for ") {
-        return None;
+/// When a Rust file defines `struct Store` and `impl Store`, `#Store` resolves
+/// to the type definition rather than colliding with the `impl` container block.
+fn prefer_definitions(hits: Vec<ScopeEntry>) -> Vec<ScopeEntry> {
+    if hits.len() > 1 && hits.iter().any(|e| e.kind != "impl") {
+        hits.into_iter().filter(|e| e.kind != "impl").collect()
+    } else {
+        hits
     }
-    Some((ty, rest))
 }
 
-fn legacy_trait_impl(chain: &str, ty: &str, rest: &str) -> bool {
-    let (head, entry_rest) = chain.split_once(" › ").unwrap_or((chain, ""));
-    if entry_rest != rest {
-        return false;
+fn entry_matches_relaxed(entry: &ScopeEntry, q_segs: &[&str]) -> bool {
+    let primary: Vec<&str> = entry.anchor.split('.').collect();
+    if primary.len() > q_segs.len() && primary[primary.len() - q_segs.len()..] == *q_segs {
+        return true;
     }
-    let Some(body) = head.trim().strip_prefix("impl ") else {
-        return false;
-    };
-    let Some((trait_name, impl_ty)) = body.rsplit_once(" for ") else {
-        return false;
-    };
-    !trait_name.trim().is_empty() && impl_ty.trim() == ty
+    for alias in trait_impl_aliases(&entry.chain) {
+        let parts: Vec<&str> = alias.iter().map(String::as_str).collect();
+        if parts == q_segs
+            || (parts.len() > q_segs.len() && parts[parts.len() - q_segs.len()..] == *q_segs)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Alternative dot-paths for `impl Trait for Type` scopes:
+/// - `[Type, ...rest]` (e.g. `Store.hi` when unique on `Store`)
+/// - `[Trait, ...rest]` (e.g. `Greet.hi`)
+/// - `[Trait, Type, ...rest]` (e.g. `Greet.Store.hi`)
+fn trait_impl_aliases(chain: &str) -> Vec<Vec<String>> {
+    let segs: Vec<&str> = chain.split(" › ").collect();
+    let mut variants: Vec<Vec<String>> = vec![Vec::new()];
+    let mut saw_trait_impl = false;
+    for seg in segs {
+        if let Some(body) = seg.strip_prefix("impl ")
+            && let Some((tr, ty)) = body.rsplit_once(" for ")
+        {
+            let ty_id = clean_anchor_ident(ty);
+            let tr_id = clean_anchor_ident(tr);
+            if !ty_id.is_empty() && !tr_id.is_empty() {
+                saw_trait_impl = true;
+                let mut next = Vec::with_capacity(variants.len() * 3);
+                for base in &variants {
+                    let mut by_ty = base.clone();
+                    by_ty.push(ty_id.clone());
+                    next.push(by_ty);
+                    let mut by_tr = base.clone();
+                    by_tr.push(tr_id.clone());
+                    next.push(by_tr);
+                    let mut tr_ty = base.clone();
+                    tr_ty.push(tr_id.clone());
+                    tr_ty.push(ty_id.clone());
+                    next.push(tr_ty);
+                }
+                variants = next;
+                continue;
+            }
+        }
+        let name = seg.split_once(' ').map(|(_, n)| n).unwrap_or(seg);
+        let id = clean_anchor_ident(name);
+        if !id.is_empty() {
+            for base in &mut variants {
+                base.push(id.clone());
+            }
+        }
+    }
+    if saw_trait_impl { variants } else { Vec::new() }
+}
+
+/// Strip generics (`<...>`), module qualifiers (`a::B` → `B`), and stray spaces/punctuation
+/// to form a single clean identifier segment.
+fn clean_anchor_ident(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let no_generics = trimmed.split('<').next().unwrap_or(trimmed).trim();
+    let last_scoped = no_generics.rsplit("::").next().unwrap_or(no_generics).trim();
+    let token = last_scoped.split_whitespace().next().unwrap_or(last_scoped);
+    token
+        .trim_matches(|c: char| matches!(c, '&' | '*' | '(' | ')' | '{' | '}' | '[' | ']'))
+        .to_string()
+}
+
+fn format_anchor(stack: &[ScopeSegment]) -> String {
+    let mut parts = Vec::with_capacity(stack.len() + 1);
+    for seg in stack {
+        if seg.kind == "impl"
+            && let Some((tr, ty)) = seg.name.rsplit_once(" for ")
+        {
+            let ty_id = clean_anchor_ident(ty);
+            let tr_id = clean_anchor_ident(tr);
+            if !ty_id.is_empty() {
+                parts.push(ty_id);
+            }
+            if !tr_id.is_empty() {
+                parts.push(tr_id);
+            }
+            continue;
+        }
+        let id = clean_anchor_ident(&seg.name);
+        if !id.is_empty() {
+            parts.push(id);
+        }
+    }
+    parts.join(".")
 }
 
 /// Tightest named scope that fully contains the inclusive 1-based line range.
@@ -290,15 +384,19 @@ fn walk_scopes(
     let pushed = if let Some(segment) = scope_segment(node, content) {
         stack.push(segment);
         if let Some(chain) = format_breadcrumb(stack) {
+            let anchor = format_anchor(stack);
             let leaf = stack.last().expect("just pushed");
             let (start_line, end_line) = node_line_span(node);
-            out.push(ScopeEntry {
-                chain,
-                kind: leaf.kind.clone(),
-                name: leaf.name.clone(),
-                start_line,
-                end_line,
-            });
+            if !anchor.is_empty() {
+                out.push(ScopeEntry {
+                    chain,
+                    anchor,
+                    kind: leaf.kind.clone(),
+                    name: leaf.name.clone(),
+                    start_line,
+                    end_line,
+                });
+            }
         }
         true
     } else {

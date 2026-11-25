@@ -78,7 +78,8 @@ pub(crate) use store::{persist_usearch, restore_usearch};
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::types::{LitecodeError, Result};
@@ -129,7 +130,104 @@ pub struct FileStamp {
     pub len: u64,
 }
 
+/// Scheduling priority for the shared embedder session inside the worker.
+///
+/// Interactive searches (`High`) preempt background indexing batches (`Low`)
+/// at the next 32-chunk micro-batch boundary so indexing never starves queries
+/// (even under unfair OS mutexes like Windows SRWLOCK).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EmbedderPriority {
+    High,
+    Low,
+}
+
+#[derive(Default)]
+struct EmbedderGateState {
+    busy: bool,
+    high_waiters: usize,
+}
+
+struct EmbedderGate {
+    state: Mutex<EmbedderGateState>,
+    cv: Condvar,
+}
+
+impl EmbedderGate {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(EmbedderGateState::default()),
+            cv: Condvar::new(),
+        }
+    }
+
+    fn acquire(&self, priority: EmbedderPriority) -> EmbedderGateGuard<'_> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if priority == EmbedderPriority::High {
+            state.high_waiters += 1;
+            while state.busy {
+                state = self.cv.wait(state).unwrap_or_else(|e| e.into_inner());
+            }
+            state.high_waiters -= 1;
+            state.busy = true;
+        } else {
+            while state.busy || state.high_waiters > 0 {
+                state = self.cv.wait(state).unwrap_or_else(|e| e.into_inner());
+            }
+            state.busy = true;
+        }
+        EmbedderGateGuard { gate: self }
+    }
+}
+
+struct EmbedderGateGuard<'a> {
+    gate: &'a EmbedderGate,
+}
+
+impl Drop for EmbedderGateGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.busy = false;
+        self.gate.cv.notify_all();
+    }
+}
+
+/// Low-priority per-batch embedder facade for background session indexing.
+///
+/// Acquires and releases the shared ORT session on every `embed_batch` call so
+/// interactive queries preempt between batches and never deadlock against
+/// `session_index`.
+struct LowPriorityRuntimeEmbedder<'a> {
+    runtime: &'a CodeSearchRuntime,
+    embedder_id: &'static str,
+    device: &'static str,
+}
+
+impl embed::Embedder for LowPriorityRuntimeEmbedder<'_> {
+    fn embedder_id(&self) -> &'static str {
+        self.embedder_id
+    }
+
+    fn inference_device(&self) -> &'static str {
+        self.device
+    }
+
+    fn embed_batch(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if self.runtime.is_cancelled() {
+            return Err(LitecodeError::ToolExecution(
+                "code_search worker shutting down".into(),
+            ));
+        }
+        self.runtime
+            .with_embedder_priority(EmbedderPriority::Low, |emb| emb.embed_batch(texts))
+    }
+}
+
 /// Shared runtime after warmup. ORT Session and RAM index may cool-drop; disk artifacts stay.
+///
+/// Lock ordering invariant (deadlock-free):
+/// - `embedder` (guarded by `embedder_gate`) MUST NOT be held while acquiring
+///   `index`, `session_index`, or `bm25`. Interactive queries embed first,
+///   release `embedder`, and then lock their index.
 pub struct CodeSearchRuntime {
     pub workspace_root: PathBuf,
     session_reader: Mutex<Option<crate::session::SessionDataReader>>,
@@ -139,9 +237,12 @@ pub struct CodeSearchRuntime {
     pub session_index: Mutex<Option<crate::engines::session_search::SessionSemanticIndex>>,
     /// Code-corpus BM25 sidecar (Tantivy). Rebuilt when the dense index mutates.
     bm25: Mutex<Option<bm25::Bm25Index>>,
+    embedder_gate: EmbedderGate,
     embedder: Mutex<Option<Box<dyn embed::Embedder>>>,
     /// Last live inference device (`cuda-ort` / `cpu-ort` / `hash`). Survives OrtCold.
     embed_device: Mutex<String>,
+    /// Set on worker shutdown so in-flight indexing loops exit between batches.
+    cancelled: AtomicBool,
     /// File changes from serve watcher via IPC; consumed on refresh / agent.
     pub pending_updates: Mutex<HashSet<(String, bool)>>, // (relative_path, deleted)
     /// mtime/len after a successful index of a path (reconcile fast path).
@@ -190,8 +291,10 @@ impl CodeSearchRuntime {
             index: Mutex::new(Some(index)),
             session_index: Mutex::new(None),
             bm25: Mutex::new(None),
+            embedder_gate: EmbedderGate::new(),
             embedder: Mutex::new(embedder),
             embed_device: Mutex::new(device),
+            cancelled: AtomicBool::new(false),
             pending_updates: Mutex::new(HashSet::new()),
             file_stamps: Mutex::new(file_stamps),
             full_reconcile_on_load: std::sync::atomic::AtomicBool::new(false),
@@ -293,13 +396,22 @@ impl CodeSearchRuntime {
         self.touch_index_at();
     }
 
+    /// Signal in-flight indexing loops to exit at the next batch boundary.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
     /// Persist the worker queue with its exact surviving chunk count
-    /// (`queue.json`, WP-131). Takes the index lock briefly.
+    /// (`queue.json`, WP-131). Never blocks on a busy `index` commit.
     pub(crate) fn persist_queue(&self, pending: &HashSet<(String, bool)>) {
-        // Loaded index only: never reload a cooled index under the queue lock.
-        // Lock order pending -> index matches update paths (none take the
-        // reverse). Falls back to the previous / on-disk value when cooled.
-        let kept = self.index.lock().ok().and_then(|guard| {
+        // Loaded index only: never reload a cooled index under the queue lock,
+        // and never block the fast FS-notification lane behind an active index
+        // commit (`try_lock` falls back to the previous/on-disk kept count).
+        let kept = self.index.try_lock().ok().and_then(|guard| {
             let index = guard.as_ref()?;
             let paths: HashSet<&str> = pending.iter().map(|(p, _)| p.as_str()).collect();
             let old = index
@@ -400,13 +512,25 @@ impl CodeSearchRuntime {
     }
 
     /// First-desired / refresh consume: embed session drift and save.
+    ///
+    /// Uses [`LowPriorityRuntimeEmbedder`] so the shared ORT session is acquired
+    /// per 32-chunk micro-batch and released between batches, letting interactive
+    /// searches preempt without waiting for the entire pass.
     pub fn consume_session_index(&self) -> Result<()> {
         let reader = match self.session_reader() {
             Ok(r) => r,
             Err(_) => return Ok(()),
         };
         self.ensure_session_index()?;
-        self.with_embedder(|emb| {
+        let (embedder_id, device) = self.with_embedder_priority(EmbedderPriority::Low, |emb| {
+            Ok((emb.embedder_id(), emb.inference_device()))
+        })?;
+        let mut low_emb = LowPriorityRuntimeEmbedder {
+            runtime: self,
+            embedder_id,
+            device,
+        };
+        {
             let mut guard = self
                 .session_index
                 .lock()
@@ -417,16 +541,20 @@ impl CodeSearchRuntime {
             crate::engines::session_search::consume_session_index(
                 &self.workspace_root,
                 &reader,
-                emb,
+                &mut low_emb,
                 index,
             )?;
-            Ok(())
-        })?;
+        }
         self.touch_index_at();
         Ok(())
     }
 
     /// ANN search only. Load from disk if cold; does not digest `sessions.db`.
+    ///
+    /// Obeys the lock ordering invariant: embeds the query at High priority
+    /// *before* acquiring `session_index` (never nests `session_index` inside
+    /// `embedder`). Uses `try_lock` when `consume_session_index` is actively
+    /// mutating the session index so the query lane never stalls behind it.
     pub fn search_sessions(
         &self,
         query: &str,
@@ -438,35 +566,30 @@ impl CodeSearchRuntime {
                 "session semantic index unavailable: SessionData reader not ready".into(),
             ));
         }
-        {
-            let loaded = self
-                .session_index
-                .lock()
-                .map_err(|e| LitecodeError::Config(format!("session_index lock: {e}")))?
-                .is_some();
-            if !loaded {
-                let loaded_idx =
-                    crate::engines::session_search::load_session_index(&self.workspace_root)?;
-                let mut guard = self
-                    .session_index
-                    .lock()
-                    .map_err(|e| LitecodeError::Config(format!("session_index lock: {e}")))?;
-                *guard = Some(loaded_idx);
+        let qv = self.with_embedder_priority(EmbedderPriority::High, |emb| emb.embed_one(query))?;
+        let mut guard = match self.session_index.try_lock() {
+            Ok(g) => g,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(LitecodeError::ToolExecution(
+                    crate::engines::code_search_engine::SEARCH_WORKER_BUSY.into(),
+                ));
             }
+            Err(std::sync::TryLockError::Poisoned(e)) => {
+                return Err(LitecodeError::Config(format!("session_index lock: {e}")));
+            }
+        };
+        if guard.is_none() {
+            let loaded_idx =
+                crate::engines::session_search::load_session_index(&self.workspace_root)?;
+            *guard = Some(loaded_idx);
         }
-        self.with_embedder(|emb| {
-            let guard = self
-                .session_index
-                .lock()
-                .map_err(|e| LitecodeError::Config(format!("session_index lock: {e}")))?;
-            let index = guard
-                .as_ref()
-                .ok_or_else(|| LitecodeError::Config("session_index missing after load".into()))?;
-            let qv = emb.embed_one(query)?;
-            let hits = index.search(&qv, top_k, session_id)?;
-            self.touch_index_at();
-            Ok(hits)
-        })
+        let index = guard
+            .as_ref()
+            .ok_or_else(|| LitecodeError::Config("session_index missing after load".into()))?;
+        let hits = index.search(&qv, top_k, session_id)?;
+        drop(guard);
+        self.touch_index_at();
+        Ok(hits)
     }
 
     /// Load dense index + BM25 from disk when IndexCold. Does not touch activity if already loaded.
@@ -549,6 +672,14 @@ impl CodeSearchRuntime {
     where
         F: FnOnce(&mut dyn embed::Embedder) -> Result<T>,
     {
+        self.with_embedder_priority(EmbedderPriority::Low, f)
+    }
+
+    pub(crate) fn with_embedder_priority<F, T>(&self, priority: EmbedderPriority, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut dyn embed::Embedder) -> Result<T>,
+    {
+        let _gate = self.embedder_gate.acquire(priority);
         let mut guard = self
             .embedder
             .lock()
@@ -908,6 +1039,9 @@ pub fn update_files(runtime: &CodeSearchRuntime, updates: &[(String, bool)]) -> 
     let mut stamp_only: Vec<(String, FileStamp)> = Vec::new();
     let mut held_bytes = 0usize;
     for (path, is_deleted) in updates {
+        if runtime.is_cancelled() {
+            return Ok(());
+        }
         if *is_deleted || !is_indexable_rel_path(path, root) || !root.join(path).is_file() {
             // WP-141: a file that exists but is not indexable (binary, too
             // large) is accounted with a stamp so the stat scan skips it.
@@ -1048,13 +1182,15 @@ pub fn update_files(runtime: &CodeSearchRuntime, updates: &[(String, bool)]) -> 
             }));
             queue.extend(chunks.into_iter().map(|c| (idx, c)));
         }
-        if queue.is_empty() {
+        if queue.is_empty() || runtime.is_cancelled() {
             break;
         }
         let take = queue.len().min(EMBED_BATCH);
         let batch: Vec<(usize, chunk::ChunkRecord)> = queue.drain(..take).collect();
         let texts: Vec<String> = batch.iter().map(|(_, c)| c.text.clone()).collect();
-        let vectors = match runtime.with_embedder(|emb| emb.embed_batch(&texts)) {
+        let vectors = match runtime
+            .with_embedder_priority(EmbedderPriority::Low, |emb| emb.embed_batch(&texts))
+        {
             Ok(v) if v.len() == batch.len() => v,
             Ok(_) | Err(_) => {
                 // Drop every file touched by this batch; they keep their old

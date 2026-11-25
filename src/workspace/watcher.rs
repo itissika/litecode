@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, mpsc};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -23,6 +24,8 @@ const DEBOUNCE_MS: u64 = 300;
 pub struct WorkspaceWatcher {
     // The watcher is held purely for ownership (kept alive for the server's
     // lifetime); it is never locked after creation, so a Mutex is not needed.
+    // Dropping `_watcher` closes the notify callback's Sender, which terminates
+    // the dedicated `workspace-watcher` debounce thread cleanly.
     _watcher: RecommendedWatcher,
 }
 
@@ -33,7 +36,7 @@ impl WorkspaceWatcher {
         let rescan_tx = workspace.rescan_sender();
 
         // `None` = the backend reported an error (WP-141: never dropped).
-        let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<Option<Event>>();
+        let (notify_tx, notify_rx) = mpsc::channel::<Option<Event>>();
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| {
                 let _ = notify_tx.send(notify_signal(res));
@@ -44,76 +47,124 @@ impl WorkspaceWatcher {
 
         let handle = Arc::new(Self { _watcher: watcher });
 
+        // Run debounce + synchronous FS stat/media/excludes work on a dedicated
+        // OS thread so heavy FS storms (e.g. Unity imports) never block Tokio
+        // async worker threads.
         let rel_base = root;
-        tokio::spawn(async move {
-            let mut pending: HashSet<String> = HashSet::new();
-            let mut pending_deleted: HashSet<String> = HashSet::new();
-            let mut debounce = tokio::time::interval(Duration::from_millis(DEBOUNCE_MS));
-            debounce.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        thread::Builder::new()
+            .name("workspace-watcher".into())
+            .spawn(move || {
+                let debounce = Duration::from_millis(DEBOUNCE_MS);
+                let mut pending: HashSet<String> = HashSet::new();
+                let mut pending_deleted: HashSet<String> = HashSet::new();
+                let mut flush_at: Option<Instant> = None;
 
-            loop {
-                tokio::select! {
-                    maybe_event = notify_rx.recv() => {
-                        let Some(event) = maybe_event else { break };
-                        // WP-141: a watcher error, a Rescan flag, or a queue
-                        // overflow means events were lost; the consumers run a
-                        // full disk reconcile instead of trusting the stream.
-                        let Some(event) = event.filter(|e| !event_requests_rescan(e)) else {
-                            // Events were lost, so the media snapshot is not
-                            // trusted either: the next listing walks again.
-                            workspace.invalidate_media();
-                            let _ = rescan_tx.send(());
-                            continue;
-                        };
-                        if let Some((paths, deleted)) = classify_event(&event, &rel_base) {
-                            if deleted {
-                                pending_deleted.extend(paths);
-                            } else {
-                                pending.extend(paths);
-                            }
+                let handle_event = |maybe_event: Option<Event>,
+                                    pending: &mut HashSet<String>,
+                                    pending_deleted: &mut HashSet<String>,
+                                    flush_at: &mut Option<Instant>| {
+                    // WP-141: a watcher error, a Rescan flag, or a queue
+                    // overflow means events were lost; the consumers run a
+                    // full disk reconcile instead of trusting the stream.
+                    let Some(event) = maybe_event.filter(|e| !event_requests_rescan(e)) else {
+                        // Events were lost, so the media snapshot is not
+                        // trusted either: the next listing walks again.
+                        workspace.invalidate_media();
+                        let _ = rescan_tx.send(());
+                        return;
+                    };
+                    if let Some((paths, deleted)) = classify_event(&event, &rel_base) {
+                        if deleted {
+                            pending_deleted.extend(paths);
+                        } else {
+                            pending.extend(paths);
+                        }
+                        if flush_at.is_none() {
+                            *flush_at = Some(Instant::now() + debounce);
                         }
                     }
-                    _ = debounce.tick() => {
-                        // A `Remove` event does not always mean the file is gone: an
-                        // atomic save (write a temp file, then rename it over the
-                        // original — which `WorkspaceService::atomic_write` does) is
-                        // reported as `Remove` for the original path on Windows. If the
-                        // path still exists on disk at flush time it was an overwrite,
-                        // not a deletion, so reclassify it as `modified`. This mirrors
-                        // VS Code's file-watcher behaviour (nodejsWatcherLib.ts): on a
-                        // rename/delete it waits, stats the path, and emits a `change`
-                        // when the file still exists, a `delete` only when it is truly
-                        // gone. It prevents the frontend from closing the editor tab on
-                        // every Ctrl+S save.
-                        let changes = coalesce_pending(&mut pending, &mut pending_deleted, |rel| {
-                            rel_base.join(rel).exists()
-                        });
-                        let excludes_changed = changes_include_workspace_excludes(&changes);
-                        if excludes_changed {
-                            reload_workspace_excludes_from_disk(&rel_base);
+                };
+
+                let flush = |pending: &mut HashSet<String>,
+                             pending_deleted: &mut HashSet<String>| {
+                    // A `Remove` event does not always mean the file is gone: an
+                    // atomic save (write a temp file, then rename it over the
+                    // original — which `WorkspaceService::atomic_write` does) is
+                    // reported as `Remove` for the original path on Windows. If the
+                    // path still exists on disk at flush time it was an overwrite,
+                    // not a deletion, so reclassify it as `modified`. This mirrors
+                    // VS Code's file-watcher behaviour (nodejsWatcherLib.ts): on a
+                    // rename/delete it waits, stats the path, and emits a `change`
+                    // when the file still exists, a `delete` only when it is truly
+                    // gone. It prevents the frontend from closing the editor tab on
+                    // every Ctrl+S save.
+                    let changes = coalesce_pending(pending, pending_deleted, |rel| {
+                        rel_base.join(rel).exists()
+                    });
+                    if changes.is_empty() {
+                        return;
+                    }
+                    let excludes_changed = changes_include_workspace_excludes(&changes);
+                    if excludes_changed {
+                        reload_workspace_excludes_from_disk(&rel_base);
+                    }
+                    // The tree moved outside the service. Patch the media
+                    // snapshot for the paths we can name; a change to the
+                    // ignore rules themselves alters what is visible at all,
+                    // so that still drops the snapshot for a fresh walk.
+                    if excludes_changed
+                        || changes.iter().any(|change| {
+                            change.paths.iter().any(|rel| rel_changes_ignore_rules(rel))
+                        })
+                    {
+                        workspace.invalidate_media();
+                    } else {
+                        for change in &changes {
+                            workspace.apply_media_paths(&change.paths);
                         }
-                        // The tree moved outside the service. Patch the media
-                        // snapshot for the paths we can name; a change to the
-                        // ignore rules themselves alters what is visible at all,
-                        // so that still drops the snapshot for a fresh walk.
-                        if excludes_changed
-                            || changes.iter().any(|change| {
-                                change.paths.iter().any(|rel| rel_changes_ignore_rules(rel))
-                            })
-                        {
-                            workspace.invalidate_media();
-                        } else {
-                            for change in &changes {
-                                workspace.apply_media_paths(&change.paths);
+                    }
+                    for change in changes {
+                        let _ = change_tx.send(change);
+                    }
+                };
+
+                loop {
+                    match flush_at {
+                        None => match notify_rx.recv() {
+                            Ok(ev) => {
+                                handle_event(ev, &mut pending, &mut pending_deleted, &mut flush_at);
                             }
-                        }
-                        for change in changes {
-                            let _ = change_tx.send(change);
+                            Err(_) => break,
+                        },
+                        Some(deadline) => {
+                            let now = Instant::now();
+                            if now >= deadline {
+                                flush_at = None;
+                                flush(&mut pending, &mut pending_deleted);
+                                continue;
+                            }
+                            match notify_rx.recv_timeout(deadline.saturating_duration_since(now)) {
+                                Ok(ev) => {
+                                    handle_event(
+                                        ev,
+                                        &mut pending,
+                                        &mut pending_deleted,
+                                        &mut flush_at,
+                                    );
+                                }
+                                Err(mpsc::RecvTimeoutError::Timeout) => {
+                                    flush_at = None;
+                                    flush(&mut pending, &mut pending_deleted);
+                                }
+                                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                    flush(&mut pending, &mut pending_deleted);
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
-            }
-        });
+            })?;
 
         Ok(handle)
     }

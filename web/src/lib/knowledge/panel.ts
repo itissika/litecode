@@ -1,9 +1,14 @@
 import { openPanel, revealPanel } from "../../dockview/workbench/commands";
 import { activePanelComponent, activePanelId, hasPanel } from "../../dockview/workbench/queries";
-import { isWorkspaceFileRef } from "./markers";
+import { isWorkspaceFileRef, normalizeRefPath } from "./markers";
 import { citationRefKey, resolveCitation, type Citation } from "./refDisplay";
 import { externalPreviewId, useEditorStore } from "../../stores/editorStore";
-import { knowledgeRefState, useKnowledgeStore } from "../../stores/knowledgeStore";
+import {
+  knowledgeRefState,
+  lookupKnowledgeNodeByPath,
+  resolveKnowledgeDiskPath,
+  useKnowledgeStore,
+} from "../../stores/knowledgeStore";
 
 const KNOWLEDGE_GRAPH_PANEL_ID = "knowledge-graph";
 
@@ -33,14 +38,18 @@ function viewingKnowledgeGraph(): boolean {
 function citationInput(citation: Citation, sourceId?: string) {
   const knowledge = useKnowledgeStore.getState();
   const source = sourceId ? (knowledge.byId.get(sourceId) ?? null) : null;
-  const key = citation.kind === "node" ? citation.key.trim() : "";
-  const target = key ? (knowledge.byKey.get(key) ?? null) : null;
+  const isBare =
+    !citation.symbol?.trim() &&
+    !citation.lines?.trim() &&
+    !citation.badLines?.trim() &&
+    citation.line == null;
+  const target = isBare
+    ? (lookupKnowledgeNodeByPath(knowledge, citation.path) ?? null)
+    : null;
   const ref = knowledgeRefState(knowledge, sourceId, citationRefKey(citation)) ?? null;
-  const externalOpen =
-    citation.kind === "file" &&
-    useEditorStore
-      .getState()
-      .tabs.some((tab) => tab.external && tab.path === externalPreviewId(citation.path));
+  const externalOpen = useEditorStore
+    .getState()
+    .tabs.some((tab) => tab.external && tab.path === externalPreviewId(citation.path));
   return { source, target, ref, ready: knowledge.ready, externalOpen };
 }
 
@@ -52,8 +61,7 @@ function citationInput(citation: Citation, sourceId?: string) {
 export function followCitation(citation: Citation, sourceId?: string): void {
   const model = resolveCitation(citation, citationInput(citation, sourceId));
   if (!model.resolvable) return;
-  if (citation.kind === "node") {
-    if (!model.targetId) return;
+  if (!model.file && model.targetId) {
     if (!viewingKnowledgeGraph()) openKnowledgeGraphPanel();
     useKnowledgeStore.getState().focusCanvas(model.targetId);
     return;
@@ -63,8 +71,10 @@ export function followCitation(citation: Citation, sourceId?: string): void {
     revealPanel(previewId);
     return;
   }
-  if (!isWorkspaceFileRef(citation.path)) return;
+  const norm = normalizeRefPath(citation.path);
+  if (!isWorkspaceFileRef(norm)) return;
+  const diskPath = resolveKnowledgeDiskPath(useKnowledgeStore.getState(), norm);
   const editor = useEditorStore.getState();
-  if (citation.line != null) void editor.openFileAt(citation.path, citation.line);
-  else void editor.openFile(citation.path);
+  if (citation.line != null) void editor.openFileAt(diskPath, citation.line);
+  else void editor.openFile(diskPath);
 }

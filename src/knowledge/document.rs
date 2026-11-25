@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::mentions;
+use super::mentions::{self, Cite};
 
 static OPEN_FENCE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:[ \t]*\r?\n)*```node[ \t]*\r?\n").expect("open fence"));
@@ -51,7 +51,7 @@ pub struct ParsedFile {
     /// Raw `status` text when it is not `enabled`, `disabled`, or `pending`.
     pub invalid_status: Option<String>,
     pub summary: String,
-    pub refs: Vec<String>,
+    pub cites: Vec<Cite>,
     pub body: String,
     pub folder_id: Option<String>,
     pub x: Option<f64>,
@@ -121,7 +121,7 @@ pub fn parse_knowledge_markdown(path: &str, markdown: &str) -> ParsedFile {
         }
     }
 
-    let refs = mentions::extract_markers(&body);
+    let cites = mentions::extract_cites(&body);
     ParsedFile {
         path: path.clone(),
         folder_id: folder_id_of(&path),
@@ -129,7 +129,7 @@ pub fn parse_knowledge_markdown(path: &str, markdown: &str) -> ParsedFile {
         status,
         invalid_status,
         summary,
-        refs,
+        cites,
         body,
         x,
         y,

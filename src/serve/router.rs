@@ -135,10 +135,13 @@ pub async fn listen(
                                 .iter()
                                 .any(|p| crate::config::workspace::is_workspace_tool_defs_rel(p))
                         {
-                            runtime
-                                .write()
-                                .expect("runtime lock")
-                                .sync_workspace_tool_readiness();
+                            let rt = runtime.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                rt.write()
+                                    .expect("runtime lock")
+                                    .sync_workspace_tool_readiness();
+                            })
+                            .await;
                         }
                         let deleted = change.kind == "deleted";
                         engines
@@ -206,8 +209,12 @@ pub async fn listen(
                     continue;
                 }
                 // No-op unless the engine is desired, warm, and the store moved.
-                // Real failures are logged inside; nothing to surface here.
-                let _ = engines.consume_session_index_work();
+                // Run off the async runtime because `session_work_now` reads SQLite + disk.
+                let engines = engines.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = engines.consume_session_index_work();
+                })
+                .await;
             }
         });
     }

@@ -11,6 +11,6 @@ domain : release-desktop
 
 **准入：** A3。真源在 sidecar（litecode.exe）与工作区；桌面壳负责进程寿命、IPC、Open Remote、组件落盘到 `%LOCALAPPDATA%/litecode/bundles`。壳若再持一份布局/会话/模型状态，会与 web 投影和 sidecar 抢权威。
 
-依据：[@ file="desktop/src/sidecar.ts"]、[@ file="desktop/src/main.ts"]、[@ file="desktop/src/bundle-paths.ts" symbol="fn litecodeBundlesDir"]。
-上层：[@ key="release-design"]。
-契约展开：[@ key="slim-packaging"]、[@ key="component-distribution"]、[@ key="bundle-resolve"]。
+依据：[sidecar.ts](desktop/src/sidecar.ts)、[main.ts](desktop/src/main.ts)、[litecodeBundlesDir](desktop/src/bundle-paths.ts#litecodeBundlesDir)。
+上层：[release-design](knowledge/design/release-design.md)。
+契约展开：[slim-packaging](knowledge/contracts/slim-packaging.md)、[component-distribution](knowledge/contracts/component-distribution.md)、[bundle-resolve](knowledge/contracts/bundle-resolve.md)。

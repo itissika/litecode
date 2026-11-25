@@ -33,7 +33,7 @@
       "status": "enabled",
       "invalidStatus": null,
       "summary": "坏引用",
-      "refs": ["missing"],
+      "refs": [],
       "extras": []
     },
     {

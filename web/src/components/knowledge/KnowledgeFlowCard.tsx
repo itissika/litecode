@@ -16,16 +16,24 @@ import {
 } from "../../lib/knowledge/layoutGraph";
 import {
   knowledgeContentSignature,
-  mentionKeysOf,
+  mentionNodesSignature,
+  parseMentionCandidates,
   prefersReducedMotion,
 } from "../../lib/knowledge/flowProjection";
-import { extractMarkers, knowledgePreview, normalizeKey } from "../../lib/knowledge/markers";
+import {
+  extractNodeRelations,
+  knowledgePreview,
+  normalizeKey,
+} from "../../lib/knowledge/markers";
 import {
   knowledgeAttentionWarnings,
   knowledgeTitleTone,
 } from "../../lib/knowledge/validate";
 import type { KnowledgeIssue } from "../../lib/knowledge/types";
-import { useKnowledgeStore } from "../../stores/knowledgeStore";
+import {
+  lookupKnowledgeNodeByPath,
+  useKnowledgeStore,
+} from "../../stores/knowledgeStore";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { KnowledgeAttentionIcon } from "./KnowledgeAttentionIcon";
 import { KnowledgeBodyEditor } from "./KnowledgeBodyEditor";
@@ -55,7 +63,7 @@ export function KnowledgeFlowCard({
   const contentSeen = useRef<string | null>(null);
   const contentSummary = useKnowledgeStore((s) => s.byId.get(data.nodeId)?.summary ?? null);
   const contentValue = useKnowledgeStore((s) => s.byId.get(data.nodeId)?.value ?? null);
-  const mentionKeys = useKnowledgeStore((s) => mentionKeysOf(s.nodes));
+  const mentionSig = useKnowledgeStore((s) => mentionNodesSignature(s.nodes, s.root));
   const focusedId = useKnowledgeStore((s) => s.focusedId);
   const graphOpen = useKnowledgeStore((s) => s.graphExpanded.has(data.nodeId));
   const toggleGraph = useKnowledgeStore((s) => s.toggleGraph);
@@ -89,10 +97,10 @@ export function KnowledgeFlowCard({
   const nodeIdRef = useRef(data.nodeId);
   nodeIdRef.current = data.nodeId;
   const ownKey = node ? normalizeKey(node.key) : "";
-  const refCandidates = useMemo(() => {
-    if (!mentionKeys) return [];
-    return mentionKeys.split("\n").filter((key) => key && key !== ownKey);
-  }, [mentionKeys, ownKey]);
+  const refCandidates = useMemo(
+    () => parseMentionCandidates(mentionSig, ownKey),
+    [mentionSig, ownKey],
+  );
   const [scaleMotion, setScaleMotion] = useState<"in" | "out" | null>(null);
   const expandMotionReady = useRef(false);
 
@@ -172,7 +180,11 @@ export function KnowledgeFlowCard({
         if (text !== current.value.replace(/\s+$/, "")) {
           void state.saveNode(current.id, {
             value: text,
-            relations: extractMarkers(text),
+            relations: extractNodeRelations(
+              text,
+              (normPath) => lookupKnowledgeNodeByPath(state, normPath),
+              current.path,
+            ),
           });
         }
       }
@@ -300,9 +312,14 @@ export function KnowledgeFlowCard({
     inflight.current += 1;
     clearSavedLater();
     setSaveMark("saving");
+    const store = useKnowledgeStore.getState();
     const ok = await saveNode(current.id, {
       value: text,
-      relations: extractMarkers(text),
+      relations: extractNodeRelations(
+        text,
+        (normPath) => lookupKnowledgeNodeByPath(store, normPath),
+        current.path,
+      ),
     });
     inflight.current = Math.max(0, inflight.current - 1);
     if (!mounted.current) return;

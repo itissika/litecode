@@ -1,7 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fileMentionSource, mentionSource, symbolMentionSource } from "../../lib/knowledge/markers";
 import { useEditorStore } from "../../stores/editorStore";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
 import { MentionText } from "./MentionText";
@@ -12,19 +11,22 @@ afterEach(() => {
 
 describe("MentionText", () => {
   it("draws node, file, and symbol capsules and leaves the prose to markdown", async () => {
+    const seqNode = { id: "seq", key: "seq", path: "arch/seq.md", status: "enabled" };
     useKnowledgeStore.setState({
-      byKey: new Map([["seq", { id: "seq", key: "seq", status: "active" }]]),
-      byId: new Map([["seq", { id: "seq", key: "seq", status: "active" }]]),
+      byKey: new Map([["seq", seqNode]]),
+      byId: new Map([["seq", seqNode]]),
+      byLogicalPath: new Map([["knowledge/arch/seq.md", seqNode]]),
+      visibility: "public",
     } as never);
     const openFile = vi.fn(async () => {});
     const openFileAt = vi.fn(async () => {});
     useEditorStore.setState({ openFile, openFileAt });
-    const text = `see ${mentionSource("seq")} and ${fileMentionSource("src/a.rs")} then ${symbolMentionSource("src/a.rs", { symbol: "fn save", lines: "4-9", label: "fn save" })}`;
+    const text =
+      "see [seq](knowledge/arch/seq.md) and [a.rs](src/a.rs) then [Store.save](src/a.rs#Store.save)";
     render(<MentionText text={text} />);
     fireEvent.click(await screen.findByRole("button", { name: "seq" }));
     expect(useKnowledgeStore.getState().focusedId).toBe("seq");
-    fireEvent.click(screen.getByRole("button", { name: "a.rs : fn save" }));
-    // A symbol citation opens the file; lines never ride on it (KR-SYM-6).
+    fireEvent.click(screen.getByRole("button", { name: "a.rs : save" }));
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     expect(openFileAt).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "a.rs" }).className).toContain(
@@ -36,8 +38,7 @@ describe("MentionText", () => {
   });
 
   it("keeps ordinary text on the capsule's line and starts a new paragraph after a blank line", () => {
-    const file = fileMentionSource("src/a.rs");
-    render(<MentionText text={`${file} stays here\n\nnext paragraph`} />);
+    render(<MentionText text={"[a.rs](src/a.rs) stays here\n\nnext paragraph"} />);
     const inline = document.querySelector(".agent-markdown.is-inline");
     expect(inline?.textContent).toContain("stays here");
     const blocks = [...document.querySelectorAll(".agent-markdown")].filter(

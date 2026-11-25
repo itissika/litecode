@@ -18,6 +18,6 @@ h : 414
 - 纪律有测试：死亡清单测试封禁第二套对话语义；流式平滑只是显示缓冲。
 - 边界：子会话事件按自身 session 分发；关闭 tab 或断开连接不拥有取消执行的权力。
 
-契约展开：[@ key="connection-ask-registry"]。
-上层：[@ key="ux"]。相关：[@ key="session-model"]。
-依据：[@ file="src/client_protocol/protocol.rs"]、[@ file="web/src/stores/messageStore.ts"]。
+契约展开：[connection-ask-registry](knowledge/contracts/client/connection-ask-registry.md)。
+上层：[ux](knowledge/framework/ux.md)。相关：[session-model](knowledge/contracts/session-model.md)。
+依据：[protocol.rs](src/client_protocol/protocol.rs)、[messageStore.ts](web/src/stores/messageStore.ts)。

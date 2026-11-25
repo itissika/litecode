@@ -32,9 +32,9 @@ domain : harness-core
 
 ## 证据
 
-- 单入口：[@ file="src/session/data/writer.rs" symbol="impl WriterHandle › fn submit_blocking"]
-- 事务内分发与回执：[@ file="src/session/data/writer.rs" symbol="fn execute"]、[@ file="src/session/data/sqlite/ops.rs" symbol="fn record_commit"]
-- 幂等先于版本：[@ file="src/session/data/writer.rs" symbol="fn execute"]
-- 禁止旁路开库：[@ file="tests/session_data_sql_death_list.rs"]
+- 单入口：[WriterHandle.submit_blocking](src/session/data/writer.rs#WriterHandle.submit_blocking)
+- 事务内分发与回执：[execute](src/session/data/writer.rs#execute)、[record_commit](src/session/data/sqlite/ops.rs#record_commit)
+- 幂等先于版本：[execute](src/session/data/writer.rs#execute)
+- 禁止旁路开库：[session_data_sql_death_list.rs](tests/session_data_sql_death_list.rs)
 
-父节点：[@ key="session-model"]。
+父节点：[session-model](knowledge/contracts/session-model.md)。

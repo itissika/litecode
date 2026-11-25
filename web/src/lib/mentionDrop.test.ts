@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fetchSymbolAt } from "../api/workspace";
 import { LITECODE_PATHS_MIME, LITECODE_SPAN_MIME } from "./dropPayload";
-import { fileMentionSource, symbolMentionSource } from "./knowledge/markers";
 import { mentionTextForDrop } from "./mentionDrop";
 import { fakeTransfer } from "../test/fakeTransfer";
 import { stubDesktopBridge } from "../test/desktopBridge";
@@ -18,18 +17,18 @@ beforeEach(() => {
 });
 
 describe("mentionTextForDrop", () => {
-  it("turns file-tree paths into file chips", async () => {
+  it("turns file-tree paths into standard Markdown links", async () => {
     const dt = fakeTransfer();
     dt.setData(LITECODE_PATHS_MIME, JSON.stringify(["src/a.rs", "docs"]));
     dt.setData("text/plain", "src/a.rs\ndocs");
     await expect(mentionTextForDrop(dt, "E:/ws")).resolves.toBe(
-      `${fileMentionSource("src/a.rs")} ${fileMentionSource("docs")}`,
+      "[a.rs](src/a.rs) [docs](docs)",
     );
     expect(symbolAt).not.toHaveBeenCalled();
   });
 
-  it("turns a code span into a symbol chip, and a line chip when lookup fails", async () => {
-    symbolAt.mockResolvedValue({ chain: "fn save" });
+  it("turns a code span into a symbol link, and a line-range link when lookup fails", async () => {
+    symbolAt.mockResolvedValue({ chain: "Store.save" });
     const dt = fakeTransfer();
     dt.setData(
       LITECODE_SPAN_MIME,
@@ -37,12 +36,12 @@ describe("mentionTextForDrop", () => {
     );
     dt.setData("text/plain", "fn save() {}");
     await expect(mentionTextForDrop(dt, "")).resolves.toBe(
-      symbolMentionSource("src/a.rs", { symbol: "fn save", lines: "4-9" }),
+      "[Store.save](src/a.rs#Store.save)",
     );
 
     symbolAt.mockRejectedValue(new Error("offline"));
     await expect(mentionTextForDrop(dt, "")).resolves.toBe(
-      symbolMentionSource("src/a.rs", { lines: "4-9" }),
+      "[a.rs:4-9](src/a.rs#L4-L9)",
     );
   });
 
@@ -50,14 +49,12 @@ describe("mentionTextForDrop", () => {
     const file = new File(["x"], "a.ts", { type: "text/plain" });
     const files = fakeTransfer({ files: [file] });
     window.litecode = stubDesktopBridge({ getPathForFile: () => "E:\\ws\\src\\a.ts" });
-    await expect(mentionTextForDrop(files, "E:/ws")).resolves.toBe(
-      fileMentionSource("src/a.ts"),
-    );
+    await expect(mentionTextForDrop(files, "E:/ws")).resolves.toBe("[a.ts](src/a.ts)");
 
     const uri = fakeTransfer();
     uri.setData("text/uri-list", "file:///C:/outside/a.ts");
     await expect(mentionTextForDrop(uri, "E:/ws")).resolves.toBe(
-      fileMentionSource("C:/outside/a.ts"),
+      "[a.ts](C:/outside/a.ts)",
     );
     Reflect.deleteProperty(window, "litecode");
   });

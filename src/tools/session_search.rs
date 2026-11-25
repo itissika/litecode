@@ -188,9 +188,23 @@ impl Tool for SessionSearchTool {
         input: Value,
         execution: ToolExecutionContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
-        Box::pin(std::future::ready(
-            self.search_from_input(input, &execution),
-        ))
+        let tool = SessionSearchTool {
+            engines: self.engines.clone(),
+            owners: self.owners.clone(),
+        };
+        Box::pin(async move {
+            match tokio::task::spawn_blocking(move || tool.search_from_input(input, &execution))
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => ToolCallResult::error_with_kind(
+                    ToolErrorKind::Internal,
+                    format!("session_search task failed: {error}"),
+                    false,
+                )
+                .with_error_code("internal"),
+            }
+        })
     }
 
     fn call_inner(&self, input: Value) -> ToolCallResult {
@@ -600,15 +614,18 @@ mod tests {
         ));
         assert_eq!(read.level, ToolSignalLevel::Ok, "{}", read.content);
         let data = read.data.as_ref().expect("read returns data");
-        let lines: Vec<&str> = data["lines"]
-            .as_array()
-            .expect("data.lines")
-            .iter()
-            .filter_map(|l| l.as_str())
-            .collect();
+        let lines = data["lines"].as_array().expect("data.lines");
         assert_eq!(lines.len(), 1, "read at L{line} must cover the hit: {data}");
+        assert_eq!(
+            lines[0]["line"].as_u64(),
+            Some(line as u64),
+            "read line number should match hit: {data}"
+        );
         assert!(
-            lines[0].contains("SEARCH_READ_ALIGN_TOKEN"),
+            lines[0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("SEARCH_READ_ALIGN_TOKEN"),
             "read at L{line} should contain the hit: {data}"
         );
     }

@@ -9,11 +9,21 @@ import {
 } from "react";
 import { ArrowLeft, ArrowRight, Eye, FileText, PencilSimple } from "@phosphor-icons/react";
 
-import { mentionKeysOf } from "../../lib/knowledge/flowProjection";
-import { extractMarkers, normalizeKey } from "../../lib/knowledge/markers";
+import {
+  mentionNodesSignature,
+  parseMentionCandidates,
+} from "../../lib/knowledge/flowProjection";
+import {
+  extractNodeRelations,
+  logicalKnowledgePath,
+  normalizeKey,
+} from "../../lib/knowledge/markers";
 import type { KnowledgeIssue } from "../../lib/knowledge/types";
 import { knowledgeTitleTone } from "../../lib/knowledge/validate";
-import { useKnowledgeStore } from "../../stores/knowledgeStore";
+import {
+  lookupKnowledgeNodeByPath,
+  useKnowledgeStore,
+} from "../../stores/knowledgeStore";
 import { AgentMarkdown } from "../AgentMarkdown";
 import { CitationChip } from "../CitationChip";
 import { KnowledgeBodyEditor } from "./KnowledgeBodyEditor";
@@ -36,10 +46,11 @@ export function KnowledgeDocument() {
     s.focusedId ? s.byId.get(s.focusedId) : undefined,
   );
   const nodes = useKnowledgeStore((s) => s.nodes);
+  const byKey = useKnowledgeStore((s) => s.byKey);
   const issues = useKnowledgeStore((s) =>
     s.focusedId ? (s.issuesByNode.get(s.focusedId) ?? NO_ISSUES) : NO_ISSUES,
   );
-  const mentionKeys = useKnowledgeStore((s) => mentionKeysOf(s.nodes));
+  const mentionSig = useKnowledgeStore((s) => mentionNodesSignature(s.nodes, s.root));
   const saveNode = useKnowledgeStore((s) => s.saveNode);
   const focusCanvas = useKnowledgeStore((s) => s.focusCanvas);
   const clearCanvasFocus = useKnowledgeStore((s) => s.clearCanvasFocus);
@@ -120,8 +131,14 @@ export function KnowledgeDocument() {
       const latestSummary = summaryDraftRef.current.trim();
       const patch: Parameters<typeof saveNode>[1] = {};
       if (bodyDirtyRef.current) {
+        const store = useKnowledgeStore.getState();
+        const ownPath = store.byId.get(id)?.path;
         patch.value = latestBody;
-        patch.relations = extractMarkers(latestBody);
+        patch.relations = extractNodeRelations(
+          latestBody,
+          (normPath) => lookupKnowledgeNodeByPath(store, normPath),
+          ownPath,
+        );
       }
       if (summaryDirtyRef.current) patch.summary = latestSummary;
       if (Object.keys(patch).length === 0) {
@@ -186,11 +203,8 @@ export function KnowledgeDocument() {
 
   const ownKey = node ? normalizeKey(node.key) : "";
   const refCandidates = useMemo(
-    () =>
-      mentionKeys
-        ? mentionKeys.split("\n").filter((key) => key && key !== ownKey)
-        : [],
-    [mentionKeys, ownKey],
+    () => parseMentionCandidates(mentionSig, ownKey),
+    [mentionSig, ownKey],
   );
 
   const outgoing = useMemo(
@@ -383,13 +397,21 @@ export function KnowledgeDocument() {
               <div className="knowledge-document-relation">
                 <span className="knowledge-document-relation-label">{i18n.t("knowledge.refs")}</span>
                 <div className="knowledge-document-relation-chips">
-                  {outgoing.map((key) => (
-                    <CitationChip
-                      key={key}
-                      citation={{ kind: "node", key }}
-                      sourceId={node.id}
-                    />
-                  ))}
+                  {outgoing.map((key) => {
+                    const target = byKey.get(normalizeKey(key));
+                    return (
+                      <CitationChip
+                        key={key}
+                        citation={{
+                          path: target
+                            ? logicalKnowledgePath(target.path)
+                            : `knowledge/${key}.md`,
+                        }}
+                        sourceId={node.id}
+                        label={key}
+                      />
+                    );
+                  })}
                 </div>
               </div>
             ) : null}
@@ -400,7 +422,8 @@ export function KnowledgeDocument() {
                   {incoming.map((candidate) => (
                     <CitationChip
                       key={candidate.id}
-                      citation={{ kind: "node", key: candidate.key }}
+                      citation={{ path: logicalKnowledgePath(candidate.path) }}
+                      label={candidate.key}
                     />
                   ))}
                 </div>

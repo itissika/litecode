@@ -24,10 +24,10 @@ domain : harness-core
 
 **口径的边界**（各管一层，不打架）
 
-- 旋钮是 LiteCode 自己的，不是评测专用的旁路。对话里只暴露两个意图：想多久、上下文多大；供应商写法只在模型目录里对应 [@ key="platform-knobs"]，能切的也只是目录里有的 [@ key="provider-catalog"]。工具集、提示词、模型在配置里，不在对话里。
-- 一次会话内不换。供应商、密钥、模型定一次，压缩原样复用 [@ key="turn-llm-binding"]。要换就换批次。
-- 上下文是模式，不是阈值。80% 准备、100% 硬线不动 [@ key="context-budget"]。
-- 少而好，不是不许造工具。默认面只许一个 `run_code`；用户自造的 custom tool 不进默认面 [@ key="featured-tools"]。
+- 旋钮是 LiteCode 自己的，不是评测专用的旁路。对话里只暴露两个意图：想多久、上下文多大；供应商写法只在模型目录里对应 [platform-knobs](knowledge/contracts/platform-knobs.md)，能切的也只是目录里有的 [provider-catalog](knowledge/framework/provider-catalog.md)。工具集、提示词、模型在配置里，不在对话里。
+- 一次会话内不换。供应商、密钥、模型定一次，压缩原样复用 [turn-llm-binding](knowledge/contracts/turn-llm-binding.md)。要换就换批次。
+- 上下文是模式，不是阈值。80% 准备、100% 硬线不动 [context-budget](knowledge/contracts/context-budget.md)。
+- 少而好，不是不许造工具。默认面只许一个 `run_code`；用户自造的 custom tool 不进默认面 [featured-tools](knowledge/framework/featured-tools.md)。
 
 **要什么**（决定性的只有一句：更少成本，更高成功率）
 
@@ -58,12 +58,12 @@ domain : harness-core
 
 **依据（每条钉死的东西落在哪）**
 
-- 一个 `run_code` 面：`builtin_code_surface_tools` 是唯一装配点，测试断言 provider 拿到的 tools 只有 `run_code` [@ file="src/tool/registry.rs" symbol="fn builtin_code_surface_tools"]。
-- 思考档位：`ThinkingTier` 是唯一枚举，厂商写法只在目录里映射 [@ file="src/platform_knobs.rs" symbol="enum ThinkingTier"]。
-- 压缩预算线：`COMPACTION_BUDGET_PERCENT` 是唯一常量，三处都读它——会话压缩触发线、压缩后历史预算、摘要请求自身的输入上限 [@ file="src/session/estimate.rs" symbol="fn compaction_budget"]。
-- 模型绑定：一次会话一套 provider + 模型，压缩原样复用 [@ file="src/runtime/llm_resolve.rs" symbol="struct TurnLlmBinding"]。
-- 统一入口、题集/价目表与报告渲染各一处：[@ file="eval/run.py"]、[@ file="eval/harbor/bench5/campaigns/panel-v4.1-flash.yaml"]、[@ file="eval/core/report.py"]。
+- 一个 `run_code` 面：`builtin_code_surface_tools` 是唯一装配点，测试断言 provider 拿到的 tools 只有 `run_code` [builtin_code_surface_tools](src/tool/registry.rs#builtin_code_surface_tools)。
+- 思考档位：`ThinkingTier` 是唯一枚举，厂商写法只在目录里映射 [ThinkingTier](src/platform_knobs.rs#ThinkingTier)。
+- 压缩预算线：`COMPACTION_BUDGET_PERCENT` 是唯一常量，三处都读它——会话压缩触发线、压缩后历史预算、摘要请求自身的输入上限 [compaction_budget](src/session/estimate.rs#compaction_budget)。
+- 模型绑定：一次会话一套 provider + 模型，压缩原样复用 [TurnLlmBinding](src/runtime/llm_resolve.rs#TurnLlmBinding)。
+- 统一入口、题集/价目表与报告渲染各一处：[run.py](eval/run.py)、[panel-v4.1-flash.yaml](eval/harbor/bench5/campaigns/panel-v4.1-flash.yaml)、[report.py](eval/core/report.py)。
 
-父节点：[@ key="product-brief"]。
+父节点：[product-brief](knowledge/product-brief.md)。
 
-相关：[@ key="agent-design"]、[@ key="engine-design"]、[@ key="featured-tools"]。
+相关：[agent-design](knowledge/design/agent-design.md)、[engine-design](knowledge/design/engine-design.md)、[featured-tools](knowledge/framework/featured-tools.md)。

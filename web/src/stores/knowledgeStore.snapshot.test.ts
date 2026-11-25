@@ -65,25 +65,25 @@ function snapshot(
 }
 
 const missingRef = {
-  ref_key: "sym:src/a.rs\u0000fn save",
+  ref_key: "sym:src/a.rs\u0000Store.save",
   kind: "symbol" as const,
   key: null,
   path: "src/a.rs",
-  symbol: "fn save",
+  symbol: "Store.save",
   lines: null,
-  raw: '[@ file="src/a.rs" symbol="fn save"]',
+  raw: "[Store.save](src/a.rs#Store.save)",
   status: "missing_symbol",
   severity: "error" as const,
   target_path: "src/a.rs",
-  args: { path: "src/a.rs", symbol: "fn save" },
-  message: 'Symbol "fn save" in "src/a.rs" does not exist.',
+  args: { path: "src/a.rs", symbol: "Store.save" },
+  message: 'Symbol "Store.save" in "src/a.rs" does not exist.',
 };
 
 const seq = wireNode({
   path: "内核/seq.md",
   key: "seq",
   summary: "序号",
-  body: 'See [@ file="src/a.rs" symbol="fn save"]',
+  body: "See [Store.save](src/a.rs#Store.save)",
   folder_id: "内核",
   severity: "error",
   issues: [

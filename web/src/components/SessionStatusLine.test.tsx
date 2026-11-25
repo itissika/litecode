@@ -1340,10 +1340,10 @@ describe("SessionStatusLine — migrated chip content", () => {
     expect(screen.getByText("body text")).toBeTruthy();
   });
 
-  it("renders plan citations as chips, not raw shortcodes", async () => {
+  it("renders plan citations as chips, not raw links", async () => {
     useSessionStore.setState({ project: "E:\\project" } as never);
     vi.mocked(readFile).mockResolvedValue(
-      'The guard at [@ file="src/auth/validate.ts" lines="42-45"] returns 401.',
+      "The guard at [validate.ts:42-45](src/auth/validate.ts#L42-L45) returns 401.",
     );
     seedTurn("s1", { activePlanPath: ".litecode/plan/calm.md" });
 
@@ -1353,7 +1353,7 @@ describe("SessionStatusLine — migrated chip content", () => {
     expect(
       await screen.findByRole("button", { name: "validate.ts : 42-45" }),
     ).toBeTruthy();
-    expect(screen.queryByText(/\[@ file=/)).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
   });
 
   it("shows lost when the plan file cannot be read", async () => {

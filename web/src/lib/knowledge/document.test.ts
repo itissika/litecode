@@ -5,21 +5,23 @@ import {
   parseKnowledgeMarkdown,
   renderKnowledgeMarkdown,
 } from "./document";
-import { extractMarkers, mentionSource } from "./markers";
+import { extractRefs } from "./markers";
 
 describe("parseKnowledgeMarkdown", () => {
   it("reads the leading node fence and leaves the body", () => {
     const markdown = renderKnowledgeMarkdown({
       key: "seq",
       status: "disabled",
-      body: `以 ${mentionSource("session")} 递增。`,
+      body: "以 [session](knowledge/内核/session.md) 递增。",
     });
     const parsed = parseKnowledgeMarkdown("内核/seq.md", markdown);
     expect(parsed.key).toBe("seq");
     expect(parsed.status).toBe("disabled");
     expect(parsed.folderId).toBe("内核");
-    expect(parsed.body).toBe(`以 ${mentionSource("session")} 递增。\n`);
-    expect(extractMarkers(parsed.body)).toEqual(["session"]);
+    expect(parsed.body).toBe("以 [session](knowledge/内核/session.md) 递增。\n");
+    expect(extractRefs(parsed.body).map((r) => r.path)).toEqual([
+      "knowledge/内核/session.md",
+    ]);
   });
 
   it("accepts a tight colon and ignores a later node fence in the body", () => {
@@ -36,7 +38,7 @@ describe("parseKnowledgeMarkdown", () => {
     const parsed = parseKnowledgeMarkdown("seq.md", markdown);
     expect(parsed.key).toBe("seq");
     expect(parsed.body).toContain("node : other");
-    expect(extractMarkers(parsed.body)).toEqual([]);
+    expect(extractRefs(parsed.body)).toEqual([]);
   });
 
   it("does not treat prose before the fence as a declaration", () => {
@@ -48,14 +50,14 @@ describe("parseKnowledgeMarkdown", () => {
 });
 
 describe("knowledgeFromFiles", () => {
-  it("uses a unique key as the id and derives relations from the body", () => {
+  it("uses a unique key as the id and folds valid knowledge links into relations", () => {
     const { nodes, folders } = knowledgeFromFiles([
       {
         path: "内核/session.md",
         markdown: renderKnowledgeMarkdown({
           key: "session",
           status: "enabled",
-          body: `见 ${mentionSource("seq")} 与 ${mentionSource("seq")}。`,
+          body: "见 [seq](knowledge/内核/上下文/seq.md) 与 [seq](knowledge/内核/上下文/seq.md)。",
         }),
       },
       {

@@ -17,5 +17,5 @@ domain : tools-permission
 - 结果交代：维护 call_id 与调用的配对，按调用顺序交付结果，失败与取消有兜底，结果由公共出口统一整形。
 - 身份两级：tool name 是工具身份，call_id 是调用身份，二者不是一回事。
 
-上层：[@ key="tools"]。相关：[@ key="tool-pipeline"]。
+上层：[tools](knowledge/framework/tools.md)。相关：[tool-pipeline](knowledge/contracts/tool-pipeline.md)。
 - 管线职责拆到 tool-request-entry / lifecycle / delivery / shaping；与实现入口 `run_tool` 一致。

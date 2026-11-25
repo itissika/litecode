@@ -28,7 +28,9 @@ impl SemanticEngine {
         top_k: usize,
     ) -> Result<Vec<SearchHit>> {
         let top_k = top_k.clamp(1, MAX_TOP_K);
-        let query_vec = runtime.with_embedder(|emb| emb.embed_one(query))?;
+        let query_vec = runtime.with_embedder_priority(super::EmbedderPriority::High, |emb| {
+            emb.embed_one(query)
+        })?;
 
         let hits = match runtime.with_index_and_bm25(|index, bm25| {
             retrieve::bm25_cc_search(

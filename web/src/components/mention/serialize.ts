@@ -1,24 +1,10 @@
 import type { JSONContent } from "@tiptap/core";
 import type { MentionOptions } from "@tiptap/extension-mention";
 
-import { fileMentionSource, mentionSource, splitBodyRefs, symbolMentionSource } from "../../lib/knowledge/markers";
+import { citationMarkdown, splitBodyRefs } from "../../lib/knowledge/markers";
 
-export function knowledgeMentionOptions(
-  suggestion: MentionOptions["suggestion"],
-): Partial<MentionOptions> {
-  return {
-    HTMLAttributes: { class: "mention-chip" },
-    deleteTriggerWithBackspace: true,
-    renderText({ node }) {
-      const id = String(node.attrs.id ?? "");
-      const label = String(node.attrs.label ?? id);
-      return mentionSource(id, label);
-    },
-    suggestion,
-  };
-}
-
-export function fileMentionOptions(
+/** Single TipTap Mention configuration: serializes every chip as a standard Markdown link. */
+export function citationMentionOptions(
   suggestion: MentionOptions["suggestion"],
 ): Partial<MentionOptions> {
   return {
@@ -26,25 +12,17 @@ export function fileMentionOptions(
     deleteTriggerWithBackspace: true,
     renderText({ node }) {
       const path = String(node.attrs.id ?? "");
-      const label = String(node.attrs.label ?? path);
-      const symbol = String(node.attrs.symbol ?? "").trim();
-      const lines = String(node.attrs.lines ?? "");
-      if (symbol || lines) {
-        // Round-trip: re-emit lines exactly as the body had them.
-        return symbolMentionSource(path, {
-          symbol: symbol || undefined,
-          lines: lines || undefined,
-          label,
-          asWritten: true,
-        });
-      }
-      return fileMentionSource(path, label);
+      const label = node.attrs.label == null ? null : String(node.attrs.label);
+      const symbol = String(node.attrs.symbol ?? "").trim() || null;
+      const lines = node.attrs.lines == null ? null : String(node.attrs.lines);
+      const badLines = node.attrs.badLines == null ? null : String(node.attrs.badLines);
+      return citationMarkdown({ path, label, symbol, lines, badLines });
     },
     suggestion,
   };
 }
 
-/** Turn stored body text into a TipTap document. Valid shortcodes become mention nodes. */
+/** Turn stored body text into a TipTap document. Workspace Markdown links become mention nodes. */
 export function bodyToContent(text: string): JSONContent {
   const lines = text.length > 0 ? text.split(/\r?\n/) : [""];
   return {
@@ -63,26 +41,14 @@ function inlineContent(line: string): JSONContent[] {
       if (segment.value) nodes.push({ type: "text", text: segment.value });
       continue;
     }
-    if (segment.type === "file" || segment.type === "symbol") {
-      nodes.push({
-        type: "fileMention",
-        attrs: {
-          id: segment.path,
-          label: segment.label,
-          symbol: segment.type === "symbol" ? segment.symbol : null,
-          // The attribute as written, so a malformed span (or lines on a symbol,
-          // which the backend reports) round-trips instead of vanishing on save.
-          lines: segment.rawLines ?? null,
-          mentionSuggestionChar: "/",
-        },
-      });
-      continue;
-    }
     nodes.push({
       type: "mention",
       attrs: {
-        id: segment.id,
+        id: segment.path,
         label: segment.label,
+        symbol: segment.symbol,
+        lines: segment.lines,
+        badLines: segment.badLines,
         mentionSuggestionChar: "@",
       },
     });
@@ -90,7 +56,7 @@ function inlineContent(line: string): JSONContent[] {
   return nodes;
 }
 
-/** Inline nodes for one shortcode line, ready for `insertContentAt`. */
+/** Inline nodes for one citation line, ready for `insertContentAt`. */
 export function mentionInlineContent(text: string): JSONContent[] {
   const paragraph = bodyToContent(text).content?.[0];
   return paragraph?.content ?? [];

@@ -11,6 +11,6 @@ domain : tools-permission
 
 **准入：** A1。websearch 是只读网络检索适配：参数是 query，业务是调搜索后端拿文本；不自造授权、不自造结果方言。与 webfetch 同属网络面，但没有 URL 出站门——风险模型不同，故分节点。
 
-依据：[@ file="src/tools/websearch.rs" symbol="impl Tool for WebSearchTool › fn call_inner"]、[@ file="src/tools/websearch.rs" symbol="impl WebSearchTool › fn search_outcome"]。
-父节点：[@ key="tool-implementation-contract"]。
-相关：[@ key="webfetch-ssrf"]、[@ key="tool-adapters"]。
+依据：[WebSearchTool.Tool.call_inner](src/tools/websearch.rs#WebSearchTool.Tool.call_inner)、[WebSearchTool.search_outcome](src/tools/websearch.rs#WebSearchTool.search_outcome)。
+父节点：[tool-implementation-contract](knowledge/contracts/tool-implementation-contract.md)。
+相关：[webfetch-ssrf](knowledge/contracts/tools/webfetch-ssrf.md)、[tool-adapters](knowledge/contracts/tools/tool-adapters.md)。

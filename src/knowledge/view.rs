@@ -45,17 +45,16 @@ summary : one line
 
 `summary` is one line. The body is the markdown after the fence.
 
-The only citation that names a node is `[@ key="seq"]`. Lookup uses the key.
+Citations are standard Markdown links with workspace-relative paths:
 
-A file citation is `[@ file="src/a.rs"]`. It names a workspace path, not a node. A file and a directory both count. `..` and an absolute path are not a path.
+- Knowledge node: `[seq](knowledge/contracts/seq.md)`. Any valid `.md` node under `knowledge/` folds to a node citation automatically.
+- File or directory: `[a.rs](src/a.rs)`. A file and a directory both count. `..` and absolute paths are not valid.
+- Line or range: `[a.rs:4-9](src/a.rs#L4-L9)` (or `#L4-9` / `#L4`). Ranges are 1-based (`1 <= A <= B`); a malformed range or one past EOF is an error.
+- Symbol: `[Store.save](src/a.rs#Store.save)` or `[resolve](src/a.rs#resolve)` (dot-separated identifier, no spaces; `::` is also accepted). A missing or ambiguous symbol is an error.
 
-A symbol citation is `[@ file="src/a.rs" symbol="impl Store › fn save"]`. `symbol` is the ancestor chain and is the identity. A symbol citation takes no `lines`; `lines` on it is an error. A chain that is missing or not unique is an error.
+Links inside fences (` ``` ` or `~~~`), inside inline code, images (`![...](...)`), web links (`https://...`), and `#section` anchors are not workspace citations.
 
-A line range is `[@ file="src/a.rs" lines="4-9"]` (or `lines="4"`) and has no symbol. A malformed range, or one past the end of the file, is an error.
-
-A citation inside a fence (` ``` ` or `~~~`), inside inline code, or written as `@seq` or `/src/a.rs` is ordinary text.
-
-The file is named `<key>.md`. If the name differs, the key is still the identity.
+The file must be named `<key>.md`. A filename that differs from `node :` is an error and the node cannot be cited.
 
 `x`, `y`, `w`, and `h` in the fence are the human panel's layout; ignore them when reading. Unrecognized field lines are kept.
 
@@ -65,25 +64,23 @@ Errors:
 
 - The status is not `enabled`, `disabled`, or `pending`.
 - The declaration is missing, or the key is not valid.
+- The file name does not match the declared `node` key.
 - The same key is declared more than once.
-- A node cites its own key.
-- A citation `key` matches no node.
-- A file citation path is not in the workspace.
-- A symbol citation's chain is missing from that file, or the same chain occurs more than once.
+- A node cites itself.
+- A citation targets a bad node or a path that does not exist in the workspace.
+- A symbol anchor is missing or ambiguous in that file.
+- A line range is malformed or past EOF.
 
 Warnings:
 
-- The file name does not match the key.
 - An enabled node cites a disabled or pending node.
 
 ## Notes
 
 - `knowledge create` writes a pending node. This command does not delete a node or change its status.
-- `knowledge rename` changes the key, the file name, and citation keys. A node citation is rewritten as `[@ key="new"]`. Editing `node :` or the file name by hand does not.
-- A card's `cites` and `cited by` count node citations only. File and symbol citations are not counted.
-- `knowledge refs` shows the file as stored, so a citation there stays in the bracket form.
+- A card's `cites` and `cited by` count knowledge node citations only. File, symbol, and range citations are not counted.
+- `knowledge refs` shows the file as stored.
 - Edit the body in place and leave the fence as it is, so layout fields and unrecognized lines stay.
-- Quote a key that contains a space.
 - A markdown file with no `node` declaration is not a node. It is left in place.
 "#;
 

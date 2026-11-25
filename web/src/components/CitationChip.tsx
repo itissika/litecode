@@ -1,6 +1,8 @@
 import { X } from "@phosphor-icons/react";
-import { useMemo, type MouseEvent } from "react";
+import { useEffect, useMemo, type MouseEvent } from "react";
 
+import { KNOWLEDGE_PRIVATE_ROOT, KNOWLEDGE_PUBLIC_ROOT } from "../lib/knowledge/load";
+import { normalizeRefPath } from "../lib/knowledge/markers";
 import { followCitation } from "../lib/knowledge/panel";
 import {
   citationRefKey,
@@ -10,7 +12,12 @@ import {
   type CitationChipModel,
 } from "../lib/knowledge/refDisplay";
 import { externalPreviewId, useEditorStore } from "../stores/editorStore";
-import { knowledgeRefState, useKnowledgeStore } from "../stores/knowledgeStore";
+import {
+  ensureKnowledgeLoaded,
+  knowledgeRefState,
+  lookupKnowledgeNodeByPath,
+  useKnowledgeStore,
+} from "../stores/knowledgeStore";
 import { imageChipPath } from "./mention/imageChipHover";
 import { ImageChipPreview } from "./mention/imageChipPreview";
 
@@ -34,6 +41,23 @@ function chipClass(model: CitationChipModel, nodrag: boolean): string {
   return names.join(" ");
 }
 
+function isBarePathCitation(citation: Citation): boolean {
+  return (
+    !citation.symbol?.trim() &&
+    citation.line == null &&
+    !citation.lines?.trim() &&
+    !citation.badLines?.trim()
+  );
+}
+
+function looksLikeKnowledgePath(rawPath: string): boolean {
+  const norm = normalizeRefPath(rawPath);
+  return (
+    norm.startsWith(`${KNOWLEDGE_PUBLIC_ROOT}/`) ||
+    norm.startsWith(`${KNOWLEDGE_PRIVATE_ROOT}/`)
+  );
+}
+
 /** The one citation capsule. A resolvable label follows the reference; remove is only for editors.
  *  Hover is the image preview layer: it opens immediately, and the full reference is its caption. */
 export function CitationChip({
@@ -49,20 +73,25 @@ export function CitationChip({
   onRemove?: () => void;
   nodrag?: boolean;
 }) {
+  const barePath = isBarePathCitation(citation);
+  const maybeKnowledge = barePath && looksLikeKnowledgePath(citation.path);
+
+  useEffect(() => {
+    if (maybeKnowledge) ensureKnowledgeLoaded();
+  }, [maybeKnowledge]);
+
   const source = useKnowledgeStore((state) =>
     sourceId ? state.byId.get(sourceId) : undefined,
   );
-  const target = useKnowledgeStore((state) => {
-    if (citation.kind !== "node") return undefined;
-    const key = citation.key.trim();
-    return key ? state.byKey.get(key) : undefined;
-  });
+  const target = useKnowledgeStore((state) =>
+    barePath ? lookupKnowledgeNodeByPath(state, citation.path) : undefined,
+  );
   // Backend verdict for this citation, aligned by `ref_key` (KR-KEY-1).
   const refKey = useMemo(() => citationRefKey(citation), [citation]);
   const ref = useKnowledgeStore((state) => knowledgeRefState(state, sourceId, refKey));
   const ready = useKnowledgeStore((state) => state.ready);
   const externalOpen = useEditorStore((state) => {
-    if (citation.kind !== "file") return false;
+    if (target) return false;
     const id = externalPreviewId(citation.path);
     return state.tabs.some((tab) => tab.external && tab.path === id);
   });
@@ -79,16 +108,19 @@ export function CitationChip({
     [citation, source, target, ref, ready, externalOpen, label],
   );
 
-  // Copy hands the reference back as source text: the chip itself is not
-  // selectable, so a selection that crosses it would otherwise lose it (see
-  // `onCitationCopy`).
-  const shortcode = useMemo(() => citationSource(citation), [citation]);
+  // Copy hands the reference back as standard Markdown link text: the chip
+  // itself is not selectable, so a selection that crosses it would otherwise
+  // lose it (see `onCitationCopy`).
+  const sourceLink = useMemo(
+    () => citationSource(citation, target ?? null),
+    [citation, target],
+  );
   const detail = model.detail && model.detail !== model.label ? model.detail : null;
   // Full reference first, then the verdict text: a shortened label never hides
   // where it points, and an issue keeps its own line.
   const text = [detail, model.title].filter(Boolean).join("\n");
   const previewPath =
-    citation.kind === "file"
+    model.file
       ? imageChipPath("file", {
           id: citation.path,
           symbol: citation.symbol,
@@ -103,7 +135,7 @@ export function CitationChip({
       className={chipClass(model, nodrag)}
       path={previewPath}
       text={text}
-      source={shortcode}
+      source={sourceLink}
     >
       {model.resolvable ? (
         <button

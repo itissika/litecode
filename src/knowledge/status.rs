@@ -122,7 +122,7 @@ mod tests {
         write_node(
             errors.path(),
             "seq.md",
-            &enabled("seq", "see [@ key=\"missing\"]\n"),
+            &enabled("seq", "see [missing](knowledge/missing.md)\n"),
         );
         let error = note(errors.path()).unwrap();
         assert_eq!(error.class, Class::Error);
@@ -132,19 +132,22 @@ mod tests {
         );
 
         let two = tempfile::tempdir().unwrap();
-        write_node(two.path(), "a.md", &enabled("a", "see [@ key=\"gone\"]\n"));
-        write_node(two.path(), "b.md", &enabled("b", "see [@ key=\"also\"]\n"));
+        write_node(two.path(), "a.md", &enabled("a", "see [gone](knowledge/gone.md)\n"));
+        write_node(two.path(), "b.md", &enabled("b", "see [also](knowledge/also.md)\n"));
         assert_eq!(
             note(two.path()).unwrap().text,
             "Knowledge base: 2 nodes have errors. You can run `knowledge check` and tell the user."
         );
 
-        // A warning alone (file name differs from the key) stays quiet.
-        let warned = tempfile::tempdir().unwrap();
-        write_node(warned.path(), "other.md", &enabled("seq", ""));
-        let held = note(warned.path()).unwrap();
-        assert_eq!(held.class, Class::Ok);
-        assert_eq!(held.text, "Knowledge base: 1 enabled node.");
+        // Filename mismatch is an error and raises the class.
+        let mismatched = tempfile::tempdir().unwrap();
+        write_node(mismatched.path(), "other.md", &enabled("seq", ""));
+        let mismatch_note = note(mismatched.path()).unwrap();
+        assert_eq!(mismatch_note.class, Class::Error);
+        assert_eq!(
+            mismatch_note.text,
+            "Knowledge base: 1 node has errors. You can run `knowledge check` and tell the user."
+        );
 
         let mixed = tempfile::tempdir().unwrap();
         write_node(mixed.path(), "draft.md", &pending("draft", ""));

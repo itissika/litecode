@@ -18,7 +18,7 @@ describe("MessageCopyButton", () => {
   it("copies the source text as given, citations included", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     stubClipboard(writeText);
-    const text = 'Look [@ file="src/a.ts" lines="12-30"] and stop.';
+    const text = "Look [a.ts:12-30](src/a.ts#L12-L30) and stop.";
     render(<MessageCopyButton text={text} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Copy message" }));

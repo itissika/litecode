@@ -17,7 +17,7 @@ h : 537
 - 治理收敛：权限单管线求值（只收紧、不放宽），配置经唯一写入门。
 - 团队与基座：子 agent 是完整会话、不可嵌套；能力落工作区基座共享；内核独立进程，位置只改变连接方式。
 
-框架展开：[@ key="session"]、[@ key="context"]、[@ key="tools"]、[@ key="config"]。
-契约展开：[@ key="item-authority"]、[@ key="platform-knobs"]。
-上层：[@ key="product-brief"]、[@ key="agent-design"]。
-依据：[@ file="src/agent/core.rs"]、[@ file="src/agent/deps.rs"]、[@ file="src/tool/pipeline.rs"]。
+框架展开：[session](knowledge/framework/session.md)、[context](knowledge/framework/context.md)、[tools](knowledge/framework/tools.md)、[config](knowledge/framework/config.md)。
+契约展开：[item-authority](knowledge/contracts/item-authority.md)、[platform-knobs](knowledge/contracts/platform-knobs.md)。
+上层：[product-brief](knowledge/product-brief.md)、[agent-design](knowledge/design/agent-design.md)。
+依据：[core.rs](src/agent/core.rs)、[deps.rs](src/agent/deps.rs)、[pipeline.rs](src/tool/pipeline.rs)。

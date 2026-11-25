@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
@@ -15,9 +14,27 @@ use crate::client_protocol::permission_bridge::PendingPermission;
 use crate::client_protocol::project;
 use crate::client_protocol::protocol::{JsonRpcRequestEnvelope, TransportRequest, methods};
 use crate::client_protocol::workspace;
-use crate::engines::WorkspaceEngines;
 use crate::serve::state::ServeState;
 use crate::telemetry;
+
+/// Transport-layer RFC 6455 Ping cadence for server-side half-open TCP detection.
+const WS_PROTOCOL_PING_INTERVAL: Duration = Duration::from_secs(15);
+/// Threshold above which a slow WebSocket sink write emits a diagnostic warning.
+const SLOW_WS_SEND_WARN: Duration = Duration::from_secs(2);
+
+enum WsControlFrame {
+    Json(serde_json::Value),
+}
+
+fn is_ordered_terminal_method(method: &str) -> bool {
+    matches!(
+        method,
+        methods::TERMINAL_CREATE
+            | methods::TERMINAL_WRITE
+            | methods::TERMINAL_RESIZE
+            | methods::TERMINAL_CLOSE
+    )
+}
 
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
@@ -55,28 +72,6 @@ pub async fn ws_handler(
         return axum::http::StatusCode::UNAUTHORIZED.into_response();
     }
     ws.on_upgrade(move |socket| handle_socket(socket, state, session_hint))
-}
-
-fn spawn_stats_ticker(
-    response_tx: mpsc::UnboundedSender<serde_json::Value>,
-    engines: Arc<WorkspaceEngines>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let emit_stats = || {
-            let sample = engines.memory_sample();
-            let _ = response_tx.send(project::server_stats(sample));
-        };
-        emit_stats();
-        let mut interval = tokio::time::interval(Duration::from_secs(2));
-        interval.tick().await;
-        loop {
-            interval.tick().await;
-            emit_stats();
-            if response_tx.is_closed() {
-                break;
-            }
-        }
-    })
 }
 
 fn spawn_log_forwarder(response_tx: mpsc::UnboundedSender<serde_json::Value>) -> JoinHandle<()> {
@@ -146,17 +141,35 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
 
     let (perm_tx, perm_rx) = mpsc::unbounded_channel::<PendingPermission>();
     let (request_tx, request_rx) = mpsc::unbounded_channel::<SessionRequest>();
+    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<WsControlFrame>();
     let (response_tx, mut response_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+    let (terminal_cmd_tx, mut terminal_cmd_rx) = mpsc::unbounded_channel::<JsonRpcRequestEnvelope>();
     let mut settings_rx = state.subscribe_settings();
+    let mut stats_rx = state.subscribe_stats();
 
-    let stats_handle = spawn_stats_ticker(response_tx.clone(), state.workspace_engines.clone());
+    let mut bg_tasks: Vec<JoinHandle<()>> = Vec::with_capacity(8);
     let terminal_rx = terminal_hub.attach_connection(conn_id.clone());
-    let terminal_handle = spawn_terminal_forwarder(response_tx.clone(), terminal_rx);
+    bg_tasks.push(spawn_terminal_forwarder(response_tx.clone(), terminal_rx));
     let mut log_forwarder: Option<JoinHandle<()>> = None;
+
+    // Dedicated ordered terminal command lane: preserves keystroke/resize FIFO
+    // without ever blocking the WS reader loop.
+    {
+        let term_runtime = workspace_runtime.clone();
+        let term_tx = response_tx.clone();
+        let term_hub = terminal_hub.clone();
+        let term_conn = conn_id.clone();
+        bg_tasks.push(tokio::spawn(async move {
+            while let Some(rpc) = terminal_cmd_rx.recv().await {
+                workspace::handle_jsonrpc(&term_runtime, &term_tx, &term_hub, &term_conn, rpc)
+                    .await;
+            }
+        }));
+    }
 
     let workspace = state.workspace.clone();
     let workspace_tx = response_tx.clone();
-    tokio::spawn(async move {
+    bg_tasks.push(tokio::spawn(async move {
         let mut broadcast_rx = workspace.subscribe_changes();
         loop {
             match broadcast_rx.recv().await {
@@ -196,7 +209,7 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
-    });
+    }));
 
     // `knowledge/changed`: the resident index published a new version.
     {
@@ -205,7 +218,7 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
             .unwrap_or_else(|| crate::knowledge::index::start(&root));
         let knowledge_tx = response_tx.clone();
         let mut knowledge_rx = index.subscribe();
-        tokio::spawn(async move {
+        bg_tasks.push(tokio::spawn(async move {
             loop {
                 match knowledge_rx.recv().await {
                     Ok(changed) => {
@@ -243,12 +256,12 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
-        });
+        }));
     }
 
     let settings_tx = response_tx.clone();
     let settings_runtime = state.runtime.clone();
-    tokio::spawn(async move {
+    bg_tasks.push(tokio::spawn(async move {
         loop {
             match settings_rx.recv().await {
                 Ok(event) => {
@@ -297,12 +310,12 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
-    });
+    }));
 
     let lsp_hub = state.workspace_engines.lsp_hub();
     let mut lsp_diag_rx = lsp_hub.subscribe_diagnostics();
     let lsp_diag_tx = response_tx.clone();
-    tokio::spawn(async move {
+    bg_tasks.push(tokio::spawn(async move {
         loop {
             match lsp_diag_rx.recv().await {
                 Ok(ev) => {
@@ -324,13 +337,13 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
-    });
+    }));
 
     // Bot directory changes are product-layer events, separate from the
     // session lifecycle bus. Tool-created bots must appear without a refresh.
     let bot_tx = response_tx.clone();
     let mut bot_rx = state.bots.subscribe();
-    tokio::spawn(async move {
+    bg_tasks.push(tokio::spawn(async move {
         loop {
             match bot_rx.recv().await {
                 Ok(event) => {
@@ -342,13 +355,13 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
-    });
+    }));
 
     // G0: forward session lifecycle events to this connection.
     let lifecycle_tx = response_tx.clone();
     let mut lifecycle_rx = state.service.subscribe_lifecycle();
     let lifecycle_sessions = state.service.clone();
-    tokio::spawn(async move {
+    bg_tasks.push(tokio::spawn(async move {
         // WP-091 R8: raw status on turn events; status_changed comes from
         // the serve-level TurnStatusHook as SessionStatusChanged.
         loop {
@@ -372,7 +385,7 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
-    });
+    }));
 
     for msg in session.handshake_frames() {
         emit(&response_tx, msg);
@@ -397,17 +410,91 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
 
     let (mut ws_tx, mut ws_rx) = socket.split();
 
+    // Two-lane prioritized WS writer: control (`server/ping` replies), cached
+    // process-level `server/stats` (coalesced via `watch`), and RFC 6455 Ping
+    // strictly preempt the business data queue (`response_rx`).
     let writer = tokio::spawn(async move {
-        while let Some(resp) = response_rx.recv().await {
-            let line = match serde_json::to_string(&resp) {
+        async fn send_ws_msg(
+            ws_tx: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+            msg: Message,
+            kind: &'static str,
+        ) -> bool {
+            let started = Instant::now();
+            let ok = ws_tx.send(msg).await.is_ok();
+            let elapsed = started.elapsed();
+            if elapsed > SLOW_WS_SEND_WARN {
+                tracing::warn!(
+                    kind,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "websocket sink send stalled"
+                );
+            }
+            ok
+        }
+
+        async fn send_json(
+            ws_tx: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+            val: &serde_json::Value,
+            kind: &'static str,
+        ) -> bool {
+            let line = match serde_json::to_string(val) {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!("response serialize failed: {}", e);
-                    continue;
+                    return true;
                 }
             };
-            if ws_tx.send(Message::Text(line.into())).await.is_err() {
-                break;
+            send_ws_msg(ws_tx, Message::Text(line.into()), kind).await
+        }
+
+        let initial = *stats_rx.borrow_and_update();
+        if let Some(initial) = initial
+            && !send_json(&mut ws_tx, &project::server_stats(initial), "stats").await
+        {
+            return;
+        }
+
+        let mut ws_ping = tokio::time::interval_at(
+            tokio::time::Instant::now() + WS_PROTOCOL_PING_INTERVAL,
+            WS_PROTOCOL_PING_INTERVAL,
+        );
+        ws_ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                biased;
+
+                Some(ctrl) = control_rx.recv() => {
+                    match ctrl {
+                        WsControlFrame::Json(val) => {
+                            if !send_json(&mut ws_tx, &val, "control").await {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                Ok(()) = stats_rx.changed() => {
+                    let sample = *stats_rx.borrow_and_update();
+                    if let Some(sample) = sample
+                        && !send_json(&mut ws_tx, &project::server_stats(sample), "stats").await
+                    {
+                        break;
+                    }
+                }
+
+                _ = ws_ping.tick() => {
+                    if !send_ws_msg(&mut ws_tx, Message::Ping(Default::default()), "ping").await {
+                        break;
+                    }
+                }
+
+                maybe_resp = response_rx.recv() => {
+                    let Some(resp) = maybe_resp else { break; };
+                    if !send_json(&mut ws_tx, &resp, "data").await {
+                        break;
+                    }
+                }
             }
         }
     });
@@ -426,15 +513,34 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
         if let Ok(rpc) = serde_json::from_str::<JsonRpcRequestEnvelope>(&text)
             && rpc.jsonrpc == "2.0"
         {
+            // Zero-lock liveness probe: answered immediately on the priority control lane.
+            if rpc.method == methods::SERVER_PING {
+                let _ = control_tx.send(WsControlFrame::Json(
+                    serde_json::to_value(ok_response(
+                        rpc.id.clone(),
+                        serde_json::json!({ "ts_ms": chrono::Utc::now().timestamp_millis() }),
+                    ))
+                    .unwrap(),
+                ));
+                continue;
+            }
             if workspace::is_workspace_method(&rpc.method) {
-                workspace::handle_jsonrpc(
-                    &workspace_runtime,
-                    &response_tx,
-                    &terminal_hub,
-                    &conn_id,
-                    rpc,
-                )
-                .await;
+                if is_ordered_terminal_method(&rpc.method) {
+                    if terminal_cmd_tx.send(rpc).is_err() {
+                        break;
+                    }
+                } else {
+                    // Run LSP / bash requests concurrently off the read loop so
+                    // a slow LSP call never stalls `server/ping`, `agent/cancel`,
+                    // or WS Pong/Close processing.
+                    let rt = workspace_runtime.clone();
+                    let tx = response_tx.clone();
+                    let hub = terminal_hub.clone();
+                    let cid = conn_id.clone();
+                    tokio::spawn(async move {
+                        workspace::handle_jsonrpc(&rt, &tx, &hub, &cid, rpc).await;
+                    });
+                }
                 continue;
             }
             // Intercept agent/permission and convert to PermissionGrant.
@@ -585,8 +691,10 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
     if let Some(handle) = log_forwarder.take() {
         handle.abort();
     }
-    stats_handle.abort();
-    terminal_handle.abort();
+    for handle in bg_tasks {
+        handle.abort();
+    }
+    drop(terminal_cmd_tx);
     let cleanup_hub = state.terminal_hub.clone();
     let cleanup_conn = conn_id.clone();
     let _ = tokio::task::spawn_blocking(move || cleanup_hub.disconnect(&cleanup_conn)).await;

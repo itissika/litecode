@@ -70,30 +70,48 @@ describe("classifyWorkspaceLink", () => {
       action: "chip",
       path: "src/a.ts",
       line: null,
+      lines: null,
+      badLines: null,
       symbol: null,
     });
     expect(classifyWorkspaceLink("src/auth/validate.ts#L42")).toEqual({
       action: "chip",
       path: "src/auth/validate.ts",
       line: 42,
+      lines: "42",
+      badLines: null,
+      symbol: null,
+    });
+    expect(classifyWorkspaceLink("src/auth/validate.ts#L12-L30")).toEqual({
+      action: "chip",
+      path: "src/auth/validate.ts",
+      line: 12,
+      lines: "12-30",
+      badLines: null,
       symbol: null,
     });
     expect(classifyWorkspaceLink("src/session.rs#Session.user")).toEqual({
       action: "chip",
       path: "src/session.rs",
       line: null,
+      lines: null,
+      badLines: null,
       symbol: "Session.user",
     });
     expect(classifyWorkspaceLink("./src/my%20file.ts")).toEqual({
       action: "chip",
       path: "src/my file.ts",
       line: null,
+      lines: null,
+      badLines: null,
       symbol: null,
     });
     expect(classifyWorkspaceLink("src\\a.ts")).toEqual({
       action: "chip",
       path: "src/a.ts",
       line: null,
+      lines: null,
+      badLines: null,
       symbol: null,
     });
   });
