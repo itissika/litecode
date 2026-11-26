@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 
 mod render;
 pub use render::RUN_CODE_VIEW_MAX_BYTES;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -269,7 +269,6 @@ struct LedgerLine {
     /// Display state: `ok`, `ok(a/b)`, `error:{code}`, `cancelled`, `unsettled`.
     outcome: Option<String>,
     error_code: Option<String>,
-    session_read: bool,
     /// One-line result digest for the failure view (WP-210 A).
     brief: Option<String>,
 }
@@ -277,7 +276,6 @@ struct LedgerLine {
 struct PendingCall {
     tool: String,
     summary: String,
-    session_read: bool,
 }
 
 struct LedgerSnapshot {
@@ -286,7 +284,6 @@ struct LedgerSnapshot {
     /// Settled per-tool ok/fail (unsettled & host-cancelled excluded).
     by_tool: BTreeMap<String, (usize, usize)>,
     error_counts: BTreeMap<String, usize>,
-    session_read_hidden: bool,
 }
 
 struct CallLedger {
@@ -297,7 +294,6 @@ struct CallLedger {
     /// Settled ok/fail per tool name. Host `cancelled` and unsettled are excluded.
     by_tool: Mutex<BTreeMap<String, (usize, usize)>>,
     per_error: Mutex<BTreeMap<String, usize>>,
-    session_read_hidden: AtomicBool,
 }
 
 impl CallLedger {
@@ -309,7 +305,6 @@ impl CallLedger {
             priority_used: AtomicUsize::new(0),
             by_tool: Mutex::new(BTreeMap::new()),
             per_error: Mutex::new(BTreeMap::new()),
-            session_read_hidden: AtomicBool::new(false),
         }
     }
 
@@ -333,7 +328,6 @@ impl CallLedger {
     }
 
     fn begin(&self, seq: u64, tool: &str, summary: &str) {
-        let session_read = call_reads_session(tool, summary);
         let mut lines = self
             .lines
             .lock()
@@ -345,7 +339,6 @@ impl CallLedger {
                 args_summary: summary.to_string(),
                 outcome: None,
                 error_code: None,
-                session_read,
                 brief: None,
             });
             return;
@@ -360,7 +353,6 @@ impl CallLedger {
                 PendingCall {
                     tool: tool.to_string(),
                     summary: summary.to_string(),
-                    session_read,
                 },
             );
     }
@@ -413,16 +405,12 @@ impl CallLedger {
                     args_summary: pending.summary,
                     outcome: Some(outcome),
                     error_code,
-                    session_read: pending.session_read,
                     brief: Some(brief),
                 });
             return;
         }
         // Settled but not retained in the snap: still count for human by_tool.
         self.note_settled(&pending.tool, &outcome);
-        if pending.session_read {
-            self.session_read_hidden.store(true, Ordering::Relaxed);
-        }
     }
 
     fn snapshot(&self) -> LedgerSnapshot {
@@ -439,7 +427,6 @@ impl CallLedger {
             .collect();
         let mut omitted = self.omitted.load(Ordering::Relaxed);
         let mut priority_used = self.priority_used.load(Ordering::Relaxed);
-        let mut session_read_hidden = self.session_read_hidden.load(Ordering::Relaxed);
         for (seq, pending) in pending {
             if priority_used < PRIORITY_CAP {
                 priority_used += 1;
@@ -450,11 +437,8 @@ impl CallLedger {
                     args_summary: pending.summary,
                     outcome: Some("unsettled".to_string()),
                     error_code: None,
-                    session_read: pending.session_read,
                     brief: None,
                 });
-            } else if pending.session_read {
-                session_read_hidden = true;
             }
         }
         lines.sort_by_key(|line| line.seq);
@@ -471,7 +455,6 @@ impl CallLedger {
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
                 .clone(),
-            session_read_hidden,
         }
     }
 }
@@ -506,14 +489,6 @@ fn call_brief(result: &ToolCallResult) -> String {
     } else {
         cut.to_string()
     }
-}
-
-fn call_reads_session(tool: &str, summary: &str) -> bool {
-    if tool == "session_search" {
-        return true;
-    }
-    matches!(tool, "read" | "grep" | "glob")
-        && crate::session::transcript_file::is_session_target(summary)
 }
 
 fn is_priority_state(state: &str) -> bool {
@@ -1419,7 +1394,6 @@ fn run_report(
             summary: line.args_summary.clone(),
             state: merge_call_outcome(line.outcome.as_deref(), record.map(|call| call.state)),
             error_code: line.error_code.clone(),
-            session_read: line.session_read,
             brief: line.brief.clone(),
         });
     }
@@ -1445,7 +1419,6 @@ fn run_report(
                 .filter(|call| call.state == CallState::CancelledUnfinished)
                 .count(),
         ),
-        session_read_hidden: snapshot.session_read_hidden,
         failure_location: outcome
             .failure
             .as_ref()
@@ -1700,8 +1673,9 @@ mod outcome_tests {
             &ToolCallResult::error_with_kind(ToolErrorKind::PermissionDenied, "denied", false),
             &completed,
         );
-        assert!(text.starts_with("run_code ok · 1 calls · "), "{text}");
-        assert!(!text.contains("tool calls:"), "{text}");
+        // Nothing failed at the program level and no reminder was built, so the
+        // view is empty: a clean run has no status line.
+        assert_eq!(text, "", "{text}");
         assert!(!text.contains("#1 "), "{text}");
         assert!(!text.contains("@@run_code_data"), "{text}");
     }
@@ -1771,11 +1745,7 @@ mod outcome_tests {
         };
         let result = render_run_output(&ledger, &outcome, 120_000, "", Vec::new());
         assert!(result.error.is_none(), "{}", result.content);
-        assert!(
-            result.content.starts_with("run_code ok · 2 calls · 42ms"),
-            "{}",
-            result.content
-        );
+        assert!(!result.content.contains("run_code"), "{}", result.content);
         assert!(result.content.ends_with("done"), "{}", result.content);
         assert!(!result.content.contains("by_tool"), "{}", result.content);
         assert!(!result.content.contains("calls ("), "{}", result.content);

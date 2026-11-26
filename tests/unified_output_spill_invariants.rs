@@ -253,7 +253,7 @@ inspect("TAIL_RUN_2MB");
     let first = run_code_with_bundle(root, vec![Arc::clone(&read_tool)], script).await;
     assert_eq!(first.level, ToolSignalLevel::Ok, "{}", first.content);
     assert!(first.error.is_none(), "{}", first.content);
-    assert!(first.content.starts_with("run_code ok"), "{}", first.content);
+    assert!(!first.content.starts_with("run_code"), "{}", first.content);
     assert!(
         first.content.len() <= RUN_CODE_VIEW_MAX_BYTES + 256,
         "over cap: {}",

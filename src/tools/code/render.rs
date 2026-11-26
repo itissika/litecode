@@ -1,9 +1,9 @@
 //! Model-facing text for one `run_code` execution.
 //!
-//! The view is a header, one **upfloat block**, then **one ordered stream** of
-//! `inspect(...)` entries. One single byte budget ([`RUN_CODE_VIEW_MAX_BYTES`])
-//! covers everything. On failure the header is followed by a brief of the calls
-//! that already settled, then the block, then the same stream.
+//! A clean run is one **upfloat block** then **one ordered stream** of
+//! `inspect(...)` entries. A failed run puts a header line first, followed by a
+//! brief of the calls that already settled. One single byte budget
+//! ([`RUN_CODE_VIEW_MAX_BYTES`]) covers everything.
 //!
 //! The block sits **above** the stream because its facts are what the stream
 //! cannot say: a cut, a path outside the workspace, a clamped argument, a
@@ -24,7 +24,6 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::ptc::{FailureKind, ResourceKind, SourceLocation};
-use crate::session::transcript_file::RUN_CODE_SESSION_NOTE;
 use crate::types::utf8::prefix_utf8;
 
 /// Hard cap for the model-facing `run_code` view, including omission notes.
@@ -41,7 +40,6 @@ pub(super) struct LedgerSnap {
     pub summary: String,
     pub state: String,
     pub error_code: Option<String>,
-    pub session_read: bool,
     /// One-line result digest (WP-210 A); `None` while unsettled.
     pub brief: Option<String>,
 }
@@ -125,7 +123,6 @@ pub(super) struct RunReport {
     pub error_counts: BTreeMap<String, usize>,
     pub call_total: Option<usize>,
     pub unsettled_total: Option<usize>,
-    pub session_read_hidden: bool,
     pub failure_location: Option<SourceLocation>,
     pub failure_at_end: bool,
     pub failure_stack: Option<String>,
@@ -153,7 +150,10 @@ pub(super) fn render_model_view_in(
     let mut upfloat = render_upfloat(report, after_head / 3, manifest.as_deref());
 
     let assemble_prefix = |upfloat_text: &str| {
-        let mut prefix_parts = vec![header.clone()];
+        let mut prefix_parts = Vec::new();
+        if !header.is_empty() {
+            prefix_parts.push(header.clone());
+        }
         prefix_parts.extend(manifest.clone());
         if !upfloat_text.is_empty() {
             prefix_parts.push(upfloat_text.to_string());
@@ -172,19 +172,16 @@ pub(super) fn render_model_view_in(
     let full_stream = join_stream_blocks(&blocks);
 
     let base_prefix = assemble_prefix(&upfloat);
-    if base_prefix.len() + 2 + full_stream.len() <= RUN_CODE_VIEW_MAX_BYTES {
-        return if full_stream.is_empty() {
-            base_prefix
-        } else {
-            format!("{base_prefix}\n\n{full_stream}")
-        };
+    let base_sep = if base_prefix.is_empty() { 0 } else { 2 };
+    if base_prefix.len() + base_sep + full_stream.len() <= RUN_CODE_VIEW_MAX_BYTES {
+        return join_prefix_stream(&base_prefix, &full_stream);
     }
 
     // Reserve space for the spilled upfloat line (path + exact omitted line range)
     // so the complete output strictly stays within RUN_CODE_VIEW_MAX_BYTES.
     const SPILL_UPFLOAT_RESERVE: usize = 220;
     let stream_budget = RUN_CODE_VIEW_MAX_BYTES
-        .saturating_sub(base_prefix.len() + 2 + SPILL_UPFLOAT_RESERVE);
+        .saturating_sub(base_prefix.len() + base_sep + SPILL_UPFLOAT_RESERVE);
     let cut = crate::tool::output::cut_and_spill_lines(
         &full_stream,
         stream_budget,
@@ -201,16 +198,26 @@ pub(super) fn render_model_view_in(
         }
     }
     let final_prefix = assemble_prefix(&upfloat);
-    let shown_stream = if final_prefix.len() + 2 + cut.text.len() > RUN_CODE_VIEW_MAX_BYTES {
-        let remaining = RUN_CODE_VIEW_MAX_BYTES.saturating_sub(final_prefix.len() + 2);
-        prefix_utf8(&cut.text, remaining).to_string()
+    let final_sep = if final_prefix.is_empty() { 0 } else { 2 };
+    let shown_stream =
+        if final_prefix.len() + final_sep + cut.text.len() > RUN_CODE_VIEW_MAX_BYTES {
+            let remaining = RUN_CODE_VIEW_MAX_BYTES.saturating_sub(final_prefix.len() + final_sep);
+            prefix_utf8(&cut.text, remaining).to_string()
+        } else {
+            cut.text
+        };
+    join_prefix_stream(&final_prefix, &shown_stream)
+}
+
+/// Join an optional fact prefix to the stream. A clean run has no prefix at all,
+/// and the stream must not start with a blank separator.
+fn join_prefix_stream(prefix: &str, stream: &str) -> String {
+    if stream.is_empty() {
+        prefix.to_string()
+    } else if prefix.is_empty() {
+        stream.to_string()
     } else {
-        cut.text
-    };
-    if shown_stream.is_empty() {
-        final_prefix
-    } else {
-        format!("{final_prefix}\n\n{shown_stream}")
+        format!("{prefix}\n\n{stream}")
     }
 }
 
@@ -1345,7 +1352,10 @@ fn failure_kind_slug(kind: FailureKind) -> &'static str {
 }
 
 fn render_header_block(report: &RunReport) -> String {
-    let mut parts = vec![header_line(report)];
+    let mut parts = Vec::new();
+    if let Some(line) = header_line(report) {
+        parts.push(line);
+    }
     if report.failure_kind == Some(FailureKind::Exception)
         && let Some(stack) = short_stack(report.failure_stack.as_deref())
     {
@@ -1364,6 +1374,9 @@ fn render_header_block(report: &RunReport) -> String {
                 "{unsettled} calls were still running when the program stopped; their side effects may still land. Re-read the files before retrying any write."
             ));
         }
+    }
+    if parts.is_empty() {
+        return String::new();
     }
     explained_cut(&parts.join("\n\n"), HEADER_CAP)
 }
@@ -1430,12 +1443,13 @@ fn did_not_start(report: &RunReport) -> bool {
     }
 }
 
-fn header_line(report: &RunReport) -> String {
+/// The run's status line. A clean run has none: only a problem earns a line.
+fn header_line(report: &RunReport) -> Option<String> {
     if did_not_start(report) {
-        return wont_start_line(report);
+        return Some(wont_start_line(report));
     }
     let duration = format!("{}ms", report.duration_ms);
-    let mut line = if let Some(error) = &report.tool_error {
+    if let Some(error) = &report.tool_error {
         let detail = error
             .message
             .lines()
@@ -1454,49 +1468,41 @@ fn header_line(report: &RunReport) -> String {
             line.push_str(" · ");
             line.push_str(detail);
         }
-        line
-    } else if let Some(kind) = report.failure_kind {
-        let label = if report.uncaught_type_error {
-            "uncaught TypeError".to_string()
-        } else {
-            failure_label(kind, report)
-        };
-        let mut line = format!("run_code failed: {label} · {duration}");
-        // WP-210 B: a runtime exception points at the user's line like a
-        // syntax error does.
-        if kind == FailureKind::Exception
-            && let Some(location) = report.failure_location
-        {
-            line.push_str(&format!(
-                " · line {}, column {}",
-                location.line, location.column
-            ));
-            if let Some(snippet) = source_line_snippet(&report.source, location.line) {
-                line.push_str(" · ");
-                line.push_str(&snippet);
-            }
-        }
-        // Exception / illegal-output: one short cause on the head. Timeout /
-        // cancel / limits already have a precise label — do not rehash.
-        if matches!(
-            kind,
-            FailureKind::Exception | FailureKind::IllegalOutput | FailureKind::Internal
-        ) {
-            if let Some(detail) = short_failure_detail(report) {
-                line.push_str(" · ");
-                line.push_str(&detail);
-            }
-        }
-        line
-    } else {
-        let calls = call_total(report);
-        format!("run_code ok · {calls} calls · {duration}")
-    };
-    if session_read_mark(report) {
-        line.push(' ');
-        line.push_str(RUN_CODE_SESSION_NOTE);
+        return Some(line);
     }
-    line
+    let kind = report.failure_kind?;
+    let label = if report.uncaught_type_error {
+        "uncaught TypeError".to_string()
+    } else {
+        failure_label(kind, report)
+    };
+    let mut line = format!("run_code failed: {label} · {duration}");
+    // WP-210 B: a runtime exception points at the user's line like a
+    // syntax error does.
+    if kind == FailureKind::Exception
+        && let Some(location) = report.failure_location
+    {
+        line.push_str(&format!(
+            " · line {}, column {}",
+            location.line, location.column
+        ));
+        if let Some(snippet) = source_line_snippet(&report.source, location.line) {
+            line.push_str(" · ");
+            line.push_str(&snippet);
+        }
+    }
+    // Exception / illegal-output: one short cause on the head. Timeout /
+    // cancel / limits already have a precise label — do not rehash.
+    if matches!(
+        kind,
+        FailureKind::Exception | FailureKind::IllegalOutput | FailureKind::Internal
+    ) {
+        if let Some(detail) = short_failure_detail(report) {
+            line.push_str(" · ");
+            line.push_str(&detail);
+        }
+    }
+    Some(line)
 }
 
 fn wont_start_line(report: &RunReport) -> String {
@@ -1585,10 +1591,6 @@ fn short_failure_detail(report: &RunReport) -> Option<String> {
     Some(prefix_utf8(first, HEAD_MESSAGE_CAP).to_string())
 }
 
-fn session_read_mark(report: &RunReport) -> bool {
-    report.session_read_hidden || report.calls.iter().any(|call| call.session_read)
-}
-
 fn failure_label(kind: FailureKind, report: &RunReport) -> String {
     match kind {
         FailureKind::Timeout => format!("timeout after {}ms", report.timeout_ms),
@@ -1647,7 +1649,6 @@ mod tests {
             summary: summary.to_string(),
             state: state.to_string(),
             error_code: code.map(str::to_string),
-            session_read: false,
             brief: None,
         }
     }
@@ -1689,7 +1690,6 @@ mod tests {
             error_counts: BTreeMap::new(),
             call_total: None,
             unsettled_total: None,
-            session_read_hidden: false,
             failure_location: None,
             failure_at_end: false,
             failure_stack: None,
@@ -2227,8 +2227,6 @@ mod tests {
         assert_eq!(
             out.lines().collect::<Vec<_>>(),
             vec![
-                "run_code ok · 0 calls · 12ms",
-                "",
                 "↳ #3 tools.read: showing lines 1-2000 of 5000; continue with start_line 2001",
                 "↳ #4 tools.grep: the pattern was not found",
                 "",
@@ -2276,7 +2274,6 @@ mod tests {
             summary: "path=missing.txt".into(),
             state: "error:not_found".into(),
             error_code: Some("not_found".into()),
-            session_read: false,
             brief: Some("not_found".into()),
         }];
         report.call_total = Some(1);
@@ -2442,7 +2439,6 @@ mod tests {
             summary: "path=a.txt".into(),
             state: "error:invalid_args".into(),
             error_code: Some("invalid_args".into()),
-            session_read: false,
             brief: Some("x".into()),
         }];
         died.call_total = Some(1);
@@ -2701,7 +2697,7 @@ mod tests {
         let out = render_model_view(&report);
         assert_eq!(
             out,
-            "run_code ok · 3 calls · 12ms\n\nfirst\ncount: 42\n{\"done\":true,\"ok\":true}",
+            "first\ncount: 42\n{\"done\":true,\"ok\":true}",
             "{out}"
         );
 
@@ -2720,7 +2716,7 @@ mod tests {
         let out = render_model_view(&multiline);
         assert_eq!(
             out,
-            "run_code ok · 2 calls · 12ms\n\nfile:\nlines:\n1: hello\n\nrun:\nok\n",
+            "file:\nlines:\n1: hello\n\nrun:\nok\n",
             "{out}"
         );
     }
@@ -2914,18 +2910,30 @@ mod tests {
         assert!(spilled.contains("ITEM_3999_MARKER"));
     }
     #[test]
-    fn header_counts_calls_and_names_the_failure() {
+    fn only_a_failure_earns_a_header_line() {
         let mut report = base_report();
         report.call_total = Some(4);
         report.duration_ms = 1234;
-        assert_eq!(header_line(&report), "run_code ok · 4 calls · 1234ms");
+        // A clean run has no status line at all.
+        assert_eq!(header_line(&report), None);
 
         report.failure_kind = Some(FailureKind::Timeout);
         report.failure_text = Some("run_code timed out after 120000ms".into());
         assert_eq!(
-            header_line(&report),
-            "run_code failed: timeout after 120000ms · 1234ms"
+            header_line(&report).as_deref(),
+            Some("run_code failed: timeout after 120000ms · 1234ms")
         );
+    }
+
+    #[test]
+    fn clean_stream_exactly_at_cap_does_not_spill() {
+        let mut report = base_report();
+        let exact = "x".repeat(RUN_CODE_VIEW_MAX_BYTES);
+        set_value(&mut report, Value::String(exact.clone()));
+        let text = render_model_view(&report);
+        assert_eq!(text.len(), RUN_CODE_VIEW_MAX_BYTES);
+        assert_eq!(text, exact);
+        assert!(!text.contains("output clipped"));
     }
 
     #[test]
@@ -2940,7 +2948,7 @@ mod tests {
             details: None,
         });
         report.call_total = Some(2);
-        let line = header_line(&report);
+        let line = header_line(&report).expect("a tool error earns a line");
         assert!(
             line.contains("run_code failed: tool call invalid_args from call #2 tools.write path=a.txt"),
             "{line}"
@@ -3156,7 +3164,7 @@ mod tests {
         );
         set_value(&mut report, Value::String(body));
         let text = render_model_view(&report);
-        assert!(text.starts_with("run_code ok"));
+        assert!(!text.contains("run_code"), "{}", text);
         assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
         assert!(text.contains("↳ output clipped (lines "), "{text}");
         let result = result_of(&text);
@@ -3327,10 +3335,10 @@ mod tests {
         assert!(!text.contains("tool calls:"), "{text}");
     }
 
-    /// Everything after the header: the stream (these tests render success
-    /// views, where the header is followed directly by the stream).
+    /// The whole view of a clean run: there is no header line, so the stream
+    /// (and any upfloat line above it) is the view.
     fn result_of(text: &str) -> &str {
-        text.split_once("\n\n").map(|(_, rest)| rest).unwrap_or("")
+        text
     }
 
     fn ok_with(value: Value) -> String {

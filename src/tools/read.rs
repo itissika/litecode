@@ -265,7 +265,10 @@ fn read_virtual_session(
         Ok(f) => f,
         Err(e) => return Some(crate::tools::file_path::litecode_error(e)),
     };
-    let hidden = hidden_surface_seqs(reader, &session_id, &execution.session_id);
+    let hidden = match hidden_surface_seqs(reader, &session_id, &execution.session_id) {
+        Ok(hidden) => hidden,
+        Err(e) => return Some(crate::tools::file_path::litecode_error(e)),
+    };
     Some(render_projection_page(&file, input, &hidden, raw_path))
 }
 
@@ -273,11 +276,11 @@ fn hidden_surface_seqs(
     reader: &crate::session::SessionDataReader,
     target_session: &str,
     caller_session: &str,
-) -> Vec<i64> {
+) -> crate::types::Result<Vec<i64>> {
     if caller_session.is_empty() || caller_session != target_session {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    crate::engines::session_search::load_surface_seqs(reader, target_session).unwrap_or_default()
+    crate::engines::session_search::load_surface_seqs(reader, target_session)
 }
 
 fn render_projection_page(

@@ -275,15 +275,30 @@ fn pattern_reaches_parent(pattern: &str) -> bool {
 
 /// Match `pattern` against virtual session paths as given.
 /// A repeated directory prefix is not stripped.
+///
+/// The caller's own session is omitted while every row still sits on its live
+/// context window (nothing archived yet), so `glob` stays consistent with
+/// `session_search` / `read` / `grep` without surfacing any masking notice.
 fn glob_virtual_sessions(
     execution: &crate::tool::trait_::ToolExecutionContext,
     pattern: &str,
 ) -> Result<GlobListing> {
     let matcher = compile_include_pattern(pattern)?;
     let reader = execution.session_reader()?;
-    let listed = crate::session::transcript_file::list_virtual_paths(
-        reader.list_session_ids_blocking().unwrap_or_default(),
-    );
+    let mut ids = reader.list_session_ids_blocking()?;
+    if !execution.session_id.is_empty() && ids.iter().any(|id| id == &execution.session_id) {
+        let surface =
+            crate::engines::session_search::load_surface_seqs(reader, &execution.session_id)?;
+        let file = reader.transcript_file_blocking(&execution.session_id)?;
+        let has_archived = file
+            .line_index
+            .iter()
+            .any(|span| !surface.contains(&span.seq));
+        if !has_archived {
+            ids.retain(|id| id != &execution.session_id);
+        }
+    }
+    let listed = crate::session::transcript_file::list_virtual_paths(ids);
     let mut hits: Vec<String> = listed
         .into_iter()
         .filter(|path| matcher.matches(path))
@@ -552,5 +567,81 @@ mod tests {
         let error = glob_match_cancellable(dir.path(), dir.path(), "**/*.rs", false, Some(&cancel))
             .unwrap_err();
         assert!(error.to_string().contains("glob cancelled"), "{error}");
+    }
+
+    #[test]
+    fn virtual_session_glob_hides_own_uncompacted_session_and_shows_archived() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = crate::session::WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = crate::session::SessionData::open(&lease, &db).unwrap();
+
+        let mine = data
+            .create_session(root.to_str().unwrap(), "default", None)
+            .unwrap();
+        data.insert_items(
+            &mine,
+            &[
+                crate::types::user_text("earlier turn"),
+                crate::types::user_text("live tail"),
+            ],
+        )
+        .unwrap();
+
+        let other = data
+            .create_session(root.to_str().unwrap(), "default", None)
+            .unwrap();
+        data.insert_items(&other, &[crate::types::user_text("other session")])
+            .unwrap();
+
+        let run_glob = |caller: &str| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            rt.block_on(GlobTool.execute(
+                serde_json::json!({ "path": ".litecode/sessions", "pattern": "*.md" }),
+                crate::tool::trait_::ToolExecutionContext {
+                    path_mode: crate::workspace::ToolPathMode::Safe,
+                    workspace_root: root.to_path_buf(),
+                    call_id: String::new(),
+                    cancel: tokio_util::sync::CancellationToken::new(),
+                    output_limit: GlobTool.max_result_size(),
+                    session_id: caller.to_string(),
+                    session: Some(crate::session::SessionDataReader::open(&db)),
+                },
+            ))
+            .data
+            .expect("glob data")
+        };
+
+        let mine_path = crate::session::transcript_file::virtual_path_for(&mine);
+        let other_path = crate::session::transcript_file::virtual_path_for(&other);
+
+        // Before compaction, own session lives entirely in context window -> omitted silently.
+        let before = run_glob(&mine);
+        let before_paths: Vec<&str> = before["paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(!before_paths.contains(&mine_path.as_str()), "{before}");
+        assert!(before_paths.contains(&other_path.as_str()), "{before}");
+
+        // After compaction, own session has archived lines outside surface -> listed.
+        data.compact_from(&mine, "[summary] mine", Some(1), 10)
+            .unwrap();
+        let after = run_glob(&mine);
+        let after_paths: Vec<&str> = after["paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(after_paths.contains(&mine_path.as_str()), "{after}");
+        assert!(after_paths.contains(&other_path.as_str()), "{after}");
     }
 }

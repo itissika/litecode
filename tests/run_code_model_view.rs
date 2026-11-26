@@ -83,7 +83,7 @@ async fn large_result_is_budgeted_in_the_request() {
     let text = captured_run_code(r#"inspect("START_SENTINEL" + "A".repeat(200000) + "END_SENTINEL");"#).await;
     assert!(text.len() <= 20_480, "{}", text.len());
     assert!(!text.starts_with("[blob:"), "{text}");
-    assert!(text.starts_with("run_code ok"), "{text}");
+    assert!(!text.starts_with("run_code"), "{text}");
     assert!(text.contains("START_SENTINEL"), "{text}");
     assert!(text.contains("END_SENTINEL"), "{text}");
     assert!(
@@ -108,7 +108,7 @@ async fn caught_tool_error_is_counted_and_stated_once() {
     assert!(text.contains("\"not_found\""), "{text}");
     assert!(text.contains("\"read\""), "{text}");
     assert!(text.contains("\"string\""), "{text}");
-    assert!(text.starts_with("run_code ok"), "the run itself succeeded: {text}");
+    assert!(!text.contains("run_code failed"), "the run itself succeeded: {text}");
     assert!(!text.contains("rejected"), "{text}");
     assert_eq!(text.matches("#1 ").count(), 1, "{text}");
     let lines: Vec<&str> = text.lines().collect();
@@ -184,7 +184,7 @@ async fn a_second_argument_is_a_catchable_type_error() {
     )
     .await;
     assert_eq!(text.lines().last(), Some("TypeError"), "{text}");
-    assert!(text.starts_with("run_code ok"), "{text}");
+    assert!(!text.contains("run_code"), "{text}");
 }
 
 #[tokio::test(flavor = "current_thread")]

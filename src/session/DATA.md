@@ -167,11 +167,14 @@ AgentView/projector 在读取边界把它展开成唯一形状：
 
 只在请求缝隙、构建 view 之前追加。缝隙顺序：`sync_request_seam` → 必要时压缩 → 压缩后再 sync 一次 → `prepare_view`。同一缝隙内的写入顺序固定。
 
+压缩后的重新注入会折成一条：脊骨以 `compacted` 开头时，同一缝隙里的 env / tasks / memory / background 合并成一条 `reminder/restore`（`RestoreBody.parts` 保留各分量），模型只看到**一个** user `Item`。只有这四类 Hidden 提醒折叠；`bash_exit` / `subagent_settled` 的可见切痕和其余 kind 仍各占一行。`view_from_spine` 对 bundle 逐分量登记 `latest_by_kind` / `kinds_after_compacted`，env 的 Diff 与另三类的「压缩后只补一次」不变。
+
 | kind | 触发 | HumanView | 何时写 |
 |---|---|---|---|
 | `reminder/env` | Diff | 隐藏 | 工作目录、系统、日期（精确到日）、时区相对脊骨上同 kind 最新一行变了 |
 | `reminder/tasks` | Restore | 隐藏 | 脊骨以 `compacted` 开头、压缩后还没有这个 kind、待办或活动计划非空 |
 | `reminder/background` | Restore | 隐藏 | 同上，仍在跑的 bash 或子会话计数非空 |
+| `reminder/restore` | Restore | 隐藏 | 压缩后同一缝隙里 env/tasks/memory/background 命中 ≥2 条时折成这一条；分量在 `parts` 里 |
 | `reminder/plan_changed` | **已停写** | 隐藏 | 不再产生新行；仍是可读 kind，老行按原 body 渲染（曾按磁盘 revision 与 `active_plan.revision` 的 Diff 写出） |
 | `reminder/files_changed` | Event | 隐藏 | 外部改了本会话跟踪的文件。只列路径，不带内容 |
 | `reminder/bash_exit` | Event | 切痕「后台终端退出」 | 后台 `run` 作业**进程退出**（不等 stdout/stderr 读完，孙进程仍持管道时也照发）。`wait` 或 `kill` 已消费的通知不进这里 |

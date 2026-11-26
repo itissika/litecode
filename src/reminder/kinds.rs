@@ -17,6 +17,9 @@ pub enum ReminderKind {
     Tasks,
     Memory,
     Background,
+    /// Post-compaction re-injection folded into one row. Hidden; it stands for
+    /// its component reminders.
+    Restore,
     PlanChanged,
     FilesChanged,
     BashExit,
@@ -34,6 +37,7 @@ impl ReminderKind {
             Self::Tasks => "tasks",
             Self::Memory => "memory",
             Self::Background => "background",
+            Self::Restore => "restore",
             Self::PlanChanged => "plan_changed",
             Self::FilesChanged => "files_changed",
             Self::BashExit => "bash_exit",
@@ -49,6 +53,7 @@ impl ReminderKind {
             Self::Tasks => "reminder/tasks",
             Self::Memory => "reminder/memory",
             Self::Background => "reminder/background",
+            Self::Restore => "reminder/restore",
             Self::PlanChanged => "reminder/plan_changed",
             Self::FilesChanged => "reminder/files_changed",
             Self::BashExit => "reminder/bash_exit",
@@ -64,6 +69,7 @@ impl ReminderKind {
             "reminder/tasks" => Self::Tasks,
             "reminder/memory" => Self::Memory,
             "reminder/background" => Self::Background,
+            "reminder/restore" => Self::Restore,
             "reminder/plan_changed" => Self::PlanChanged,
             "reminder/files_changed" => Self::FilesChanged,
             "reminder/bash_exit" => Self::BashExit,
@@ -85,6 +91,7 @@ impl ReminderKind {
             | Self::Tasks
             | Self::Memory
             | Self::Background
+            | Self::Restore
             | Self::PlanChanged
             | Self::FilesChanged
             | Self::Mentions
@@ -125,6 +132,14 @@ pub struct TasksBody {
     pub todos: Vec<TodoSnap>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_plan: Option<PlanPointer>,
+    pub text: String,
+}
+
+/// Post-compaction re-injection folded into one row: the env, tasks, memory,
+/// and background facts that would otherwise arrive as consecutive user items.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreBody {
+    pub parts: Vec<Reminder>,
     pub text: String,
 }
 
@@ -236,6 +251,7 @@ pub enum Reminder {
     Tasks(TasksBody),
     Memory(MemoryBody),
     Background(BackgroundBody),
+    Restore(RestoreBody),
     PlanChanged(PlanChangedBody),
     FilesChanged(FilesChangedBody),
     BashExit(BashExitBody),
@@ -251,6 +267,7 @@ impl Reminder {
             Self::Tasks(_) => ReminderKind::Tasks,
             Self::Memory(_) => ReminderKind::Memory,
             Self::Background(_) => ReminderKind::Background,
+            Self::Restore(_) => ReminderKind::Restore,
             Self::PlanChanged(_) => ReminderKind::PlanChanged,
             Self::FilesChanged(_) => ReminderKind::FilesChanged,
             Self::BashExit(_) => ReminderKind::BashExit,
@@ -266,12 +283,22 @@ impl Reminder {
             Self::Tasks(body) => &body.text,
             Self::Memory(body) => &body.text,
             Self::Background(body) => &body.text,
+            Self::Restore(body) => &body.text,
             Self::PlanChanged(body) => &body.text,
             Self::FilesChanged(body) => &body.text,
             Self::BashExit(body) => &body.text,
             Self::SubagentSettled(body) => &body.text,
             Self::Mentions(body) => &body.text,
             Self::KnowledgeStatus(body) => &body.text,
+        }
+    }
+
+    /// The reminders this row stands for. A restore bundle stands for its
+    /// parts; every other reminder stands for itself.
+    pub fn components(&self) -> &[Reminder] {
+        match self {
+            Self::Restore(body) => &body.parts,
+            other => std::slice::from_ref(other),
         }
     }
 

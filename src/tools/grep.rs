@@ -953,6 +953,7 @@ fn grep_virtual_dir(
         reader.list_session_ids_blocking().unwrap_or_default(),
     );
     let mut hits = Vec::new();
+    let mut matched_files = 0usize;
     for virtual_path in &listed {
         if !glob_allows(
             virtual_path,
@@ -961,6 +962,7 @@ fn grep_virtual_dir(
         ) {
             continue;
         }
+        matched_files += 1;
         let Some(stem) = crate::session::transcript_file::try_parse_virtual_path(virtual_path)
         else {
             continue;
@@ -981,7 +983,7 @@ fn grep_virtual_dir(
     }
     let empty_reason = if listed.is_empty() {
         "no_files"
-    } else if options.glob.is_some() && hits.is_empty() {
+    } else if options.glob.is_some() && matched_files == 0 {
         "glob_no_files"
     } else {
         "no_match"
@@ -1064,8 +1066,7 @@ fn grep_transcript(
             LitecodeError::ToolExecution(format!("invalid regular expression: {error}"))
         })?;
     let hidden = if !caller_session_id.is_empty() && caller_session_id == file.session_id {
-        crate::engines::session_search::load_surface_seqs(reader, &file.session_id)
-            .unwrap_or_default()
+        crate::engines::session_search::load_surface_seqs(reader, &file.session_id)?
     } else {
         Vec::new()
     };

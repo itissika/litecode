@@ -69,9 +69,8 @@ pub fn build_docs(
     let rows = reader
         .searchable_rows_blocking(None)
         .context("read session snapshot rows")?;
-    // 会话回声：`session_search` / 指向会话存储的 `read`/`grep` 的产出是复制品；
-    // 两条腿一致只留调用行（意图），产出整条剔除（2026-09-22 定）。V0Prod 是
-    // 冻结基线，不动。
+    // 会话回声：读过会话存储的调用，其产出是复制品；只留调用行（意图），产出
+    // 整条剔除（2026-09-22 定）。V0Prod 是冻结基线，不动。
     let echo_keys = match policy {
         Policy::Final => echo::result_keys(&rows, data_root)?,
         Policy::V0Prod => Default::default(),

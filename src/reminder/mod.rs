@@ -18,8 +18,8 @@ pub use file_tracker::FileTracker;
 pub use kinds::{
     BackgroundBody, BashExitBody, BashExitEntry, ChildCountsBody, EnvBody, FilesChangedBody,
     KnowledgeStatusBody, MemoryBody, MemorySnap, MentionRef, MentionsBody, PlanChangedBody,
-    PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild, SubagentSettledBody,
-    TasksBody, TodoSnap, Visibility,
+    PlanPointer, Reminder, ReminderKind, RestoreBody, RunningBash, SettledChild,
+    SubagentSettledBody, TasksBody, TodoSnap, Visibility,
 };
 
 use crate::types::{Item, user_text};

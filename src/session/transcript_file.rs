@@ -283,30 +283,32 @@ fn row_item(row: &SearchableRow, data_root: &Path) -> Result<Option<Item>> {
     )))
 }
 
-/// Whether a call reads the session store: a `session_search`, or a `read` /
-/// `grep` whose arguments point into it.
-///
-/// The single rule for "is this call an echo call", shared by the index-time
-/// echo closure (`echo.rs`) and the read-time check — so the two can never
-/// disagree about what an echo is. Detection is structural (name plus arguments),
-/// not textual: a content signature catches only part of the copies and misfires
-/// on bash/glob output.
+/// Whether a call reads the session store: a `run_code` program that invokes
+/// `session_search` or targets `.litecode/sessions`, or a legacy direct
+/// `session_search` / `read` / `grep` / `glob` call aimed at the session store.
 pub fn call_reads_sessions(name: &str, arguments: Option<&str>) -> bool {
     if name == "session_search" {
         return true;
     }
-    if !matches!(name, "read" | "grep") {
-        return false;
-    }
     let Some(raw) = arguments else {
         return false;
     };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return false;
-    };
-    let mut found = Vec::new();
-    collect_strings(&v, &mut found);
-    found.iter().any(|s| is_session_target(s))
+    if name == "run_code" {
+        let code = serde_json::from_str::<serde_json::Value>(raw)
+            .ok()
+            .and_then(|v| v.get("code").and_then(|c| c.as_str()).map(str::to_string));
+        let source = code.as_deref().unwrap_or(raw);
+        return source.contains("session_search") || text_targets_session_dir(source);
+    }
+    if matches!(name, "read" | "grep" | "glob") {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return false;
+        };
+        let mut found = Vec::new();
+        collect_strings(&v, &mut found);
+        return found.iter().any(|s| text_targets_session_dir(s));
+    }
+    false
 }
 
 fn collect_strings<'a>(v: &'a serde_json::Value, out: &mut Vec<&'a str>) {
@@ -318,55 +320,36 @@ fn collect_strings<'a>(v: &'a serde_json::Value, out: &mut Vec<&'a str>) {
     }
 }
 
-/// `.litecode/sessions` followed by `/` (a file below it) or end (the directory
-/// itself). `.litecode/sessions.db` is *not* a hit. Backslashes are folded.
-pub(crate) fn is_session_target(arg: &str) -> bool {
-    let norm = arg.replace('\\', "/");
-    let Some(pos) = norm.find(VIRTUAL_SESSION_DIR) else {
-        return false;
-    };
-    let rest = &norm[pos + VIRTUAL_SESSION_DIR.len()..];
-    rest.is_empty() || rest.starts_with('/')
-}
-
-/// Fixed mark appended to a truncated `run_code` ledger when an omitted call
-/// read the session store. `ledger_reads_sessions` matches this same text.
-pub const RUN_CODE_SESSION_NOTE: &str = "· reads session store";
-
-/// True when a `run_code` result ledger records a nested read, grep, or glob of
-/// the session store, or the omission line says that an omitted call did.
-pub fn ledger_reads_sessions(text: &str) -> bool {
-    if text.contains(RUN_CODE_SESSION_NOTE) {
-        return true;
-    }
-    text.lines().any(|line| {
-        let Some((tool, summary)) = parse_ledger_line(line) else {
-            return false;
-        };
-        match tool {
-            "session_search" => true,
-            "read" | "grep" | "glob" => is_session_target(summary),
-            _ => false,
+/// True when `text` references `.litecode/sessions` (with `/` or `\` separators)
+/// as a directory or file prefix, excluding siblings like `.litecode/sessions.db`.
+fn text_targets_session_dir(text: &str) -> bool {
+    let mut norm = String::with_capacity(text.len());
+    let mut prev_slash = false;
+    for ch in text.chars() {
+        let mapped = if ch == '\\' { '/' } else { ch };
+        if mapped == '/' {
+            if !prev_slash {
+                norm.push('/');
+            }
+            prev_slash = true;
+        } else {
+            norm.push(mapped);
+            prev_slash = false;
         }
-    })
-}
-
-/// `{index}. {tool} {summary} {outcome}` as written by the code-mode host.
-fn parse_ledger_line(line: &str) -> Option<(&str, &str)> {
-    let line = line.trim();
-    let (index, rest) = line.split_once(". ")?;
-    if index.is_empty() || !index.chars().all(|ch| ch.is_ascii_digit()) {
-        return None;
     }
-    let (tool, after) = rest.split_once(' ')?;
-    if tool.is_empty() {
-        return None;
+    let mut offset = 0;
+    while let Some(rel) = norm[offset..].find(VIRTUAL_SESSION_DIR) {
+        let end = offset + rel + VIRTUAL_SESSION_DIR.len();
+        let next = norm[end..].chars().next();
+        match next {
+            None | Some('/') => return true,
+            Some(c) if !(c == '.' || c == '_' || c == '-' || c.is_ascii_alphanumeric()) => {
+                return true;
+            }
+            _ => offset = end,
+        }
     }
-    let summary = match after.rsplit_once(' ') {
-        Some((summary, _outcome)) => summary,
-        None => "",
-    };
-    Some((tool, summary))
+    false
 }
 
 pub fn load_blob_text(body_ref: &str, data_root: &Path) -> Result<String> {
@@ -447,9 +430,6 @@ pub fn load_transcript_file(
             // is the only row that can be an echo copy.
             Item::FunctionCallOutput(out) => {
                 result_call_ids.insert(row.seq, out.call_id.clone());
-                if ledger_reads_sessions(&text) {
-                    session_read_calls.insert(out.call_id.clone());
-                }
                 links.push((row.seq, out.call_id.clone(), None));
             }
             _ => {}
@@ -585,4 +565,48 @@ fn normalize_newlines(text: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn call_reads_sessions_detects_code_mode_and_windows_paths_without_db_false_positives() {
+        assert!(call_reads_sessions(
+            "run_code",
+            Some(r#"{"code":"await tools.session_search({ query: \"hi\" });"}"#)
+        ));
+        assert!(call_reads_sessions(
+            "run_code",
+            Some(r#"{"code":"await tools.read({ path: \".litecode/sessions/abc.md\" });"}"#)
+        ));
+        assert!(call_reads_sessions(
+            "run_code",
+            Some(r#"{"code":"await tools.glob({ path: \".litecode/sessions\", pattern: \"*.md\" });"}"#)
+        ));
+        assert!(call_reads_sessions(
+            "run_code",
+            Some(r#"{"code":"await tools.read({ path: \".litecode\\\\sessions\\\\abc.md\" });"}"#)
+        ));
+        assert!(!call_reads_sessions(
+            "run_code",
+            Some(r#"{"code":"await tools.grep({ pattern: \".litecode/sessions.db\" });"}"#)
+        ));
+        assert!(!call_reads_sessions(
+            "run_code",
+            Some(r#"{"code":"await tools.read({ path: \"src/main.rs\" });"}"#)
+        ));
+        // Legacy direct calls remain recognized for existing session history.
+        assert!(call_reads_sessions("session_search", Some(r#"{"query":"hi"}"#)));
+        assert!(call_reads_sessions(
+            "read",
+            Some(r#"{"path":".litecode\\sessions\\abc.md"}"#)
+        ));
+        assert!(call_reads_sessions(
+            "glob",
+            Some(r#"{"path":".litecode/sessions","pattern":"*.md"}"#)
+        ));
+        assert!(!call_reads_sessions(
+            "read",
+            Some(r#"{"path":".litecode/sessions.db"}"#)
+        ));
+    }
+}

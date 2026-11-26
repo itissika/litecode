@@ -1,22 +1,15 @@
 //! Session-echo result rows: `tool_result`s whose content is a copy of another
-//! session's transcript, because the producing call was `session_search`, or a
-//! `read`/`grep` aimed at the session store (`.litecode/sessions/…`).
+//! session's transcript, because the producing call read the session store.
 //!
 //! 定稿（2026-09-22）：两条腿一致——回声产出**整条剔除**，调用行（意图）保留。
 //! 理由：复制品不是原件；稀疏腿的精确落点会钉在复制品上，而且生产排序同分
 //! 先看"最近更新"，复制品天然压过原件。代价：fixture 里 1 条 `session_level`
 //! 真值行（"读会话回声"那个元用例）随之不可检索。
-//!
-//! Detection is structural — call linkage through `call_id` — not textual. A
-//! content signature (session path / `[seq:N item/` markers) catches only ~71%
-//! of the echoes and misfires on bash/glob output, so it is not used.
 
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::session::transcript_file::{
-    SearchableRow, call_reads_sessions, ledger_reads_sessions, load_blob_text,
-};
+use crate::session::transcript_file::{SearchableRow, call_reads_sessions, load_blob_text};
 use anyhow::Result;
 use serde_json::Value;
 
@@ -101,25 +94,8 @@ pub fn result_keys_with(
         {
             out.insert((row.session_id.clone(), row.seq));
         }
-        if result_body_reads_sessions(row, data_root) {
-            out.insert((row.session_id.clone(), row.seq));
-        }
     }
     Ok(out)
-}
-
-fn result_body_reads_sessions(row: &SearchableRow, data_root: &Path) -> bool {
-    let Some(value) = row_json(row, data_root) else {
-        return false;
-    };
-    if value.get("type").and_then(Value::as_str) != Some("function_call_output") {
-        return false;
-    }
-    match value.get("output") {
-        Some(Value::String(text)) => ledger_reads_sessions(text),
-        Some(other) => ledger_reads_sessions(&other.to_string()),
-        None => false,
-    }
 }
 
 /// The row's raw JSON, parsed. `None` on unreadable input — the caller keeps
