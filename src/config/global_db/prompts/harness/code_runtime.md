@@ -5,4 +5,4 @@
 - Orchestrate multi-step work in one `run_code` call: run independent calls concurrently with `Promise.all`, chain dependent steps with `await`, and filter or summarize large data in JS before emitting with `inspect(...)`.
 - Output channel: call `inspect(...values)` (or `inspect(label, value)`) to emit values into the run output; there is no `console.*` and no return value. Pass tool results directly (`inspect(r)` or `inspect(label, r)`) instead of manually reformatting or stringifying—the host renderer formats them compactly.
 - `fs` (`ls`, `stat`, `exists`) provides synchronous read-only filesystem probes following the active read permission scope; `libs` provides pure-JS helpers.
-- When `run_code` output exceeds the 20 KB display limit, the complete unclipped output is saved under `.litecode/run/` and the top `↳ ` reminder gives the file path and exact omitted line range—read or grep only the missing range instead of re-running commands.
+- When `run_code` output is large, the complete output is saved under `.litecode/run/` and the top `↳ ` reminder gives the file path and exact line range—read or grep only the needed range instead of re-running commands.

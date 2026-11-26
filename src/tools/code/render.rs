@@ -563,13 +563,13 @@ fn grep_reminders(object: &serde_json::Map<String, Value>, out: &mut Vec<String>
     } else if truncated {
         parts.push(format!("cut at {shown} matches; more exist"));
     } else if out_capped {
-        parts.push("output capped".to_string());
+        parts.push("showing partial matches".to_string());
     }
     if at_cap {
-        parts.push("at limit max".to_string());
+        parts.push("at max limit".to_string());
     }
     if ctx_omitted {
-        parts.push("context omitted".to_string());
+        parts.push("surrounding lines omitted".to_string());
     }
     if !parts.is_empty() {
         out.push(parts.join("; "));
@@ -1760,7 +1760,7 @@ mod tests {
                     "at_limit_cap": true, "truncated": true,
                     "hits": [{"path": "a.rs", "line": 1, "text": "needle"}],
                 })),
-                vec!["cut at 1 matches; more exist; at limit max"],
+                vec!["cut at 1 matches; more exist; at max limit"],
             ),
             (
                 base(serde_json::json!({
@@ -1780,7 +1780,7 @@ mod tests {
                 base(serde_json::json!({
                     "context_omitted": true, "output_capped": true,
                 })),
-                vec!["output capped; context omitted"],
+                vec!["showing partial matches; surrounding lines omitted"],
             ),
             (
                 base(serde_json::json!({"clamped": [{"parameter": "before", "requested": 25, "applied": 10}]})),

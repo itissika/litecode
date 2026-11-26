@@ -264,7 +264,7 @@ fn dsh_instruction_has_eight_sections_in_order_and_no_anchor_contract() {
         "## Pending Jobs",
         "## Current Work",
         "## Next Step",
-        "## Critical Context",
+        "## Key Decisions and Constraints",
     ];
     let mut cursor = 0;
     for section in sections {

@@ -42,8 +42,7 @@ pub fn format_stopped_and_queued(child_id: &str) -> String {
 pub fn format_stopped(child_id: &str) -> String {
     format!(
         "status: stopped\nchild_session_id: {child_id}\n\
-         Only the current turn was stopped; queued messages are still delivered. \
-         The current work may already have consumed resources. Confirm the next assignment before continuing this session.\n"
+         Only the current turn was stopped; queued messages are still delivered.\n"
     )
 }
 
@@ -123,11 +122,14 @@ fn format_turn_result_with_budget(
 
 fn truncation_location(result: &TurnResult) -> String {
     match (result.start_line, result.end_line) {
-        (Some(start), Some(end)) => format!(
-            "transcript: {}\nstart_line: {start}\nend_line: {end}\n\
-             read: {{\"path\":\"{}\",\"start_line\":{start},\"end_line\":{end}}}\n",
-            result.transcript_path, result.transcript_path
-        ),
+        (Some(start), Some(end)) => {
+            let limit = end.saturating_sub(start).saturating_add(1);
+            format!(
+                "transcript: {}\nstart_line: {start}\nend_line: {end}\n\
+                 read: {{\"path\":\"{}\",\"start_line\":{start},\"limit\":{limit}}}\n",
+                result.transcript_path, result.transcript_path
+            )
+        }
         _ => format!("transcript: {}\n", result.transcript_path),
     }
 }

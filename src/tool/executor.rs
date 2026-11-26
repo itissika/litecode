@@ -788,7 +788,7 @@ pub async fn execute_tool_call(
                             format!("tool '{name}' timed out after {budget_label}")
                         } else {
                             format!(
-                                "tool '{name}' timed out after {budget_label}. Retry with a narrower scope, or use bash run_in_background for long commands"
+                                "tool '{name}' timed out after {budget_label}. Retry with a narrower scope, or use exec_command with background: true for long commands"
                             )
                         };
                         Ok(ToolCallResult::error_with_kind(

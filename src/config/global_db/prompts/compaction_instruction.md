@@ -23,7 +23,7 @@ Output EXACTLY the Markdown structure below: keep every section, in order. Use t
 ## Next Step
 - [concrete next actions required to complete the request, or "(none)"]
 
-## Critical Context
+## Key Decisions and Constraints
 - [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]
 
 Rules:

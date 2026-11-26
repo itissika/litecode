@@ -1548,7 +1548,7 @@ impl Tool for CodeTool {
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "Async TypeScript/JavaScript body for the bound SDK below. Call inspect(value) to emit outputs. Active JS execution has a 600000 ms cap (paused during tool calls), with a 1800000 ms wall-clock cap (paused during human prompts)."
+                        "description": "Async TypeScript/JavaScript body for the bound SDK below. Call inspect(value) to emit outputs."
                     }
                 },
                 "required": ["code"],

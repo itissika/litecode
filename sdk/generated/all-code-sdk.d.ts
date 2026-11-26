@@ -59,7 +59,7 @@ declare const libs: {
 
 /** Read-only filesystem probes. Synchronous; path scope follows the active read permission mode. */
 declare const fs: {
-  /** One level, sorted by name (capped at 500 entries; truncation is surfaced as a run warning). */
+  /** One level, sorted by name (up to 500 entries; larger directories surface a run warning). */
   ls(path: string): { entries: Array<{ name: string; type: "file" | "dir" | "symlink" | "other"; size: number }> };
   /** mtime is ms since the Unix epoch. */
   stat(path: string): { type: "file" | "dir" | "symlink" | "other"; size: number; mtime: number };
@@ -408,11 +408,11 @@ interface Tools {
   }): Promise<{
     paths: string[]; // Matching paths, sorted by depth, then parent directory, then name.
   }>;
-  /** Search file contents. Pass directly to `inspect(r)`—renders `hits` as a compact table. */
+  /** Search file contents. Pass directly to `inspect(r)`—renders `hits` as a flat table. */
   grep(args: {
     pattern: string; // Regular expression over file contents, unless literal is true.
-    before?: Integer; // Lines of context before each hit. 0-10. @default 0
-    after?: Integer; // Lines of context after each hit. 0-10. @default 0
+    before?: Integer; // Lines shown before each hit. 0-10. @default 0
+    after?: Integer; // Lines shown after each hit. 0-10. @default 0
     glob?: string; // One glob or comma-separated globs. A leading ! excludes. Relative to path.
     ignore_case?: boolean; // Ignore case when matching. @default false
     limit?: Integer; // Maximum hits to return. 1-100. @default 40
@@ -422,7 +422,7 @@ interface Tools {
     hits: Array<{
       path: string; // Source file path.
       line: Integer; // 1-based match line.
-      text: string; // Matching line text, capped at 500 characters.
+      text: string; // Matching line text (up to 500 characters).
     }>;
   }>;
   /** Read lines from one file or archived session transcript. Pass directly to `inspect(r)`—renders `line: text` verbatim without `.lines.map(...)`. */
@@ -461,14 +461,14 @@ interface Tools {
       via: "lex" | "dense" | "both"; // Which retrieval leg(s) admitted this chunk.
       dense_similarity: number; // Raw dense cosine similarity; 0.0 means the hit is lexical-only.
       text: string; // The anchor line itself, cheap enough for a table cell.
-      snippet: string; // Source excerpt, at most 24 lines; overlong lines are capped.
+      snippet: string; // Source excerpt (up to 24 lines).
     }[];
   }>;
   /** Search past session transcripts. */
   session_search(args: {
     query: string; // What to find in past session transcripts. Literal words or a phrase.
     session_id?: string; // Optional session scope: full id, unique prefix, or the handle from a result.
-    own_session?: boolean; // Search only this session's transcript: the turns already folded out of the live context window. Cannot be combined with session_id.
+    own_session?: boolean; // Search only this session's earlier transcript. Cannot be combined with session_id.
     limit?: Integer; // Maximum rows. 1–50. @default 20
   }): Promise<{
     // Flat rank order; not grouped by session.
@@ -603,7 +603,7 @@ interface Tools {
   go_to_implementation(args: RangeInput): Promise<LocationsData>;
   /** Fetch hover docs or type information at a file position. */
   hover(args: RangeInput): Promise<
-    // One hover answer. A hover is a single value, so there is no truncation.
+    // One hover answer.
     {
       markdown: string; // Flattened hover text, not raw LSP JSON.
     }
@@ -622,7 +622,7 @@ interface Tools {
     deleted: string[]; // Deleted ids.
     rejected: RejectedItem[];
   }>;
-  /** Return the authoritative current session memory snapshot; memory survives compaction and is re-injected. */
+  /** Return the authoritative current session memory snapshot. */
   memory_list(args?: NoArgs): Promise<{
     count: Integer; // Number of entries in this snapshot.
     // Authoritative current entries, in insertion order.

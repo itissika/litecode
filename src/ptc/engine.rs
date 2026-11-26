@@ -649,7 +649,7 @@ fn reconcile_drain(end: ProgramEnd, drained: Option<Failure>, faults: &Faults) -
             FailureKind::Timeout | FailureKind::Internal => {
                 let note = match failure.kind {
                     FailureKind::Timeout => {
-                        "program budget expired while draining host calls after the program finished"
+                        "host calls were still pending when the program finished; they were stopped"
                     }
                     _ => "host drain stopped after the program finished",
                 };
@@ -804,7 +804,7 @@ fn settle<Left, Right>(
         Either::Right((Ok(Stop::WallTimeout), _)) => ProgramEnd::Failure(Failure::wall_timeout()),
         Either::Right((Ok(Stop::Output), _)) => ProgramEnd::Failure(Failure::output(output_limit)),
         Either::Right((Err(_), _)) => {
-            ProgramEnd::Failure(Failure::internal("budget watcher stopped"))
+            ProgramEnd::Failure(Failure::internal("run watcher stopped"))
         }
     };
     if let ProgramEnd::Success = end {
@@ -2128,7 +2128,7 @@ mod settle_tests {
             faults
                 .warnings()
                 .iter()
-                .any(|text| text.contains("program budget expired while draining")),
+                .any(|text| text.contains("host calls were still pending when the program finished")),
             "{:?}",
             faults.warnings()
         );

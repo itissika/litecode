@@ -52,7 +52,7 @@ declare const libs: {
 
 /** Read-only filesystem probes. Synchronous; path scope follows the active read permission mode. */
 declare const fs: {
-  /** One level, sorted by name (capped at 500 entries; truncation is surfaced as a run warning). */
+  /** One level, sorted by name (up to 500 entries; larger directories surface a run warning). */
   ls(path: string): { entries: Array<{ name: string; type: "file" | "dir" | "symlink" | "other"; size: number }> };
   /** mtime is ms since the Unix epoch. */
   stat(path: string): { type: "file" | "dir" | "symlink" | "other"; size: number; mtime: number };

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sdk_hash": "9827ddddce643943bca4d84fad9268f9990cc2dfff2f5a67efe781de8f347ea7",
+  "sdk_hash": "ff85000a19036844ed764f5c89bece57f6fe4464a00995f7bf8d4ba7d23f13b6",
   "tools": {
     "apply_edits": {
       "path": [
@@ -135,8 +135,8 @@
       ],
       "suite": "file",
       "tool": "grep",
-      "doc": "Search file contents. Pass directly to `inspect(r)`—renders `hits` as a compact table.",
-      "signature": "grep(args: {\n  pattern: string; // Regular expression over file contents, unless literal is true.\n  before?: Integer; // Lines of context before each hit. 0-10. @default 0\n  after?: Integer; // Lines of context after each hit. 0-10. @default 0\n  glob?: string; // One glob or comma-separated globs. A leading ! excludes. Relative to path.\n  ignore_case?: boolean; // Ignore case when matching. @default false\n  limit?: Integer; // Maximum hits to return. 1-100. @default 40\n  literal?: boolean; // Search for pattern as plain text. @default false\n  path?: Path; // File or directory to search. Defaults to the workspace.\n}): Promise<{\n  hits: Array<{\n    path: string; // Source file path.\n    line: Integer; // 1-based match line.\n    text: string; // Matching line text, capped at 500 characters.\n  }>;\n}>;",
+      "doc": "Search file contents. Pass directly to `inspect(r)`—renders `hits` as a flat table.",
+      "signature": "grep(args: {\n  pattern: string; // Regular expression over file contents, unless literal is true.\n  before?: Integer; // Lines shown before each hit. 0-10. @default 0\n  after?: Integer; // Lines shown after each hit. 0-10. @default 0\n  glob?: string; // One glob or comma-separated globs. A leading ! excludes. Relative to path.\n  ignore_case?: boolean; // Ignore case when matching. @default false\n  limit?: Integer; // Maximum hits to return. 1-100. @default 40\n  literal?: boolean; // Search for pattern as plain text. @default false\n  path?: Path; // File or directory to search. Defaults to the workspace.\n}): Promise<{\n  hits: Array<{\n    path: string; // Source file path.\n    line: Integer; // 1-based match line.\n    text: string; // Matching line text (up to 500 characters).\n  }>;\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
       "type_deps": [
@@ -152,12 +152,12 @@
           },
           "before": {
             "type": "integer",
-            "description": "Lines of context before each hit. 0-10.",
+            "description": "Lines shown before each hit. 0-10.",
             "default": 0
           },
           "after": {
             "type": "integer",
-            "description": "Lines of context after each hit. 0-10.",
+            "description": "Lines shown after each hit. 0-10.",
             "default": 0
           },
           "glob": {
@@ -207,7 +207,7 @@
                 },
                 "text": {
                   "type": "string",
-                  "description": "Matching line text, capped at 500 characters."
+                  "description": "Matching line text (up to 500 characters)."
                 }
               },
               "required": [
@@ -346,7 +346,7 @@
       "suite": "search",
       "tool": "code_search",
       "doc": "Semantic search over the workspace code index.",
-      "signature": "code_search(args: {\n  query: string; // One natural-language or code-token query.\n  include_pattern?: string; // Optional glob filter for workspace paths.\n  min_score?: number; // Minimum raw dense cosine similarity for dense-only hits. 0–1. Lexical hits are not subject to this floor; 0 disables it. @default 0.8\n  top_k?: Integer; // Maximum hits. 1–20. @default 8\n}): Promise<{\n  // Empty if the search completed but found no matching chunks.\n  hits: {\n    path: string; // Source file path.\n    anchor_line: Integer; // Query-relevant anchor line.\n    start_line: Integer; // First line in the returned snippet.\n    end_line: Integer; // Last line in the returned snippet.\n    symbol?: string; // Optional AST symbol enclosing the anchor.\n    via: \"lex\" | \"dense\" | \"both\"; // Which retrieval leg(s) admitted this chunk.\n    dense_similarity: number; // Raw dense cosine similarity; 0.0 means the hit is lexical-only.\n    text: string; // The anchor line itself, cheap enough for a table cell.\n    snippet: string; // Source excerpt, at most 24 lines; overlong lines are capped.\n  }[];\n}>;",
+      "signature": "code_search(args: {\n  query: string; // One natural-language or code-token query.\n  include_pattern?: string; // Optional glob filter for workspace paths.\n  min_score?: number; // Minimum raw dense cosine similarity for dense-only hits. 0–1. Lexical hits are not subject to this floor; 0 disables it. @default 0.8\n  top_k?: Integer; // Maximum hits. 1–20. @default 8\n}): Promise<{\n  // Empty if the search completed but found no matching chunks.\n  hits: {\n    path: string; // Source file path.\n    anchor_line: Integer; // Query-relevant anchor line.\n    start_line: Integer; // First line in the returned snippet.\n    end_line: Integer; // Last line in the returned snippet.\n    symbol?: string; // Optional AST symbol enclosing the anchor.\n    via: \"lex\" | \"dense\" | \"both\"; // Which retrieval leg(s) admitted this chunk.\n    dense_similarity: number; // Raw dense cosine similarity; 0.0 means the hit is lexical-only.\n    text: string; // The anchor line itself, cheap enough for a table cell.\n    snippet: string; // Source excerpt (up to 24 lines).\n  }[];\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
       "type_deps": [
@@ -426,7 +426,7 @@
                 },
                 "snippet": {
                   "type": "string",
-                  "description": "Source excerpt, at most 24 lines; overlong lines are capped."
+                  "description": "Source excerpt (up to 24 lines)."
                 }
               },
               "required": [
@@ -457,7 +457,7 @@
       "suite": "search",
       "tool": "session_search",
       "doc": "Search past session transcripts.",
-      "signature": "session_search(args: {\n  query: string; // What to find in past session transcripts. Literal words or a phrase.\n  session_id?: string; // Optional session scope: full id, unique prefix, or the handle from a result.\n  own_session?: boolean; // Search only this session's transcript: the turns already folded out of the live context window. Cannot be combined with session_id.\n  limit?: Integer; // Maximum rows. 1–50. @default 20\n}): Promise<{\n  // Flat rank order; not grouped by session.\n  hits: {\n    session: string; // Shortest unique session handle, also accepted by `session_id`.\n    bot_name?: string; // Derived bot name for this session, if any. Never a stored session field.\n    age: string; // Relative age of the session's last update.\n    line: Integer; // 1-based rendered transcript line of the hit.\n    role: \"conversation\" | \"reasoning\" | \"action\" | \"outcome\" | \"unknown\"; // Content role of the row.\n    via: string; // Evidence that found this row, in rank order: `exact`, `prox`, `lex`, `sem`, `fuzzy`, joined by `+`.\n    summary: string; // Collapsed one-line hit text.\n  }[];\n  total: Integer; // Total matching rows before `limit` is applied.\n  truncated: boolean; // True when `total` exceeds the returned rows.\n  semantic: boolean; // False when the semantic leg was unavailable: the hits are lexical only.\n}>;",
+      "signature": "session_search(args: {\n  query: string; // What to find in past session transcripts. Literal words or a phrase.\n  session_id?: string; // Optional session scope: full id, unique prefix, or the handle from a result.\n  own_session?: boolean; // Search only this session's earlier transcript. Cannot be combined with session_id.\n  limit?: Integer; // Maximum rows. 1–50. @default 20\n}): Promise<{\n  // Flat rank order; not grouped by session.\n  hits: {\n    session: string; // Shortest unique session handle, also accepted by `session_id`.\n    bot_name?: string; // Derived bot name for this session, if any. Never a stored session field.\n    age: string; // Relative age of the session's last update.\n    line: Integer; // 1-based rendered transcript line of the hit.\n    role: \"conversation\" | \"reasoning\" | \"action\" | \"outcome\" | \"unknown\"; // Content role of the row.\n    via: string; // Evidence that found this row, in rank order: `exact`, `prox`, `lex`, `sem`, `fuzzy`, joined by `+`.\n    summary: string; // Collapsed one-line hit text.\n  }[];\n  total: Integer; // Total matching rows before `limit` is applied.\n  truncated: boolean; // True when `total` exceeds the returned rows.\n  semantic: boolean; // False when the semantic leg was unavailable: the hits are lexical only.\n}>;",
       "input_type": "(inline)",
       "output_type": "(inline)",
       "type_deps": [
@@ -476,7 +476,7 @@
           },
           "own_session": {
             "type": "boolean",
-            "description": "Search only this session's transcript: the turns already folded out of the live context window. Cannot be combined with session_id."
+            "description": "Search only this session's earlier transcript. Cannot be combined with session_id."
           },
           "limit": {
             "type": "integer",
@@ -1562,7 +1562,7 @@
       "suite": "lsp",
       "tool": "hover",
       "doc": "Fetch hover docs or type information at a file position.",
-      "signature": "hover(args: RangeInput): Promise<\n  // One hover answer. A hover is a single value, so there is no truncation.\n  {\n    markdown: string; // Flattened hover text, not raw LSP JSON.\n  }\n>;",
+      "signature": "hover(args: RangeInput): Promise<\n  // One hover answer.\n  {\n    markdown: string; // Flattened hover text, not raw LSP JSON.\n  }\n>;",
       "input_type": "RangeInput",
       "output_type": "(inline)",
       "type_deps": [
@@ -1605,7 +1605,7 @@
           "markdown"
         ],
         "additionalProperties": false,
-        "description": "One hover answer. A hover is a single value, so there is no truncation."
+        "description": "One hover answer."
       }
     },
     "workspace_symbol": {
@@ -1780,7 +1780,7 @@
       ],
       "suite": "memory",
       "tool": "memory.list",
-      "doc": "Return the authoritative current session memory snapshot; memory survives compaction and is re-injected.",
+      "doc": "Return the authoritative current session memory snapshot.",
       "signature": "memory_list(args?: NoArgs): Promise<{\n  count: Integer; // Number of entries in this snapshot.\n  // Authoritative current entries, in insertion order.\n  entries: {\n    id: string;\n    text: string;\n    updated_at: Integer; // Milliseconds since Unix epoch.\n  }[];\n  limit: Integer; // Maximum entries the session can hold.\n  total: Integer; // Entries in the whole session memory.\n  total_chars: Integer; // Characters across all entry texts.\n}>;",
       "input_type": "NoArgs",
       "output_type": "(inline)",
