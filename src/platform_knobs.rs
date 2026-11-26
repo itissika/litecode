@@ -1,7 +1,7 @@
 //! Platform semantics for thinking intensity and context window mode.
 //!
-//! See `docs/platform-knobs.md`. UI / session persist platform enums; the
-//! provider catalog maps them onto vendor wire literals.
+//! See `knowledge/contracts/platform-knobs.md`. UI / session persist platform
+//! enums; the provider catalog maps them onto vendor wire literals.
 
 use serde::{Deserialize, Serialize};
 
@@ -89,5 +89,48 @@ pub fn effective_context_window(model: &ResolvedModel, mode: ContextMode) -> usi
     match mode {
         ContextMode::Standard => model.context_window,
         ContextMode::Max => model.context_window_max,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider_catalog::{DEFAULT_CATALOG, ProviderCatalog};
+    use crate::session::estimate::compaction_budget;
+    use std::path::Path;
+
+    /// The catalog is the only origin of these two numbers: the eval's 1M/256K
+    /// comparison reads them, and the 80% prepare line is derived from them.
+    #[test]
+    fn cline_pass_exposes_256k_standard_and_1m_max() {
+        let catalog = ProviderCatalog::parse(DEFAULT_CATALOG, Path::new("default_catalog.toml"))
+            .expect("the embedded catalog is valid");
+        let model = catalog
+            .model("cline/cline-pass/deepseek-v4.1-flash-1017")
+            .expect("cline-pass model is in the shipped catalog");
+
+        let standard = effective_context_window(model, ContextMode::Standard);
+        let max = effective_context_window(model, ContextMode::Max);
+        assert_eq!(standard, 256_000);
+        assert_eq!(max, 1_000_000);
+        assert_eq!(compaction_budget(standard), 204_800);
+        assert_eq!(compaction_budget(max), 800_000);
+        // The prepare line stays under the hard prompt ceiling (the physical
+        // window minus the output reserve), so `max` still compacts before it
+        // stops sending.
+        let hard_line = max - usize::try_from(model.max_output).expect("max_output fits");
+        assert!(compaction_budget(max) < hard_line);
+    }
+
+    #[test]
+    fn a_mode_is_the_only_spelling_a_session_row_can_hold() {
+        assert_eq!(ContextMode::default(), ContextMode::Standard);
+        assert_eq!(ContextMode::parse("max"), Some(ContextMode::Max));
+        assert_eq!(
+            ContextMode::parse(" standard "),
+            Some(ContextMode::Standard)
+        );
+        assert_eq!(ContextMode::parse("1m"), None);
+        assert_eq!(ContextMode::Max.as_str(), "max");
     }
 }

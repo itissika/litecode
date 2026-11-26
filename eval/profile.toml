@@ -98,8 +98,10 @@ edit = "all"
 exec = "all"  # unified exec: Safe would quietly allowlist the shell
 
 [knobs]
-# Model comes from Harbor's `-m`. These two are session fields the CLI cannot
-# set yet, so this pins the values the artifact records; a scored run must not
-# differ from another one in a way the score cannot explain.
+# Model comes from Harbor's `-m`. These two are the session fields a scored run
+# is bound to, and both are recorded in the trial artifact. `context` is passed
+# by the adapter as the CLI's own `--context-mode` (the campaign's
+# `litecode_context_mode`); this line is the mode a run uses when nothing else
+# names one, and the 1M group overrides it per campaign, never per file.
 thinking = "medium"
 context = "standard"

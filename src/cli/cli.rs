@@ -19,6 +19,7 @@ use crate::client_protocol::protocol::{
     JsonRpcRequestEnvelope, TurnEndReason, TurnTokenStats, WireEvent,
 };
 use crate::config::{ConfigManager, ResolvedConfig, SettingsWriter, cli_turn_guard};
+use crate::platform_knobs::ContextMode;
 use crate::runtime::RuntimeHandle;
 use crate::types::LitecodeError;
 
@@ -48,6 +49,20 @@ struct Cli {
     /// Off by default: an interactive run still asks.
     #[arg(long, short = 'y', global = true)]
     yes: bool,
+
+    /// Context window mode for the session this run opens.
+    ///
+    /// `standard` is the model's default budget, `max` its full window. The
+    /// same product knob the session UI writes; it is stored on the session
+    /// row, so the ContextMeter reads one value for the whole session.
+    #[arg(
+        long,
+        global = true,
+        default_value = "standard",
+        value_name = "standard|max",
+        value_parser = parse_context_mode
+    )]
+    context_mode: ContextMode,
 
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     prompt: Vec<String>,
@@ -144,6 +159,12 @@ enum ProfileCommands {
         #[arg(long)]
         websearch_key_file: Option<String>,
     },
+}
+
+/// `--context-mode` accepts exactly the two platform modes; anything else is a
+/// usage error, not a silent fallback to the default window.
+fn parse_context_mode(value: &str) -> Result<ContextMode, String> {
+    ContextMode::parse(value).ok_or_else(|| format!("expected 'standard' or 'max', not '{value}'"))
 }
 
 fn workspace_override(cli: &Cli) -> Option<&Path> {
@@ -772,6 +793,7 @@ impl CliConversation {
         project: &str,
         agent_id: &str,
         model_id: Option<&str>,
+        context_mode: ContextMode,
     ) -> anyhow::Result<Self> {
         let turn_guard = cli_turn_guard();
         let db_path = runtime.db_path();
@@ -796,6 +818,12 @@ impl CliConversation {
             .worker_threads(2)
             .build()?;
         let session_id = rt.block_on(service.open_session(project, agent_id, model_id))?;
+        // The mode is part of the session binding, not a per-turn option: it is
+        // written once, on the row the context meter reads. A new session
+        // already carries the default, so only another mode is a write.
+        if context_mode != ContextMode::default() {
+            service.set_context_mode(&session_id, context_mode)?;
+        }
         // The run's tokens are the session meter's move across it. A run is a
         // fresh session today, but the delta is what makes the number "this
         // run" rather than "this session", and it reuses the same rows the UI
@@ -1056,6 +1084,13 @@ pub fn run() -> anyhow::Result<()> {
         shutdown_on_stdin_eof,
     }) = &cli.command
     {
+        // A served session takes its mode from the client (`session/setContextMode`);
+        // honouring the flag here would be a second, silent origin for one field.
+        if cli.context_mode != ContextMode::default() {
+            anyhow::bail!(
+                "--context-mode applies to one CLI run; a served session takes its mode from the client"
+            );
+        }
         // Provider resolution is deferred to runtime — the web server must
         // start regardless of provider configuration so the Settings UI is
         // available.  A missing / invalid provider will surface as a clear
@@ -1139,7 +1174,28 @@ pub fn run() -> anyhow::Result<()> {
         .get(&agent_id)
         .map(|p| p.model_ref.clone())
         .filter(|s| !s.is_empty());
-    let mut cli_session = CliConversation::open(runtime, &project, &agent_id, model_id.as_deref())?;
+    // The window the session will actually be measured against: the catalog's
+    // standard or maximum for this model, read through the same function the
+    // meter uses. Nothing is estimated here.
+    let context_window = model_id
+        .as_deref()
+        .and_then(|reference| runtime.resolved.catalog().model(reference))
+        .map(|model| crate::platform_knobs::effective_context_window(model, cli.context_mode));
+    let mut cli_session = CliConversation::open(
+        runtime,
+        &project,
+        &agent_id,
+        model_id.as_deref(),
+        cli.context_mode,
+    )?;
+
+    eprintln!(
+        "[litecode] context_mode={} window={}",
+        cli.context_mode.as_str(),
+        context_window
+            .map(|window| window.to_string())
+            .unwrap_or_else(|| "unknown".into()),
+    );
 
     let policy = answer_policy(cli.yes, stdin_is_terminal);
     if policy == AnswerPolicy::Approve {
@@ -1171,6 +1227,35 @@ pub fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_mode_defaults_to_standard_and_takes_both_modes() {
+        let cli = Cli::try_parse_from(["litecode", "hi"]).expect("parse");
+        assert_eq!(cli.context_mode, ContextMode::Standard);
+
+        let cli = Cli::try_parse_from(["litecode", "--context-mode", "max", "hi"]).expect("parse");
+        assert_eq!(cli.context_mode, ContextMode::Max);
+        assert_eq!(cli.prompt, vec!["hi".to_string()]);
+
+        // The mode is global, so it also lands before the subcommand.
+        let cli = Cli::try_parse_from(["litecode", "--context-mode", "standard", "list-sessions"])
+            .expect("parse");
+        assert_eq!(cli.context_mode, ContextMode::Standard);
+    }
+
+    #[test]
+    fn an_unknown_context_mode_is_a_usage_error() {
+        let error = match Cli::try_parse_from(["litecode", "--context-mode", "huge", "hi"]) {
+            Ok(_) => panic!("only two modes exist"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("standard") && message.contains("max"),
+            "{message}"
+        );
+        assert!(message.contains("huge"), "{message}");
+    }
 
     #[test]
     fn app_mcp_takes_the_shape_a_client_definition_writes() {

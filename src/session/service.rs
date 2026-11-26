@@ -200,6 +200,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_new_session_starts_standard_and_keeps_the_mode_it_is_given() {
+        let (_dir, manager, service) = fixture();
+        let session = service
+            .open_session("/proj", "default", None)
+            .await
+            .expect("session");
+        // A run that asks for nothing gets the product default.
+        assert_eq!(
+            service.context_mode(&session),
+            Some(crate::platform_knobs::ContextMode::Standard)
+        );
+
+        service
+            .set_context_mode(&session, crate::platform_knobs::ContextMode::Max)
+            .expect("set mode");
+        assert_eq!(
+            service.context_mode(&session),
+            Some(crate::platform_knobs::ContextMode::Max)
+        );
+        // The meter reads the persisted row, so the write has to be on it and
+        // not only in the manager's live record.
+        let meta = manager.data().meta_blocking(&session).expect("meta");
+        assert_eq!(
+            crate::platform_knobs::ContextMode::parse(&meta.context_mode),
+            Some(crate::platform_knobs::ContextMode::Max)
+        );
+    }
+
+    #[tokio::test]
     async fn ui_facts_delegate_without_projection_state() {
         let (_dir, manager, service) = fixture();
         let session = manager
