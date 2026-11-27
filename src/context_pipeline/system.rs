@@ -1,7 +1,6 @@
 use crate::config::AgentConfig;
 use crate::config::global_db::{
     CITATION_PROMPT, DEFAULT_PROMPT, HARNESS_CODE_RUNTIME, HARNESS_SYSTEM, builtin_prompt_for,
-    is_builtin_prompt_marker,
 };
 use crate::context_pipeline::env::Context;
 
@@ -17,9 +16,11 @@ pub fn build_system_prompt(
 }
 
 /// Same stack with an engine-owned platform segment between the editable body
-/// and citations. Only [`build_system_prompt`] calls this with `None` today; bot
-/// sessions use [`build_system_prompt_for_bot`], which owns the `# Bot Role`
-/// segment as well.
+/// and citations. The platform is engine-owned, so no production caller passes
+/// one today: [`build_system_prompt`] always passes `None` and bot sessions use
+/// [`build_system_prompt_for_bot`], which owns the `# Bot Role` segment and the
+/// platform together. The parameter stays on this seam so the one splice keeps
+/// a single ordering rule instead of growing a second builder.
 pub fn build_system_prompt_with_platform(
     agent_id: &str,
     agent_config: &AgentConfig,
@@ -108,23 +109,18 @@ fn splice_workspace_docs(body: String, ctx: Option<&Context>) -> String {
 /// no settings write, DB row or hand-built `AgentConfig` can replace a locked
 /// prompt with something else.
 ///
-/// Non-built-in ids keep the legacy rule: a `builtin`/`builtin:*` marker still
-/// asks for the pack for that id (none exists for a non-built-in id, so the
-/// block comes out empty), and any other stored text is used verbatim. Bot
-/// sessions never come through here: they use
-/// [`build_system_prompt_for_bot`], whose editable block is always `DEFAULT_PROMPT`.
+/// Every other id has no pack to resolve, so its stored text is the body —
+/// verbatim, including text that merely looks like a `builtin`/`builtin:*`
+/// marker. A marker is a request for the pack *of this id*; with no pack it
+/// means nothing, and resolving it used to erase the body, silently dropping a
+/// custom agent's prompt out of the model-visible system prompt. Bot sessions
+/// never come through here: they use [`build_system_prompt_for_bot`], whose
+/// editable block is always `DEFAULT_PROMPT`.
 fn resolve_body(agent_id: &str, stored: &str) -> String {
     if let Some(pack) = builtin_prompt_for(agent_id) {
         return pack.trim().to_string();
     }
-    if is_builtin_prompt_marker(stored) {
-        builtin_prompt_for(agent_id)
-            .unwrap_or("")
-            .trim()
-            .to_string()
-    } else {
-        stored.to_string()
-    }
+    stored.to_string()
 }
 
 fn splice_instruction_file(body: &str, filename: &str, content: &str) -> String {
@@ -318,6 +314,22 @@ mod tests {
                     "{id} leaked the stored prompt"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn custom_agent_keeps_marker_shaped_stored_text() {
+        // The other half of I1: only a built-in id is locked. An id with no
+        // pack keeps whatever the user stored, even when the text looks like a
+        // built-in marker — erasing it would blank a custom agent's prompt.
+        let named = build_system_prompt("my-custom-agent", &cfg("subagent", "builtin:default"), None);
+        let blank = build_system_prompt("my-custom-agent", &cfg("subagent", ""), None);
+        assert!(named.contains("builtin:default"), "{named}");
+        assert_ne!(named, blank, "the stored body must survive");
+
+        for stored in ["builtin", "builtin:plan", "plain prose"] {
+            let prompt = build_system_prompt("my-custom-agent", &cfg("subagent", stored), None);
+            assert!(prompt.contains(stored), "{stored:?} was dropped");
         }
     }
 

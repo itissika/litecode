@@ -202,13 +202,14 @@ fn validate_log_level(log: &super::schema::LogSettings) -> Result<()> {
 }
 
 fn validate_custom_tools(global: &GlobalSettings) -> Result<()> {
-    use super::global_db::tools;
     let mut names = std::collections::HashSet::new();
     for (suite_name, suite) in &global.custom_suites {
         crate::config::settings_writer::validate_tool_id(suite_name)?;
-        if tools::is_core_tool(suite_name) || tools::is_optional_builtin(suite_name) {
+        // One shared table with the workspace load path: a suite may not claim a
+        // builtin card id, namespace, or `<suite>.<member>` alias space.
+        if let Some(reason) = crate::config::workspace::builtin_suite_id_conflict(suite_name) {
             return Err(LitecodeError::Config(format!(
-                "custom suite '{suite_name}' conflicts with a builtin tool"
+                "custom suite '{suite_name}' {reason}"
             )));
         }
         if let Some(error) = crate::permission::policy::custom_rule_ids_error(&suite.rules) {

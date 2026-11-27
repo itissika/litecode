@@ -240,14 +240,43 @@ fn hard_limit_error(meter: &ContextMeter) -> LitecodeError {
     }
 }
 
+/// What the ordinary (sealed-only) auto trigger is allowed to look at.
+///
+/// `NoSealedRow` means no row has crossed the write gate, so the sealed prefix
+/// cannot be summarized at all: an unsealed tail must never make the ordinary
+/// pipeline look compactable. The full meter still owns the hard send gate.
+enum TriggerMeter {
+    Sealed(ContextMeter),
+    NoSealedRow,
+}
+
+/// How a turn finished settling a compaction terminal it observed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Settled {
+    Succeeded,
+    Failed,
+}
+
+/// Result of waiting on one episode terminal.
+enum Waited {
+    Settled(Settled),
+    /// This turn's own cancel fired while waiting; the episode keeps running.
+    TurnCancelled,
+    /// No terminal was observed: the episode is still running.
+    StillRunning,
+}
+
 fn sealed_trigger_meter(
     sessions: &crate::session::manager::SessionManager,
     session_id: &str,
     request: &crate::llm::CompactionRequestContext,
     baseline: &crate::context_pipeline::ProviderPromptBaseline,
     data_root: &std::path::Path,
-) -> Option<ContextMeter> {
-    CompactPolicy::measure_sealed_meter(sessions, session_id, request, baseline, data_root)
+) -> TriggerMeter {
+    match CompactPolicy::measure_sealed_meter(sessions, session_id, request, baseline, data_root) {
+        Some(meter) => TriggerMeter::Sealed(meter),
+        None => TriggerMeter::NoSealedRow,
+    }
 }
 
 impl AgentRuntime {
@@ -273,6 +302,77 @@ impl AgentRuntime {
         )?;
         *meter = next;
         Ok(())
+    }
+
+    /// The one settlement rule for every compaction terminal this turn
+    /// observes. `manual` marks an episode this turn did not start: a manual
+    /// compaction has no turn of its own, so its failure is reported through the
+    /// lifecycle and may never stop this turn nor latch a turn-level failure.
+    fn settle_episode(
+        &self,
+        request: &crate::llm::CompactionRequestContext,
+        meter: &mut ContextMeter,
+        outcome: EpisodeOutcome,
+        manual: bool,
+    ) -> Result<Settled> {
+        // The tracked id is spent as soon as its terminal is observed.
+        *self
+            .compaction_episode
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+        match outcome {
+            EpisodeOutcome::Succeeded { .. } => {
+                self.clear_compaction_failure();
+                self.prompt_usage_baseline.clear();
+                let (next_meter, _) = self.context_pipeline.measure_working_set(
+                    &self.sessions,
+                    &self.session_id,
+                    request,
+                    &self.prompt_usage_baseline,
+                )?;
+                *meter = next_meter;
+                Ok(Settled::Succeeded)
+            }
+            EpisodeOutcome::Failed {
+                kind,
+                message,
+                action,
+            } => {
+                if !manual
+                    && action == crate::session::manager::CompactionFailureAction::StopTurn
+                {
+                    return Err(compaction_stop_error(kind, &message));
+                }
+                if !manual {
+                    self.record_compaction_failure();
+                }
+                // A commit may have landed even though read-back failed: re-read
+                // before this step uses the cached surface.
+                self.refresh_full_meter(request, meter)?;
+                Ok(Settled::Failed)
+            }
+            EpisodeOutcome::Cancelled { .. } => Err(LitecodeError::Canceled),
+        }
+    }
+
+    /// Wait for one episode terminal and settle it.
+    async fn wait_and_settle(
+        &self,
+        episode_id: &str,
+        manual: bool,
+        request: &crate::llm::CompactionRequestContext,
+        meter: &mut ContextMeter,
+    ) -> Result<Waited> {
+        let outcome = self.wait_compaction_or_cancel(episode_id).await;
+        if self.is_cancelled() {
+            return Ok(Waited::TurnCancelled);
+        }
+        match outcome {
+            Some(outcome) => Ok(Waited::Settled(
+                self.settle_episode(request, meter, outcome, manual)?,
+            )),
+            None => Ok(Waited::StillRunning),
+        }
     }
 }
 
@@ -497,45 +597,17 @@ impl AgentDeps for AgentRuntime {
         if let Some(id) = tracked
             && let Some(outcome) = self.sessions.last_episode_outcome(&self.session_id, &id)
         {
-            *self
-                .compaction_episode
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()) = None;
-            match outcome {
-                EpisodeOutcome::Succeeded { .. } => {
-                    self.clear_compaction_failure();
-                    self.prompt_usage_baseline.clear();
-                    let (next_meter, _) = self.context_pipeline.measure_working_set(
-                        &self.sessions,
-                        &self.session_id,
-                        &compaction_request,
-                        &self.prompt_usage_baseline,
-                    )?;
-                    meter = next_meter;
-                    trigger_meter = sealed_trigger_meter(
-                        &self.sessions,
-                        &self.session_id,
-                        &compaction_request,
-                        &self.prompt_usage_baseline,
-                        self.context_pipeline.data_root(),
-                    );
-                }
-                EpisodeOutcome::Failed {
-                    kind,
-                    message,
-                    action,
-                } => {
-                    if action == crate::session::manager::CompactionFailureAction::StopTurn {
-                        return Err(compaction_stop_error(kind, &message));
-                    }
-                    self.record_compaction_failure();
-                    // A commit may have landed even though read-back failed.
-                    // Re-read before this step uses the cached surface.
-                    self.refresh_full_meter(&compaction_request, &mut meter)?;
-                }
-                EpisodeOutcome::Cancelled { .. } => {
-                    return Err(LitecodeError::Canceled);
-                }
+            // This turn started the episode, so it owns its failure.
+            if self.settle_episode(&compaction_request, &mut meter, outcome, false)?
+                == Settled::Succeeded
+            {
+                trigger_meter = sealed_trigger_meter(
+                    &self.sessions,
+                    &self.session_id,
+                    &compaction_request,
+                    &self.prompt_usage_baseline,
+                    self.context_pipeline.data_root(),
+                );
             }
         }
 
@@ -545,60 +617,25 @@ impl AgentDeps for AgentRuntime {
             if !meter.is_at_wait_line(margin) && !meter.is_over_hard_line() {
                 return Ok(false);
             }
-            let outcome = self.wait_compaction_or_cancel(&active.id).await;
-            if self.is_cancelled() {
-                return Ok(false);
-            }
-            match outcome {
-                Some(EpisodeOutcome::Succeeded { .. }) => {
-                    *self
-                        .compaction_episode
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner()) = None;
-                    self.clear_compaction_failure();
-                    self.prompt_usage_baseline.clear();
-                    let (next_meter, _) = self.context_pipeline.measure_working_set(
-                        &self.sessions,
-                        &self.session_id,
-                        &compaction_request,
-                        &self.prompt_usage_baseline,
-                    )?;
-                    meter = next_meter;
+            // A manual episode has no turn of its own: its failure is reported
+            // through the lifecycle, never by stopping this turn.
+            match self
+                .wait_and_settle(
+                    &active.id,
+                    active.trigger == CompactionTrigger::Manual,
+                    &compaction_request,
+                    &mut meter,
+                )
+                .await?
+            {
+                Waited::Settled(Settled::Succeeded) => {
                     if meter.is_over_hard_line() {
                         return Err(hard_limit_error(&meter));
                     }
                     return Ok(true);
                 }
-                Some(EpisodeOutcome::Failed {
-                    kind,
-                    message,
-                    action,
-                }) => {
-                    *self
-                        .compaction_episode
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner()) = None;
-                    // A manual episode has no turn of its own. Its failure is
-                    // reported through the lifecycle, never by stopping this
-                    // turn; the session read below decides whether it is usable.
-                    if active.trigger != CompactionTrigger::Manual
-                        && action == crate::session::manager::CompactionFailureAction::StopTurn
-                    {
-                        return Err(compaction_stop_error(kind, &message));
-                    }
-                    if active.trigger != CompactionTrigger::Manual {
-                        self.record_compaction_failure();
-                    }
-                    self.refresh_full_meter(&compaction_request, &mut meter)?;
-                }
-                Some(EpisodeOutcome::Cancelled { .. }) => {
-                    *self
-                        .compaction_episode
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner()) = None;
-                    return Err(LitecodeError::Canceled);
-                }
-                None => {}
+                Waited::TurnCancelled => return Ok(false),
+                Waited::Settled(Settled::Failed) | Waited::StillRunning => {}
             }
             if meter.is_over_hard_line() {
                 return Err(hard_limit_error(&meter));
@@ -619,10 +656,20 @@ impl AgentDeps for AgentRuntime {
         }
 
         // Auto start is sealed-only: the tail cannot make the ordinary
-        // pipeline look compactable. If the full request is already over the
-        // hard line but the sealed prefix is not, no ordinary compaction can
-        // fix it; fail the send rather than start a no-op episode.
-        let trigger = trigger_meter.as_ref().unwrap_or(&meter);
+        // pipeline look compactable. No sealed row means there is nothing an
+        // ordinary compaction could summarize, so an unsealed tail never starts
+        // an episode. If the full request is already over the hard line, no
+        // compaction can fix it either: fail the send rather than wait on a
+        // no-op episode.
+        let trigger = match &trigger_meter {
+            TriggerMeter::Sealed(meter) => meter,
+            TriggerMeter::NoSealedRow => {
+                if meter.is_over_hard_line() {
+                    return Err(hard_limit_error(&meter));
+                }
+                return Ok(false);
+            }
+        };
         if !trigger.should_compact() && !trigger.is_over_hard_line() {
             if meter.is_over_hard_line() {
                 return Err(hard_limit_error(&meter));
@@ -642,48 +689,25 @@ impl AgentDeps for AgentRuntime {
                 if let Some(active) = self.sessions.active_compaction(&self.session_id)
                     && (meter.is_at_wait_line(margin) || meter.is_over_hard_line())
                 {
-                    let outcome = self.wait_compaction_or_cancel(&active.id).await;
-                    if self.is_cancelled() {
-                        return Ok(false);
-                    }
-                    match outcome {
-                        Some(EpisodeOutcome::Succeeded { .. }) => {
-                            self.clear_compaction_failure();
-                            self.prompt_usage_baseline.clear();
-                            let (next_meter, _) = self.context_pipeline.measure_working_set(
-                                &self.sessions,
-                                &self.session_id,
-                                &compaction_request,
-                                &self.prompt_usage_baseline,
-                            )?;
-                            meter = next_meter;
+                    // Manual has no turn; report only. The session read below is
+                    // the authority for this turn.
+                    match self
+                        .wait_and_settle(
+                            &active.id,
+                            active.trigger == CompactionTrigger::Manual,
+                            &compaction_request,
+                            &mut meter,
+                        )
+                        .await?
+                    {
+                        Waited::Settled(Settled::Succeeded) => {
                             if meter.is_over_hard_line() {
                                 return Err(hard_limit_error(&meter));
                             }
                             return Ok(true);
                         }
-                        Some(EpisodeOutcome::Failed {
-                            kind,
-                            message,
-                            action,
-                        }) => {
-                            // Manual has no turn; report only. The session
-                            // read below is the authority for this turn.
-                            if active.trigger != CompactionTrigger::Manual
-                                && action
-                                    == crate::session::manager::CompactionFailureAction::StopTurn
-                            {
-                                return Err(compaction_stop_error(kind, &message));
-                            }
-                            if active.trigger != CompactionTrigger::Manual {
-                                self.record_compaction_failure();
-                            }
-                            self.refresh_full_meter(&compaction_request, &mut meter)?;
-                        }
-                        Some(EpisodeOutcome::Cancelled { .. }) => {
-                            return Err(LitecodeError::Canceled);
-                        }
-                        None => {}
+                        Waited::TurnCancelled => return Ok(false),
+                        Waited::Settled(Settled::Failed) | Waited::StillRunning => {}
                     }
                 }
                 if meter.is_over_hard_line() {
@@ -709,53 +733,19 @@ impl AgentDeps for AgentRuntime {
         );
 
         if meter.is_at_wait_line(margin) || meter.is_over_hard_line() {
-            let outcome = self.wait_compaction_or_cancel(&id).await;
-            if self.is_cancelled() {
-                return Ok(false);
-            }
-            match outcome {
-                Some(EpisodeOutcome::Succeeded { .. }) => {
-                    *self
-                        .compaction_episode
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner()) = None;
-                    self.clear_compaction_failure();
-                    self.prompt_usage_baseline.clear();
-                    let (next_meter, _) = self.context_pipeline.measure_working_set(
-                        &self.sessions,
-                        &self.session_id,
-                        &compaction_request,
-                        &self.prompt_usage_baseline,
-                    )?;
-                    meter = next_meter;
+            // This turn started the episode, so it owns its failure.
+            match self
+                .wait_and_settle(&id, false, &compaction_request, &mut meter)
+                .await?
+            {
+                Waited::Settled(Settled::Succeeded) => {
                     if meter.is_over_hard_line() {
                         return Err(hard_limit_error(&meter));
                     }
                     return Ok(true);
                 }
-                Some(EpisodeOutcome::Failed {
-                    kind,
-                    message,
-                    action,
-                }) => {
-                    *self
-                        .compaction_episode
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner()) = None;
-                    if action == crate::session::manager::CompactionFailureAction::StopTurn {
-                        return Err(compaction_stop_error(kind, &message));
-                    }
-                    self.record_compaction_failure();
-                    self.refresh_full_meter(&compaction_request, &mut meter)?;
-                }
-                Some(EpisodeOutcome::Cancelled { .. }) => {
-                    *self
-                        .compaction_episode
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner()) = None;
-                    return Err(LitecodeError::Canceled);
-                }
-                None => {}
+                Waited::TurnCancelled => return Ok(false),
+                Waited::Settled(Settled::Failed) | Waited::StillRunning => {}
             }
         }
 
@@ -1941,6 +1931,3 @@ mod overflow_retry_tests {
         );
     }
 }
-
-#[cfg(test)]
-mod request_health_tests {}

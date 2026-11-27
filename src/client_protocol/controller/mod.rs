@@ -513,27 +513,6 @@ impl Projection {
             turn.awaiting_permission = !snap.pending_permissions.is_empty();
         }
         snap.llm_reconnect = self.service.llm_reconnect(&self.session_id);
-        if let Ok(meta) = self.service.meta(&self.session_id) {
-            snap.meta = crate::client_protocol::protocol::SessionMetaWire {
-                id: meta.id,
-                project: meta.project,
-                created_at: meta.created_at,
-                updated_at: meta.updated_at,
-                parent_session_id: meta.parent_session_id,
-                parent_call_id: meta.parent_call_id,
-                responsibility: meta.responsibility,
-                subagent_depth: meta.subagent_depth,
-                agent_id: meta.agent_id,
-                model_id: meta.model_id,
-                thinking_tier: meta.thinking_tier,
-                context_mode: meta.context_mode,
-                compacted_seq: meta.compacted_seq,
-                spine_from: meta.spine_from,
-                todos: meta.todos,
-                plan_slug: meta.plan_slug,
-                preview: meta.preview,
-            };
-        }
         snap
     }
 

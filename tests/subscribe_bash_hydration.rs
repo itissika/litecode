@@ -66,7 +66,7 @@ async fn subscribe_hydrates_bash_jobs_and_clears_after_kill() {
     let sid = fixture.create("/proj", "default", None);
     let sessions = Arc::new(fixture.manager());
     let root = fixture.dir.path();
-    let mut ctrl = controller(sessions, root);
+    let mut ctrl = controller(Arc::clone(&sessions), root);
 
     let job_id = "bg_a1b2c3d4";
     ctrl.runtime
@@ -89,12 +89,21 @@ async fn subscribe_hydrates_bash_jobs_and_clears_after_kill() {
             .any(|j| j["id"] == job_id && j["call_id"] == "call_hydrate"),
         "hydrated bash.jobs must contain the spawned job: {jobs:?}"
     );
-    // The wire snapshot has no `subagent.jobs` field (transient bash state is
-    // what (re)subscribe hydrates): the subagent half of the projection is the
-    // durable session row, so a root session must hydrate at depth 0.
+    // The wire snapshot has no `subagent.jobs` or redundant `meta` envelope
+    // (transient bash state is what (re)subscribe hydrates): the subagent half
+    // of the projection is the durable session row, so a root session must
+    // hydrate at depth 0.
+    assert!(
+        snap["params"].get("meta").is_none(),
+        "snapshot must not duplicate meta envelope on the wire: {snap:?}"
+    );
+    let meta = sessions
+        .data()
+        .meta_blocking(&sid)
+        .expect("read session meta");
     assert_eq!(
-        snap["params"]["meta"]["subagent_depth"], 0,
-        "a root session must hydrate with zero subagent depth: {snap:?}"
+        meta.subagent_depth, 0,
+        "a root session must hydrate with zero subagent depth"
     );
 
     // 2. After the job exits, a fresh (re)subscribe must not report it.

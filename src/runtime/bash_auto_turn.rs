@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use crate::permission::PermissionSink;
-use crate::runtime::{RuntimeHandle, TurnOptions};
-use crate::session::{LifecycleEvent, SessionService};
+use crate::session::SessionService;
 use crate::terminal::TerminalHub;
-use crate::types::LitecodeError;
+
+use super::idle_auto_turn::{self, IdleTurn};
+use super::RuntimeHandle;
 
 pub enum IdleAutoTurn {
     Prepared {
@@ -33,106 +34,32 @@ pub fn try_begin_idle_auto_turn(
     workspace_root: &Path,
     session_id: &str,
 ) -> IdleAutoTurn {
-    let sid = session_id;
-    if sid.is_empty() || sid == "_" {
-        return IdleAutoTurn::SkippedNoUi;
-    }
-    if !hub.jobs.mailbox_pending(sid) {
-        return IdleAutoTurn::SkippedEmptyMailbox;
-    }
-    if service.subscriber_count_blocking(sid) == 0 {
-        return IdleAutoTurn::SkippedNoUi;
-    }
-    if service.is_session_busy_blocking(sid) {
-        return IdleAutoTurn::SkippedBusy;
-    }
-
-    let default_primary = runtime.desired_primary_agent();
-    let primary_agent = match service.resolve_primary_agent_for_session(runtime, sid, default_primary)
-    {
-        Ok(id) => id,
-        Err(_) => return IdleAutoTurn::SkippedSessionGone,
-    };
-    let project = service
-        .project(sid)
-        .unwrap_or_else(|| workspace_root.display().to_string());
-    let step_max = crate::agent::AGENT_MAX_STEPS;
-    let turn_id = uuid::Uuid::new_v4().to_string();
-    match service.reserve_auto_turn(sid, turn_id.clone(), step_max, &primary_agent, &project) {
-        Ok(_) => {}
-        Err(LitecodeError::AgentAlreadyRunning) => return IdleAutoTurn::SkippedBusy,
-        Err(_) => return IdleAutoTurn::SkippedSessionGone,
-    }
-
-    if !hub.jobs.mailbox_pending(sid) {
-        service.release_auto_turn(sid, &turn_id);
-        return IdleAutoTurn::SkippedEmptyMailbox;
-    }
-    let sink = service.auto_turn_permission_sink(sid);
-    IdleAutoTurn::Prepared {
-        session_id: sid.to_string(),
-        turn_id,
-        primary_agent,
-        project,
-        sink,
+    match plan(hub, runtime, service, workspace_root, session_id) {
+        IdleTurn::Prepared(prepared) => IdleAutoTurn::Prepared {
+            session_id: prepared.session_id,
+            turn_id: prepared.turn_id,
+            primary_agent: prepared.primary_agent,
+            project: prepared.project,
+            sink: prepared.sink,
+        },
+        IdleTurn::SkippedBusy => IdleAutoTurn::SkippedBusy,
+        IdleTurn::SkippedNoUi => IdleAutoTurn::SkippedNoUi,
+        IdleTurn::SkippedEmptyMailbox => IdleAutoTurn::SkippedEmptyMailbox,
+        IdleTurn::SkippedSessionGone => IdleAutoTurn::SkippedSessionGone,
     }
 }
 
-fn spawn_prepared_idle_auto_turn(
+/// This listener's mailbox probe, plugged into the shared decision order.
+fn plan(
+    hub: &TerminalHub,
     runtime: &RuntimeHandle,
-    service: &Arc<SessionService>,
-    decision: IdleAutoTurn,
-) {
-    let IdleAutoTurn::Prepared {
-        session_id,
-        turn_id,
-        primary_agent,
-        project,
-        sink,
-    } = decision
-    else {
-        return;
-    };
-    let service = Arc::clone(service);
-    let handle = match service.spawn_auto_turn(
-        runtime,
-        session_id.clone(),
-        crate::runtime::TurnInput::Wake {
-            anchor_user_seq: None,
-        },
-        sink,
-        turn_id.clone(),
-        TurnOptions::default(),
-    ) {
-        Ok(h) => h,
-        Err(error) => {
-            tracing::warn!(error = %error, "bash idle auto-turn spawn failed");
-            service.release_auto_turn(&session_id, &turn_id);
-            return;
-        }
-    };
-    std::thread::spawn(move || {
-        let rt = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(rt) => rt,
-            Err(error) => {
-                tracing::warn!(error = %error, "bash idle auto-turn runtime failed");
-                service.release_auto_turn(&session_id, &turn_id);
-                return;
-            }
-        };
-        if let Err(error) = rt.block_on(service.start_auto_turn_with_handle(
-            &session_id,
-            handle,
-            &primary_agent,
-            &project,
-        )) {
-            tracing::warn!(error = %error, "bash idle auto-turn start failed");
-            service.release_auto_turn(&session_id, &turn_id);
-        }
-    });
+    service: &SessionService,
+    workspace_root: &Path,
+    session_id: &str,
+) -> IdleTurn {
+    idle_auto_turn::plan_idle_turn(runtime, service, workspace_root, session_id, || {
+        hub.jobs.mailbox_pending(session_id)
+    })
 }
 
 fn maybe_spawn_idle_auto_turn(
@@ -142,10 +69,9 @@ fn maybe_spawn_idle_auto_turn(
     workspace_root: &Path,
     session_id: &str,
 ) {
-    let runtime_snap = runtime.read().expect("runtime lock").clone();
-    let decision =
-        try_begin_idle_auto_turn(hub, &runtime_snap, service, workspace_root, session_id);
-    spawn_prepared_idle_auto_turn(&runtime_snap, service, decision);
+    idle_auto_turn::spawn_from_snapshot(runtime, service, "bash", |runtime| {
+        plan(hub, runtime, service, workspace_root, session_id)
+    });
 }
 
 pub fn install_idle_auto_turn(
@@ -171,27 +97,15 @@ pub fn install_idle_auto_turn(
     let hub_for_life = Arc::clone(&hub);
     let runtime_for_life = Arc::clone(&runtime);
     let service_for_life = Arc::clone(&service);
-    let mut rx = service.subscribe_lifecycle();
-    let _ = std::thread::Builder::new()
-        .name("bash-idle-turn-flush".into())
-        .spawn(move || {
-            loop {
-                match rx.blocking_recv() {
-                    Ok(LifecycleEvent::TurnFinished { session_id, .. }) => {
-                        maybe_spawn_idle_auto_turn(
-                            &hub_for_life,
-                            &runtime_for_life,
-                            &service_for_life,
-                            &workspace_root,
-                            &session_id,
-                        );
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
+    idle_auto_turn::install_turn_finished_flush(&service, "bash-idle-turn-flush", move |sid| {
+        maybe_spawn_idle_auto_turn(
+            &hub_for_life,
+            &runtime_for_life,
+            &service_for_life,
+            &workspace_root,
+            sid,
+        );
+    });
 }
 
 #[cfg(test)]

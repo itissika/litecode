@@ -12,6 +12,10 @@ pub enum ResourceKey {
 #[derive(Debug, Clone)]
 pub struct LockInfo {
     pub session_id: String,
+    /// How many acquires this session still owes a release for. One call takes
+    /// its keys exactly once, but a sibling nested call of the same session may
+    /// re-enter a key, so a single `release_keys` must not drop the key early.
+    pub holds: usize,
 }
 
 /// Process-wide write-lock registry.
@@ -42,7 +46,8 @@ impl WorkspaceWriteLock {
     /// `Err(holder session_id)` and **no** lock is taken.
     ///
     /// **Same-session re-entrant:** requesting a key this session already holds
-    /// succeeds.
+    /// succeeds and increments that key's hold count, so the key survives a
+    /// sibling call's [`Self::release_keys`].
     ///
     /// **Coarse-lock exclusion:** `ResourceKey::Workspace` conflicts with any
     /// held lock (Workspace or File) and vice versa. Distinct `File` keys do
@@ -68,21 +73,52 @@ impl WorkspaceWriteLock {
             }
         }
 
-        // Pass 2: no conflicts; acquire idle keys (keys this session already holds stay).
+        // Pass 2: no conflicts. A key this session already holds keeps its
+        // owner and counts one more hold; an idle key is taken for the first time.
         for key in keys {
-            locks.entry(key.clone()).or_insert(LockInfo {
-                session_id: session_id.to_string(),
-            });
+            match locks.get_mut(key) {
+                Some(info) if info.session_id == session_id => info.holds += 1,
+                _ => {
+                    locks.insert(
+                        key.clone(),
+                        LockInfo {
+                            session_id: session_id.to_string(),
+                            holds: 1,
+                        },
+                    );
+                }
+            }
         }
 
         Ok(())
     }
 
+    /// Release the keys one call acquired, and only those.
+    ///
+    /// Every call must release exactly what it took: a nested call finishing in
+    /// the middle of a `run_code` program must not free a sibling call's file.
+    /// A key stays held until its last hold is released.
+    pub fn release_keys(&self, session_id: &str, keys: &[ResourceKey]) {
+        let mut locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
+        for key in keys {
+            let last_hold = match locks.get_mut(key) {
+                Some(info) if info.session_id == session_id => {
+                    info.holds = info.holds.saturating_sub(1);
+                    info.holds == 0
+                }
+                _ => false,
+            };
+            if last_hold {
+                locks.remove(key);
+            }
+        }
+    }
+
     /// Release every lock held by this session.
     ///
-    /// Only locks owned by `session_id` are dropped. Callers that hold locks
-    /// across calls must use this session's id — this method does not care how
-    /// the lock was acquired.
+    /// Only locks owned by `session_id` are dropped, regardless of hold count.
+    /// This is the turn/session cleanup escape hatch, not the per-call release:
+    /// tool calls use [`Self::release_keys`].
     pub fn release_all(&self, session_id: &str) {
         let mut locks = self.locks.lock().unwrap_or_else(|e| e.into_inner());
         locks.retain(|_key, info| info.session_id != session_id);

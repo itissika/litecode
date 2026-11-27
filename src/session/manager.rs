@@ -2579,29 +2579,6 @@ impl SessionManager {
         (record.compaction_revision, operation_id)
     }
 
-    /// The old lifecycle emitter reports a terminal *before* the owner lease
-    /// finishes. Report the matching id so the event carries it; clearing the
-    /// episode is the lease's job (the post-finish terminal clears clients).
-    pub fn end_compaction_blocking(
-        &self,
-        session_id: &str,
-        operation_id: Option<&str>,
-        trigger: CompactionTrigger,
-    ) -> (u64, Option<String>) {
-        let records = self.records.lock().unwrap();
-        let Some(record) = records.get(session_id) else {
-            return (0, None);
-        };
-        let Some(episode) = record.episode.as_ref() else {
-            return (record.compaction_revision, None);
-        };
-        let matches = operation_id.map_or(episode.trigger == trigger, |id| episode.id == id);
-        if !matches {
-            return (record.compaction_revision, None);
-        }
-        (record.compaction_revision, Some(episode.id.clone()))
-    }
-
     /// Read the one compaction state a snapshot/event should project. The
     /// session-owned episode is the only source; there is no reaper and no
     /// second lifecycle-owned flag.
@@ -4487,9 +4464,6 @@ mod request_origin_tests {
     }
 }
 
-#[cfg(test)]
-mod turn_step_tests {}
-
 fn apply_event_to_progress(progress: &mut TurnProgress, ev: &InternalEvent) -> bool {
     match ev {
         InternalEvent::TurnStarted {
@@ -5406,9 +5380,6 @@ mod usage_series_tests {
         );
     }
 }
-
-#[cfg(test)]
-mod plan_settle_tests {}
 
 #[cfg(test)]
 mod pending_message_tests {

@@ -232,9 +232,20 @@ fn push_custom(
     );
     if let Some(suite) = id.strip_prefix("suite:") {
         for member in member_ids {
-            catalog
-                .member_owner
-                .insert(format!("{suite}.{member}"), id.clone());
+            let alias = format!("{suite}.{member}");
+            match catalog.member_owner.get(&alias).cloned() {
+                // An alias never displaces an owner that was registered earlier:
+                // builtin cards are pushed before custom suites, so this is what
+                // keeps `suite:memory` from claiming `memory.list`.
+                Some(owner) if owner != id => catalog.errors.push(format!(
+                    "custom suite '{suite}' member '{member}' resolves to '{alias}', \
+                     which is already owned by '{owner}'"
+                )),
+                Some(_) => {}
+                None => {
+                    catalog.member_owner.insert(alias, id.clone());
+                }
+            }
         }
     }
 }

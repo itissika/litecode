@@ -3,8 +3,14 @@
   "covered": true,
   "data": {
     "lines": [
-      "alpha",
-      "beta"
+      {
+        "line": 1,
+        "text": "alpha"
+      },
+      {
+        "line": 2,
+        "text": "beta"
+      }
     ]
   },
   "error": null,

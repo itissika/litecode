@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::session::data::read_bytes;
-use crate::tool::output::{BLOB_PREFIX, blob_dir};
+use crate::session::data::blob::{BLOB_PREFIX, blob_dir};
 use crate::types::{Item, LitecodeError, Result, item_text_preview};
 
 pub const VIRTUAL_SESSION_DIR: &str = ".litecode/sessions";

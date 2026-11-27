@@ -266,11 +266,64 @@ pub fn load_workspace_defs(
     std::collections::HashMap<String, CustomSuiteDefinition>,
 )> {
     let file = read_workspace_custom_tools(workspace_root)?;
+    let suites = accepted_workspace_custom_suites(file.suites);
     Ok((
         read_workspace_mcp(workspace_root)?.servers,
-        accepted_workspace_custom_tools(file.tools, &file.suites),
-        file.suites,
+        accepted_workspace_custom_tools(file.tools, &suites),
+        suites,
     ))
+}
+
+/// Suite ids that would shadow a builtin card's own member aliases.
+///
+/// A custom suite publishes members as `<suite>.<member>`, so a suite named
+/// after a builtin card (`memory`, `subagent_tools`, …) or a builtin namespace
+/// would produce aliases a builtin already owns. The same table guards the
+/// global config and the workspace file: a cloned repo must not be able to
+/// re-point a builtin member's permission attribution.
+pub(crate) fn builtin_suite_id_conflict(id: &str) -> Option<&'static str> {
+    use super::global_db::tools;
+    if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
+        return Some("custom suite id conflicts with a builtin tool or capability id");
+    }
+    if crate::tools::lsp::LSP_CODE_TOOL_NAMES.contains(&id)
+        || crate::tool::code_contract::is_builtin_code_binding(id)
+        || matches!(
+            id,
+            "file" | "search" | "process" | "web" | "workspace" | "subagent" | "bot"
+        )
+    {
+        return Some("custom suite id conflicts with a builtin tool or namespace");
+    }
+    None
+}
+
+/// Drop workspace suites the settings page would reject, without rewriting the
+/// file. A dropped suite also drops its members: they would otherwise load as
+/// "references missing suite" entries.
+fn accepted_workspace_custom_suites(
+    suites: std::collections::HashMap<String, CustomSuiteDefinition>,
+) -> std::collections::HashMap<String, CustomSuiteDefinition> {
+    let mut out = std::collections::HashMap::new();
+    for (id, mut def) in suites {
+        if let Err(error) = crate::config::settings_writer::validate_tool_id(&id) {
+            tracing::warn!(suite = %id, error = %error, "skipping workspace custom suite");
+            continue;
+        }
+        if let Some(reason) = builtin_suite_id_conflict(&id) {
+            tracing::warn!(suite = %id, %reason, "skipping workspace custom suite");
+            continue;
+        }
+        if let Some(error) = crate::permission::policy::custom_rule_ids_error(&def.rules) {
+            tracing::warn!(suite = %id, %error, "skipping workspace custom suite");
+            continue;
+        }
+        if def.label.trim().is_empty() {
+            def.label = id.clone();
+        }
+        out.insert(id, def);
+    }
+    out
 }
 
 /// Drop entries the settings page would reject, without rewriting the file.

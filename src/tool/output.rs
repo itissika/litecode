@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::authority::responses::FunctionCallOutput;
 use crate::session::media::{MAX_MEDIA_BLOB_SIZE, write_media_blob};
@@ -7,12 +7,10 @@ use crate::types::{Item, MediaSource, Result, ToolOutputPart};
 use crate::types::utf8::{prefix_utf8, suffix_utf8};
 
 pub const RUN_SPILL_DIR: &str = ".litecode/run";
-pub const BLOB_PREFIX: &str = "[blob:";
-pub const DEFAULT_SPILL_THRESHOLD: usize = 32_768;
 
-pub fn blob_dir(data_root: &Path) -> PathBuf {
-    data_root.join("blobs")
-}
+// The transcript blob envelope belongs to session storage, not the tool layer.
+// Re-exported here so every tool/runtime caller keeps the old path.
+pub use crate::session::data::blob::{BLOB_PREFIX, DEFAULT_SPILL_THRESHOLD, blob_dir};
 
 fn sanitize_stem(stem: &str) -> String {
     let cleaned: String = stem

@@ -8,8 +8,20 @@ use sha2::{Digest, Sha256};
 
 use crate::types::{LitecodeError, Result};
 
+/// Envelope prefix of a spilled transcript body: `[blob:<id>]`.
+pub const BLOB_PREFIX: &str = "[blob:";
+
+/// Bodies larger than this spill to the content-addressed blob store. User
+/// message rows never spill: the k-anchor SQL reads their inline body JSON.
+pub const DEFAULT_SPILL_THRESHOLD: usize = 32_768;
+
 pub fn blob_root(data_root: &Path) -> PathBuf {
     data_root.join("blobs")
+}
+
+/// Directory holding the content-addressed blobs for one workspace.
+pub fn blob_dir(data_root: &Path) -> PathBuf {
+    blob_root(data_root)
 }
 
 pub fn put_bytes(data_root: &Path, bytes: &[u8]) -> Result<String> {

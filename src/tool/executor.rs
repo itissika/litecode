@@ -308,16 +308,20 @@ fn function_call_output_item(
     }
 }
 
-/// Drop guard that releases all of a session's write locks when the function
-/// returns (success or error). Ensures a tool never leaks a held lock.
+/// Drop guard that releases only the keys this call acquired.
+///
+/// It must never release the whole session: nested `run_code` calls share one
+/// `session_id` and run concurrently, so a sibling finishing would otherwise
+/// free a file another call is still writing.
 struct WriteLockGuard {
     lock: Arc<WorkspaceWriteLock>,
     session_id: String,
+    keys: Vec<ResourceKey>,
 }
 
 impl Drop for WriteLockGuard {
     fn drop(&mut self) {
-        self.lock.release_all(&self.session_id);
+        self.lock.release_keys(&self.session_id, &self.keys);
     }
 }
 
@@ -432,8 +436,11 @@ pub async fn run_tool(
     sink: &dyn PermissionSink,
     cancel: CancellationToken,
     data_root: &std::path::Path,
-    spill_threshold: usize,
-    turn_anchor_seq: Option<i64>,
+    // Kept in the signature only for the two integration tests that call
+    // `run_tool` directly. Spill and turn anchoring live in presentation
+    // (`tools/code/render.rs`), not in this pipeline.
+    _spill_threshold: usize,
+    _turn_anchor_seq: Option<i64>,
     write_lock: Arc<WorkspaceWriteLock>,
     session: Option<crate::session::SessionDataReader>,
 ) -> ToolCallResult {
@@ -447,8 +454,6 @@ pub async fn run_tool(
         sink,
         cancel,
         data_root,
-        spill_threshold,
-        turn_anchor_seq,
         write_lock,
         session,
         ToolCallOrigin::transport(),
@@ -467,8 +472,6 @@ pub async fn execute_tool_call(
     sink: &dyn PermissionSink,
     cancel: CancellationToken,
     data_root: &std::path::Path,
-    _spill_threshold: usize,
-    _turn_anchor_seq: Option<i64>,
     write_lock: Arc<WorkspaceWriteLock>,
     session: Option<crate::session::SessionDataReader>,
     origin: ToolCallOrigin,
@@ -631,6 +634,7 @@ pub async fn execute_tool_call(
             Ok(()) => Some(WriteLockGuard {
                 lock: Arc::clone(&write_lock),
                 session_id: session_id.to_string(),
+                keys: resource_keys.clone(),
             }),
             Err(holder) => {
                 let code_caller = matches!(origin.caller, ToolCaller::Code { .. });
@@ -1573,8 +1577,6 @@ mod code_caller_contract_tests {
             sink.as_ref(),
             CancellationToken::new(),
             &root.join(".litecode"),
-            usize::MAX,
-            None,
             Arc::new(WorkspaceWriteLock::new()),
             None,
             code_origin(),

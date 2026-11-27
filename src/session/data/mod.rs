@@ -1,6 +1,6 @@
 //! Session persistence owner: one writer actor, read-only executor, blob store.
 
-mod blob;
+pub mod blob;
 pub mod command;
 #[cfg(test)]
 mod final_immutability_tests;
@@ -15,7 +15,10 @@ use std::sync::Arc;
 use crate::session::workspace_lock::WorkspaceWriteLease;
 use crate::types::{LitecodeError, Result};
 
-pub use blob::{gc_unreferenced, put_bytes, put_text, read_bytes};
+pub use blob::{
+    BLOB_PREFIX, DEFAULT_SPILL_THRESHOLD, blob_dir, gc_unreferenced, put_bytes, put_text,
+    read_bytes,
+};
 pub use command::{
     CommitKind, CommitReceipt, DirtySession, MAX_STREAM_BATCH_ROWS, MutationId, ReadValue,
     SessionFolderRow, SessionListPreview, SessionListRow, SessionMutation, SessionRead,

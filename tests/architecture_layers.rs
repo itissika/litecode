@@ -45,8 +45,55 @@ fn read_combined(dirs: &[&str]) -> String {
     combined
 }
 
-fn production_part(source: &str) -> &str {
-    source.split("#[cfg(test)]").next().unwrap_or(source)
+/// Production slice of `source`: everything outside `#[cfg(test)]` module
+/// blocks, comments, and attributes.
+///
+/// A `#[cfg(test)]` attribute either opens an inline `mod ... {` on the same
+/// line, or applies to the next block item. Brace depth decides where the
+/// skipped region ends, so production code that follows an inline test module
+/// (e.g. `manager.rs`) stays visible to the guards below. Anything else is
+/// treated as a single-item guard and does not open a skipped region.
+fn production_part(source: &str) -> String {
+    let mut out = String::new();
+    let mut depth: i32 = 0;
+    let mut pending_cfg_test = false;
+    let mut test_block_entry: Option<i32> = None;
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if test_block_entry.is_none() {
+            if trimmed.starts_with("#[cfg(test)]") {
+                if line.contains('{') {
+                    test_block_entry = Some(depth);
+                    pending_cfg_test = false;
+                } else {
+                    pending_cfg_test = true;
+                }
+            } else if pending_cfg_test {
+                pending_cfg_test = false;
+                if trimmed.starts_with("mod ") && line.contains('{') {
+                    test_block_entry = Some(depth);
+                }
+            }
+        }
+
+        if test_block_entry.is_none() {
+            let is_comment_or_attr = trimmed.starts_with("//") || trimmed.starts_with('#');
+            if !is_comment_or_attr {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+
+        depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+        if let Some(entry) = test_block_entry
+            && depth <= entry
+        {
+            test_block_entry = None;
+            pending_cfg_test = false;
+        }
+    }
+    out
 }
 
 fn assert_absent(haystack: &str, needle: &str, where_: &str) {
@@ -70,6 +117,37 @@ fn session_layer_does_not_absorb_the_hub() {
     ] {
         assert_absent(&session, token, "src/session/");
     }
+}
+
+#[test]
+fn session_layer_does_not_import_the_tool_layer() {
+    let src = src_root();
+    let mut files = Vec::new();
+    rust_files(&src.join("session"), &mut files);
+    assert!(!files.is_empty(), "no session sources found to scan");
+
+    let mut violations = Vec::new();
+    for file in &files {
+        let source = fs::read_to_string(file).unwrap_or_default();
+        let production = production_part(&source);
+        for (index, line) in production.lines().enumerate() {
+            if line.contains("crate::tool::") || line.contains("crate::tools::") {
+                let rel = file
+                    .strip_prefix(&src)
+                    .unwrap_or(file)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                violations.push(format!("src/{rel}:{index}: {}", line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "src/session/ must not depend on the tool layer; storage owns its own \
+         blob envelope. Violations:\n{}",
+        violations.join("\n")
+    );
 }
 
 #[test]
@@ -162,7 +240,7 @@ fn session_service_business_and_support_surfaces_are_separate() {
 fn production_ui_and_subagent_entrypoints_use_the_service() {
     let connection = fs::read_to_string(src_root().join("client_protocol/connection.rs")).unwrap();
     assert_absent(
-        production_part(&connection),
+        &production_part(&connection),
         "SessionManager",
         "client_protocol/connection.rs",
     );
@@ -177,7 +255,7 @@ fn production_ui_and_subagent_entrypoints_use_the_service() {
         "runtime/pending_auto_turn.rs",
     ] {
         let source = fs::read_to_string(src_root().join(path)).unwrap();
-        assert_absent(production_part(&source), "SessionManager", path);
+        assert_absent(&production_part(&source), "SessionManager", path);
     }
 
     let cli = fs::read_to_string(src_root().join("cli/cli.rs")).unwrap();

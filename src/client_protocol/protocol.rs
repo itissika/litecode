@@ -361,30 +361,6 @@ pub struct BufferState {
     pub revision: u64,
 }
 
-/// Durable session metadata. This deliberately excludes process-local turn,
-/// token, terminal, and catalog projection state.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SessionMetaWire {
-    pub id: String,
-    pub project: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub parent_session_id: Option<String>,
-    pub parent_call_id: Option<String>,
-    pub responsibility: String,
-    pub subagent_depth: u32,
-    pub agent_id: String,
-    pub model_id: Option<String>,
-    pub thinking_tier: String,
-    pub context_mode: String,
-    pub compacted_seq: Option<u64>,
-    pub spine_from: u64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub todos: Vec<serde_json::Value>,
-    pub plan_slug: Option<String>,
-    pub preview: String,
-}
-
 /// One persisted log row as shipped on `buffer/item` and `buffer/load`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireBufferEvent {
@@ -486,10 +462,6 @@ pub struct CompactionStateWire {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSnapshot {
-    /// New session contract. Legacy flattened fields remain only while all
-    /// snapshot producers are migrated in this release.
-    #[serde(default)]
-    pub meta: SessionMetaWire,
     pub session_id: String,
     pub project: String,
     pub agent_id: String,

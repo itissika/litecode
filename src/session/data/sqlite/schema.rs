@@ -120,7 +120,6 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             event_type      TEXT NOT NULL,
             surface_op      TEXT NOT NULL,
             source_seqs     TEXT,
-            cites           TEXT,
             state           TEXT NOT NULL DEFAULT 'final',
             provider_usage  TEXT,
             result_data     TEXT,

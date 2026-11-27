@@ -1370,25 +1370,6 @@ pub fn buffer_snapshot(
     compaction: super::protocol::CompactionStateWire,
 ) -> SessionSnapshot {
     SessionSnapshot {
-        meta: super::protocol::SessionMetaWire {
-            id: session_id.to_string(),
-            project: project.to_string(),
-            created_at: 0,
-            updated_at: 0,
-            parent_session_id: None,
-            parent_call_id: None,
-            responsibility: String::new(),
-            subagent_depth: 0,
-            agent_id: binding.agent_id.clone(),
-            model_id: binding.model_id.clone(),
-            thinking_tier: binding.thinking_tier.clone(),
-            context_mode: binding.context_mode.clone(),
-            compacted_seq: None,
-            spine_from: 0,
-            todos: Vec::new(),
-            plan_slug: None,
-            preview: String::new(),
-        },
         session_id: session_id.to_string(),
         project: project.to_string(),
         agent_id: binding.agent_id.clone(),
@@ -1552,7 +1533,6 @@ mod wp186_pending_permissions_tests {
 
     fn empty_snap() -> SessionSnapshot {
         SessionSnapshot {
-            meta: Default::default(),
             session_id: "s".into(),
             project: "p".into(),
             agent_id: "a".into(),

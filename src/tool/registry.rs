@@ -528,6 +528,15 @@ pub async fn build_tool_list_with_resolution(
                         &sessions,
                     ) {
                         tools.push(tool);
+                    } else {
+                        // A card member with no constructor is a catalog/registry
+                        // drift: the model would silently lose the tool. The
+                        // contract test in `tool::code_contract` pins the same set.
+                        tracing::warn!(
+                            capability = %capability.id,
+                            member = %member,
+                            "builtin capability member has no runtime constructor; it is missing from the tool surface"
+                        );
                     }
                 }
             }

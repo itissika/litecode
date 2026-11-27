@@ -309,6 +309,46 @@ mod tests {
         assert_eq!(builtins.contract.sdk_hash, builtins.fragments.sdk_hash);
     }
 
+    /// Every builtin member the catalog can expose must have a generated
+    /// contract. Three tables describe the same identity set — cards/members
+    /// (`config/global_db/tools.rs`, `tool/capability.rs`), runtime constructors
+    /// (`tool/registry.rs`) and this contract — and nothing else cross-checks
+    /// them, so a rename could drop a tool from the model surface silently.
+    #[test]
+    fn every_catalog_builtin_member_has_a_contract() {
+        use crate::config::GlobalSettings;
+        use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
+        use crate::tool::capability::{CapabilitySource, capability_catalog};
+
+        let workspace = WorkspaceState::new(std::path::Path::new("<contract-check>"));
+        let resolved = resolve_without_catalog(GlobalSettings::default(), workspace);
+        let catalog = capability_catalog(&resolved);
+        assert!(
+            catalog.errors.is_empty(),
+            "an empty workspace must produce a clean catalog: {:?}",
+            catalog.errors
+        );
+
+        let mut missing: Vec<String> = Vec::new();
+        for capability in &catalog.capabilities {
+            if matches!(
+                capability.source,
+                CapabilitySource::Custom | CapabilitySource::Mcp { .. }
+            ) {
+                continue;
+            }
+            for member in capability.member_ids() {
+                if builtin_input_schema(member).is_none() {
+                    missing.push(format!("{}/{member}", capability.id));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "builtin card members without a generated code contract: {missing:?}"
+        );
+    }
+
     #[test]
     fn full_builtin_sdk_matches_generated_fixture() {
         let tools = crate::tool::registry::builtin_code_surface_tools();

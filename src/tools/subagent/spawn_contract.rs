@@ -21,20 +21,79 @@ use crate::session::manager::SessionManager;
 use crate::session::model::TurnResult;
 use crate::tools::subagent::{LaunchSpec, SpawnDeps, spawn_child_job};
 
-/// Two providers on closed local ports: any LLM call fails fast, and the error
-/// text names the port — which lets tests assert WHICH provider was called.
-const CATALOG: &str = r#"version = 1
+/// A local endpoint that answers every request with `401 Unauthorized` and
+/// counts the hits. A bound port fails in milliseconds and never retries (401 is
+/// not a transient status), so a test can assert WHICH provider was called
+/// without waiting out the connect-retry budget.
+struct TestEndpoint {
+    port: u16,
+    hits: Arc<std::sync::atomic::AtomicUsize>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl TestEndpoint {
+    async fn start() -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test endpoint");
+        let port = listener.local_addr().expect("local addr").port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = tokio::time::timeout(
+                        Duration::from_millis(500),
+                        stream.read(&mut buf),
+                    )
+                    .await;
+                    let _ = stream
+                        .write_all(
+                            b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                        )
+                        .await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        Self { port, hits, task }
+    }
+
+    fn hits(&self) -> usize {
+        self.hits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Drop for TestEndpoint {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Two providers on the given local ports; both answer 401 so the child fails
+/// fast and the hit counters say which one it actually reached.
+fn catalog(p1_port: u16, p2_port: u16) -> String {
+    format!(
+        r#"version = 1
 
 [[providers]]
 id = "p1"
 name = "P1"
-endpoint = "http://127.0.0.1:60001/v1"
+endpoint = "http://127.0.0.1:{p1_port}/v1"
 endpoint_type = "responses"
 
 [[providers]]
 id = "p2"
 name = "P2"
-endpoint = "http://127.0.0.1:60002/v1"
+endpoint = "http://127.0.0.1:{p2_port}/v1"
 endpoint_type = "responses"
 
 [[models]]
@@ -54,7 +113,9 @@ id = "m3"
 provider_id = "p2"
 context_window = 8000
 max_output = 1024
-"#;
+"#
+    )
+}
 
 fn settings_with_explore_model(explore_model: &str) -> GlobalSettings {
     GlobalSettings {
@@ -101,14 +162,14 @@ struct SpawnEnv {
 /// as the explore agent's model_ref. The returned handle's `resolved` is a
 /// snapshot of that state (what a parent tool list would have been built
 /// against).
-async fn spawn_env(explore_model: &str) -> SpawnEnv {
+async fn spawn_env(explore_model: &str, catalog_toml: &str) -> SpawnEnv {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("litecode.db");
 
     let global = settings_with_explore_model(explore_model);
     let catalog = Arc::new(
         provider_catalog::ProviderCatalog::parse(
-            CATALOG,
+            catalog_toml,
             std::path::Path::new("provider-catalog.toml"),
         )
         .expect("test catalog"),
@@ -203,25 +264,30 @@ async fn spawn_and_wait(env: &SpawnEnv, deps: SpawnDeps) -> (String, TurnResult)
 /// provider. Locked as a regression test for the parent-provider clobber bug.
 #[tokio::test]
 async fn child_calls_agent_provider_endpoint_not_parent_provider() {
-    // Parent runs p1/m1 on p1 (port 60001); explore is configured with p2/m2 on
-    // p2 (port 60002). The child's failing request must name p2's port.
-    let env = spawn_env("p2/m2").await;
+    // Parent runs p1/m1 on p1; explore is configured with p2/m2 on p2. Both
+    // endpoints are live and record hits, so the assertion is about routing, not
+    // about error text.
+    let p1 = TestEndpoint::start().await;
+    let p2 = TestEndpoint::start().await;
+    let env = spawn_env("p2/m2", &catalog(p1.port, p2.port)).await;
 
     let deps = make_deps(&env);
     let (_child, result) = spawn_and_wait(&env, deps).await;
     assert!(
         result.reason != "completed",
-        "dummy endpoints must fail; unexpected success: {}",
+        "a 401 endpoint must fail the turn; unexpected success: {}",
         result.output
     );
     assert!(
-        result.output.contains("60002"),
-        "child must call the agent's provider (p2), got: {}",
+        p2.hits() >= 1,
+        "child must call the agent's provider (p2), but p2 saw 0 requests: {}",
         result.output
     );
-    assert!(
-        !result.output.contains("60001"),
-        "child must NOT call the parent's provider (p1), got: {}",
+    assert_eq!(
+        p1.hits(),
+        0,
+        "child must NOT call the parent's provider (p1); p1 saw {} requests: {}",
+        p1.hits(),
         result.output
     );
 }

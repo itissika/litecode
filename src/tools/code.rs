@@ -124,9 +124,6 @@ impl CodeToolHost {
             sink,
             cancel,
             &self.data_root,
-            // Nested output stays in the program. The outer render owns the byte budget.
-            0,
-            None,
             Arc::clone(&self.write_lock),
             self.session.clone(),
             ToolCallOrigin {

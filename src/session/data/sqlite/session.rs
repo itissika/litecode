@@ -30,7 +30,7 @@ use crate::session::surface::{
 use crate::session::task_state::TodoItem;
 use crate::session::task_state::{PlanRef, TaskReminders};
 use crate::session::working::{CompactionCheckpoint, WorkingPayload, WorkingRow, project_items};
-use crate::tool::output::{BLOB_PREFIX, DEFAULT_SPILL_THRESHOLD, blob_dir};
+use crate::session::data::blob::{BLOB_PREFIX, DEFAULT_SPILL_THRESHOLD, blob_dir};
 use crate::types::{Item, LitecodeError, Result, ToolResultData, Transcript, item_text_preview};
 
 /// Last-known **provider** usage for a session (ring + cache observability).
@@ -586,20 +586,19 @@ fn surface_event_type_of(item: &Item) -> EventType {
     }
 }
 
-fn event_sql_envelope(event: &SessionEvent) -> Result<(String, Option<String>, Option<String>)> {
+fn event_sql_envelope(event: &SessionEvent) -> Result<(String, Option<String>)> {
     let surface_op = match &event.surface_op {
         Some(op) => serde_json::to_string(op)?,
         None => String::new(),
     };
+    // `source_seqs` is the only durable surface relation; `cites` is projected
+    // from it on the wire (`project::buffer_log_row`).
     let source_seqs = event
         .source_seqs
         .as_ref()
         .map(serde_json::to_string)
         .transpose()?;
-    // `source_seqs` remains a transient legacy fold encoding until all readers
-    // consume `compacted.body`; `cites` is the durable generic relation.
-    let cites = source_seqs.clone();
-    Ok((surface_op, source_seqs, cites))
+    Ok((surface_op, source_seqs))
 }
 
 /// Re-attach the durable source sidecar to the encoded Item body. The model
@@ -662,10 +661,10 @@ fn insert_event_row(
     } else {
         event.event_type.as_str().to_string()
     };
-    let (surface_op, source_seqs, cites) = event_sql_envelope(event)?;
+    let (surface_op, source_seqs) = event_sql_envelope(event)?;
     tx.execute(
-        "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs, cites, state)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        "INSERT INTO transcript_items (session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, surface_op, source_seqs, state)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         rusqlite::params![
             session_id,
             seq,
@@ -680,7 +679,6 @@ fn insert_event_row(
             event.event_type.as_str(),
             surface_op,
             source_seqs,
-            cites,
             event.state.as_str(),
         ],
     )?;

@@ -236,8 +236,6 @@ mod projection {
             &sink,
             tokio_util::sync::CancellationToken::new(),
             dir.path(),
-            4096,
-            None,
             process_write_lock(),
             None,
             ToolCallOrigin {
@@ -282,8 +280,6 @@ mod projection {
             &sink,
             tokio_util::sync::CancellationToken::new(),
             dir.path(),
-            4096,
-            None,
             process_write_lock(),
             None,
             ToolCallOrigin {
@@ -442,8 +438,6 @@ mod projection {
             &sink,
             tokio_util::sync::CancellationToken::new(),
             dir.path(),
-            4096,
-            None,
             process_write_lock(),
             None,
             ToolCallOrigin {
@@ -656,8 +650,6 @@ mod run_code_only {
             sink,
             cancel,
             &hosted.data_root,
-            32_768,
-            None,
             process_write_lock(),
             None,
             origin(Arc::clone(&hosted.code_names)),
@@ -1403,8 +1395,6 @@ mod edit_write {
             sink,
             cancel,
             &hosted.data_root,
-            32_768,
-            None,
             process_write_lock(),
             None,
             ToolCallOrigin {
@@ -2187,8 +2177,6 @@ mod approval_locks {
             sink,
             cancel,
             &hosted.data_root,
-            32_768,
-            None,
             process_write_lock(),
             None,
             ToolCallOrigin {
@@ -2598,8 +2586,6 @@ mod approval_concurrency {
             sink,
             cancel,
             &hosted.data_root,
-            32_768,
-            None,
             process_write_lock(),
             None,
             ToolCallOrigin {

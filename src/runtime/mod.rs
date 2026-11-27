@@ -2,6 +2,7 @@ pub mod bash_auto_turn;
 pub mod context;
 pub(crate) mod diagnostics;
 pub mod exec;
+pub(crate) mod idle_auto_turn;
 pub mod llm_resolve;
 pub mod observer;
 pub mod pending_auto_turn;

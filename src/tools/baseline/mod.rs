@@ -385,8 +385,6 @@ async fn run_case(case: &Live, root: &Path, data_root: &Path) -> ToolCallResult 
         sink.as_ref(),
         cancel,
         data_root,
-        usize::MAX,
-        None,
         Arc::new(WorkspaceWriteLock::new()),
         None,
         code_origin(),
@@ -421,8 +419,13 @@ fn expect_shape(case: &Live, result: &ToolCallResult) {
     if case.tool == "read" && case.scenario == "truncation" {
         let data = result.data.as_ref().unwrap();
         let metadata = result.metadata.as_ref().expect("reminder metadata");
-        let line = data["lines"][0].as_str().unwrap();
-        assert!(line.contains("... [+") && line.ends_with(" chars]"), "{data}");
+        // `read` publishes `lines` as `{line, text}` records; the per-line cap is
+        // applied to `text`, and the cap is surfaced in that text, not in metadata.
+        let text = data["lines"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("... [+") && text.ends_with(" chars]"),
+            "{data}"
+        );
         assert!(metadata.get("lines_capped").is_none(), "{metadata}");
     }
     if case.tool == "glob" && case.scenario == "truncation" {
