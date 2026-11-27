@@ -159,6 +159,12 @@ enum ProfileCommands {
         #[arg(long)]
         websearch_key_file: Option<String>,
     },
+    /// Remove the active eval surface override from the database
+    ///
+    /// The `default` agent goes back to the locked built-in tool surface; the
+    /// user's own non-core toggles were never touched by a profile, so they
+    /// survive as they were.
+    Clear,
 }
 
 /// `--context-mode` accepts exactly the two platform modes; anything else is a
@@ -961,12 +967,40 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
             ConfigCommands::Profile { command } => {
+                if let ProfileCommands::Clear = command {
+                    let database = crate::config::global_db::default_db_path();
+                    let writer = SettingsWriter::with_path(&database, cli_turn_guard());
+                    match crate::config::eval_profile::clear(&writer) {
+                        Ok(cleared) => {
+                            if cleared {
+                                println!(
+                                    "eval surface override cleared; agent '{}' uses the locked built-in surface",
+                                    crate::config::eval_profile::AGENT_ID
+                                );
+                            } else {
+                                println!(
+                                    "no eval surface override to clear; agent '{}' already uses the locked built-in surface",
+                                    crate::config::eval_profile::AGENT_ID
+                                );
+                            }
+                            println!("database: {}", database.display());
+                        }
+                        Err(error) => {
+                            eprintln!("error: {error}");
+                            std::process::exit(1);
+                        }
+                    }
+                    return Ok(());
+                }
                 let ProfileCommands::Apply {
                     path,
                     web,
                     write_applied,
                     websearch_key_file,
-                } = command;
+                } = command
+                else {
+                    unreachable!("the Clear arm returned above")
+                };
                 let web = match web.as_deref() {
                     None => None,
                     Some("on") => Some(crate::config::eval_profile::WebMode::On),

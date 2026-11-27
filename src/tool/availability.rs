@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::config::resolved::ResolvedConfig;
 use crate::config::schema::{AvailableStatus, AvailableTool};
-use crate::tool::capability::{Capability, capability_catalog, member_owner};
+use crate::tool::capability::{Capability, CapabilityKind, capability_catalog, member_owner};
 use crate::tool::custom_spec::custom_function_name;
 use crate::tool::project::RejectedTool;
 use serde::Serialize;
@@ -18,6 +18,7 @@ fn project_capability(capability: &Capability) -> AvailableTool {
         overridden: capability.overridden,
         permission_surface: capability.permission_surface,
         scope: capability.scope,
+        locked: capability.kind == CapabilityKind::Core,
         members: capability.member_ids().map(str::to_string).collect(),
         label: capability.label.clone(),
         status: None,
@@ -240,11 +241,80 @@ pub fn agent_tool_enabled(resolved: &ResolvedConfig, agent_id: &str, tool_id: &s
 mod tests {
     use super::*;
     use crate::config::WorkspaceState;
+    use crate::config::global_db::tools::is_core_tool;
     use crate::config::resolved::resolve_without_catalog;
     use crate::config::schema::GlobalSettings;
 
     fn resolved() -> ResolvedConfig {
         resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"))
+    }
+
+    /// One custom tool plus one MCP server, so the lock test also covers the two
+    /// card families that are never core.
+    fn resolved_with_custom_and_mcp() -> ResolvedConfig {
+        let mut global = GlobalSettings::default();
+        global
+            .custom_tools
+            .push(crate::config::schema::CustomToolDefinition {
+                name: "demo_probe".into(),
+                description: String::new(),
+                schema: crate::config::schema::ToolSchema {
+                    schema_type: "object".into(),
+                    properties: serde_json::json!({}),
+                    required: Vec::new(),
+                },
+                command: "echo".into(),
+                args: Vec::new(),
+                timeout: 30,
+                rules: Vec::new(),
+                suite: None,
+            });
+        global.mcp_servers.insert(
+            "demo".into(),
+            crate::config::schema::McpServerDefinition {
+                command: "echo".into(),
+                ..Default::default()
+            },
+        );
+        resolve_without_catalog(global, WorkspaceState::new("/tmp"))
+    }
+
+    /// Settings must not keep its own "core" list: the wire flag is derived from
+    /// the same capability kind the runtime selection uses.
+    #[test]
+    fn available_tools_marks_only_core_capabilities_as_locked() {
+        let tools = available_tools(&resolved_with_custom_and_mcp());
+        assert!(!tools.is_empty());
+        for tool in &tools {
+            assert_eq!(
+                tool.locked,
+                is_core_tool(&tool.id),
+                "{}: locked must follow the core tool set",
+                tool.id
+            );
+        }
+
+        let locked = |id: &str| {
+            tools
+                .iter()
+                .find(|tool| tool.id == id)
+                .unwrap_or_else(|| panic!("missing card {id}"))
+                .locked
+        };
+        for id in ["read", "exec", "plan", "subagent_tools"] {
+            assert!(locked(id), "{id} is core and must be locked");
+        }
+        for id in [
+            "webfetch",
+            "websearch",
+            "code_search",
+            "lsp",
+            "browser",
+            "demo_probe",
+            "mcp_demo",
+        ] {
+            assert!(!locked(id), "{id} is not core and must stay unlocked");
+        }
     }
 
     #[test]

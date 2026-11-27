@@ -87,12 +87,6 @@ impl ConfigManager {
                 }
             }
 
-            if profile.role == AgentRole::Hidden && !profile.tools.is_empty() {
-                return Err(LitecodeError::Config(format!(
-                    "agent '{agent_id}' (hidden) must not have tool bindings"
-                )));
-            }
-
             match profile.role {
                 AgentRole::Primary => {
                     for sub_id in &profile.allowed_subagents {

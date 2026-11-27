@@ -80,14 +80,6 @@ fn settings_with_explore_model(explore_model: &str) -> GlobalSettings {
                     ..Default::default()
                 },
             ),
-            (
-                "compaction".into(),
-                AgentProfile {
-                    role: AgentRole::Hidden,
-                    model_ref: "p1/m1".into(),
-                    ..Default::default()
-                },
-            ),
         ]),
         ..Default::default()
     }

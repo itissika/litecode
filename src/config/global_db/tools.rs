@@ -26,10 +26,6 @@ pub fn core_configurable_tools() -> &'static [&'static str] {
     ]
 }
 
-pub fn network_core_tools() -> &'static [&'static str] {
-    &["webfetch", "websearch"]
-}
-
 pub fn core_none_tools() -> &'static [&'static str] {
     &[
         "plan",
@@ -45,7 +41,6 @@ pub fn core_tool_ids() -> Vec<String> {
     core_configurable_tools()
         .iter()
         .chain(core_none_tools().iter())
-        .chain(network_core_tools().iter())
         .map(|s| (*s).to_string())
         .collect()
 }
@@ -53,7 +48,6 @@ pub fn core_tool_ids() -> Vec<String> {
 pub fn is_core_tool(id: &str) -> bool {
     core_configurable_tools().contains(&id)
         || core_none_tools().contains(&id)
-        || network_core_tools().contains(&id)
         // Members are no longer cards, but their model names stay reserved.
         || crate::config::schema::SUBAGENT_MEMBER_TOOL_IDS.contains(&id)
         || MEMORY_TOOL_IDS.contains(&id)
@@ -65,7 +59,7 @@ pub fn is_core_tool(id: &str) -> bool {
 }
 
 pub fn optional_builtin_ids() -> &'static [&'static str] {
-    &["code_search", "lsp", "browser"]
+    &["code_search", "lsp", "browser", "webfetch", "websearch"]
 }
 
 /// Optional builtins that primary-role agents bind by default (WP-146 §B).
@@ -136,5 +130,82 @@ pub fn normalize_mcp_tool_name(name: &str) -> Option<String> {
         Some(name.to_string())
     } else {
         Some(mcp_catalog_id(name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::{CustomToolDefinition, McpServerDefinition, ToolSchema};
+    use std::collections::HashMap;
+
+    const WEB_TOOLS: [&str; 2] = ["webfetch", "websearch"];
+
+    /// D3: the web cards are optional builtins, not core tools. Their names are
+    /// still reserved so a custom tool or an MCP server cannot take them.
+    #[test]
+    fn web_engines_are_optional_builtins_with_reserved_names() {
+        for id in WEB_TOOLS {
+            assert!(
+                optional_builtin_ids().contains(&id),
+                "{id} must be an optional builtin"
+            );
+            assert!(is_optional_builtin(id), "{id} is_optional_builtin");
+            assert!(!is_core_tool(id), "{id} must not be a core tool");
+            assert!(is_reserved_builtin(id), "{id} name must stay reserved");
+            assert!(
+                !core_tool_ids().iter().any(|core| core == id),
+                "{id} must not be in core_tool_ids"
+            );
+            assert!(
+                !is_workspace_optional(id),
+                "{id} is an install-level engine, not workspace-level"
+            );
+        }
+    }
+
+    fn web_custom_tool(name: &str) -> CustomToolDefinition {
+        CustomToolDefinition {
+            name: name.to_string(),
+            description: String::new(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "echo".into(),
+            args: Vec::new(),
+            timeout: 30,
+            rules: Vec::new(),
+            suite: None,
+        }
+    }
+
+    #[test]
+    fn custom_tool_and_mcp_cannot_claim_a_web_name() {
+        for id in WEB_TOOLS {
+            let mut def = web_custom_tool(id);
+            let err = crate::config::settings_writer::validate_custom_definition_with_suites(
+                id,
+                &mut def,
+                &HashMap::new(),
+            )
+            .expect_err("a custom tool must not take a builtin name");
+            assert!(
+                err.to_string().contains(id),
+                "{id}: rejection must name the tool, got {err}"
+            );
+
+            let mut mcp = McpServerDefinition {
+                command: "echo".into(),
+                ..Default::default()
+            };
+            let err = crate::config::settings_writer::validate_mcp_definition(id, &mut mcp)
+                .expect_err("an MCP server must not take a builtin name");
+            assert!(
+                err.to_string().contains("conflicts with a builtin tool"),
+                "{id}: unexpected rejection {err}"
+            );
+        }
     }
 }

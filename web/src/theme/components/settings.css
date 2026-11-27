@@ -272,6 +272,17 @@
   background: rgba(0, 0, 0, 0.04);
 }
 
+/* Locked (core) cards are spec-owned and read-only: no fill and no state
+   stripe, just a hairline frame, so they read as a record of what the agent
+   has bound rather than as a control. Matches the light-theme enabled rule
+   above by carrying the same specificity in both themes. */
+.tool-binding-card[data-locked="true"],
+:root[data-dv-theme="light"] .tool-binding-card[data-locked="true"] {
+  background: transparent;
+  box-shadow: none;
+  border: 1px solid var(--_dk-line);
+}
+
 .tool-binding-foot {
   border-top: none;
   position: relative;

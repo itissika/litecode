@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ListChecks } from "@phosphor-icons/react";
 import { useTranslation } from "react-i18next";
@@ -166,6 +166,169 @@ function McpToolVisibilityControl({
   );
 }
 
+/**
+ * One capability card. Locked (core) cards report the spec's binding and
+ * change nothing; the rest toggle and dial ALL/SAFE.
+ */
+function ToolBindingCard({
+  entry,
+  draftTools,
+  mcpServers,
+  saveBlocked,
+  onBindingChange,
+}: {
+  entry: AvailableTool;
+  draftTools: Record<string, AgentToolBinding>;
+  mcpServers: AgentToolServer[];
+  saveBlocked: boolean;
+  onBindingChange: (toolId: string, patch: Partial<AgentToolBinding>) => void;
+}) {
+  const { t } = useTranslation();
+  const binding = bindingFor(draftTools, entry.id);
+  const configurable = isConfigurableTool(entry);
+  const enabled = binding.enabled;
+  const preset = binding.preset ?? "ALL";
+  // System-tuned card: the spec owns the binding and the preset. The
+  // card still reports what is bound, but nothing here can change it.
+  const locked = Boolean(entry.locked);
+  const serverId = entry.id.slice("mcp_".length);
+  const mcpTools =
+    entry.kind === "mcp"
+      ? (mcpServers.find((server) => server.id === serverId)?.tools ??
+        [])
+      : [];
+
+  const toggleEnabled = () => {
+    if (saveBlocked || locked) return;
+    onBindingChange(entry.id, { enabled: !enabled });
+  };
+  const memberLine =
+    entry.members && entry.members.length > 1
+      ? `${entry.kind} · ${entry.members.join(", ")}`
+      : entry.kind;
+  const seriesDetail = entry.overridden
+    ? `${memberLine} · ${t("settings.agents.workspaceOverride")}`
+    : memberLine;
+  const status = entry.status && entry.status !== "ready" ? entry.status : null;
+  const statusTone =
+    status === "failed" || status === "down"
+      ? "tag-danger"
+      : status === "warming"
+        ? "tag-warn"
+        : "tag-neutral";
+
+  return (
+    <div
+      data-enabled={enabled ? "true" : "false"}
+      data-locked={locked ? "true" : undefined}
+      className="tool-binding-card flex flex-col overflow-hidden"
+    >
+      <button
+        type="button"
+        disabled={saveBlocked || locked}
+        aria-disabled={locked ? "true" : undefined}
+        aria-pressed={enabled}
+        aria-label={t("settings.agents.toolBindingAria", { id: entry.id, state: enabled ? t("settings.agents.enabled") : t("settings.agents.disabled") })}
+        className="tool-binding-toggle"
+        onClick={toggleEnabled}
+      />
+      <div className="tool-binding-content flex flex-col">
+        <div className="flex w-full items-start justify-between gap-2 p-3">
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">
+                {entry.label || entry.id}
+              </p>
+            </div>
+            <p
+              className="mt-0.5 truncate text-dk-xs text-(--_dk-text-disabled)"
+              title={seriesDetail}
+            >
+              {seriesDetail}
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            {/* A locked card is read-only and only shown when bound, so an
+                on/off tag would just repeat itself. */}
+            {locked ? null : (
+              <span
+                className={`tag ${enabled ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}
+              >
+                {enabled ? t("common.on") : t("common.off")}
+              </span>
+            )}
+            {status ? (
+              <span className={`tag ${statusTone} tag-xs tag-outline`}>{status}</span>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="tool-binding-foot px-3 py-2.5">
+          {configurable ? (
+            <div className="space-y-1">
+              <div
+                className="flex flex-wrap gap-1.5"
+                role="group"
+                aria-label={t("settings.agents.presetAria", { id: entry.id })}
+              >
+                {(["ALL", "SAFE"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    disabled={saveBlocked || !enabled || locked}
+                    aria-pressed={preset === value}
+                    aria-disabled={locked ? "true" : undefined}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (locked) return;
+                      onBindingChange(entry.id, {
+                        preset: value,
+                      });
+                    }}
+                    className={[
+                      // Only intercept hits when the control is live; disabled
+                      // buttons stay click-through so the full-card toggle works.
+                      enabled && !saveBlocked && !locked
+                        ? "tool-binding-action"
+                        : "",
+                      preset === value
+                        ? "btn-primary btn-xs"
+                        : "btn-ghost btn-xs",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs text-(--_dk-text-disabled)">
+                {entry.kind === "mcp"
+                  ? t("settings.agents.noPreset")
+                  : t("settings.agents.notConfigurable")}
+              </p>
+              {entry.kind === "mcp" ? (
+                <McpToolVisibilityControl
+                  serverId={serverId}
+                  binding={binding}
+                  tools={mcpTools}
+                  disabled={saveBlocked || !enabled || locked}
+                  onChange={(allowed_tools) =>
+                    onBindingChange(entry.id, { allowed_tools })
+                  }
+                />
+              ) : null}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Capability card grid shared by Settings → Agents and the bot editor. */
 export function AgentToolsGrid({
   draft,
@@ -174,7 +337,6 @@ export function AgentToolsGrid({
   saveBlocked,
   onBindingChange,
   gridStyle,
-  note,
 }: {
   draft: AgentProfile;
   bindableTools: AvailableTool[];
@@ -183,26 +345,13 @@ export function AgentToolsGrid({
   onBindingChange: (toolId: string, patch: Partial<AgentToolBinding>) => void;
   /** Inline style for the card grid (e.g. force columns below sm breakpoint). */
   gridStyle?: CSSProperties;
-  /** Extra guidance rendered under the section title (e.g. subagent deny semantics). */
-  note?: ReactNode;
 }) {
   const { t } = useTranslation();
-  /** Sections, each with a header row, flattened so the grid stays one map. */
-  const rows = useMemo(
-    () =>
-      groupToolCards(bindableTools).flatMap((group) => [
-        { kind: "head" as const, group },
-        ...group.tools.map((entry) => ({ kind: "card" as const, entry })),
-      ]),
-    [bindableTools],
-  );
+  const groups = useMemo(() => groupToolCards(bindableTools), [bindableTools]);
   if (bindableTools.length === 0) {
     return (
       <div className="space-y-2">
         <h3 className="settings-section-title">{t("settings.agents.toolBindings")}</h3>
-        {note ? (
-          <p className="text-xs text-(--_dk-text-muted)">{note}</p>
-        ) : null}
         <p className="text-sm text-(--_dk-amber-500)">
           {t("settings.agents.noBindableTools")}
         </p>
@@ -213,168 +362,59 @@ export function AgentToolsGrid({
   return (
     <div className="space-y-2">
       <h3 className="settings-section-title">{t("settings.agents.toolBindings")}</h3>
-      {note ? <p className="text-xs text-(--_dk-text-muted)">{note}</p> : null}
+      {/* One fold card per section, collapsed by default: the header count is
+          the summary and the cards only mount once the section is opened. */}
       <div
-        className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-2 xl:grid-cols-3"
-        style={gridStyle}
+        className="space-y-2 p-3"
         role="group"
         aria-label={t("settings.agents.agentToolBindings")}
       >
-        {rows.map((row) => {
-          if (row.kind === "head") {
-            const { group } = row;
-            const on = group.tools.filter(
-              (tool) => bindingFor(draft.tools, tool.id).enabled,
-            ).length;
-            return (
-              <div
-                key={`head-${group.kind}`}
-                role="presentation"
-                className="col-span-full flex items-baseline justify-between gap-2 pt-2 first:pt-0"
-              >
-                <h4 className="text-dk-xs font-medium text-(--_dk-text-muted)">
-                  {t(`settings.agents.toolGroup.${group.kind}`)}
-                </h4>
-                <span className="settings-header-meta">
-                  {t("settings.agents.toolGroupCount", {
-                    enabled: on,
-                    total: group.tools.length,
-                  })}
-                </span>
-              </div>
-            );
-          }
-          const entry = row.entry;
-          const binding = bindingFor(draft.tools, entry.id);
-          const configurable = isConfigurableTool(entry);
-          const enabled = binding.enabled;
-          const preset = binding.preset ?? "ALL";
-          const serverId = entry.id.slice("mcp_".length);
-          const mcpTools =
-            entry.kind === "mcp"
-              ? (mcpServers.find((server) => server.id === serverId)?.tools ??
-                [])
-              : [];
-
-          const toggleEnabled = () => {
-            if (saveBlocked) return;
-            onBindingChange(entry.id, { enabled: !enabled });
-          };
-          const memberLine =
-            entry.members && entry.members.length > 1
-              ? `${entry.kind} · ${entry.members.join(", ")}`
-              : entry.kind;
-          const seriesDetail = entry.overridden
-            ? `${memberLine} · ${t("settings.agents.workspaceOverride")}`
-            : memberLine;
-          const status = entry.status && entry.status !== "ready" ? entry.status : null;
-          const statusTone =
-            status === "failed" || status === "down"
-              ? "tag-danger"
-              : status === "warming"
-                ? "tag-warn"
-                : "tag-neutral";
-
+        {groups.map((group) => {
+          const on = group.tools.filter(
+            (tool) => bindingFor(draft.tools, tool.id).enabled,
+          ).length;
+          // A locked card cannot be turned on from here, so an unbound one is
+          // dead weight — core shows only what this agent has bound. Editable
+          // cards stay complete: an off card is still a place to bind.
+          const cards = group.tools.filter(
+            (tool) => !tool.locked || bindingFor(draft.tools, tool.id).enabled,
+          );
+          if (cards.length === 0) return null;
           return (
-            <div
-              key={entry.id}
-              data-enabled={enabled ? "true" : "false"}
-              className="tool-binding-card flex flex-col overflow-hidden"
+            <FoldCard
+              key={group.kind}
+              defaultOpen
+              label={
+                <span className="flex min-w-0 flex-1 items-baseline justify-between gap-2">
+                  <span className="text-dk-xs font-medium text-(--_dk-text-muted)">
+                    {t(`settings.agents.toolGroup.${group.kind}`)}
+                  </span>{" "}
+                  <span className="settings-header-meta">
+                    {t("settings.agents.toolGroupCount", {
+                      enabled: on,
+                      total: group.tools.length,
+                    })}
+                  </span>
+                </span>
+              }
+              className="settings-foldcard"
             >
-              <button
-                type="button"
-                disabled={saveBlocked}
-                aria-pressed={enabled}
-                aria-label={t("settings.agents.toolBindingAria", { id: entry.id, state: enabled ? t("settings.agents.enabled") : t("settings.agents.disabled") })}
-                className="tool-binding-toggle"
-                onClick={toggleEnabled}
-              />
-              <div className="tool-binding-content flex flex-col">
-                <div className="flex w-full items-start justify-between gap-2 p-3">
-                  <div className="min-w-0">
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">
-                        {entry.label || entry.id}
-                      </p>
-                    </div>
-                    <p
-                      className="mt-0.5 truncate text-dk-xs text-(--_dk-text-disabled)"
-                      title={seriesDetail}
-                    >
-                      {seriesDetail}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end gap-1">
-                    <span
-                      className={`tag ${enabled ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}
-                    >
-                      {enabled ? t("common.on") : t("common.off")}
-                    </span>
-                    {status ? (
-                      <span className={`tag ${statusTone} tag-xs tag-outline`}>{status}</span>
-                    ) : null}
-                  </div>
-                </div>
-
-                <div className="tool-binding-foot px-3 py-2.5">
-                  {configurable ? (
-                    <div
-                      className="flex flex-wrap gap-1.5"
-                      role="group"
-                      aria-label={t("settings.agents.presetAria", { id: entry.id })}
-                    >
-                      {(["ALL", "SAFE"] as const).map((value) => (
-                        <button
-                          key={value}
-                          type="button"
-                          disabled={saveBlocked || !enabled}
-                          aria-pressed={preset === value}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onBindingChange(entry.id, {
-                              preset: value,
-                            });
-                          }}
-                          className={[
-                            // Only intercept hits when the control is live; disabled
-                            // buttons stay click-through so the full-card toggle works.
-                            enabled && !saveBlocked
-                              ? "tool-binding-action"
-                              : "",
-                            preset === value
-                              ? "btn-primary btn-xs"
-                              : "btn-ghost btn-xs",
-                          ]
-                            .filter(Boolean)
-                            .join(" ")}
-                        >
-                          {value}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs text-(--_dk-text-disabled)">
-                        {entry.kind === "mcp"
-                          ? t("settings.agents.noPreset")
-                          : t("settings.agents.notConfigurable")}
-                      </p>
-                      {entry.kind === "mcp" ? (
-                        <McpToolVisibilityControl
-                          serverId={serverId}
-                          binding={binding}
-                          tools={mcpTools}
-                          disabled={saveBlocked || !enabled}
-                          onChange={(allowed_tools) =>
-                            onBindingChange(entry.id, { allowed_tools })
-                          }
-                        />
-                      ) : null}
-                    </div>
-                  )}
-                </div>
+              <div
+                className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3"
+                style={gridStyle}
+              >
+                {cards.map((entry) => (
+                  <ToolBindingCard
+                    key={entry.id}
+                    entry={entry}
+                    draftTools={draft.tools}
+                    mcpServers={mcpServers}
+                    saveBlocked={saveBlocked}
+                    onBindingChange={onBindingChange}
+                  />
+                ))}
               </div>
-            </div>
+            </FoldCard>
           );
         })}
       </div>

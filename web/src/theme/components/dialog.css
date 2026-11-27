@@ -51,3 +51,36 @@
   height: 12px;
   cursor: nwse-resize;
 }
+
+/* Corner grip for a centered overlay sheet (the bot editor). Two faint
+   diagonals read as a resize handle without adding chrome to the border. */
+.dialog-resize-grip {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  touch-action: none;
+  opacity: 0.45;
+  transition: opacity 120ms ease;
+  background-image:
+    linear-gradient(
+      135deg,
+      transparent 40%,
+      var(--_dk-line-visible) 40%,
+      var(--_dk-line-visible) 52%,
+      transparent 52%
+    ),
+    linear-gradient(
+      135deg,
+      transparent 68%,
+      var(--_dk-line-visible) 68%,
+      var(--_dk-line-visible) 80%,
+      transparent 80%
+    );
+}
+
+.dialog-resize-grip:hover {
+  opacity: 1;
+}

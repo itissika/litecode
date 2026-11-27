@@ -3611,15 +3611,35 @@ impl SessionManager {
     }
 
     /// Resolved primary for a turn: per-session binding, else workspace default.
+    ///
+    /// I2: the agent set is closed, so an old session may still carry the id of
+    /// an agent this build no longer ships (custom agents are deleted at boot).
+    /// That is a fallback, not an error: warn and use `default_primary`, else
+    /// `"default"`. A session pointing at an agent that *does* exist is still
+    /// held to the primary-role rule — e.g. `explore` stays rejected.
     pub fn resolve_primary_agent(
         &self,
         session_id: &str,
         default_primary: &str,
         resolved: &ResolvedConfig,
     ) -> Result<String> {
-        let agent_id = self
+        let mut agent_id = self
             .agent_id(session_id)
             .unwrap_or_else(|| default_primary.to_string());
+        if !resolved.agents().contains_key(&agent_id) {
+            let fallback = if resolved.agents().contains_key(default_primary) {
+                default_primary.to_string()
+            } else {
+                "default".to_string()
+            };
+            tracing::warn!(
+                session = %session_id,
+                agent = %agent_id,
+                fallback = %fallback,
+                "session references an agent this build does not ship; falling back"
+            );
+            agent_id = fallback;
+        }
         RuntimeHandle::validate_primary_agent(resolved, &agent_id)?;
         Ok(agent_id)
     }
@@ -6149,5 +6169,79 @@ mod cum_usage_tests {
             70,
             "the summarizer call is billed into the same totals"
         );
+    }
+}
+
+/// I2: a session whose sticky `agent_id` is gone falls back, but a session
+/// pointing at an existing non-primary agent is still refused.
+#[cfg(test)]
+mod primary_agent_fallback_tests {
+    use super::*;
+    use crate::config::{ConfigManager, WorkspaceState};
+    use std::sync::Arc;
+
+    fn resolved_with_seeded_agents(dir: &tempfile::TempDir) -> ResolvedConfig {
+        let db = dir.path().join("litecode.db");
+        let global = ConfigManager::load_global_from(&db).expect("seed");
+        ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path().join("ws")))
+    }
+
+    fn manager() -> Arc<SessionManager> {
+        Arc::new(SessionManager::new_for_test(
+            Arc::new(crate::config::TurnGuard::new()),
+            String::new(),
+        ))
+    }
+
+    #[test]
+    fn missing_session_agent_falls_back_to_the_default_primary() {
+        let dir = tempfile::tempdir().expect("dir");
+        let resolved = resolved_with_seeded_agents(&dir);
+        assert!(
+            !resolved.agents().contains_key("legacy_custom"),
+            "a custom agent must not resolve"
+        );
+
+        let manager = manager();
+        let session = manager
+            .open_session_sync("/proj", "legacy_custom", None)
+            .expect("session");
+        assert_eq!(
+            manager
+                .resolve_primary_agent(&session, "default", &resolved)
+                .expect("fallback"),
+            "default"
+        );
+
+        // A seat that still exists wins over the literal "default".
+        assert_eq!(
+            manager
+                .resolve_primary_agent(&session, "plan", &resolved)
+                .expect("fallback to default_primary"),
+            "plan"
+        );
+
+        // An unknown default_primary collapses to "default" too.
+        assert_eq!(
+            manager
+                .resolve_primary_agent(&session, "also_gone", &resolved)
+                .expect("fallback to default"),
+            "default"
+        );
+    }
+
+    #[test]
+    fn existing_subagent_is_still_rejected_as_primary() {
+        let dir = tempfile::tempdir().expect("dir");
+        let resolved = resolved_with_seeded_agents(&dir);
+        let manager = manager();
+        let session = manager
+            .open_session_sync("/proj", "explore", None)
+            .expect("session");
+
+        let err = manager
+            .resolve_primary_agent(&session, "default", &resolved)
+            .expect_err("explore is not a primary agent");
+        assert!(err.to_string().contains("not a primary agent"), "got: {err}");
     }
 }

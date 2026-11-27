@@ -6,8 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::config::binding_scope::{BindingScope, scope_of};
 use crate::config::global_db::tools::{
     KNOWLEDGE_TOOL_IDS, MEMORY_TOOL_IDS, PLAN_TOOL_IDS, TODO_TOOL_IDS, WORKSPACE_TOOL_IDS,
-    core_configurable_tools, core_none_tools, mcp_catalog_id, network_core_tools,
-    optional_builtin_ids,
+    core_configurable_tools, core_none_tools, mcp_catalog_id, optional_builtin_ids,
 };
 use crate::config::resolved::ResolvedConfig;
 use crate::config::schema::{
@@ -422,19 +421,19 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
         }
     }
 
-    for id in network_core_tools() {
-        push_builtin(
-            &mut catalog,
-            resolved,
-            id,
-            &[*id],
-            CapabilityKind::Core,
-            ToolOrigin::Builtin,
-        );
-    }
-
     for id in optional_builtin_ids() {
         match *id {
+            // Web engines are global builtin services (one engine per install),
+            // not workspace-level definitions like `code_search` / `lsp`. They
+            // stay `ToolOrigin::Builtin` now that they are optional cards.
+            "webfetch" | "websearch" => push_builtin(
+                &mut catalog,
+                resolved,
+                id,
+                &[*id],
+                CapabilityKind::Engine,
+                ToolOrigin::Builtin,
+            ),
             LSP_CARD_ID => push_capability(
                 &mut catalog,
                 Capability {
@@ -628,6 +627,26 @@ mod tests {
         assert_eq!(lsp.members.len(), 7);
         assert!(lsp.member_ids().any(|name| name == "hover"));
         assert!(lsp.member_ids().any(|name| name == "go_to_definition"));
+    }
+
+    #[test]
+    fn web_cards_are_engine_capabilities_with_builtin_origin() {
+        let catalog = capability_catalog(&resolved());
+        for id in ["webfetch", "websearch"] {
+            let card = catalog
+                .get(id)
+                .unwrap_or_else(|| panic!("{id} must stay a capability card"));
+            assert_eq!(card.kind, CapabilityKind::Engine, "{id} kind");
+            assert_eq!(
+                card.origin,
+                ToolOrigin::Builtin,
+                "{id} is an install-level builtin engine"
+            );
+            assert_eq!(card.members.len(), 1, "{id} is its own member");
+            assert_eq!(card.member_ids().collect::<Vec<_>>(), [id]);
+            assert_eq!(catalog.member_capability_id(id), Some(id));
+        }
+        assert!(catalog.errors.is_empty(), "{:?}", catalog.errors);
     }
 
     #[test]

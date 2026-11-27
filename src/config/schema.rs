@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::config::binding_scope::BindingScope;
 use serde_json::Value;
 
-/// Agent role (`primary` / `subagent` / `hidden`).
+/// Agent role (`primary` / `subagent`).
+///
+/// The retired `hidden` role is gone: every agent is a primary or a subagent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -17,7 +19,6 @@ pub enum AgentRole {
     #[default]
     Primary,
     Subagent,
-    Hidden,
 }
 
 /// Per-tool permission preset for configurable-strategy tools.
@@ -72,16 +73,6 @@ impl Default for AgentProfile {
         }
     }
 }
-
-/// Agent ids that cannot be deleted via settings API.
-pub const PROTECTED_AGENT_IDS: &[&str] = &[
-    "default",
-    "plan",
-    "orchestrator",
-    "explore",
-    "general",
-    "verification",
-];
 
 /// One-card capability id for the five subagent orchestration members.
 pub const SUBAGENT_CAPABILITY_ID: &str = "subagent_tools";
@@ -160,6 +151,10 @@ pub struct AvailableTool {
     /// Role/depth scope; the Agents UI and runtime selection consume the same table.
     #[serde(default)]
     pub scope: BindingScope,
+    /// Backend-owned lock: core capabilities are part of the built-in agent spec,
+    /// so their card cannot be toggled or re-dialed by a user. The Agents UI
+    /// reads this instead of keeping its own hard-coded id list.
+    pub locked: bool,
     /// Runtime status projection. Absent for definitions with no engine (builtin/custom).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<AvailableStatus>,

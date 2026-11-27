@@ -19,6 +19,7 @@ vi.mock("../api/settings", async (importOriginal) => {
     putProviderKey: vi.fn(),
     deleteProviderKey: vi.fn(),
     getAgent: vi.fn(),
+    putAgent: vi.fn(),
     loadSettingsAgentIds: vi.fn(),
     getMcpServers: vi.fn(),
     getAvailableTools: vi.fn(),
@@ -51,6 +52,7 @@ import {
   getMcpServers,
   getSettingsSummary,
   loadSettingsAgentIds,
+  putAgent,
   putProviderKey,
 } from "../api/settings";
 import type { CatalogProviderDto, LlmSettings } from "../api/settings";
@@ -61,6 +63,7 @@ const mockedLlm = vi.mocked(getLlmSettings);
 const mockedPutKey = vi.mocked(putProviderKey);
 const mockedDeleteKey = vi.mocked(deleteProviderKey);
 const mockedAgent = vi.mocked(getAgent);
+const mockedPutAgent = vi.mocked(putAgent);
 const mockedAgentIds = vi.mocked(loadSettingsAgentIds);
 const mockedMcp = vi.mocked(getMcpServers);
 const mockedTools = vi.mocked(getAvailableTools);
@@ -142,6 +145,7 @@ beforeEach(() => {
   mockedPutKey.mockReset().mockResolvedValue({ revision: 2, docs: ["llm"] });
   mockedDeleteKey.mockReset().mockResolvedValue({ revision: 2, docs: ["llm"] });
   mockedAgent.mockReset();
+  mockedPutAgent.mockReset();
   mockedAgentIds.mockReset().mockResolvedValue(["default"]);
   mockedMcp.mockReset().mockResolvedValue({ global: [], workspace: [] });
   mockedTools.mockReset().mockResolvedValue([]);
@@ -424,6 +428,86 @@ describe("settings persist toasts", () => {
     await useSettingsStore.getState().closeSettings();
     expect(flush).toHaveBeenCalledTimes(1);
     unreg();
+  });
+});
+
+describe("agent writes", () => {
+  function profile(): Parameters<typeof mockedPutAgent>[1] {
+    return {
+      role: "primary",
+      model_ref: "prov/m1",
+      system_prompt: "builtin:default",
+      description: "Default agent",
+      tools: { read: { enabled: true, preset: "ALL" } },
+      allowed_subagents: ["general"],
+      builtin: true,
+    };
+  }
+
+  it("drops the create/delete agent actions from the store surface", () => {
+    const state = useSettingsStore.getState() as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(state.createAgent).toBeUndefined();
+    expect(state.removeAgent).toBeUndefined();
+  });
+
+  it("saveAgent PUTs the profile and stores the server-normalized read-back", async () => {
+    mockedPutAgent.mockResolvedValue({ revision: 6, docs: ["agents"] });
+    mockedAgent.mockResolvedValue({
+      ...profile(),
+      // Server normalization: the locked fields come back as the spec says,
+      // and only the non-core binding the user toggled is kept.
+      description: "Default agent (spec)",
+      tools: { read: { enabled: true, preset: "ALL" }, lsp: { enabled: true, preset: null } },
+      builtin: true,
+    });
+    useSettingsStore.setState({
+      revision: 1,
+      agents: { default: profile() },
+      selectedAgentId: "default",
+      docClock: { agents: 1 },
+    });
+
+    await useSettingsStore.getState().saveAgent("default", {
+      ...profile(),
+      tools: {
+        read: { enabled: true, preset: "ALL" },
+        lsp: { enabled: true, preset: null },
+      },
+    });
+
+    expect(mockedPutAgent).toHaveBeenCalledWith(
+      "default",
+      expect.objectContaining({
+        model_ref: "prov/m1",
+        tools: { read: { enabled: true, preset: "ALL" }, lsp: { enabled: true, preset: null } },
+      }),
+    );
+    const state = useSettingsStore.getState();
+    expect(state.revision).toBe(6);
+    expect(state.docClock.agents).toBe(6);
+    expect(state.agents.default?.builtin).toBe(true);
+    expect(state.agents.default?.description).toBe("Default agent (spec)");
+    expect(state.agents.default?.tools.lsp).toEqual({
+      enabled: true,
+      preset: null,
+    });
+  });
+
+  it("keeps the draft when the read-back fails after a successful PUT", async () => {
+    mockedPutAgent.mockResolvedValue({ revision: 7, docs: ["agents"] });
+    mockedAgent.mockRejectedValue(new Error("read back boom"));
+    const saved = {
+      ...profile(),
+      model_ref: "other/m1",
+    };
+    await useSettingsStore.getState().saveAgent("default", saved);
+
+    const state = useSettingsStore.getState();
+    expect(state.revision).toBe(7);
+    expect(state.agents.default?.model_ref).toBe("other/m1");
   });
 });
 

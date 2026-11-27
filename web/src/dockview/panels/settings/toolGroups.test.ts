@@ -35,13 +35,29 @@ describe("groupToolCards", () => {
       card("alpha", "core"),
       card("edit", "core"),
     ]);
+    // `run` is a retired tool id, so it sorts with the other unknown ids.
     expect(core.tools.map((tool) => tool.id)).toEqual([
       "read",
       "edit",
       "write",
-      "run",
       "alpha",
+      "run",
       "zeta",
+    ]);
+  });
+
+  it("keeps web tools in the engine section, not the curated core order", () => {
+    const groups = groupToolCards([
+      card("webfetch", "engine"),
+      card("websearch", "engine"),
+      card("code_search", "engine"),
+      card("read", "core"),
+    ]);
+    expect(groups.map((group) => group.kind)).toEqual(["core", "engine"]);
+    expect(groups[1].tools.map((tool) => tool.id)).toEqual([
+      "code_search",
+      "webfetch",
+      "websearch",
     ]);
   });
 

@@ -11,8 +11,8 @@ mod service;
 
 pub use permission::{BotPermissionSink, bot_permission_sink};
 pub use resolve::{
-    AgentResolution, BOT_MAX_STEPS, expand_builtin_prompt, platform_prompt,
-    resolve_agent_for_session, step_max_for_session,
+    AgentResolution, BOT_MAX_STEPS, bot_role_instructions, normalize_bot_role_instructions,
+    platform_prompt, resolve_agent_for_session, step_max_for_session,
 };
 pub use service::{
     BOT_FOLDER_PREFIX, BotBody, BotError, BotEvent, BotPosition, BotRecord, BotService,

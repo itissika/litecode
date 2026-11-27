@@ -9,14 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
+use super::binding_scope::scope_of;
 use super::gate::{CommitAck, DocId};
 use super::global_db::{self, store, tools};
 use super::log_filter;
 use super::manager::ConfigManager;
 use super::schema::{
-    AgentProfile, AgentToolBinding, CustomSuiteDefinition, CustomToolDefinition, GlobalSettings,
-    LogSettings, McpServerDefinition, McpTransport, PROTECTED_AGENT_IDS, ToolPreset,
-    WebSearchSettings,
+    AgentProfile, CustomSuiteDefinition, CustomToolDefinition, GlobalSettings, LogSettings,
+    McpServerDefinition, McpTransport, WebSearchSettings,
 };
 use super::turn_guard::TurnGuard;
 use super::workspace;
@@ -624,94 +624,141 @@ impl SettingsWriter {
         })
     }
 
-    pub fn write_agent(&self, id: &str, mut profile: AgentProfile) -> Result<CommitAck> {
+    /// Replace the evaluator's scored surface for one built-in agent.
+    ///
+    /// This is the system channel of I6 / D7, not a setting: it is not exposed
+    /// on any settings route, and `write_agent` never reads or clears it. It
+    /// writes `meta.eval_surface` wholesale (see
+    /// [`global_db::store::write_eval_surface`]), so the caller's map is the
+    /// entire surface — a card left out is off.
+    ///
+    /// Takes the process-wide commit lock so it cannot interleave with a
+    /// settings save, and refuses an id that is not a built-in agent or a
+    /// database that was never initialized.
+    pub fn write_eval_surface(
+        &self,
+        surface: &global_db::EvalSurfaceOverride,
+    ) -> Result<()> {
+        if global_db::builtin_agent(&surface.agent_id).is_none() {
+            return Err(LitecodeError::Config(format!(
+                "eval surface: '{}' is not a built-in agent",
+                surface.agent_id
+            )));
+        }
+        let _guard = Self::commit_lock();
+        self.ensure_writable()
+            .map_err(|e| LitecodeError::Config(e.to_string()))?;
+        if !self.db_path.is_file() {
+            return Err(LitecodeError::Config(format!(
+                "eval surface: database {} is not initialized (run litecode once first)",
+                self.db_path.display()
+            )));
+        }
+        global_db::with_conn(&self.db_path, |conn| {
+            store::write_eval_surface(conn, surface)
+        })?;
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Delete `meta.eval_surface`, restoring the locked built-in surface and the
+    /// user's own non-core toggles. `true` when an override was actually
+    /// removed.
+    pub fn clear_eval_surface(&self) -> Result<bool> {
+        let _guard = Self::commit_lock();
+        self.ensure_writable()
+            .map_err(|e| LitecodeError::Config(e.to_string()))?;
+        // No database, no override: do not create one just to delete a row.
+        if !self.db_path.is_file() {
+            return Ok(false);
+        }
+        let cleared = global_db::with_conn(&self.db_path, store::clear_eval_surface)?;
+        if cleared {
+            self.revision.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(cleared)
+    }
+
+    /// Persist one built-in agent.
+    ///
+    /// I2: the agent set is closed — an id outside the spec is rejected instead
+    /// of creating a new agent. For a built-in id, only `model_ref` and the
+    /// **non-core** tool bindings are taken from the request; identity, prompt,
+    /// description, allowed subagents and every core binding are overwritten
+    /// with the spec values. Locked fields are silently dropped (with one
+    /// warning) rather than rejected, so an old UI draft cannot wedge saving.
+    pub fn write_agent(&self, id: &str, profile: AgentProfile) -> Result<CommitAck> {
         validate_agent_id(id)?;
+        let spec = super::global_db::builtin_agent(id).ok_or_else(|| {
+            LitecodeError::Config(format!(
+                "agent '{id}' cannot be created: LiteCode ships a fixed set of built-in agents"
+            ))
+        })?;
+
+        let mut next = AgentProfile {
+            role: spec.role,
+            model_ref: profile.model_ref.clone(),
+            system_prompt: spec.prompt_marker(),
+            description: spec.description.to_string(),
+            tools: HashMap::new(),
+            allowed_subagents: spec
+                .allowed_subagents
+                .iter()
+                .map(|subagent| (*subagent).to_string())
+                .collect(),
+        };
+        if next.role != profile.role
+            || next.system_prompt != profile.system_prompt
+            || next.description != profile.description
+            || next.allowed_subagents != profile.allowed_subagents
+        {
+            tracing::warn!(
+                agent = %id,
+                "ignoring a write that tried to change a built-in agent's locked identity or prompt"
+            );
+        }
+
         let loaded = self.load()?;
         let defs = loaded.custom_tools.clone();
-        for note in super::suite_bindings::collapse_custom_suite_bindings(&mut profile.tools, &defs)
-        {
+        let mut bindings = profile.tools;
+        let requested = bindings.len();
+        bindings.retain(|tool_id, _| {
+            !tools::is_core_tool(tool_id) && scope_of(tool_id).allows_role(spec.role)
+        });
+        if bindings.len() != requested {
+            tracing::warn!(
+                agent = %id,
+                dropped = requested - bindings.len(),
+                "dropped core or role-invalid tool bindings from a built-in agent write"
+            );
+        }
+        for note in super::suite_bindings::collapse_custom_suite_bindings(&mut bindings, &defs) {
             tracing::warn!("{note}");
         }
-        normalize_agent_profile(&mut profile);
+        for (tool_id, binding) in bindings.iter_mut() {
+            if tools::is_optional_builtin(tool_id)
+                && !crate::permission::has_permission_preset(tool_id)
+            {
+                binding.preset = None;
+            }
+        }
+        next.tools = bindings;
+        normalize_agent_profile(&mut next);
+
         let id = id.to_string();
         self.commit_partial(&[DocId::Agents], |settings| {
-            // WP-149: a newly created primary agent binds code_search by default
-            // unless the caller sent the key (true or false). Existing agents
-            // switched to primary are not auto-bound.
-            if !settings.agents.contains_key(&id)
-                && profile.role == crate::config::schema::AgentRole::Primary
-            {
-                for tool in super::global_db::tools::default_bound_optional_builtins() {
-                    if !profile.tools.contains_key(*tool) {
-                        profile.tools.insert(
-                            (*tool).to_string(),
-                            super::global_db::default_optional_binding(tool),
-                        );
-                    }
-                }
-            }
-            settings.agents.insert(id.clone(), profile);
+            settings.agents.insert(id, next);
             Ok(false)
         })
     }
 
+    /// The built-in agent set is closed: every agent is protected, so no delete
+    /// succeeds. Retained as a hard error instead of a silent no-op so callers
+    /// (legacy bot cleanup) learn the contract from the message.
     pub fn delete_agent(&self, id: &str) -> Result<CommitAck> {
-        if PROTECTED_AGENT_IDS.contains(&id) {
-            return Err(LitecodeError::Config(format!(
-                "agent '{id}' is protected and cannot be deleted"
-            )));
-        }
-        self.commit_partial(&[DocId::Agents], |settings| {
-            if settings.agents.remove(id).is_none() {
-                return Err(LitecodeError::Config(format!("agent not found: {id}")));
-            }
-            for profile in settings.agents.values_mut() {
-                profile.allowed_subagents.retain(|s| s != id);
-            }
-            Ok(false)
-        })
-    }
-
-    pub fn apply_agent_tool_preset(
-        &self,
-        agent_id: &str,
-        preset: ToolPreset,
-        workspace: &super::resolved::WorkspaceState,
-    ) -> Result<CommitAck> {
-        validate_agent_id(agent_id)?;
-        let loaded = self.load()?;
-        if !loaded.agents.contains_key(agent_id) {
-            return Err(LitecodeError::Config(format!(
-                "agent not found: {agent_id}"
-            )));
-        }
-        let safe = merged_custom_rules(
-            &loaded.custom_tools,
-            &workspace.workspace_custom_tools,
-            &loaded.custom_suites,
-            &workspace.workspace_custom_suites,
-        );
-        let mut defs = loaded.custom_tools.clone();
-        for (name, definition) in &workspace.workspace_custom_tools {
-            defs.retain(|tool| &tool.name != name);
-            defs.push(definition.clone());
-        }
-        let id = agent_id.to_string();
-        self.commit_partial(&[DocId::Agents], move |settings| {
-            let profile = settings
-                .agents
-                .get_mut(&id)
-                .expect("agent exists after load check");
-            for (tool_id, binding) in profile.tools.iter_mut() {
-                apply_forced_preset(tool_id, binding, preset, &safe);
-            }
-            for note in
-                super::suite_bindings::collapse_custom_suite_bindings(&mut profile.tools, &defs)
-            {
-                tracing::warn!("{note}");
-            }
-            Ok(false)
-        })
+        Err(LitecodeError::Config(format!(
+            "agent '{id}' cannot be deleted: LiteCode ships a fixed set of built-in agents"
+        )))
     }
 
     pub fn list_custom_tools(&self) -> Result<Vec<CustomToolDefinition>> {
@@ -1219,70 +1266,6 @@ fn validate_agent_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Non-empty rule lists keyed by the binding that owns them. Workspace custom
-/// tools and suites replace global entries. Suite members route to one
-/// `suite:<name>` binding, so only the suite's own rules make that binding
-/// dialable.
-fn merged_custom_rules(
-    global: &[CustomToolDefinition],
-    workspace: &HashMap<String, CustomToolDefinition>,
-    global_suites: &HashMap<String, CustomSuiteDefinition>,
-    workspace_suites: &HashMap<String, CustomSuiteDefinition>,
-) -> HashMap<String, Vec<crate::permission::PolicyRule>> {
-    let mut effective: HashMap<String, (Option<String>, Vec<crate::permission::PolicyRule>)> =
-        HashMap::new();
-    for tool in global {
-        effective.insert(tool.name.clone(), (tool.suite.clone(), tool.rules.clone()));
-    }
-    for (name, tool) in workspace {
-        effective.insert(name.clone(), (tool.suite.clone(), tool.rules.clone()));
-    }
-
-    let mut suites: HashMap<String, Vec<crate::permission::PolicyRule>> = HashMap::new();
-    for (name, suite) in global_suites {
-        suites.insert(name.clone(), suite.rules.clone());
-    }
-    for (name, suite) in workspace_suites {
-        suites.insert(name.clone(), suite.rules.clone());
-    }
-
-    let mut rules = HashMap::new();
-    for (name, (suite, declared)) in effective {
-        if let Some(suite) = suite.filter(|suite| !suite.trim().is_empty()) {
-            if let Some(suite_rules) = suites.get(&suite)
-                && !suite_rules.is_empty()
-            {
-                rules.insert(
-                    crate::config::suite_bindings::suite_id(&suite),
-                    suite_rules.clone(),
-                );
-            }
-        } else if !declared.is_empty() {
-            rules.insert(name, declared);
-        }
-    }
-    rules
-}
-
-/// Bulk dial: write only the intent. Fixed rows keep `preset = None`; custom
-/// rows get a dial only when their current definition declares rules.
-fn apply_forced_preset(
-    tool_id: &str,
-    binding: &mut AgentToolBinding,
-    preset: ToolPreset,
-    custom_rules: &HashMap<String, Vec<crate::permission::PolicyRule>>,
-) {
-    let mcp = tools::is_mcp_catalog_id(tool_id);
-    if !mcp {
-        binding.allowed_tools = None;
-    }
-    let dialable = crate::permission::has_permission_preset(tool_id)
-        || custom_rules
-            .get(tool_id)
-            .is_some_and(|rules| !rules.is_empty());
-    binding.preset = dialable.then_some(preset);
-}
-
 pub(crate) fn validate_mcp_definition(id: &str, def: &mut McpServerDefinition) -> Result<()> {
     validate_tool_id(id)?;
     if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
@@ -1617,8 +1600,9 @@ pub(crate) fn validate_tool_id(id: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    use tempfile::TempDir;
+    use crate::config::schema::{AgentToolBinding, ToolPreset};
 
+    use tempfile::TempDir;
     const TEST_CATALOG: &str = r#"version = 1
 
 [[providers]]
@@ -1718,7 +1702,7 @@ max_output = 1024
         }
     }
 
-    fn dial_binding(preset: Option<super::ToolPreset>) -> AgentToolBinding {
+    fn dial_binding(preset: Option<ToolPreset>) -> AgentToolBinding {
         AgentToolBinding {
             enabled: true,
             preset: preset,
@@ -1858,83 +1842,6 @@ max_output = 1024
         assert_eq!(loaded.tools["code_probe"].command, "demo");
     }
 
-    #[test]
-    fn merged_rules_come_from_the_suite_definition() {
-        let mut members = custom_def("suite_a", Vec::new());
-        members.suite = Some("deck".into());
-        let mut suites = HashMap::new();
-        suites.insert(
-            "deck".into(),
-            CustomSuiteDefinition {
-                label: "Deck".into(),
-                rules: declared_rules(),
-            },
-        );
-        let safe = super::merged_custom_rules(
-            &[members],
-            &std::collections::HashMap::new(),
-            &suites,
-            &std::collections::HashMap::new(),
-        );
-        let suite = safe
-            .get(&super::super::suite_bindings::suite_id("deck"))
-            .expect("suite rules");
-        assert_eq!(suite.len(), 1);
-
-        let mut binding = AgentToolBinding {
-            enabled: true,
-            preset: None,
-            allowed_tools: None,
-        };
-        super::apply_forced_preset("suite:deck", &mut binding, ToolPreset::Safe, &safe);
-        assert_eq!(binding.preset, Some(ToolPreset::Safe));
-    }
-
-    #[test]
-    fn workspace_suite_rules_replace_global_suite_rules() {
-        let global = [(
-            "deck".to_string(),
-            CustomSuiteDefinition {
-                label: "Deck".into(),
-                rules: declared_rules(),
-            },
-        )];
-        let workspace = [(
-            "deck".to_string(),
-            CustomSuiteDefinition {
-                label: "Deck".into(),
-                rules: Vec::new(),
-            },
-        )];
-        let mut members = custom_def("suite_a", Vec::new());
-        members.suite = Some("deck".into());
-        let safe = super::merged_custom_rules(
-            &[members],
-            &std::collections::HashMap::new(),
-            &global.into_iter().collect(),
-            &workspace.into_iter().collect(),
-        );
-        assert!(
-            safe.is_empty(),
-            "workspace suite rules replace global rules"
-        );
-    }
-
-    #[test]
-    fn workspace_custom_without_rules_hides_global_rules() {
-        let declared = declared_rules();
-        let global = vec![custom_def("demo", declared)];
-        let mut workspace = std::collections::HashMap::new();
-        workspace.insert("demo".into(), custom_def("demo", Vec::new()));
-        let safe = super::merged_custom_rules(
-            &global,
-            &workspace,
-            &std::collections::HashMap::new(),
-            &std::collections::HashMap::new(),
-        );
-        assert!(safe.is_empty());
-    }
-
     /// ISSUE-017 / WP-008: after a successful file write, a DB-side failure
     /// must restore the prior file bytes (no durable half-write).
     #[test]
@@ -2014,94 +1921,146 @@ max_output = 1024
         );
     }
 
-    // ---- WP-149: new primary agents bind code_search by default ----
+    // ---- lockdown: the built-in agent set is closed ----
 
-    fn cs_binding(writer: &SettingsWriter, id: &str) -> Option<bool> {
-        writer
-            .load_settings()
-            .unwrap()
-            .agents
-            .get(id)
-            .and_then(|p| p.tools.get("code_search"))
-            .map(|b| b.enabled)
+    fn agent_tool_rows(
+        db: &std::path::Path,
+        agent_id: &str,
+    ) -> Vec<(String, bool, Option<String>)> {
+        let conn = crate::config::global_db::open(db).expect("db");
+        let mut stmt = conn
+            .prepare(
+                "SELECT tool_id, enabled, preset FROM agent_tools WHERE agent_id = ?1 ORDER BY tool_id",
+            )
+            .expect("stmt");
+        stmt.query_map([agent_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)? != 0,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .expect("rows")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("collect")
     }
 
     #[test]
-    fn write_agent_roundtrips_intent_without_a_workspace() {
+    fn write_agent_rejects_an_id_outside_the_spec() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let err = writer
+            .write_agent(
+                "brand_new",
+                AgentProfile {
+                    role: crate::config::schema::AgentRole::Primary,
+                    ..AgentProfile::default()
+                },
+            )
+            .expect_err("new agents are not accepted");
+        assert!(err.to_string().contains("cannot be created"), "got: {err}");
+        assert!(
+            !writer
+                .load_settings()
+                .unwrap()
+                .agents
+                .contains_key("brand_new")
+        );
+    }
+
+    #[test]
+    fn delete_agent_is_always_refused() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        for id in ["default", "anything"] {
+            let err = writer.delete_agent(id).expect_err("deletes are refused");
+            assert!(err.to_string().contains("cannot be deleted"), "got: {err}");
+        }
+        assert!(
+            writer
+                .load_settings()
+                .unwrap()
+                .agents
+                .contains_key("default")
+        );
+    }
+
+    #[test]
+    fn write_agent_keeps_the_locked_spec_fields_and_the_users_non_core_intent() {
         let (_dir, db, writer) = writer_with_catalog();
-        let mut profile = AgentProfile {
-            role: crate::config::schema::AgentRole::Subagent,
-            ..Default::default()
+        let spec = crate::config::global_db::builtin_agent("default").expect("spec");
+        let binding = |enabled: bool, preset: Option<ToolPreset>| AgentToolBinding {
+            enabled,
+            preset,
+            allowed_tools: None,
         };
-        profile.tools.insert(
-            "read".into(),
-            AgentToolBinding {
-                enabled: true,
-                preset: Some(super::ToolPreset::Safe),
-                allowed_tools: None,
-            },
-        );
-        profile.tools.insert(
-            "mcp_probe".into(),
-            AgentToolBinding {
-                enabled: true,
-                preset: Some(super::ToolPreset::All),
-                allowed_tools: Some(vec!["search".into()]),
-            },
-        );
-        writer.write_agent("ab_agent", profile).unwrap();
+        let mut tools: HashMap<String, AgentToolBinding> = HashMap::new();
+        // Attempts to tamper with the locked surface.
+        tools.insert("read".into(), binding(false, None));
+        tools.insert("exec".into(), binding(true, Some(ToolPreset::Safe)));
+        tools.insert("write".into(), binding(false, None));
+        // Legitimate user intent: optional builtins and a custom/MCP binding.
+        tools.insert("webfetch".into(), binding(false, None));
+        tools.insert("lsp".into(), binding(true, None));
+        tools.insert("mcp_probe".into(), binding(true, Some(ToolPreset::All)));
 
-        // A second writer has no workspace input; the stored intent is complete.
-        let reopened = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
-        let loaded = reopened.load_settings().unwrap();
-        let saved = &loaded.agents["ab_agent"].tools;
-        assert_eq!(saved["read"].preset, Some(super::ToolPreset::Safe));
-        assert_eq!(saved["mcp_probe"].preset, Some(super::ToolPreset::All));
+        writer
+            .write_agent(
+                "default",
+                AgentProfile {
+                    role: crate::config::schema::AgentRole::Subagent,
+                    model_ref: "main/default".into(),
+                    system_prompt: "HACKED".into(),
+                    description: "x".into(),
+                    tools,
+                    allowed_subagents: vec!["general".into()],
+                },
+            )
+            .expect("a built-in write is accepted");
+
+        let loaded = writer.load_settings().expect("reload");
+        let profile = &loaded.agents["default"];
+
+        // Locked identity: straight from the spec.
+        assert_eq!(profile.role, spec.role);
+        assert_eq!(profile.system_prompt, spec.prompt_marker());
+        assert_eq!(profile.description, spec.description);
+        assert_eq!(profile.allowed_subagents, vec!["explore".to_string()]);
+        // User state that the DB owns.
         assert_eq!(
-            saved["mcp_probe"].allowed_tools.as_deref(),
-            Some(&["search".to_string()][..])
+            profile.model_ref, "main/default",
+            "the model choice is user state"
         );
-    }
 
-    #[test]
-    fn write_agent_new_primary_missing_code_search_binds_true() {
-        let (_dir, _db, writer) = writer_with_catalog();
-        let profile = AgentProfile {
-            role: crate::config::schema::AgentRole::Primary,
-            ..Default::default()
-        };
-        writer.write_agent("wp149_new", profile).unwrap();
-        assert_eq!(cs_binding(&writer, "wp149_new"), Some(true));
-    }
+        // Locked core bindings survive a tampered request.
+        assert!(profile.tools["read"].enabled, "core off must not stick");
+        assert_eq!(profile.tools["read"].preset, Some(ToolPreset::All));
+        assert_eq!(
+            profile.tools["exec"].preset,
+            Some(ToolPreset::All),
+            "SAFE must not stick"
+        );
+        assert!(profile.tools["write"].enabled);
 
-    #[test]
-    fn write_agent_new_primary_explicit_false_stays_false() {
-        let (_dir, _db, writer) = writer_with_catalog();
-        let mut off = crate::config::global_db::default_optional_binding("code_search");
-        off.enabled = false;
-        let mut profile = AgentProfile {
-            role: crate::config::schema::AgentRole::Primary,
-            ..Default::default()
-        };
-        profile.tools.insert("code_search".into(), off);
-        writer.write_agent("wp149_off", profile).unwrap();
-        assert_eq!(cs_binding(&writer, "wp149_off"), Some(false));
-    }
+        // Non-core intent survives.
+        assert!(
+            !profile.tools["webfetch"].enabled,
+            "an explicit optional builtin off sticks"
+        );
+        assert!(profile.tools["lsp"].enabled);
+        assert!(profile.tools["mcp_probe"].enabled);
 
-    #[test]
-    fn write_agent_existing_agent_switched_to_primary_not_auto_bound() {
-        let (_dir, _db, writer) = writer_with_catalog();
-        let sub = AgentProfile {
-            role: crate::config::schema::AgentRole::Subagent,
-            ..Default::default()
-        };
-        writer.write_agent("wp149_sw", sub).unwrap();
-        assert_eq!(cs_binding(&writer, "wp149_sw"), None);
-        let prim = AgentProfile {
-            role: crate::config::schema::AgentRole::Primary,
-            ..Default::default()
-        };
-        writer.write_agent("wp149_sw", prim).unwrap();
-        assert_eq!(cs_binding(&writer, "wp149_sw"), None);
+        // Only non-core rows reach the DB; the spec's core keys are dropped.
+        let row_ids: Vec<String> = agent_tool_rows(&db, "default")
+            .into_iter()
+            .map(|(tool_id, _, _)| tool_id)
+            .collect();
+        assert_eq!(
+            row_ids,
+            vec![
+                "lsp".to_string(),
+                "mcp_probe".to_string(),
+                "webfetch".to_string()
+            ],
+            "core bindings must not be persisted for a built-in agent"
+        );
     }
 }

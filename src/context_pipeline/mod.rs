@@ -37,7 +37,9 @@ pub use env::{Context, build_context};
 pub use limits::{
     COMPACT_MAX_OUTPUT_TOKENS, KEEP_RECENT_RATIO_PERCENT, MAX_PROMPT_RESERVE_TOKENS,
 };
-pub use system::{build_system_prompt, build_system_prompt_with_platform};
+pub use system::{
+    build_system_prompt, build_system_prompt_for_bot, build_system_prompt_with_platform,
+};
 pub use view::{HotView, PreparedView};
 
 /// Result of persisting a transcript delta.

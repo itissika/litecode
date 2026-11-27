@@ -4,12 +4,6 @@ use crate::config::binding_scope::scope_of;
 use crate::config::schema::AgentRole;
 
 pub fn normalize_agent_profile(profile: &mut crate::config::schema::AgentProfile) {
-    if profile.role == AgentRole::Hidden {
-        profile.tools.clear();
-        profile.allowed_subagents.clear();
-        return;
-    }
-
     if profile.role != AgentRole::Primary {
         profile.allowed_subagents.clear();
     }
@@ -33,21 +27,6 @@ mod tests {
             preset: None,
             allowed_tools: None,
         }
-    }
-
-    #[test]
-    fn hidden_role_clears_bindings_generically() {
-        let mut profile = AgentProfile {
-            role: AgentRole::Hidden,
-            tools: HashMap::from([("read".to_string(), binding())]),
-            allowed_subagents: vec!["explore".into()],
-            ..AgentProfile::default()
-        };
-
-        normalize_agent_profile(&mut profile);
-
-        assert!(profile.tools.is_empty());
-        assert!(profile.allowed_subagents.is_empty());
     }
 
     #[test]

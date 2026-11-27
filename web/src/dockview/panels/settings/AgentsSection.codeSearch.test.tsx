@@ -1,5 +1,5 @@
 // WP-150 / WP-145: code_search bind card reflects only the stored binding.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -58,7 +58,6 @@ function setEngine(state: EngineWarmupState) {
 
 describe("AgentsSection code_search binding (WP-150)", () => {
   const saveAgent = vi.fn(async (_id: string, _next: AgentProfile) => undefined);
-  const createAgent = vi.fn(async (_id: string, _next: AgentProfile) => undefined);
 
   function seed(agent: AgentProfile, available: AvailableTool[] | null = [readTool, codeSearchTool, sessionSearchTool]) {
     useSettingsStore.setState({
@@ -71,15 +70,12 @@ describe("AgentsSection code_search binding (WP-150)", () => {
       agents: { a: agent },
       persistByDoc: {},
       saveAgent,
-      createAgent,
-      removeAgent: vi.fn(async () => undefined),
       refreshAgents: vi.fn(async () => undefined),
     });
   }
 
   beforeEach(() => {
     saveAgent.mockClear();
-    createAgent.mockClear();
   });
   afterEach(() => {
     cleanup();
@@ -167,17 +163,6 @@ describe("AgentsSection code_search binding (WP-150)", () => {
     seed(profile(), null);
     render(<AgentsSection />);
     expect(screen.queryByRole("button", { name: /^code_search tool binding/i })).toBeNull();
-  });
-
-  it("new agent payload does not write code_search", async () => {
-    seed(profile());
-    render(<AgentsSection />);
-    fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
-    fireEvent.change(screen.getByPlaceholderText("my_agent"), { target: { value: "my_agent" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
-    await waitFor(() => expect(createAgent).toHaveBeenCalled());
-    const payload = createAgent.mock.calls[0][1];
-    expect("code_search" in payload.tools).toBe(false);
   });
 });
 

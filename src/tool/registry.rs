@@ -1008,11 +1008,11 @@ mod tests {
                 .filter_map(|tool| tool.code_bindings())
                 .any(|bindings| bindings.iter().any(|name| name == target))
         };
-        assert!(!has_binding(&old_tools, "ask_user"));
+        assert!(!has_binding(&old_tools, "hover"));
 
         let mut body = crate::bot::BotBody::default();
         body.tools.insert(
-            "ask_user".into(),
+            "lsp".into(),
             AgentToolBinding {
                 enabled: true,
                 preset: Some(ToolPreset::All),
@@ -1035,7 +1035,7 @@ mod tests {
         )
         .expect("new resolution");
         assert!(
-            new.profile.tools.contains_key("ask_user"),
+            new.profile.tools.contains_key("lsp"),
             "new profile tools: {:?}",
             new.profile.tools
         );
@@ -1051,7 +1051,7 @@ mod tests {
                 Some(test_host(&resolved, 0)),
             ))
             .expect("old rebuilt");
-        assert!(!has_binding(&old_again, "ask_user"));
+        assert!(!has_binding(&old_again, "hover"));
         let new_tools = rt
             .block_on(build_tool_list_with_resolution(
                 &runtime,
@@ -1065,7 +1065,7 @@ mod tests {
             ))
             .expect("new tool list");
         assert!(
-            has_binding(&new_tools, "ask_user"),
+            has_binding(&new_tools, "hover"),
             "new tools: {:?}",
             new_tools.iter().map(|tool| tool.name()).collect::<Vec<_>>()
         );
@@ -1235,10 +1235,6 @@ mod tests {
         assert!(!deep_bindings.iter().any(|b| b == "subagent.launch"));
         assert!(!deep_bindings.iter().any(|b| b == "plan.create"));
         assert!(deep_bindings.iter().any(|b| b == "read"));
-
-        let hidden =
-            test_resolved_role(default_bindings(), crate::config::schema::AgentRole::Hidden);
-        assert!(list_tools(&hidden, 0).is_empty());
     }
 
     #[test]

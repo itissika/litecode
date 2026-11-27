@@ -3,7 +3,6 @@ import {
   fireEvent,
   render,
   screen,
-  waitFor,
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -58,164 +57,301 @@ function profile(patch: Partial<AgentProfile> = {}): AgentProfile {
     description: "",
     tools: {},
     allowed_subagents: [],
+    builtin: true,
     ...patch,
   };
 }
 
-describe("AgentsSection persist UX", () => {
-  const saveAgent = vi.fn(async () => undefined);
-  const createAgent = vi.fn(async () => undefined);
-  const removeAgent = vi.fn(async () => undefined);
-  const refreshAgents = vi.fn(async () => undefined);
-
-  beforeEach(() => {
-    saveAgent.mockClear();
-    createAgent.mockClear();
-    removeAgent.mockClear();
-    refreshAgents.mockClear();
-    useSettingsStore.setState({
-      llm: llmDoc,
-      availableTools: [],
-      mcpDefs: { global: [], workspace: [] },
-      mcpRuntime: { global: {}, workspace: {} },
-      agentIds: ["default"],
-      selectedAgentId: "default",
-      agents: { default: profile() },
-      persistByDoc: {},
-      saveAgent,
-      createAgent,
-      removeAgent,
-      refreshAgents,
-    });
-  });
-
-  afterEach(() => {
-    cleanup();
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
-  });
-
-  it("does not auto-save or show Fix fields to save when adding an agent", async () => {
-    vi.useFakeTimers();
-    render(<AgentsSection />);
-    fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
-    await vi.advanceTimersByTimeAsync(400);
-    expect(screen.getByPlaceholderText("my_agent")).toBeTruthy();
-    expect(screen.queryByText("Fix fields to save")).toBeNull();
-    expect(saveAgent).not.toHaveBeenCalled();
-    expect(createAgent).not.toHaveBeenCalled();
-  });
-
-  it("creates once the new agent has an id", async () => {
-    render(<AgentsSection />);
-    fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
-    fireEvent.change(screen.getByPlaceholderText("my_agent"), {
-      target: { value: "my_agent" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
-    await waitFor(() => {
-      expect(createAgent).toHaveBeenCalledWith("my_agent", expect.any(Object));
-    });
-    expect(saveAgent).not.toHaveBeenCalled();
-  });
-
-  it("PUTs the selected agent after an edit", async () => {
-    vi.useFakeTimers();
-    render(<AgentsSection />);
-    const description = screen
-      .getAllByRole("textbox")
-      .find(
-        (el) =>
-          (el as HTMLInputElement).type !== "number" &&
-          (el as HTMLTextAreaElement).rows == null,
-      );
-    expect(description).toBeTruthy();
-    fireEvent.change(description!, { target: { value: "Helper" } });
-    await vi.advanceTimersByTimeAsync(400);
-    expect(saveAgent).toHaveBeenCalledWith(
-      "default",
-      expect.objectContaining({ description: "Helper" }),
-    );
-  });
-
-  it("uses a multiline description for subagents", () => {
-    useSettingsStore.setState({
-      agentIds: ["helper"],
-      selectedAgentId: "helper",
-      agents: {
-        helper: profile({
-          role: "subagent",
-          description: "Reads the repo and reports back.",
-        }),
-      },
-    });
-    render(<AgentsSection />);
-    const description = screen.getByDisplayValue(
-      "Reads the repo and reports back.",
-    );
-    expect(description.tagName).toBe("TEXTAREA");
-    expect((description as HTMLTextAreaElement).rows).toBe(4);
-  });
-
-  it("deletes a non-protected agent after confirm", async () => {
-    useSettingsStore.setState({
-      agentIds: ["helper"],
-      selectedAgentId: "helper",
-      agents: { helper: profile({ role: "subagent" }) },
-    });
-    render(<AgentsSection />);
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
-    await waitFor(() => {
-      expect(removeAgent).toHaveBeenCalledWith("helper");
-    });
-  });
-});
-
+// Backend truth (W7): core cards are locked, optional/custom/MCP cards are not.
+const lockedReadTool: AvailableTool = {
+  id: "read",
+  kind: "core",
+  origin: "builtin",
+  permission_surface: "preset",
+  locked: true,
+};
+const lockedSubagentTool: AvailableTool = {
+  id: "subagent_tools",
+  kind: "core",
+  origin: "builtin",
+  permission_surface: "fixed",
+  locked: true,
+};
 const lspTool: AvailableTool = {
   id: "lsp",
   kind: "engine",
   origin: "workspace",
   permission_surface: "fixed",
-};
-const readTool: AvailableTool = {
-  id: "read",
-  kind: "core",
-  origin: "builtin",
-  permission_surface: "preset",
+  locked: false,
 };
 const mcpDemoTool: AvailableTool = {
   id: "mcp_demo",
   kind: "mcp",
   origin: "workspace",
   permission_surface: "fixed",
+  locked: false,
 };
+
+function seed(patch: {
+  availableTools?: AvailableTool[];
+  agents?: Record<string, AgentProfile>;
+  agentIds?: string[];
+  selectedAgentId?: string;
+  saveAgent?: (id: string, next: AgentProfile) => Promise<void>;
+  refreshAgents?: () => Promise<void>;
+} = {}) {
+  useSettingsStore.setState({
+    llm: llmDoc,
+    availableTools: patch.availableTools ?? [],
+    mcpDefs: { global: [], workspace: [] },
+    mcpRuntime: { global: {}, workspace: {} },
+    agentIds: patch.agentIds ?? ["default"],
+    selectedAgentId: patch.selectedAgentId ?? "default",
+    agents: patch.agents ?? { default: profile() },
+    persistByDoc: {},
+    revision: 1,
+    saveAgent: patch.saveAgent ?? vi.fn(async () => undefined),
+    refreshAgents: patch.refreshAgents ?? vi.fn(async () => undefined),
+  });
+}
+
+describe("AgentsSection read-only identity", () => {
+  beforeEach(() => seed());
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("renders no create, delete, role-switch, or identity-edit control", () => {
+    render(<AgentsSection />);
+
+    expect(screen.queryByRole("button", { name: "Add agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Primary" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Subagent" })).toBeNull();
+    expect(screen.queryByLabelText("System prompt")).toBeNull();
+    expect(screen.queryAllByRole("textbox")).toHaveLength(0);
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+  });
+
+  it("shows the role in the agent picker and the description read-only", () => {
+    seed({
+      agents: {
+        default: profile({
+          description: "Default primary agent",
+          allowed_subagents: ["general", "explore"],
+        }),
+      },
+    });
+    render(<AgentsSection />);
+
+    // The role moved into the agent picker (icon + id + primary/subagent); the
+    // old "Type" label is gone.
+    const roleText = screen.getByText("Primary");
+    expect(roleText.parentElement?.parentElement?.textContent).toContain(
+      "default",
+    );
+    expect(screen.queryByText("Type")).toBeNull();
+    // Description and allowed subagents stay visible, read-only.
+    expect(screen.getByText("Default primary agent")).toBeTruthy();
+    // One line only: the description truncates instead of wrapping, and it
+    // sits on its own row above the allowed subagents.
+    const description = document.querySelector("[data-agent-description]");
+    expect(description?.className).toContain("truncate");
+    expect(description?.parentElement?.className).toContain("flex-col");
+    // Allowed subagents use the same chip shape (icon + text) as the role
+    // badge, but as an unfilled frame.
+    for (const id of ["general", "explore"]) {
+      const chip = screen.getByText(id);
+      expect(chip.className).toContain("tag-neutral");
+      expect(chip.className).not.toContain("tag-soft");
+      expect(chip.querySelector("svg")).toBeTruthy();
+    }
+  });
+
+  it("lists primary agents before subagents, subagents dashed", () => {
+    seed({
+      agentIds: ["helper", "default"],
+      agents: {
+        default: profile(),
+        helper: profile({ role: "subagent", description: "runs errands" }),
+      },
+    });
+    render(<AgentsSection />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^default/ }));
+    const panel = document.querySelector("[data-dropdown-panel]") as HTMLElement;
+    const rows = within(panel).getAllByRole("button");
+    // helper comes first in the store, but primaries sort to the top.
+    expect(rows[0].textContent).toContain("default");
+    expect(rows[0].textContent).toContain("--Primary");
+    expect(rows[1].textContent).toContain("helper");
+    expect(rows[1].textContent).toContain("--Subagent");
+  });
+
+  it("keeps the model picker editable and saves the chosen ref", async () => {
+    vi.useFakeTimers();
+    const saveAgent = vi.fn(async () => undefined);
+    seed({
+      saveAgent,
+      agents: {
+        default: profile({
+          tools: { lsp: { enabled: true, preset: null } },
+        }),
+      },
+      availableTools: [lspTool],
+    });
+    // `seed` restores the single-model doc; add the second model on top.
+    const otherModel: CatalogModelDto = {
+      ...model,
+      ref: "other/m1",
+      id: "m1",
+      label: "Same Wire Id",
+      provider_id: "other",
+      provider_name: "Other",
+    };
+    useSettingsStore.setState({
+      llm: {
+        ...llmDoc,
+        providers: [
+          ...llmDoc.providers,
+          {
+            id: "other",
+            name: "Other",
+            visible: true,
+            configured: true,
+            masked_api_key: "sk-***y",
+            endpoint: null,
+            endpoint_type: "chat_completions",
+            models: [otherModel],
+          },
+        ],
+        active_models: [model, otherModel],
+      },
+    });
+    render(<AgentsSection />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^GPT$/ }));
+    const panel = document.querySelector("[data-dropdown-panel]") as HTMLElement;
+    expect(panel).toBeTruthy();
+    fireEvent.click(within(panel).getByRole("button", { name: /Same Wire Id/ }));
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(saveAgent).toHaveBeenCalledWith(
+      "default",
+      expect.objectContaining({ model_ref: "other/m1" }),
+    );
+  });
+});
+
+describe("AgentsSection locked capability cards", () => {
+  const saveAgent = vi.fn(async (_id: string, _next: AgentProfile) => undefined);
+
+  beforeEach(() => {
+    saveAgent.mockClear();
+    seed({
+      saveAgent,
+      availableTools: [lockedReadTool, lspTool],
+      agents: {
+        default: profile({
+          tools: {
+            read: { enabled: true, preset: "SAFE" },
+            lsp: { enabled: false },
+          },
+        }),
+      },
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("marks a locked card read-only and offers no working toggle", async () => {
+    vi.useFakeTimers();
+    render(<AgentsSection />);
+
+    const toggle = screen.getByRole("button", {
+      name: /^read tool binding, enabled/i,
+    });
+    const card = toggle.closest(".tool-binding-card") as HTMLElement;
+    expect(card.getAttribute("data-locked")).toBe("true");
+    expect(toggle).toHaveProperty("disabled", true);
+    expect(toggle.getAttribute("aria-disabled")).toBe("true");
+    // A locked card is a record, not a control: no on/off or lock tag.
+    expect(within(card).queryByText("Locked")).toBeNull();
+    expect(within(card).queryByText("On")).toBeNull();
+
+    fireEvent.click(toggle);
+    fireEvent.click(card);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(saveAgent).not.toHaveBeenCalled();
+  });
+
+  it("shows the effective preset on a locked card but cannot change it", async () => {
+    vi.useFakeTimers();
+    render(<AgentsSection />);
+
+    const preset = screen.getByRole("group", { name: "read preset" });
+    const safe = within(preset).getByRole("button", { name: "SAFE" });
+    const all = within(preset).getByRole("button", { name: "ALL" });
+    expect(safe.getAttribute("aria-pressed")).toBe("true");
+    expect(all.getAttribute("aria-pressed")).toBe("false");
+    expect(safe).toHaveProperty("disabled", true);
+    expect(all).toHaveProperty("disabled", true);
+
+    fireEvent.click(all);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(saveAgent).not.toHaveBeenCalled();
+  });
+
+  it("keeps a locked fixed-surface card's explanation instead of a preset", () => {
+    seed({
+      saveAgent,
+      availableTools: [lockedSubagentTool],
+      agents: {
+        default: profile({ tools: { subagent_tools: { enabled: true } } }),
+      },
+    });
+    render(<AgentsSection />);
+
+    const toggle = screen.getByRole("button", {
+      name: /^subagent_tools tool binding/i,
+    });
+    const card = toggle.closest(".tool-binding-card") as HTMLElement;
+    expect(card.getAttribute("data-locked")).toBe("true");
+    expect(within(card).queryByRole("group")).toBeNull();
+    expect(within(card).getByText("Not configurable")).toBeTruthy();
+  });
+
+  it("leaves a non-locked card togglable and saves the new binding", async () => {
+    vi.useFakeTimers();
+    render(<AgentsSection />);
+
+    const lsp = screen.getByRole("button", {
+      name: /^lsp tool binding, disabled/i,
+    });
+    const lspCard = lsp.closest(".tool-binding-card") as HTMLElement;
+    expect(lspCard.getAttribute("data-locked")).toBeNull();
+    expect(lsp).toHaveProperty("disabled", false);
+
+    fireEvent.click(lsp);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(saveAgent).toHaveBeenCalledTimes(1);
+    const saved = saveAgent.mock.calls[0][1] as AgentProfile;
+    expect(saved.tools.lsp).toEqual(
+      expect.objectContaining({ enabled: true }),
+    );
+    // The locked row rides along untouched.
+    expect(saved.tools.read).toEqual({ enabled: true, preset: "SAFE" });
+  });
+});
 
 describe("AgentsSection capability bind cards", () => {
   beforeEach(() => {
-    useSettingsStore.setState({
-      llm: llmDoc,
-      availableTools: [
-        readTool,
-        {
-          id: "subagent_tools",
-          kind: "core",
-          origin: "builtin",
-          permission_surface: "fixed",
-          scope: "primary_root_only",
-        },
-      ],
-      mcpDefs: { global: [], workspace: [] },
-      mcpRuntime: { global: {}, workspace: {} },
-      agentIds: ["default"],
-      selectedAgentId: "default",
-      agents: { default: profile() },
-      persistByDoc: {},
-      saveAgent: vi.fn(async () => undefined),
-      createAgent: vi.fn(async () => undefined),
-      removeAgent: vi.fn(async () => undefined),
-      refreshAgents: vi.fn(async () => undefined),
+    seed({
+      availableTools: [lockedReadTool, { ...lockedSubagentTool, scope: "primary_root_only" }],
     });
   });
 
@@ -224,9 +360,7 @@ describe("AgentsSection capability bind cards", () => {
   });
 
   it("shows engine status without hiding the binding card", () => {
-    useSettingsStore.setState({
-      availableTools: [{ ...lspTool, status: "failed" }],
-    });
+    seed({ availableTools: [{ ...lspTool, status: "failed" }] });
     render(<AgentsSection />);
     expect(
       screen.getByRole("button", { name: /lsp tool binding, disabled/i }),
@@ -235,6 +369,12 @@ describe("AgentsSection capability bind cards", () => {
   });
 
   it("renders the subagent capability as one card", () => {
+    seed({
+      availableTools: [lockedReadTool, { ...lockedSubagentTool, scope: "primary_root_only" }],
+      agents: {
+        default: profile({ tools: { subagent_tools: { enabled: true } } }),
+      },
+    });
     render(<AgentsSection />);
     expect(
       screen.getAllByRole("button", { name: /subagent_tools tool binding/i }),
@@ -247,15 +387,15 @@ describe("AgentsSection capability bind cards", () => {
 
 describe("AgentsSection tool binding sections", () => {
   beforeEach(() => {
-    useSettingsStore.setState({
-      llm: llmDoc,
+    seed({
       availableTools: [
-        readTool,
+        lockedReadTool,
         {
           id: "glob",
           kind: "core",
           origin: "builtin",
           permission_surface: "preset",
+          locked: true,
         },
         lspTool,
         {
@@ -263,23 +403,15 @@ describe("AgentsSection tool binding sections", () => {
           kind: "custom",
           origin: "global",
           permission_surface: "fixed",
+          locked: false,
         },
         mcpDemoTool,
       ],
-      mcpDefs: { global: [], workspace: [] },
-      mcpRuntime: { global: {}, workspace: {} },
-      agentIds: ["default"],
-      selectedAgentId: "default",
       agents: {
         default: profile({
           tools: { read: { enabled: true }, lsp: { enabled: true } },
         }),
       },
-      persistByDoc: {},
-      saveAgent: vi.fn(async () => undefined),
-      createAgent: vi.fn(async () => undefined),
-      removeAgent: vi.fn(async () => undefined),
-      refreshAgents: vi.fn(async () => undefined),
     });
   });
 
@@ -287,66 +419,65 @@ describe("AgentsSection tool binding sections", () => {
     cleanup();
   });
 
-  it("lays the cards out in kind sections with an on count", () => {
+  it("folds every kind into a section, open by default, with an on count", () => {
     render(<AgentsSection />);
 
-    const headings = screen
-      .getAllByRole("heading", { level: 4 })
-      .map((node) => node.textContent);
-    expect(headings).toEqual([
-      "Core tools",
-      "Engine tools",
-      "Custom tools",
-      "MCP servers",
+    const headers = [
+      ...document.querySelectorAll<HTMLElement>(".foldcard-header"),
+    ];
+    // One header per section, in reading order, with its own count.
+    expect(headers.map((node) => node.textContent)).toEqual([
+      "Core tools 1/2 on",
+      "Engine tools 1/1 on",
+      "Custom tools 0/1 on",
+      "MCP servers 0/1 on",
     ]);
-    // Core holds read + glob, one of them on; the rest report their own counts.
-    expect(screen.getByText("1/2 on")).toBeTruthy();
-    expect(screen.getByText("1/1 on")).toBeTruthy();
-    expect(screen.getAllByText("0/1 on")).toHaveLength(2);
+    expect(headers.map((node) => node.getAttribute("aria-expanded"))).toEqual([
+      "true",
+      "true",
+      "true",
+      "true",
+    ]);
+    // Locked cards list only what is bound: read is on, glob is not.
+    expect(
+      screen.getByRole("button", { name: /^read tool binding/i }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /^glob tool binding/i }),
+    ).toBeNull();
+    // Editable cards keep their off rows — that is where a bind happens.
+    expect(
+      screen.getByRole("button", { name: /^mcp_demo tool binding/i }),
+    ).toBeTruthy();
   });
 });
 
 describe("AgentsSection hides run_code transport switch", () => {
   beforeEach(() => {
-    useSettingsStore.setState({
-      llm: llmDoc,
+    seed({
       availableTools: [
-        readTool,
-        {
-          id: "glob",
-          kind: "core",
-          origin: "builtin",
-          permission_surface: "preset",
-        },
-        {
-          id: "grep",
-          kind: "core",
-          origin: "builtin",
-          permission_surface: "preset",
-        },
-        {
-          id: "edit",
-          kind: "core",
-          origin: "builtin",
-          permission_surface: "preset",
-        },
-        {
-          id: "write",
-          kind: "core",
-          origin: "builtin",
-          permission_surface: "preset",
-        },
-        {
-          id: "bash",
-          kind: "core",
-          origin: "builtin",
-          permission_surface: "preset",
-        },
+        lockedReadTool,
+        ...[
+          "glob",
+          "grep",
+          "edit",
+          "write",
+          "bash",
+        ].map(
+          (id): AvailableTool => ({
+            id,
+            kind: "core",
+            origin: "builtin",
+            permission_surface: "preset",
+            locked: true,
+          }),
+        ),
         {
           id: "demo",
           kind: "custom",
           origin: "global",
           permission_surface: "fixed",
+          locked: false,
         },
         mcpDemoTool,
         {
@@ -354,18 +485,21 @@ describe("AgentsSection hides run_code transport switch", () => {
           kind: "core",
           origin: "builtin",
           permission_surface: "fixed",
+          locked: true,
         },
       ],
-      mcpDefs: { global: [], workspace: [] },
-      mcpRuntime: { global: {}, workspace: {} },
-      agentIds: ["default"],
-      selectedAgentId: "default",
-      agents: { default: profile() },
-      persistByDoc: {},
-      saveAgent: vi.fn(async () => undefined),
-      createAgent: vi.fn(async () => undefined),
-      removeAgent: vi.fn(async () => undefined),
-      refreshAgents: vi.fn(async () => undefined),
+      // Locked cards only render when bound, so bind the core rows this test
+      // walks through.
+      agents: {
+        default: profile({
+          tools: Object.fromEntries(
+            ["read", "glob", "grep", "edit", "write", "bash"].map((id) => [
+              id,
+              { enabled: true },
+            ]),
+          ),
+        }),
+      },
     });
   });
 
@@ -393,16 +527,13 @@ describe("AgentsSection subagent tool cards", () => {
   const saveAgent = vi.fn(
     async (_id: string, _next: AgentProfile) => undefined,
   );
-  const createAgent = vi.fn(async () => undefined);
-  const removeAgent = vi.fn(async () => undefined);
-  const refreshAgents = vi.fn(async () => undefined);
 
   beforeEach(() => {
     saveAgent.mockClear();
-    useSettingsStore.setState({
-      llm: llmDoc,
+    seed({
+      saveAgent,
       availableTools: [
-        readTool,
+        { ...lockedReadTool, locked: false },
         lspTool,
         mcpDemoTool,
         {
@@ -410,19 +541,13 @@ describe("AgentsSection subagent tool cards", () => {
           kind: "core",
           origin: "builtin",
           permission_surface: "fixed",
+          locked: true,
           scope: "primary_root_only",
         },
       ],
-      mcpDefs: { global: [], workspace: [] },
-      mcpRuntime: { global: {}, workspace: {} },
       agentIds: ["helper"],
       selectedAgentId: "helper",
       agents: { helper: profile({ role: "subagent" }) },
-      persistByDoc: {},
-      saveAgent,
-      createAgent,
-      removeAgent,
-      refreshAgents,
     });
   });
 
@@ -442,7 +567,8 @@ describe("AgentsSection subagent tool cards", () => {
   });
 
   it("renders a suite label instead of its internal id", () => {
-    useSettingsStore.setState({
+    seed({
+      saveAgent,
       availableTools: [
         {
           id: "suite:deck",
@@ -450,15 +576,19 @@ describe("AgentsSection subagent tool cards", () => {
           origin: "global",
           permission_surface: "preset",
           label: "Deck",
+          locked: false,
         },
       ],
+      agentIds: ["helper"],
+      selectedAgentId: "helper",
+      agents: { helper: profile({ role: "subagent" }) },
     });
     render(<AgentsSection />);
     expect(screen.getByText("Deck")).toBeTruthy();
     expect(screen.queryByText("suite:deck")).toBeNull();
   });
 
-  it("renders per-tool preset cards with a deny-semantics note, not checkboxes", () => {
+  it("renders per-tool preset cards, not checkboxes", () => {
     render(<AgentsSection />);
     // Full card rows (clickable), one per bindable tool — not a checkbox list.
     expect(
@@ -484,11 +614,9 @@ describe("AgentsSection subagent tool cards", () => {
         name: "Select visible tools for MCP server demo",
       }),
     ).toBeTruthy();
-    // Guidance on Ask -> deny semantics for subagent turns.
-    expect(screen.getByText(/can't ask for approval/i)).toBeTruthy();
   });
 
-  it("persists a SAFE preset picked on a subagent tool card", async () => {
+  it("persists a SAFE preset picked on an unlocked subagent tool card", async () => {
     vi.useFakeTimers();
     render(<AgentsSection />);
     fireEvent.click(
@@ -512,21 +640,7 @@ describe("AgentsSection LSP bind persist loop", () => {
 
   beforeEach(() => {
     saveAgent.mockReset();
-    useSettingsStore.setState({
-      llm: llmDoc,
-      availableTools: [readTool, lspTool],
-      mcpDefs: { global: [], workspace: [] },
-      mcpRuntime: { global: {}, workspace: {} },
-      agentIds: ["default"],
-      selectedAgentId: "default",
-      agents: { default: profile() },
-      persistByDoc: {},
-      revision: 1,
-      saveAgent,
-      createAgent: vi.fn(async () => undefined),
-      removeAgent: vi.fn(async () => undefined),
-      refreshAgents: vi.fn(async () => undefined),
-    });
+    seed({ saveAgent, availableTools: [lockedReadTool, lspTool] });
   });
 
   afterEach(() => {
@@ -569,7 +683,7 @@ describe("AgentsSection LSP bind persist loop", () => {
           },
         },
       },
-      availableTools: [readTool, lspTool],
+      availableTools: [lockedReadTool, lspTool],
       revision: useSettingsStore.getState().revision,
     });
     await vi.advanceTimersByTimeAsync(400);
@@ -595,7 +709,9 @@ describe("AgentsSection LSP bind persist loop", () => {
         useSettingsStore.setState((s) => ({
           revision: s.revision + 1,
           agents: { ...s.agents, [id]: merged },
-          availableTools: lspListed ? [readTool, lspTool] : [readTool],
+          availableTools: lspListed
+            ? [lockedReadTool, lspTool]
+            : [lockedReadTool],
         }));
       });
     });
@@ -613,8 +729,9 @@ describe("AgentsSection LSP bind persist loop", () => {
   });
 
   it("hides bindings that are not in this workspace catalog", () => {
-    useSettingsStore.setState({
-      availableTools: [readTool, lspTool],
+    seed({
+      saveAgent,
+      availableTools: [lockedReadTool, lspTool],
       agents: {
         default: profile({
           tools: {
@@ -632,8 +749,9 @@ describe("AgentsSection LSP bind persist loop", () => {
 
   it("keeps other-workspace bindings on PUT and does not loop when GET reshuffles keys", async () => {
     vi.useFakeTimers();
-    useSettingsStore.setState({
-      availableTools: [readTool, lspTool],
+    seed({
+      saveAgent,
+      availableTools: [lockedReadTool, lspTool],
       agents: {
         default: profile({
           tools: {
@@ -680,7 +798,6 @@ describe("AgentsSection LSP bind persist loop", () => {
 
 describe("AgentsSection model picker", () => {
   const saveAgent = vi.fn(async () => undefined);
-  const createAgent = vi.fn(async () => undefined);
 
   const secondModel: CatalogModelDto = {
     ref: "other/m1",
@@ -698,7 +815,6 @@ describe("AgentsSection model picker", () => {
 
   beforeEach(() => {
     saveAgent.mockClear();
-    createAgent.mockClear();
     useSettingsStore.setState({
       llm: {
         ...llmDoc,
@@ -726,8 +842,6 @@ describe("AgentsSection model picker", () => {
       persistByDoc: {},
       revision: 1,
       saveAgent,
-      createAgent,
-      removeAgent: vi.fn(async () => undefined),
       refreshAgents: vi.fn(async () => undefined),
     });
   });
@@ -812,21 +926,6 @@ describe("AgentsSection model picker", () => {
       screen.getByRole("button", { name: /Missing: ghost\/gone-model/ }),
     ).toBeTruthy();
     expect(saveAgent).not.toHaveBeenCalled();
-  });
-
-  it("defaults a new agent to the first active model", async () => {
-    render(<AgentsSection />);
-    fireEvent.click(screen.getByRole("button", { name: "Add agent" }));
-    fireEvent.change(screen.getByPlaceholderText("my_agent"), {
-      target: { value: "helper" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
-    await waitFor(() => {
-      expect(createAgent).toHaveBeenCalledWith(
-        "helper",
-        expect.objectContaining({ model_ref: "prov/m1" }),
-      );
-    });
   });
 
   it("tells the user to configure a provider API key when no model is active", () => {

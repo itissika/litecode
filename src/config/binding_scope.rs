@@ -1,7 +1,7 @@
 //! Role/depth scope for one agent tool binding.
 //!
 //! This is the single source for "may this role bind this capability?".
-//! Hidden agents are cleared elsewhere; they still answer `false` here.
+//! Only `primary` and `subagent` exist; `All` admits both.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +22,7 @@ impl BindingScope {
     /// Whether `role` can bind this capability at all (depth-independent).
     pub fn allows_role(self, role: AgentRole) -> bool {
         match self {
-            Self::All => role != AgentRole::Hidden,
+            Self::All => true,
             Self::PrimaryRootOnly => role == AgentRole::Primary,
         }
     }
@@ -30,7 +30,7 @@ impl BindingScope {
     /// Whether `role` at `depth` can bind this capability.
     pub fn allows(self, role: AgentRole, depth: u32) -> bool {
         match self {
-            Self::All => role != AgentRole::Hidden,
+            Self::All => true,
             Self::PrimaryRootOnly => role == AgentRole::Primary && depth == 0,
         }
     }
@@ -71,10 +71,9 @@ mod tests {
     #[test]
     fn role_and_depth_matrix() {
         assert!(BindingScope::All.allows(AgentRole::Subagent, 1));
-        assert!(!BindingScope::All.allows(AgentRole::Hidden, 0));
+        assert!(BindingScope::All.allows(AgentRole::Primary, 0));
         assert!(BindingScope::PrimaryRootOnly.allows(AgentRole::Primary, 0));
         assert!(!BindingScope::PrimaryRootOnly.allows(AgentRole::Primary, 1));
         assert!(!BindingScope::PrimaryRootOnly.allows(AgentRole::Subagent, 0));
-        assert!(!BindingScope::PrimaryRootOnly.allows(AgentRole::Hidden, 0));
     }
 }

@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::config::DocId;
 use crate::config::schema::AgentToolBinding;
 use crate::config::settings_writer::SettingsWriter;
 use crate::runtime::RuntimeHandle;
@@ -33,6 +32,21 @@ fn bot_owner(record: &BotRecord) -> SessionBotOwner {
         bot_id: record.id.clone(),
         name: record.name.clone(),
         description: record.description.clone(),
+    }
+}
+
+/// D5/D2: the one normalization applied to every bot body that reaches disk —
+/// boot load, create, and update.
+///
+/// `system_prompt` becomes the role text (retired markers and built-in pack
+/// text collapse to empty), `tools` keeps only non-core, role-valid bindings,
+/// and `allowed_subagents` is always empty because the `default` spec owns it.
+fn normalize_bot_body(body: BotBody) -> BotBody {
+    let spec = super::resolve::default_bot_spec();
+    BotBody {
+        system_prompt: super::normalize_bot_role_instructions(&body.system_prompt),
+        tools: super::resolve::filter_bot_tool_overrides(body.tools, spec),
+        allowed_subagents: Vec::new(),
     }
 }
 
@@ -180,9 +194,18 @@ pub struct BotRecord {
     pub sort_order: i64,
 }
 
-/// The bot-owned capability body. This is the one authority for a bot's prompt,
-/// tool selection, and allowed subagents; settings profiles are read only for
-/// the one-time cutover.
+/// The bot-owned capability body. Only two things here are user intent: the
+/// role/identity text and the **non-core** tool bindings (optional builtins,
+/// custom tools, MCP).
+///
+/// `system_prompt` keeps its historical name so old `bots.json` files and the
+/// websocket payload stay compatible, but it no longer means "whole system
+/// prompt": it is the bot's role description, spliced as `# Bot Role` after the
+/// locked `DEFAULT_PROMPT` base. Empty means "no role segment".
+///
+/// `tools` never stores core bindings: the core set and its presets come from
+/// `builtin_agent("default")`. `allowed_subagents` is accepted for wire
+/// compatibility only and is always cleared — the spec owns it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BotBody {
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -277,17 +300,15 @@ pub struct BotService {
 impl BotService {
     pub fn new(
         service: Arc<SessionService>,
-        settings: Arc<SettingsWriter>,
+        _settings: Arc<SettingsWriter>,
         runtime: Option<Weak<RwLock<RuntimeHandle>>>,
         project: impl Into<String>,
         path: PathBuf,
     ) -> Result<Self, BotError> {
-        // Loading also promotes the legacy `folder_id` key into `position`
-        // and collects the old identity-profile ids for one-time cleanup.
+        // Loading also promotes the legacy `folder_id` key into `position`.
         let loaded = load_registry(&path)?;
         let mut bots = loaded.bots;
         let mut changed = loaded.legacy_shape;
-        let mut docs = Vec::new();
 
         for bot in &mut bots {
             // Folders created before bot folders existed are session folders.
@@ -329,13 +350,13 @@ impl BotService {
             }
         }
 
-        // A record written before the built-in prompt expansion may still hold
-        // a marker. Expand it in place; expanded text is not a marker, so this
-        // pass is idempotent.
+        // D5: a record written by an older build may hold an expanded built-in
+        // prompt, core tool rows, or an `allowed_subagents` list. Normalize it in
+        // place; the write is silent and idempotent.
         for bot in &mut bots {
-            let expanded = super::expand_builtin_prompt(&bot.body.system_prompt);
-            if expanded != bot.body.system_prompt {
-                bot.body.system_prompt = expanded;
+            let normalized = normalize_bot_body(bot.body.clone());
+            if normalized != bot.body {
+                bot.body = normalized;
                 changed = true;
             }
         }
@@ -378,38 +399,14 @@ impl BotService {
             }
         }
 
-        // Delete the old identity profiles named by the v3 records. Never
-        // delete a protected agent or one still referenced by another session.
-        if !loaded.legacy_profile_ids.is_empty() {
-            let settings_snapshot = settings
-                .load_settings()
-                .map_err(|error| BotError::Settings(error.to_string()))?;
-            let sessions = service
-                .list_sessions()
-                .map_err(|error| BotError::Session(error.to_string()))?;
-            for profile_id in loaded.legacy_profile_ids {
-                if profile_id.is_empty()
-                    || crate::config::schema::PROTECTED_AGENT_IDS.contains(&profile_id.as_str())
-                    || !settings_snapshot.agents.contains_key(&profile_id)
-                    || sessions.iter().any(|row| row.agent_id == profile_id)
-                {
-                    continue;
-                }
-                match settings.delete_agent(&profile_id) {
-                    Ok(ack) => docs.extend(ack.docs),
-                    Err(error) => tracing::warn!(
-                        profile = %profile_id,
-                        %error,
-                        "legacy bot identity profile was not deleted"
-                    ),
-                }
-            }
-        }
+        // Q1: the legacy identity-profile cleanup that used to live here is
+        // retired. W3 prunes every non-spec agent from the DB at boot and
+        // `delete_agent` refuses to delete anything, so there is nothing left
+        // for this layer to delete.
 
         if changed {
-            // Rewrite the pre-v4 shape only after the session rebind and legacy
-            // profile cleanup succeeded. A failed save leaves the old file for
-            // the next start to retry.
+            // Rewrite the pre-v4 shape only after the session rebind succeeded.
+            // A failed save leaves the old file for the next start to retry.
             save_registry(&path, &bots)?;
         }
 
@@ -420,7 +417,7 @@ impl BotService {
         );
 
         let (events, _) = broadcast::channel(64);
-        let service = Self {
+        Ok(Self {
             service,
             runtime,
             project: project.into(),
@@ -428,9 +425,7 @@ impl BotService {
             state: Mutex::new(bots),
             events,
             turn_runner: OnceLock::new(),
-        };
-        service.apply_docs(&docs);
-        Ok(service)
+        })
     }
 
     /// Serve state installs the runtime-backed delivery hook once.
@@ -561,10 +556,7 @@ impl BotService {
         body: BotBody,
         position: BotPosition,
     ) -> Result<BotRecord, BotError> {
-        let body = BotBody {
-            system_prompt: super::expand_builtin_prompt(&body.system_prompt),
-            ..body
-        };
+        let body = normalize_bot_body(body);
         let name = normalize_name(name)?;
         let description = normalize_description(description);
 
@@ -724,10 +716,7 @@ impl BotService {
             {
                 return Err(BotError::Busy);
             }
-            next.body = BotBody {
-                system_prompt: super::expand_builtin_prompt(&body.system_prompt),
-                ..body
-            };
+            next.body = normalize_bot_body(body);
         }
 
         self.commit(next.clone())?;
@@ -887,20 +876,6 @@ impl BotService {
             Err(crate::types::LitecodeError::SessionNotFound(_)) => Ok(false),
             Err(error) => Err(BotError::Session(error.to_string())),
         }
-    }
-
-    fn apply_docs(&self, docs: &[DocId]) {
-        if docs.is_empty() {
-            return;
-        }
-        let Some(runtime) = self.runtime.as_ref().and_then(Weak::upgrade) else {
-            return;
-        };
-        let mut runtime = runtime.write().unwrap_or_else(|error| error.into_inner());
-        if let Err(error) = runtime.apply(docs) {
-            tracing::warn!(%error, "bot settings: runtime apply failed");
-        }
-        runtime.sync_workspace_tool_readiness();
     }
 
     fn subagent_hub(&self) -> Option<Arc<crate::tools::subagent::SubagentHub>> {
@@ -1098,9 +1073,6 @@ struct LoadedRegistry {
     bots: Vec<BotRecord>,
     /// The file still uses a pre-v4 shape and must be rewritten.
     legacy_shape: bool,
-    /// Identity-profile ids named by a v3 record. They are deleted once the
-    /// session no longer references them.
-    legacy_profile_ids: Vec<String>,
 }
 
 fn load_registry(path: &Path) -> Result<LoadedRegistry, BotError> {
@@ -1108,7 +1080,6 @@ fn load_registry(path: &Path) -> Result<LoadedRegistry, BotError> {
         return Ok(LoadedRegistry {
             bots: Vec::new(),
             legacy_shape: false,
-            legacy_profile_ids: Vec::new(),
         });
     }
     let text = fs::read_to_string(path)
@@ -1117,44 +1088,18 @@ fn load_registry(path: &Path) -> Result<LoadedRegistry, BotError> {
         return Ok(LoadedRegistry {
             bots: Vec::new(),
             legacy_shape: false,
-            legacy_profile_ids: Vec::new(),
         });
     }
     let mut value: serde_json::Value = serde_json::from_str(&text)
         .map_err(|error| BotError::Registry(format!("parse {}: {error}", path.display())))?;
     let legacy_position = promote_legacy_folder_ids(&mut value);
-    let legacy_profile_ids = collect_legacy_profile_ids(&value);
     let file: BotRegistryFile = serde_json::from_value(value)
         .map_err(|error| BotError::Registry(format!("parse {}: {error}", path.display())))?;
-    let legacy_shape =
-        file.version < BOT_REGISTRY_VERSION || legacy_position || !legacy_profile_ids.is_empty();
+    let legacy_shape = file.version < BOT_REGISTRY_VERSION || legacy_position;
     Ok(LoadedRegistry {
         bots: file.bots,
         legacy_shape,
-        legacy_profile_ids,
     })
-}
-
-/// Collect the old `profile_id` / `agent_id` values before serde drops them.
-fn collect_legacy_profile_ids(file: &serde_json::Value) -> Vec<String> {
-    let Some(bots) = file.get("bots").and_then(serde_json::Value::as_array) else {
-        return Vec::new();
-    };
-    let mut ids = Vec::new();
-    for bot in bots {
-        let Some(object) = bot.as_object() else {
-            continue;
-        };
-        for key in ["profile_id", "agent_id"] {
-            if let Some(id) = object.get(key).and_then(serde_json::Value::as_str) {
-                if !id.is_empty() {
-                    ids.push(id.to_string());
-                    break;
-                }
-            }
-        }
-    }
-    ids
 }
 
 /// Accept the pre-`position` registry shape. Returns true when a legacy
@@ -1529,8 +1474,13 @@ mod tests {
         );
     }
 
+    /// Q1: the bot layer no longer deletes legacy identity profiles — W3 prunes
+    /// every non-spec agent at boot and `delete_agent` refuses all agents. What
+    /// this test still guards is the silent cutover: a stale `profile_id` in the
+    /// registry is ignored, the session re-binds to the bot id, the profile row
+    /// is gone, and the record's own text survives as the role segment.
     #[tokio::test]
-    async fn legacy_identity_profile_is_deleted_after_session_rebind() {
+    async fn legacy_profile_id_is_ignored_at_boot_and_pruned_by_the_db() {
         let f = fixture();
         let bot = f
             .bots
@@ -1540,16 +1490,21 @@ mod tests {
         f.manager
             .set_agent_id(&bot.session_id, "legacy_identity".into())
             .expect("old agent id");
-        f.settings
-            .write_agent(
-                "legacy_identity",
+        // W3: `write_agent` refuses ids outside the built-in spec, so the legacy
+        // profile is planted the way an older build left it: a raw DB row.
+        {
+            let mut settings = f.settings.load_settings().expect("settings");
+            settings.agents.insert(
+                "legacy_identity".into(),
                 AgentProfile {
                     role: AgentRole::Primary,
                     system_prompt: "legacy profile body".into(),
                     ..AgentProfile::default()
                 },
-            )
-            .expect("legacy profile");
+            );
+            crate::config::global_db::save_global(f.settings.db_path(), &settings)
+                .expect("legacy profile");
+        }
 
         let registry = f.dir.path().join("bots.json");
         let mut file: serde_json::Value =
@@ -1590,6 +1545,16 @@ mod tests {
         let settings = f.settings.load_settings().expect("settings");
         assert!(!settings.agents.contains_key("legacy_identity"));
         assert!(settings.agents.contains_key("default"));
+        // D1: the boot load prunes the retired custom agent from the DB itself.
+        let db = crate::config::global_db::open(f.settings.db_path()).expect("db");
+        let legacy_rows: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM agents WHERE id = 'legacy_identity'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(legacy_rows, 0, "a non-spec agent must be deleted at boot");
         let resolution = crate::bot::resolve_agent_for_session(
             &resolved(&f),
             Some(&restarted),
@@ -1597,8 +1562,22 @@ mod tests {
             &bot.id,
         )
         .expect("bot body");
-        assert_eq!(resolution.profile.system_prompt, "record body");
-        assert!(resolution.profile.tools.is_empty());
+        // D2: the base is always the locked `default` spec; the record's text
+        // travels as the role segment instead of replacing the prompt.
+        assert_eq!(resolution.profile.system_prompt, "builtin:default");
+        assert_eq!(
+            crate::bot::bot_role_instructions(resolution.bot.as_ref().expect("bot record"))
+                .as_deref(),
+            Some("record body")
+        );
+        assert_eq!(
+            resolution.profile.allowed_subagents,
+            vec!["explore".to_string()]
+        );
+        assert!(
+            resolution.profile.tools["read"].enabled,
+            "an empty bot body still gets the spec core surface"
+        );
 
         let after_first = fs::read_to_string(&registry).expect("registry after restart");
         let again = BotService::new(
@@ -1620,10 +1599,138 @@ mod tests {
         );
     }
 
+    /// D5/Q5: an old `bots.json` may still carry a whole prompt (a built-in pack
+    /// or a retired marker) plus core tool rows. Boot normalizes all of it
+    /// silently: the retired text becomes "no role", real user text survives,
+    /// core rows disappear, non-core rows stay.
+    #[tokio::test]
+    async fn legacy_bot_bodies_are_normalized_on_load() {
+        let f = fixture();
+        let mut bots = Vec::new();
+        for name in [
+            "Default pack",
+            "Orchestrator pack",
+            "Retired marker",
+            "User role",
+        ] {
+            bots.push(
+                f.bots
+                    .create_user_bot(name, "", body(""))
+                    .await
+                    .expect("bot"),
+            );
+        }
+
+        let registry = f.dir.path().join("bots.json");
+        let mut file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&registry).expect("registry")).expect("json");
+        let legacy_prompts = [
+            crate::config::global_db::DEFAULT_PROMPT,
+            crate::config::global_db::ORCHESTRATOR_PROMPT,
+            "builtin:orchestrator",
+            "You are the release captain.",
+        ];
+        for (row, prompt) in file["bots"]
+            .as_array_mut()
+            .expect("bots")
+            .iter_mut()
+            .zip(legacy_prompts)
+        {
+            let object = row.as_object_mut().expect("record");
+            object.insert(
+                "system_prompt".into(),
+                serde_json::json!(format!("\n  {prompt}\t\n")),
+            );
+            object.insert(
+                "tools".into(),
+                serde_json::json!({
+                    "read": { "enabled": false },
+                    "exec": { "enabled": true, "preset": "SAFE" },
+                    "webfetch": { "enabled": false },
+                    "lsp": { "enabled": true, "preset": "ALL" },
+                }),
+            );
+            object.insert("allowed_subagents".into(), serde_json::json!(["general"]));
+        }
+        fs::write(&registry, serde_json::to_string_pretty(&file).expect("json")).expect("write");
+
+        let restarted = BotService::new(
+            Arc::clone(f.bots.service()),
+            Arc::clone(&f.settings),
+            None,
+            "/proj",
+            registry.clone(),
+        )
+        .expect("restart");
+
+        for (index, bot) in bots.iter().enumerate() {
+            let loaded = restarted.find(&bot.id).expect("loaded bot");
+            if index < 3 {
+                assert!(
+                    loaded.body.system_prompt.is_empty(),
+                    "record {index} kept retired prompt text: {:?}",
+                    loaded.body.system_prompt
+                );
+            } else {
+                assert_eq!(loaded.body.system_prompt, "You are the release captain.");
+            }
+            assert!(
+                loaded.body.allowed_subagents.is_empty(),
+                "the spec owns allowed_subagents"
+            );
+            assert!(
+                !loaded.body.tools.contains_key("read"),
+                "a core row must be dropped: {:?}",
+                loaded.body.tools
+            );
+            assert!(
+                !loaded.body.tools.contains_key("exec"),
+                "a core row must be dropped: {:?}",
+                loaded.body.tools
+            );
+            assert!(!loaded.body.tools["webfetch"].enabled);
+            assert!(loaded.body.tools["lsp"].enabled);
+            assert_eq!(
+                loaded.body.tools["lsp"].preset, None,
+                "a dial-less optional builtin keeps no preset"
+            );
+        }
+
+        // I1/D2: the resolved surface is still the locked `default` spec.
+        let resolution = crate::bot::resolve_agent_for_session(
+            &resolved(&f),
+            Some(&restarted),
+            &bots[3].session_id,
+            &bots[3].id,
+        )
+        .expect("resolution");
+        assert!(resolution.profile.tools["read"].enabled);
+        assert_eq!(
+            resolution.profile.tools["exec"].preset,
+            Some(crate::config::schema::ToolPreset::All)
+        );
+        assert_eq!(
+            resolution.profile.allowed_subagents,
+            vec!["explore".to_string()]
+        );
+        assert_eq!(
+            crate::bot::bot_role_instructions(resolution.bot.as_ref().expect("bot record"))
+                .as_deref(),
+            Some("You are the release captain.")
+        );
+
+        // The rewrite lands on disk and drops the retired shapes.
+        let after = fs::read_to_string(&registry).expect("registry");
+        assert!(!after.contains("builtin:orchestrator"));
+        assert!(!after.contains("allowed_subagents"));
+    }
+
     #[tokio::test]
     async fn resolver_reads_the_bot_record_and_falls_back_to_settings() {
         let f = fixture();
         let mut profile = f.settings.load_settings().expect("settings").agents["default"].clone();
+        // W3: these two edits are accepted but ignored — the built-in identity
+        // and its core bindings are owned by the spec.
         profile.system_prompt = "profile prompt".into();
         profile.tools.insert(
             "read".into(),
@@ -1636,9 +1743,12 @@ mod tests {
         f.settings.write_agent("default", profile).expect("profile");
         let bot = f
             .bots
-            .create_user_bot("Body owner", "", body_with_tool("bot prompt", "grep"))
+            .create_user_bot("Body owner", "", body_with_tool("bot role", "webfetch"))
             .await
             .expect("bot");
+        // Only the non-core binding is stored on the record.
+        assert_eq!(bot.body.tools.len(), 1, "record tools: {:?}", bot.body.tools);
+        assert!(bot.body.tools.contains_key("webfetch"));
         let resolved = resolved(&f);
 
         let bot_resolution = crate::bot::resolve_agent_for_session(
@@ -1649,9 +1759,19 @@ mod tests {
         )
         .expect("bot body");
         assert!(bot_resolution.is_bot());
-        assert_eq!(bot_resolution.profile.system_prompt, "bot prompt");
-        assert!(bot_resolution.profile.tools.contains_key("grep"));
-        assert!(!bot_resolution.profile.tools.contains_key("read"));
+        // D2: the locked base plus the record's own role text.
+        assert_eq!(bot_resolution.profile.system_prompt, "builtin:default");
+        assert_eq!(
+            crate::bot::bot_role_instructions(
+                bot_resolution.bot.as_ref().expect("bot record")
+            )
+            .as_deref(),
+            Some("bot role")
+        );
+        // I3: the record's non-core binding applies; core comes from the spec.
+        assert!(bot_resolution.profile.tools["webfetch"].enabled);
+        assert!(bot_resolution.profile.tools["read"].enabled);
+        assert!(!bot.body.tools.contains_key("read"));
 
         let normal = crate::bot::resolve_agent_for_session(
             &resolved,
@@ -1661,24 +1781,29 @@ mod tests {
         )
         .expect("settings profile");
         assert!(!normal.is_bot());
-        assert_eq!(normal.profile.system_prompt, "profile prompt");
+        // The locked spec profile, not the rejected edit above.
+        assert_eq!(normal.profile.system_prompt, "builtin:default");
         assert!(normal.profile.tools.contains_key("read"));
     }
 
     #[tokio::test]
-    async fn builtin_prompt_is_owned_text_and_survives_restart() {
+    async fn builtin_prompt_markers_normalize_to_an_empty_role() {
         let f = fixture();
         let created = f
             .bots
             .create_user_bot("Prompt owner", "", body("builtin:general"))
             .await
             .expect("create");
-        let default_prompt = crate::config::global_db::DEFAULT_PROMPT;
-        assert_eq!(created.body.system_prompt, default_prompt);
-        assert!(!created.body.system_prompt.contains("bounded software engineering implementer"));
+        // Q5: a retired marker is not a role, so the record stays empty and the
+        // bot keeps the locked `DEFAULT_PROMPT` base.
+        assert!(
+            created.body.system_prompt.is_empty(),
+            "a builtin marker must not survive as a role"
+        );
 
         let registry = f.dir.path().join("bots.json");
         let before_restart = fs::read_to_string(&registry).expect("registry");
+        assert!(!before_restart.contains("builtin:general"));
         for _ in 0..2 {
             let restarted = BotService::new(
                 Arc::clone(f.bots.service()),
@@ -1688,20 +1813,20 @@ mod tests {
                 registry.clone(),
             )
             .expect("restart");
-            assert_eq!(
+            assert!(
                 restarted
                     .find(&created.id)
                     .expect("restarted bot")
                     .body
-                    .system_prompt,
-                default_prompt,
-                "an expanded prompt must survive restart unchanged"
+                    .system_prompt
+                    .is_empty(),
+                "an empty role must survive restart unchanged"
             );
         }
         assert_eq!(
             fs::read_to_string(&registry).expect("registry after restart"),
             before_restart,
-            "an already expanded prompt must not be rewritten"
+            "a normalized body must not be rewritten"
         );
 
         let resolution = crate::bot::resolve_agent_for_session(
@@ -1711,9 +1836,14 @@ mod tests {
             &created.id,
         )
         .expect("bot body");
-        let config = crate::config::bridge::agent_config_from_profile(&resolution.profile);
-        let prompt = crate::context_pipeline::build_system_prompt(&created.id, &config, None);
+        let prompt = crate::context_pipeline::build_system_prompt_for_bot(
+            None,
+            crate::bot::bot_role_instructions(resolution.bot.as_ref().expect("bot record"))
+                .as_deref(),
+            "PLATFORM",
+        );
         assert!(prompt.contains("LiteCode's default coding agent"));
+        assert!(!prompt.contains("# Bot Role"));
         assert!(!prompt.contains("bounded software engineering implementer"));
     }
 
@@ -1755,15 +1885,20 @@ mod tests {
             &bot.id,
         )
         .expect("bot body");
-        let bot_config = crate::config::bridge::agent_config_from_profile(&bot_resolution.profile);
-        let bot_prompt = crate::context_pipeline::build_system_prompt_with_platform(
-            &bot.id,
-            &bot_config,
+        let role = crate::bot::bot_role_instructions(
+            bot_resolution.bot.as_ref().expect("bot record"),
+        );
+        let bot_prompt = crate::context_pipeline::build_system_prompt_for_bot(
             None,
-            Some(&segment),
+            role.as_deref(),
+            &segment,
         );
         assert!(bot_prompt.contains("You are bot \"Platform bot\""));
         assert!(bot_prompt.contains("[from bot id=<sender_id> name=<sender_name>]"));
+        assert!(
+            bot_prompt.contains("# Bot Role\nbody prompt"),
+            "the record text is the role segment"
+        );
 
         let default_profile = resolved.agents().get("default").expect("default");
         let normal_config = crate::config::bridge::agent_config_from_profile(default_profile);
@@ -2324,7 +2459,7 @@ mod tests {
         let f = fixture();
         let bot = f
             .bots
-            .create_user_bot("Snapshot", "", body_with_tool("old prompt", "read"))
+            .create_user_bot("Snapshot", "", body_with_tool("old role", "webfetch"))
             .await
             .expect("bot");
         let resolved = resolved(&f);
@@ -2335,23 +2470,50 @@ mod tests {
             &bot.id,
         )
         .expect("before");
-        assert_eq!(before.profile.system_prompt, "old prompt");
-        assert!(before.profile.tools.contains_key("read"));
+        let before_role = crate::bot::bot_role_instructions(
+            before.bot.as_ref().expect("bot record"),
+        );
+        assert_eq!(before_role.as_deref(), Some("old role"));
+        assert_eq!(before.profile.system_prompt, "builtin:default");
+        assert!(before.profile.tools["webfetch"].enabled);
+        assert!(!before.profile.tools.contains_key("lsp"));
 
         f.bots
             .update(
                 &bot.id,
                 BotUpdate {
-                    body: Some(body_with_tool("new prompt", "grep")),
+                    body: Some(BotBody {
+                        system_prompt: "new role".into(),
+                        tools: HashMap::from([
+                            (
+                                "webfetch".to_string(),
+                                AgentToolBinding {
+                                    enabled: false,
+                                    preset: None,
+                                    allowed_tools: None,
+                                },
+                            ),
+                            (
+                                "lsp".to_string(),
+                                AgentToolBinding {
+                                    enabled: true,
+                                    preset: None,
+                                    allowed_tools: None,
+                                },
+                            ),
+                        ]),
+                        ..BotBody::default()
+                    }),
                     ..BotUpdate::default()
                 },
             )
             .await
             .expect("update");
 
-        assert_eq!(before.profile.system_prompt, "old prompt");
-        assert!(before.profile.tools.contains_key("read"));
-        assert!(!before.profile.tools.contains_key("grep"));
+        // The captured turn keeps its own body.
+        assert_eq!(before_role.as_deref(), Some("old role"));
+        assert!(before.profile.tools["webfetch"].enabled);
+        assert!(!before.profile.tools.contains_key("lsp"));
         let after = crate::bot::resolve_agent_for_session(
             &resolved,
             Some(f.bots.as_ref()),
@@ -2359,8 +2521,12 @@ mod tests {
             &bot.id,
         )
         .expect("after");
-        assert_eq!(after.profile.system_prompt, "new prompt");
-        assert!(after.profile.tools.contains_key("grep"));
+        let after_role =
+            crate::bot::bot_role_instructions(after.bot.as_ref().expect("bot record"));
+        assert_eq!(after_role.as_deref(), Some("new role"));
+        assert_eq!(after.profile.system_prompt, "builtin:default");
+        assert!(!after.profile.tools["webfetch"].enabled);
+        assert!(after.profile.tools["lsp"].enabled);
     }
 
     #[tokio::test]

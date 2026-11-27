@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::schema::{
     AgentProfile, AvailableStatus, CustomToolDefinition, LogSettings, McpServerDefinition,
-    ToolOrigin, ToolPreset,
+    ToolOrigin,
 };
 use crate::config::workspace::WorkspaceEnginesFile;
 use crate::config::{CommitAck, DocId};
@@ -75,11 +75,23 @@ struct AgentListItem {
     role: crate::config::schema::AgentRole,
     description: String,
     allowed_subagents: Vec<String>,
+    /// Every agent the settings surface can show is a built-in spec (I2). The
+    /// flag exists so the Agents UI never keeps its own id list.
+    builtin: bool,
 }
 
 #[derive(Serialize)]
 struct AgentsListBody {
     agents: Vec<AgentListItem>,
+}
+
+/// One agent plus its provenance. `builtin` is a sibling of the profile so the
+/// wire shape stays `{ builtin, role, model_ref, ... }` (W8 depends on it).
+#[derive(Serialize)]
+struct AgentDetailBody {
+    builtin: bool,
+    #[serde(flatten)]
+    profile: AgentProfile,
 }
 
 pub fn router() -> Router<ServeState> {
@@ -95,14 +107,7 @@ pub fn router() -> Router<ServeState> {
         .route("/models/enabled", put(put_model_enabled))
         .route("/websearch", get(get_websearch).put(put_websearch))
         .route("/agents", get(list_agents))
-        .route(
-            "/agents/{id}",
-            get(get_agent).put(put_agent).delete(delete_agent),
-        )
-        .route(
-            "/agents/{id}/tools/apply-preset",
-            post(apply_agent_tool_preset),
-        )
+        .route("/agents/{id}", get(get_agent).put(put_agent))
         .route("/available-tools", get(get_available_tools))
         .route("/custom-tools", get(list_custom_tools))
         .route("/custom-suites", get(list_custom_suites))
@@ -132,6 +137,21 @@ pub fn router() -> Router<ServeState> {
         .route("/log", get(get_log).put(put_log))
         .route("/excludes", get(get_excludes).put(put_excludes))
         .route("/engines", get(get_engines).put(put_engines))
+        // An unknown settings path is an API 404, not a static-file response. The
+        // SPA fallback (`ServeDir`) answers 405 for POST/PUT/DELETE, which would
+        // turn a removed route into a misleading "wrong method" error.
+        .fallback(unknown_endpoint)
+}
+
+async fn unknown_endpoint() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiErr {
+            ok: false,
+            error: "unknown settings endpoint".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 async fn get_settings(State(state): State<ServeState>) -> Response {
@@ -276,6 +296,7 @@ async fn list_agents(State(state): State<ServeState>) -> Response {
                     role: profile.role,
                     description: profile.description.clone(),
                     allowed_subagents: profile.allowed_subagents.clone(),
+                    builtin: crate::config::global_db::is_builtin_agent(id),
                 })
                 .collect();
             agents.sort_by(|a, b| a.id.cmp(&b.id));
@@ -285,27 +306,27 @@ async fn list_agents(State(state): State<ServeState>) -> Response {
     }
 }
 
+/// The built-in spec is the only agent source, so an unknown id is a plain 404.
+/// There is no settings-DB fallback: it could only return rows the runtime has
+/// already stopped resolving.
 async fn get_agent(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
     let resolved_profile = {
         let runtime = state.runtime.read().expect("runtime lock");
         runtime.resolved.agents().get(&id).cloned()
     };
-    if let Some(profile) = resolved_profile {
-        return ok_json(profile);
-    }
-    match state.settings_writer.load_settings() {
-        Ok(settings) => match settings.agents.get(&id) {
-            Some(profile) => ok_json(profile),
-            None => (
-                StatusCode::NOT_FOUND,
-                Json(ApiErr {
-                    ok: false,
-                    error: format!("agent not found: {id}"),
-                }),
-            )
-                .into_response(),
-        },
-        Err(e) => settings_error(e),
+    match resolved_profile {
+        Some(profile) => ok_json(AgentDetailBody {
+            builtin: crate::config::global_db::is_builtin_agent(&id),
+            profile,
+        }),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ApiErr {
+                ok: false,
+                error: format!("agent not found: {id}"),
+            }),
+        )
+            .into_response(),
     }
 }
 
@@ -328,50 +349,6 @@ async fn put_agent(
     match state.settings_writer.write_agent(&id, body.profile) {
         Ok(ack) => {
             reload_runtime_after_settings_write(&state, &ack, "agent write");
-            ok_json(revision_body(ack))
-        }
-        Err(e) => settings_write_error(e),
-    }
-}
-
-#[derive(Deserialize)]
-struct ApplyPresetBody {
-    preset: ToolPreset,
-}
-
-async fn apply_agent_tool_preset(
-    State(state): State<ServeState>,
-    Path(id): Path<String>,
-    Json(body): Json<ApplyPresetBody>,
-) -> Response {
-    let workspace = state
-        .runtime
-        .read()
-        .expect("runtime lock")
-        .workspace
-        .clone();
-    match state
-        .settings_writer
-        .apply_agent_tool_preset(&id, body.preset, &workspace)
-    {
-        Ok(ack) => {
-            reload_runtime_after_settings_write(&state, &ack, "apply tool preset");
-            ok_json(revision_body(ack))
-        }
-        Err(e) => settings_write_error(e),
-    }
-}
-
-async fn delete_agent(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
-
-    match state.settings_writer.delete_agent(&id) {
-        Ok(ack) => {
-            let mut runtime = state.runtime.write().expect("runtime lock");
-            if runtime.desired_primary_agent() == id {
-                let _ = runtime.set_desired_primary_agent("default".to_string());
-            }
-            drop(runtime);
-            reload_runtime_after_settings_write(&state, &ack, "delete agent");
             ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),

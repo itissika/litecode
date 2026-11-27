@@ -149,7 +149,6 @@ fn role_to_string(role: AgentRole) -> String {
     match role {
         AgentRole::Primary => "primary".into(),
         AgentRole::Subagent => "subagent".into(),
-        AgentRole::Hidden => "hidden".into(),
     }
 }
 

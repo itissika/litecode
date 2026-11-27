@@ -622,13 +622,21 @@ impl AgentRuntime {
         let paths = resolved.paths().clone();
         let cwd = resolved.workspace_root().to_path_buf();
         let context = build_context(&resolved, &cwd, &paths);
-        let platform = resolution.bot.as_ref().map(crate::bot::platform_prompt);
-        let instructions = crate::context_pipeline::build_system_prompt_with_platform(
-            agent_name,
-            &agent_config,
-            Some(&context),
-            platform.as_deref(),
-        );
+        // A bot is not a settings agent: its system prompt is the locked
+        // `default` base plus the record's own role segment and platform
+        // segment. Everything else keeps the normal agent path unchanged.
+        let instructions = match resolution.bot.as_ref() {
+            Some(bot) => crate::context_pipeline::build_system_prompt_for_bot(
+                Some(&context),
+                crate::bot::bot_role_instructions(bot).as_deref(),
+                &crate::bot::platform_prompt(bot),
+            ),
+            None => crate::context_pipeline::build_system_prompt(
+                agent_name,
+                &agent_config,
+                Some(&context),
+            ),
+        };
 
         let context_window = turn_llm.context_window;
         let context_pipeline =

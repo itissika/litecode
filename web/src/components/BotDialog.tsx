@@ -6,6 +6,7 @@ import {
   useState,
   type FormEvent,
   type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -27,7 +28,6 @@ import { useBotStore } from "../stores/botStore";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useToastStore } from "../stores/toastStore";
 import { usePortalTarget } from "./ui/usePortalTarget";
-import { Select } from "./ui/Select";
 import { AgentProfileFields } from "./agent/AgentProfileFields";
 import { AgentToolsGrid, bindingFor } from "./agent/AgentToolsGrid";
 import { FieldLabel, TextInput } from "./ui/FormField";
@@ -44,22 +44,114 @@ interface BotDialogProps {
   onCreated?: (bot: BotInfo) => void;
 }
 
-function draftFromBody(body: BotBody): AgentProfile {
+/**
+ * Every bot is built on the locked built-in `default` spec (D2): the bot record
+ * owns only its role text and its non-core tool overrides.
+ */
+export const BOT_BASE_AGENT_ID = "default";
+
+/**
+ * `default`'s optional builtins that the bot base keeps on no matter what the
+ * Settings → Agents page last saved (`bot::resolve::spec_tool_bindings`).
+ */
+export const BOT_DEFAULT_OPTIONAL_TOOL_IDS = [
+  "code_search",
+  "webfetch",
+  "websearch",
+] as const;
+
+/** Widest the sheet ever gets; matches the panel's `max-w-[70rem]`. */
+const DIALOG_MAX_WIDTH = 1120;
+const DIALOG_MIN_WIDTH = 520;
+const DIALOG_MIN_HEIGHT = 360;
+/** Overlay padding (`p-4`) kept clear on each side. */
+const DIALOG_VIEWPORT_GUTTER = 32;
+
+/**
+ * Sheet size after dragging the corner grip by `(dx, dy)`.
+ *
+ * The sheet stays centered over the viewport, so growing it by `2d` moves the
+ * bottom-right corner by `d` — the corner then tracks the pointer exactly. The
+ * caps mirror the panel classes (`max-h-[85vh]`, `max-w-[70rem]`), so a drag
+ * cannot push the sheet past its resting bounds.
+ */
+export function botDialogSize(
+  start: { w: number; h: number },
+  dx: number,
+  dy: number,
+  viewport: { w: number; h: number },
+): { w: number; h: number } {
+  const clamp = (value: number, min: number, max: number) =>
+    Math.min(Math.max(value, min), Math.max(min, max));
   return {
-    role: "primary",
-    model_ref: "",
-    system_prompt: body.system_prompt,
-    description: "",
-    tools: body.tools,
-    allowed_subagents: body.allowed_subagents,
+    w: clamp(
+      start.w + dx * 2,
+      DIALOG_MIN_WIDTH,
+      Math.min(DIALOG_MAX_WIDTH, viewport.w - DIALOG_VIEWPORT_GUTTER),
+    ),
+    h: clamp(start.h + dy * 2, DIALOG_MIN_HEIGHT, viewport.h * 0.85),
   };
 }
 
-function bodyFromDraft(draft: AgentProfile): BotBody {
+function lockedToolIds(availableTools: readonly AvailableTool[]): Set<string> {
+  return new Set(
+    availableTools.filter((tool) => tool.locked).map((tool) => tool.id),
+  );
+}
+
+/**
+ * Build the capability grid draft for a bot (D2/D3/I3).
+ *
+ * The backend only stores the user's non-core overrides, so the grid is rebuilt
+ * on every load: locked core cards mirror the `default` spec (they are read-only
+ * in the grid), the spec's optional defaults start on, and the saved record's
+ * non-core entries are layered on top.
+ */
+export function composeBotDraftTools(
+  defaultTools: Record<string, AgentToolBinding>,
+  availableTools: readonly AvailableTool[],
+  savedBodyTools: Record<string, AgentToolBinding>,
+): Record<string, AgentToolBinding> {
+  const locked = lockedToolIds(availableTools);
+  const draft: Record<string, AgentToolBinding> = {};
+  for (const id of locked) {
+    // A locked card always reports the spec's binding.
+    draft[id] = defaultTools[id] ?? { enabled: true, preset: null };
+  }
+  for (const id of BOT_DEFAULT_OPTIONAL_TOOL_IDS) {
+    draft[id] = { enabled: true, preset: null };
+  }
+  for (const [id, binding] of Object.entries(savedBodyTools)) {
+    // The record never owns a core key; a stale one must not re-open a lock.
+    if (locked.has(id)) continue;
+    draft[id] = { ...binding };
+  }
+  return draft;
+}
+
+/** Keep only the bindings a bot record may own: the non-core overrides (I3). */
+export function botToolOverrides(
+  tools: Record<string, AgentToolBinding>,
+  availableTools: readonly AvailableTool[],
+): Record<string, AgentToolBinding> {
+  const locked = lockedToolIds(availableTools);
+  const overrides: Record<string, AgentToolBinding> = {};
+  for (const [id, binding] of Object.entries(tools)) {
+    if (locked.has(id)) continue;
+    overrides[id] = binding;
+  }
+  return overrides;
+}
+
+function bodyFromDraft(
+  draft: AgentProfile,
+  availableTools: readonly AvailableTool[],
+): BotBody {
   return {
     system_prompt: draft.system_prompt,
-    tools: draft.tools,
-    allowed_subagents: draft.allowed_subagents,
+    tools: botToolOverrides(draft.tools, availableTools),
+    // Fixed by the `default` spec (`["explore"]`); the record cannot move it.
+    allowed_subagents: [],
   };
 }
 
@@ -72,32 +164,34 @@ function isBusy(bot: BotInfo, sessions: ReturnType<typeof useSessionStore.getSta
   );
 }
 
-/** Create/edit form for a bot identity and its owned capability profile. */
+/** Create/edit form for a bot identity and its role text. */
 export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
   const titleId = useId();
   const nameId = useId();
   const descriptionId = useId();
-  const templateFieldId = useId();
   const { anchorRef, target } = usePortalTarget<HTMLSpanElement>();
   const panelRef = useRef<HTMLDivElement>(null);
-  const primaryAgents = useSessionStore((s) => s.primaryAgents);
-  const activePrimary = useSessionStore((s) => s.activePrimary);
   const sessions = useSessionStore((s) => s.sessions);
   const createBot = useBotStore((s) => s.createBot);
   const updateBot = useBotStore((s) => s.updateBot);
   const editing = mode.kind === "edit" ? mode.bot : null;
   const [name, setName] = useState(editing?.name ?? "");
   const [description, setDescription] = useState(editing?.description ?? "");
-  const [templateId, setTemplateId] = useState(activePrimary);
-  const [profile, setProfile] = useState<AgentProfile | null>(
-    editing ? draftFromBody(editing.body) : null,
-  );
+  const [profile, setProfile] = useState<AgentProfile | null>(null);
   const [tools, setTools] = useState<AvailableTool[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerItem[]>([]);
-  const [toolsLoading, setToolsLoading] = useState(true);
-  const [templateLoading, setTemplateLoading] = useState(!editing);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Sheet size while the user drags the corner grip. Session-only — nothing is
+  // persisted — and a double-click on the grip returns to the content-fit size.
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  const resizeStart = useRef<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } | null>(null);
 
   const busy = editing ? isBusy(editing, sessions) : false;
   // The bot record has no model field: the session owns it. Read the listed
@@ -115,87 +209,100 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
   const [modelDraft, setModelDraft] = useState<string | undefined>();
   const modelId = modelDraft ?? sessionModel;
   const modelChanged = modelDraft !== undefined && modelDraft !== sessionModel;
-  const agents = useMemo(() => {
-    if (primaryAgents.length > 0) return primaryAgents;
-    return activePrimary ? [{ id: activePrimary, description: "" }] : [];
-  }, [primaryAgents, activePrimary]);
-  const selectedTemplate = agents.some((agent) => agent.id === templateId)
-    ? templateId
-    : (agents[0]?.id ?? "");
   const bindableTools = useMemo(() => settingsToolSwitches(tools), [tools]);
   const presetIds = useMemo(() => presetToolIds(bindableTools), [bindableTools]);
 
+  // Create and edit load the same base: the tool catalog, the locked `default`
+  // spec (the only base a bot can have), and the MCP catalog for the per-server
+  // picker. An MCP failure must not hide the rest of the body editor.
   useEffect(() => {
     let cancelled = false;
-    setToolsLoading(true);
+    setLoading(true);
+    setError(null);
     Promise.all([
       getAvailableTools(),
-      // MCP discovery only feeds the per-server tool picker. A failure here
-      // must not hide the rest of the body editor.
+      getAgent(BOT_BASE_AGENT_ID),
       getMcpServers().catch(() => null),
     ])
-      .then(([loadedTools, loadedMcp]) => {
+      .then(([loadedTools, base, loadedMcp]) => {
         if (cancelled) return;
         setTools(loadedTools);
         setMcpServers(
           loadedMcp ? [...loadedMcp.global, ...loadedMcp.workspace] : [],
         );
-        setToolsLoading(false);
+        setProfile({
+          role: "primary",
+          model_ref: "",
+          // New bots start empty: the base prompt is never copied into the
+          // role box, it is appended by the backend as `# Bot Role`.
+          system_prompt: editing?.body.system_prompt ?? "",
+          description: "",
+          tools: composeBotDraftTools(
+            base.tools,
+            loadedTools,
+            editing?.body.tools ?? {},
+          ),
+          allowed_subagents: [],
+        });
+        setLoading(false);
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
-        setToolsLoading(false);
-        setError(
-          reason instanceof Error
-            ? reason.message
-            : i18n.t("bot.profileLoadFailed"),
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // A new bot starts from the template's body; the record, not the template
-  // profile, is what gets persisted.
-  useEffect(() => {
-    if (editing || !selectedTemplate) return;
-    let cancelled = false;
-    setTemplateLoading(true);
-    setProfile(null);
-    setError(null);
-    getAgent(selectedTemplate)
-      .then((template) => {
-        if (cancelled) return;
-        setProfile(
-          draftFromBody({
-            system_prompt: template.system_prompt,
-            tools: template.tools,
-            allowed_subagents: template.allowed_subagents,
-          }),
-        );
-        setTemplateLoading(false);
-      })
-      .catch((reason: unknown) => {
-        if (cancelled) return;
-        setTemplateLoading(false);
         setProfile(null);
+        setLoading(false);
         setError(
+          // Always name the failure; the transport detail rides along.
           reason instanceof Error
-            ? reason.message
+            ? `${i18n.t("bot.profileLoadFailed")} ${reason.message}`.trim()
             : i18n.t("bot.profileLoadFailed"),
         );
       });
     return () => {
       cancelled = true;
     };
-  }, [editing, selectedTemplate]);
+  }, [editing]);
 
   useEffect(() => {
     const panel = panelRef.current;
     if (!target || !panel) return;
     panel.querySelector<HTMLElement>("input, textarea, select")?.focus();
-  }, [target, toolsLoading, templateLoading]);
+  }, [target, loading]);
+
+  const onResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    event.preventDefault();
+    // Start from the rendered box so the sheet never jumps on the first move.
+    const rect = panel.getBoundingClientRect();
+    resizeStart.current = {
+      x: event.clientX,
+      y: event.clientY,
+      w: rect.width,
+      h: rect.height,
+    };
+    setSize({ w: rect.width, h: rect.height });
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const onResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = resizeStart.current;
+    if (!start) return;
+    setSize(
+      botDialogSize(
+        start,
+        event.clientX - start.x,
+        event.clientY - start.y,
+        { w: window.innerWidth, h: window.innerHeight },
+      ),
+    );
+  };
+
+  const onResizeEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    resizeStart.current = null;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
@@ -241,13 +348,8 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
       setError(i18n.t("bot.profileLoadFailed"));
       return;
     }
-    const body = bodyFromDraft(profile);
+    const body = bodyFromDraft(profile, bindableTools);
     if (!editing) {
-      if (!selectedTemplate) {
-        setSaving(false);
-        setError(i18n.t("bot.noAgents"));
-        return;
-      }
       const bot = await createBot(trimmed, description.trim(), body);
       if (!bot) {
         setSaving(false);
@@ -312,6 +414,9 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
 
   const updateBinding = (toolId: string, patch: Partial<AgentToolBinding>) => {
     if (!profile) return;
+    // Locked cards are spec-owned: a stray click must not write a row, whether
+    // it came from the toggle or a preset button.
+    if (bindableTools.find((tool) => tool.id === toolId)?.locked) return;
     if (patch.enabled !== undefined) {
       setProfile({
         ...profile,
@@ -355,7 +460,8 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
             aria-modal="true"
             aria-labelledby={titleId}
             onKeyDown={onKeyDown}
-            className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-lg border border-(--_dk-line-visible) bg-(--_dk-overlay) text-(--_dk-text-secondary) shadow-(--_dk-elevation)"
+            className="relative flex max-h-[85vh] w-full max-w-[70rem] flex-col rounded-lg border border-(--_dk-line-visible) bg-(--_dk-overlay) text-(--_dk-text-secondary) shadow-(--_dk-elevation)"
+            style={size ? { width: size.w, height: size.h } : undefined}
           >
             <div className="flex items-center justify-between border-b border-(--_dk-line) px-6 py-3.5">
               <h2 id={titleId} className="settings-section-title">
@@ -384,17 +490,28 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
                     {i18n.t("bot.identity")}
                   </h3>
                   <div className="settings-card space-y-3 p-3">
-                    <div>
-                      <FieldLabel htmlFor={nameId}>
-                        {i18n.t("bot.name")}
-                      </FieldLabel>
-                      <TextInput
-                        id={nameId}
-                        value={name}
-                        maxLength={48}
-                        onChange={(event) => setName(event.target.value)}
-                        placeholder={i18n.t("bot.namePlaceholder")}
-                      />
+                    <div className="flex flex-wrap items-start gap-3">
+                      <div className="min-w-[160px] flex-1">
+                        <FieldLabel htmlFor={nameId}>
+                          {i18n.t("bot.name")}
+                        </FieldLabel>
+                        <TextInput
+                          id={nameId}
+                          value={name}
+                          maxLength={48}
+                          onChange={(event) => setName(event.target.value)}
+                          placeholder={i18n.t("bot.namePlaceholder")}
+                        />
+                      </div>
+                      <div className="min-w-[160px] flex-1">
+                        <FieldLabel>{i18n.t("bot.model")}</FieldLabel>
+                        <ModelSwitcher
+                          variant="field"
+                          modelId={modelId}
+                          onChange={setModelDraft}
+                          disabled={busy}
+                        />
+                      </div>
                     </div>
                     <div>
                       <FieldLabel htmlFor={descriptionId}>
@@ -408,59 +525,6 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
                         placeholder={i18n.t("bot.descriptionPlaceholder")}
                       />
                     </div>
-                    {!editing && (
-                      <div>
-                        <FieldLabel htmlFor={templateFieldId}>
-                          {i18n.t("bot.template")}
-                        </FieldLabel>
-                        <Select
-                          id={templateFieldId}
-                          value={selectedTemplate}
-                          onChange={setTemplateId}
-                          placeholder={i18n.t("bot.noAgents")}
-                          className="w-full"
-                          options={agents.map((agent) => ({
-                            value: agent.id,
-                            label: agent.description
-                              ? `${agent.id} — ${agent.description}`
-                              : agent.id,
-                          }))}
-                        />
-                        <p className="settings-field-hint">
-                          {i18n.t("bot.inheritHint")}
-                        </p>
-                      </div>
-                    )}
-                    {editing && (
-                      <div>
-                        <FieldLabel>{i18n.t("bot.type")}</FieldLabel>
-                        <div className="flex items-center justify-between rounded-md border border-(--_dk-line) px-3 py-2 text-xs">
-                          <span className="text-(--_dk-text-primary)">
-                            {i18n.t("bot.typeBot")}
-                          </span>
-                          <span className="text-[11px] text-(--_dk-text-disabled)">
-                            {i18n.t("bot.typeHint")}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </section>
-
-                <section className="space-y-2">
-                  <h3 className="settings-section-title">
-                    {i18n.t("bot.model")}
-                  </h3>
-                  <div className="settings-card space-y-2 p-3">
-                    <ModelSwitcher
-                      variant="field"
-                      modelId={modelId}
-                      onChange={setModelDraft}
-                      disabled={busy}
-                    />
-                    <p className="settings-field-hint">
-                      {i18n.t("bot.modelHint")}
-                    </p>
                   </div>
                 </section>
 
@@ -473,7 +537,7 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
                       {i18n.t("bot.busyCannotEdit")}
                     </p>
                   )}
-                  {templateLoading ? (
+                  {loading ? (
                     <p className="text-xs text-(--_dk-text-disabled)">
                       {i18n.t("bot.loadingProfile")}
                     </p>
@@ -483,13 +547,12 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
                         draft={profile}
                         saveBlocked={busy}
                         onChange={setProfile}
-                        showDescription={false}
                       />
                       <AgentToolsGrid
                         draft={profile}
                         bindableTools={bindableTools}
                         mcpServers={mcpServers}
-                        saveBlocked={busy || toolsLoading}
+                        saveBlocked={busy}
                         onBindingChange={updateBinding}
                         gridStyle={{
                           gridTemplateColumns:
@@ -516,12 +579,7 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
                 <button
                   type="submit"
                   className="btn btn-sm btn-primary"
-                  disabled={
-                    saving ||
-                    !name.trim() ||
-                    !profile ||
-                    (!editing && !selectedTemplate)
-                  }
+                  disabled={saving || !name.trim() || !profile}
                 >
                   {saving
                     ? i18n.t("bot.saving")
@@ -531,6 +589,17 @@ export function BotDialog({ mode, onClose, onCreated }: BotDialogProps) {
                 </button>
               </div>
             </form>
+            {/* Drag the corner to resize; double-click restores content fit. */}
+            <div
+              data-resize-grip
+              className="dialog-resize-grip"
+              onPointerDown={onResizeStart}
+              onPointerMove={onResizeMove}
+              onPointerUp={onResizeEnd}
+              onPointerCancel={onResizeEnd}
+              onDoubleClick={() => setSize(null)}
+              aria-hidden
+            />
           </div>
         </div>,
         target,

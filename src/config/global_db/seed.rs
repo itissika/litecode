@@ -1,446 +1,120 @@
-use rusqlite::{Connection, OptionalExtension, params};
+//! Global DB seeding.
+//!
+//! The DB no longer defines the built-in agents. `builtin_agents.rs` is the
+//! single source for identity, prompt marker, description, allowed subagents,
+//! core bindings and their presets — `global_db::store::load_agents` applies
+//! that spec at read time. What the DB still owns:
+//!
+//! - `agents.model_ref` per built-in agent (the user's model choice);
+//! - `agent_tools` rows for the user's **non-core** bindings (optional
+//!   builtins, custom tools, MCP), so an on/off intent survives.
+//!
+//! Core rows, extra agent rows and the other identity columns are ignored on
+//! read. `seed_agents` keeps writing spec values into those columns, and a
+//! later full settings save may rewrite the in-memory (spec) bindings as rows:
+//! that is persistence redundancy, never a second source of truth.
 
-use crate::config::binding_scope::scope_of;
-use crate::config::schema::{
-    AgentRole, SUBAGENT_CAPABILITY_ID, SUBAGENT_MEMBER_TOOL_IDS, ToolPreset,
-};
+use rusqlite::{Connection, OptionalExtension, params_from_iter};
+
 use crate::types::Result;
 
-use super::builtin_prompts::{
-    DEFAULT_DESCRIPTION, EXPLORE_DESCRIPTION, GENERAL_DESCRIPTION, ORCHESTRATOR_DESCRIPTION,
-    PLAN_DESCRIPTION, VERIFICATION_DESCRIPTION,
-};
+use super::builtin_agents::builtin_agents;
 use super::store;
-use super::tools::{
-    core_configurable_tools, core_none_tools, core_tool_ids, default_bound_optional_builtins,
-    network_core_tools,
-};
 
 pub const SEED_REVISION: &str = "19";
 
-/// One-time marker for the six `subagent_*` bindings → one `subagent_tools` row.
-pub const SUBAGENT_CAPABILITY_MARKER: &str = "subagent_capability_v1";
-/// One-time marker for converging built-in DB rows to the six fixed system presets.
-pub const BUILTIN_PRESETS_V19_MARKER: &str = "builtin_presets_v19";
-
+/// First boot: plant the six built-in agent rows.
+///
+/// No binding rows are planted. Core and default-optional bindings come from
+/// the spec at read time, so `agent_tools` only ever holds user overrides.
 pub fn seed(conn: &Connection) -> Result<()> {
-    let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);
-    let _ = conn.execute(
-        "DELETE FROM agent_tools WHERE tool_id = 'workspace_stats'",
-        [],
-    );
-    // Retired shell names are gone. Drop leftover rows for every agent.
     strip_direct_shell_bindings(conn)?;
-    remove_legacy_hidden_compaction(conn)?;
     seed_agents(conn)?;
-    seed_default_agent_bindings(conn)?;
-    seed_plan_agent_bindings(conn)?;
-    seed_orchestrator_agent_bindings(conn)?;
-    seed_general_agent_bindings(conn)?;
-    seed_explore_agent_bindings(conn)?;
-    seed_verification_agent_bindings(conn)?;
-    migrate_subagent_capability_v1(conn)?;
-    // Seeded bindings must satisfy the role rules on their own (a subagent never
-    // binds primary-only tools); this also repairs drift in older DBs.
-    reconcile_role_rules(conn)?;
-    mark_code_search_default_done(conn)?;
-    mark_builtin_presets_v19_done(conn)?;
-
     conn.execute(
         "INSERT INTO meta (key, value) VALUES ('seed_revision', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         [SEED_REVISION],
     )?;
-
     Ok(())
 }
 
-fn mark_builtin_presets_v19_done(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, strftime('%s','now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [BUILTIN_PRESETS_V19_MARKER],
-    )?;
+/// Every later boot: the agent set is closed, so drop data for agents this
+/// build does not ship (custom agents from older versions) and make sure the
+/// six built-in rows exist with their `model_ref` intact.
+pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
+    strip_direct_shell_bindings(conn)?;
+    prune_agents_outside_the_spec(conn)?;
+    seed_agents_preserving_models(conn)?;
     Ok(())
 }
 
-/// Remove the retired hidden compaction agent from older databases. Compaction
-/// is now a call mode of the current main request, so the profile and its
-/// bindings have no meaning.
-fn remove_legacy_hidden_compaction(conn: &Connection) -> Result<()> {
-    conn.execute("DELETE FROM agent_tools WHERE agent_id = 'compaction'", [])?;
-    conn.execute(
-        "DELETE FROM agents WHERE id = 'compaction' AND role = 'hidden'",
-        [],
+/// D1: a custom agent row and its bindings are deleted outright. Spec ids are
+/// the only agents the runtime can address, so anything else is dead weight.
+fn prune_agents_outside_the_spec(conn: &Connection) -> Result<()> {
+    let ids: Vec<&str> = builtin_agents().iter().map(|spec| spec.id).collect();
+    let placeholders = vec!["?"; ids.len()].join(", ");
+    let removed_bindings = conn.execute(
+        &format!("DELETE FROM agent_tools WHERE agent_id NOT IN ({placeholders})"),
+        params_from_iter(ids.iter().copied()),
     )?;
-    Ok(())
-}
-
-fn seed_agents(conn: &Connection) -> Result<()> {
-    seed_agents_preserving_models(conn, false)
-}
-
-fn seed_agents_preserving_models(conn: &Connection, preserve_models: bool) -> Result<()> {
-    let model_for = |id: &str| -> Result<String> {
-        if !preserve_models {
-            return Ok(String::new());
-        }
-        Ok(conn
-            .query_row(
-                "SELECT model_ref FROM agents WHERE id = ?1",
-                [id],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-            .unwrap_or_default())
-    };
-    let default_model = model_for("default")?;
-    store::upsert_agent(
-        conn,
-        "default",
-        AgentRole::Primary,
-        &default_model,
-        "builtin:default",
-        DEFAULT_DESCRIPTION,
-        &["explore".into()],
+    let removed_agents = conn.execute(
+        &format!("DELETE FROM agents WHERE id NOT IN ({placeholders})"),
+        params_from_iter(ids.iter().copied()),
     )?;
-    let plan_model = model_for("plan")?;
-    store::upsert_agent(
-        conn,
-        "plan",
-        AgentRole::Primary,
-        &plan_model,
-        "builtin:plan",
-        PLAN_DESCRIPTION,
-        &["explore".into()],
-    )?;
-    let orch_model = model_for("orchestrator")?;
-    store::upsert_agent(
-        conn,
-        "orchestrator",
-        AgentRole::Primary,
-        &orch_model,
-        "builtin:orchestrator",
-        ORCHESTRATOR_DESCRIPTION,
-        &["explore".into(), "general".into(), "verification".into()],
-    )?;
-    let explore_model = model_for("explore")?;
-    store::upsert_agent(
-        conn,
-        "explore",
-        AgentRole::Subagent,
-        &explore_model,
-        "builtin:explore",
-        EXPLORE_DESCRIPTION,
-        &[],
-    )?;
-    let general_model = model_for("general")?;
-    store::upsert_agent(
-        conn,
-        "general",
-        AgentRole::Subagent,
-        &general_model,
-        "builtin:general",
-        GENERAL_DESCRIPTION,
-        &[],
-    )?;
-    let verification_model = model_for("verification")?;
-    store::upsert_agent(
-        conn,
-        "verification",
-        AgentRole::Subagent,
-        &verification_model,
-        "builtin:verification",
-        VERIFICATION_DESCRIPTION,
-        &[],
-    )?;
-    Ok(())
-}
-
-fn seed_default_agent_bindings(conn: &Connection) -> Result<()> {
-    seed_primary_agent_bindings(conn, "default")
-}
-
-fn seed_plan_agent_bindings(conn: &Connection) -> Result<()> {
-    bind_tools(
-        conn,
-        "plan",
-        ToolPreset::All,
-        ["read", "grep", "glob", "write", "edit", "session_search"],
-    )?;
-    bind_tools(conn, "plan", ToolPreset::Safe, ["exec", "litecode_workspace"])?;
-    for tool in core_none_tools().iter().copied().filter(|t| *t != "todo") {
-        bind_none(conn, "plan", tool)?;
-    }
-    bind_default_optional(conn, "plan")
-}
-
-fn seed_orchestrator_agent_bindings(conn: &Connection) -> Result<()> {
-    seed_primary_agent_bindings(conn, "orchestrator")
-}
-
-fn seed_primary_agent_bindings(conn: &Connection, agent_id: &str) -> Result<()> {
-    bind_configurable(conn, agent_id, ToolPreset::All)?;
-    for tool in core_none_tools() {
-        bind_none(conn, agent_id, tool)?;
-    }
-    bind_default_optional(conn, agent_id)
-}
-
-fn bind_default_optional(conn: &Connection, agent_id: &str) -> Result<()> {
-    for tool in default_bound_optional_builtins() {
-        if !agent_has_tool(conn, agent_id, tool)? {
-            store::upsert_agent_tool(conn, agent_id, tool, &default_optional_binding(tool))?;
-        }
-    }
-    Ok(())
-}
-
-/// Binding written when an optional builtin is bound by default (enabled, ALL preset).
-pub(crate) fn default_optional_binding(tool: &str) -> crate::config::schema::AgentToolBinding {
-    binding_seeded(tool, ToolPreset::All)
-}
-
-/// Meta marker for the one-time "primary agents bind code_search" backfill (WP-149).
-pub const CODE_SEARCH_DEFAULT_MARKER: &str = "default_bind_code_search_v1";
-
-fn mark_code_search_default_done(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, strftime('%s','now'))
-         ON CONFLICT(key) DO NOTHING",
-        [CODE_SEARCH_DEFAULT_MARKER],
-    )?;
-    Ok(())
-}
-
-/// One-time backfill for existing DBs: every primary agent without a
-/// `code_search` row gets one (enabled). Existing rows, true or false, are never
-/// touched. Runs in a transaction; the marker is written only on success.
-fn ensure_code_search_default_v1(conn: &Connection) -> Result<()> {
-    let done = conn
-        .query_row(
-            "SELECT 1 FROM meta WHERE key = ?1",
-            [CODE_SEARCH_DEFAULT_MARKER],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
-    if done {
-        return Ok(());
-    }
-    let tx = conn.unchecked_transaction()?;
-    for tool in default_bound_optional_builtins() {
-        let binding = default_optional_binding(tool);
-        let preset = binding.preset.map(store::preset_to_str);
-        tx.execute(
-            "INSERT INTO agent_tools (agent_id, tool_id, enabled, preset, allowed_tools_json)
-             SELECT a.id, ?1, 1, ?2, NULL FROM agents a
-             WHERE a.role = 'primary'
-               AND NOT EXISTS (SELECT 1 FROM agent_tools t WHERE t.agent_id = a.id AND t.tool_id = ?1)
-             ON CONFLICT(agent_id, tool_id) DO NOTHING",
-            params![tool, preset],
-        )?;
-    }
-    mark_code_search_default_done(&tx)?;
-    tx.commit()?;
-    Ok(())
-}
-
-/// Same configurable set as primary, minus the primary-only tools.
-/// Fixed-behavior tools a subagent may use (`knowledge`) are bound too.
-fn seed_general_agent_bindings(conn: &Connection) -> Result<()> {
-    bind_subagent_configurable(conn, "general", ToolPreset::All)?;
-    for tool in subagent_none_tools() {
-        bind_none(conn, "general", tool)?;
-    }
-    bind_default_optional(conn, "general")
-}
-
-/// Configurable tools a subagent role may bind (scope table, not a copied list).
-fn subagent_configurable_tools() -> impl Iterator<Item = &'static str> {
-    core_configurable_tools()
-        .iter()
-        .copied()
-        .filter(|tool| scope_of(tool).allows_role(AgentRole::Subagent))
-}
-
-/// Fixed-behavior tools a subagent may bind (`knowledge`).
-/// Plan, todo, and the subagent capability stay off this set.
-fn subagent_none_tools() -> impl Iterator<Item = &'static str> {
-    core_none_tools()
-        .iter()
-        .copied()
-        .filter(|tool| scope_of(tool).allows_role(AgentRole::Subagent))
-}
-
-fn bind_configurable(conn: &Connection, agent_id: &str, preset: ToolPreset) -> Result<()> {
-    bind_tools(
-        conn,
-        agent_id,
-        preset,
-        core_configurable_tools().iter().copied(),
-    )
-}
-
-fn bind_subagent_configurable(conn: &Connection, agent_id: &str, preset: ToolPreset) -> Result<()> {
-    bind_tools(conn, agent_id, preset, subagent_configurable_tools())
-}
-
-fn bind_tools<'a>(
-    conn: &Connection,
-    agent_id: &str,
-    preset: ToolPreset,
-    tools: impl IntoIterator<Item = &'a str>,
-) -> Result<()> {
-    for tool in tools {
-        store::upsert_agent_tool(conn, agent_id, tool, &binding_seeded(tool, preset))?;
-    }
-    Ok(())
-}
-
-/// Preset tools keep the requested dial. Fixed tools are enabled with allow-all and no dial.
-fn binding_seeded(tool: &str, preset: ToolPreset) -> crate::config::schema::AgentToolBinding {
-    use crate::config::schema::AgentToolBinding;
-    use crate::permission::presets::has_permission_preset;
-
-    AgentToolBinding {
-        enabled: true,
-        preset: has_permission_preset(tool).then_some(preset),
-        allowed_tools: None,
-    }
-}
-
-fn bind_none(conn: &Connection, agent_id: &str, tool: &str) -> Result<()> {
-    use crate::config::schema::AgentToolBinding;
-
-    store::upsert_agent_tool(
-        conn,
-        agent_id,
-        tool,
-        &AgentToolBinding {
-            enabled: true,
-            preset: None,
-            allowed_tools: None,
-        },
-    )
-}
-
-fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
-    for tool in [
-        "read",
-        "grep",
-        "glob",
-        "session_search",
-        "exec",
-        "litecode_workspace",
-    ] {
-        store::upsert_agent_tool(
-            conn,
-            "explore",
-            tool,
-            &binding_seeded(tool, ToolPreset::Safe),
-        )?;
-    }
-
-    for tool in network_core_tools() {
-        store::upsert_agent_tool(
-            conn,
-            "explore",
-            tool,
-            &binding_seeded(tool, ToolPreset::All),
-        )?;
-    }
-    for tool in subagent_none_tools() {
-        bind_none(conn, "explore", tool)?;
-    }
-    bind_default_optional(conn, "explore")
-}
-
-fn seed_verification_agent_bindings(conn: &Connection) -> Result<()> {
-    bind_tools(
-        conn,
-        "verification",
-        ToolPreset::All,
-        ["read", "grep", "glob", "exec"],
-    )?;
-    for tool in subagent_none_tools() {
-        bind_none(conn, "verification", tool)?;
-    }
-    Ok(())
-}
-
-/// Prune persisted rows that violate the current agent role rules.
-///
-/// The write path already normalizes profiles before saving
-/// (`tool::agent_bindings::normalize_agent_profile`), but rows written by older
-/// builds stay in the DB until the next save of that agent. Structural validation
-/// rejects the whole settings document, so a legacy row would block serve boot.
-/// Repair such rows in place instead of failing:
-/// - `hidden` agents keep no bindings;
-/// - `subagent` agents keep no `plan` / `todo` / `subagent_*` bindings
-///   (`knowledge` and `litecode_workspace` stay);
-/// - non-primary agents keep no `allowed_subagents`.
-pub fn reconcile_role_rules(conn: &Connection) -> Result<()> {
-    let rows: Vec<(String, String, String)> = {
-        let mut stmt = conn.prepare("SELECT id, role, allowed_subagents_json FROM agents")?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
-
-    let mut notes: Vec<String> = Vec::new();
-    for (agent_id, role, allowed_json) in rows {
-        let hidden = role == "hidden";
-        let subagent = role == "subagent";
-
-        let mut removed = 0usize;
-        if hidden {
-            removed += conn.execute(
-                "DELETE FROM agent_tools WHERE agent_id = ?1",
-                params![agent_id],
-            )?;
-        } else if subagent {
-            let mut stmt = conn.prepare("SELECT tool_id FROM agent_tools WHERE agent_id = ?1")?;
-            let tool_ids = stmt
-                .query_map(params![agent_id], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for tool_id in tool_ids {
-                if !scope_of(&tool_id).allows_role(AgentRole::Subagent) {
-                    removed += conn.execute(
-                        "DELETE FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
-                        params![agent_id, tool_id],
-                    )?;
-                }
-            }
-        }
-        if removed > 0 {
-            notes.push(format!("{agent_id}: pruned {removed} binding(s)"));
-        }
-
-        if (hidden || subagent) && allowed_json.trim() != "[]" {
-            conn.execute(
-                "UPDATE agents SET allowed_subagents_json = '[]' WHERE id = ?1",
-                params![agent_id],
-            )?;
-            notes.push(format!("{agent_id}: cleared allowed_subagents"));
-        }
-    }
-
-    if !notes.is_empty() {
-        tracing::warn!(
-            changes = %notes.join("; "),
-            "global DB agent rows violated role rules; repaired in place"
+    if removed_agents > 0 || removed_bindings > 0 {
+        tracing::info!(
+            agents = removed_agents,
+            bindings = removed_bindings,
+            "deleted agent data outside the built-in spec set"
         );
     }
     Ok(())
 }
 
-/// Drop leftover retired shell bindings for every agent (Direct triad + WP-196 run_command suite).
+fn seed_agents(conn: &Connection) -> Result<()> {
+    write_builtin_agent_rows(conn, false)
+}
+
+fn seed_agents_preserving_models(conn: &Connection) -> Result<()> {
+    write_builtin_agent_rows(conn, true)
+}
+
+/// Write the six agent rows. Every column except `model_ref` mirrors the spec
+/// so the DB stays readable; `load_agents` never reads them back.
+fn write_builtin_agent_rows(conn: &Connection, preserve_models: bool) -> Result<()> {
+    for spec in builtin_agents() {
+        let model_ref = if preserve_models {
+            conn.query_row(
+                "SELECT model_ref FROM agents WHERE id = ?1",
+                [spec.id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let allowed: Vec<String> = spec
+            .allowed_subagents
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect();
+        store::upsert_agent(
+            conn,
+            spec.id,
+            spec.role,
+            &model_ref,
+            &spec.prompt_marker(),
+            spec.description,
+            &allowed,
+        )?;
+    }
+    Ok(())
+}
+
+/// Drop leftover retired shell bindings (Direct triad + WP-196 run_command
+/// suite). The names stay reserved, so these rows can only come from older
+/// builds.
 fn strip_direct_shell_bindings(conn: &Connection) -> Result<()> {
     for tool in [
         "bash",
@@ -458,1026 +132,18 @@ fn strip_direct_shell_bindings(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Whether this DB has never been seeded (empty `agents` table).
 pub fn needs_seed(conn: &Connection) -> Result<bool> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
     Ok(count == 0)
-}
-
-/// Merge legacy per-member subagent rows into one capability binding.
-/// Runs in a transaction; the marker is written only after the merge commits.
-fn migrate_subagent_capability_v1(conn: &Connection) -> Result<()> {
-    if conn
-        .query_row(
-            "SELECT 1 FROM meta WHERE key = ?1",
-            [SUBAGENT_CAPABILITY_MARKER],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some()
-    {
-        return Ok(());
-    }
-
-    backup_before_subagent_migration(conn)?;
-    let tx = conn.unchecked_transaction()?;
-    let agent_ids: Vec<String> = {
-        let mut stmt = tx.prepare("SELECT id FROM agents")?;
-        stmt.query_map([], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-    };
-
-    for agent_id in agent_ids {
-        let mut any_enabled = false;
-        let mut found = false;
-        {
-            let mut stmt =
-                tx.prepare("SELECT enabled FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2")?;
-            for member in SUBAGENT_MEMBER_TOOL_IDS {
-                if let Some(enabled) = stmt
-                    .query_row(params![agent_id, member], |row| row.get::<_, i64>(0))
-                    .optional()?
-                {
-                    found = true;
-                    any_enabled |= enabled != 0;
-                }
-            }
-        }
-        if !found {
-            continue;
-        }
-
-        let existing = tx
-            .query_row(
-                "SELECT enabled FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
-                params![agent_id, SUBAGENT_CAPABILITY_ID],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?
-            .is_some_and(|enabled| enabled != 0);
-        let mut binding = binding_seeded(SUBAGENT_CAPABILITY_ID, ToolPreset::All);
-        binding.enabled = any_enabled || existing;
-        binding.preset = None;
-        store::upsert_agent_tool(&tx, &agent_id, SUBAGENT_CAPABILITY_ID, &binding)?;
-        for member in SUBAGENT_MEMBER_TOOL_IDS {
-            tx.execute(
-                "DELETE FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
-                params![agent_id, member],
-            )?;
-        }
-    }
-
-    store::upsert_meta(&tx, SUBAGENT_CAPABILITY_MARKER, Some("1"))?;
-    tx.commit()?;
-    Ok(())
-}
-
-/// Snapshot the file DB once before the destructive 6 → 1 merge. In-memory
-/// test DBs have no main file and skip this.
-fn backup_before_subagent_migration(conn: &Connection) -> Result<()> {
-    let mut has_legacy = false;
-    for member in SUBAGENT_MEMBER_TOOL_IDS {
-        if conn
-            .query_row(
-                "SELECT 1 FROM agent_tools WHERE tool_id = ?1 LIMIT 1",
-                [member],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some()
-        {
-            has_legacy = true;
-            break;
-        }
-    }
-    if !has_legacy {
-        return Ok(());
-    }
-
-    let main_file: Option<String> = conn
-        .query_row(
-            "SELECT file FROM pragma_database_list WHERE name = 'main'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(main_file) = main_file.filter(|path| !path.is_empty()) else {
-        return Ok(());
-    };
-    let backup = format!("{main_file}.bak-subagent-v1");
-    if std::path::Path::new(&backup).exists() {
-        return Ok(());
-    }
-    conn.execute("VACUUM INTO ?1", [&backup])?;
-    tracing::info!(backup = %backup, "backed up global DB before subagent capability migration");
-    Ok(())
-}
-
-/// Repair partial DB: keep existing disables; plant missing seed agents/bindings.
-/// Runs last so the repaired document always satisfies the role rules
-/// (see [`reconcile_role_rules`]).
-pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
-    remove_legacy_hidden_compaction(conn)?;
-    let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);
-    let _ = conn.execute(
-        "DELETE FROM agent_tools WHERE tool_id = 'workspace_stats'",
-        [],
-    );
-    // Retired shell names are gone. Drop leftover rows for every agent.
-    strip_direct_shell_bindings(conn)?;
-    // Run the intent-preserving merge before ensure_* plants missing rows:
-    // `subagent_tools` is a core-none tool, so planting it first would turn a
-    // user-disabled legacy series back on.
-    migrate_subagent_capability_v1(conn)?;
-    ensure_default_core_bindings(conn)?;
-    ensure_orchestrator_agent(conn)?;
-    ensure_general_agent(conn)?;
-    ensure_explore_shared_tools(conn)?;
-    restore_default_if_mistakenly_replaced(conn)?;
-    sync_builtin_presets_v19(conn)?;
-    ensure_plan_agent(conn)?;
-    ensure_verification_agent(conn)?;
-    reconcile_role_rules(conn)?;
-    normalize_fixed_builtin_bindings(conn)?;
-    ensure_code_search_default_v1(conn)?;
-    Ok(())
-}
-
-fn delete_builtin_bindings_for_preset(conn: &Connection, agent_id: &str) -> Result<()> {
-    let mut ids = core_tool_ids();
-    ids.extend(
-        SUBAGENT_MEMBER_TOOL_IDS
-            .iter()
-            .map(|id| (*id).to_string()),
-    );
-    ids.push("code_search".to_string());
-    for id in ids {
-        conn.execute(
-            "DELETE FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
-            params![agent_id, id],
-        )?;
-    }
-    Ok(())
-}
-
-/// One-time v19 upgrade: converge the six built-in preset rows and their core/search
-/// bindings to litecode's native definitions while preserving each preset's `model_ref`,
-/// user custom tools, MCP bindings, and optional LSP/browser rows.
-fn sync_builtin_presets_v19(conn: &Connection) -> Result<()> {
-    let done = conn
-        .query_row(
-            "SELECT 1 FROM meta WHERE key = ?1",
-            [BUILTIN_PRESETS_V19_MARKER],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
-    if done {
-        return Ok(());
-    }
-    seed_agents_preserving_models(conn, true)?;
-    for preset in [
-        "default",
-        "plan",
-        "orchestrator",
-        "explore",
-        "general",
-        "verification",
-    ] {
-        delete_builtin_bindings_for_preset(conn, preset)?;
-    }
-    seed_default_agent_bindings(conn)?;
-    seed_plan_agent_bindings(conn)?;
-    seed_orchestrator_agent_bindings(conn)?;
-    seed_general_agent_bindings(conn)?;
-    seed_explore_agent_bindings(conn)?;
-    seed_verification_agent_bindings(conn)?;
-    mark_builtin_presets_v19_done(conn)?;
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES ('seed_revision', ?1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [SEED_REVISION],
-    )?;
-    Ok(())
-}
-
-fn ensure_plan_agent(conn: &Connection) -> Result<()> {
-    let exists = conn
-        .query_row("SELECT 1 FROM agents WHERE id = 'plan'", [], |_| Ok(()))
-        .optional()?
-        .is_some();
-    if !exists {
-        store::upsert_agent(
-            conn,
-            "plan",
-            AgentRole::Primary,
-            "",
-            "builtin:plan",
-            PLAN_DESCRIPTION,
-            &["explore".into()],
-        )?;
-        seed_plan_agent_bindings(conn)?;
-    }
-    Ok(())
-}
-
-fn ensure_verification_agent(conn: &Connection) -> Result<()> {
-    let exists = conn
-        .query_row("SELECT 1 FROM agents WHERE id = 'verification'", [], |_| {
-            Ok(())
-        })
-        .optional()?
-        .is_some();
-    if !exists {
-        store::upsert_agent(
-            conn,
-            "verification",
-            AgentRole::Subagent,
-            "",
-            "builtin:verification",
-            VERIFICATION_DESCRIPTION,
-            &[],
-        )?;
-        seed_verification_agent_bindings(conn)?;
-    }
-    Ok(())
-}
-
-/// Tools that used to carry ALL/SAFE but are now bind-only. Clear the stored
-/// intent so an old SAFE does not linger until the next settings save.
-/// Coding presets and `litecode_workspace` are left as stored.
-fn normalize_fixed_builtin_bindings(conn: &Connection) -> Result<()> {
-    use crate::permission::has_permission_preset;
-
-    let mut ids: Vec<String> = super::tools::core_tool_ids();
-    ids.extend(
-        super::tools::optional_builtin_ids()
-            .iter()
-            .map(|id| (*id).to_string()),
-    );
-    for id in ids {
-        if has_permission_preset(&id) {
-            continue;
-        }
-        conn.execute(
-            "UPDATE agent_tools SET preset = NULL WHERE tool_id = ?1",
-            [id],
-        )?;
-    }
-    Ok(())
-}
-
-fn ensure_default_core_bindings(conn: &Connection) -> Result<()> {
-    let default_exists = conn
-        .query_row("SELECT 1 FROM agents WHERE id = 'default'", [], |_| Ok(()))
-        .optional()?
-        .is_some();
-    if !default_exists {
-        return Ok(());
-    }
-    for tool in core_configurable_tools() {
-        if !agent_has_tool(conn, "default", tool)? {
-            store::upsert_agent_tool(
-                conn,
-                "default",
-                tool,
-                &binding_seeded(tool, ToolPreset::All),
-            )?;
-        }
-    }
-    for tool in core_none_tools() {
-        if !agent_has_tool(conn, "default", tool)? {
-            bind_none(conn, "default", tool)?;
-        }
-    }
-    Ok(())
-}
-
-fn ensure_general_agent(conn: &Connection) -> Result<()> {
-    let exists = conn
-        .query_row("SELECT 1 FROM agents WHERE id = 'general'", [], |_| Ok(()))
-        .optional()?
-        .is_some();
-    if !exists {
-        store::upsert_agent(
-            conn,
-            "general",
-            AgentRole::Subagent,
-            "",
-            "builtin:general",
-            GENERAL_DESCRIPTION,
-            &[],
-        )?;
-        seed_general_agent_bindings(conn)?;
-        return Ok(());
-    }
-    for tool in subagent_configurable_tools() {
-        if !agent_has_tool(conn, "general", tool)? {
-            store::upsert_agent_tool(
-                conn,
-                "general",
-                tool,
-                &binding_seeded(tool, ToolPreset::All),
-            )?;
-        }
-    }
-    for tool in subagent_none_tools() {
-        if !agent_has_tool(conn, "general", tool)? {
-            bind_none(conn, "general", tool)?;
-        }
-    }
-    Ok(())
-}
-
-/// Plant knowledge and the workspace tool on an existing explore agent.
-/// A disabled row is left alone; only a missing binding is filled in.
-fn ensure_explore_shared_tools(conn: &Connection) -> Result<()> {
-    let exists = conn
-        .query_row("SELECT 1 FROM agents WHERE id = 'explore'", [], |_| Ok(()))
-        .optional()?
-        .is_some();
-    if !exists {
-        return Ok(());
-    }
-    if !agent_has_tool(conn, "explore", "litecode_workspace")? {
-        store::upsert_agent_tool(
-            conn,
-            "explore",
-            "litecode_workspace",
-            &binding_seeded("litecode_workspace", ToolPreset::Safe),
-        )?;
-    }
-    if !agent_has_tool(conn, "explore", "exec")? {
-        store::upsert_agent_tool(
-            conn,
-            "explore",
-            "exec",
-            &binding_seeded("exec", ToolPreset::Safe),
-        )?;
-    }
-    for tool in subagent_none_tools() {
-        if !agent_has_tool(conn, "explore", tool)? {
-            bind_none(conn, "explore", tool)?;
-        }
-    }
-    Ok(())
-}
-
-fn ensure_orchestrator_agent(conn: &Connection) -> Result<()> {
-    let exists = conn
-        .query_row("SELECT 1 FROM agents WHERE id = 'orchestrator'", [], |_| {
-            Ok(())
-        })
-        .optional()?
-        .is_some();
-    let model_ref = conn
-        .query_row(
-            "SELECT model_ref FROM agents WHERE id = 'default'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
-        .unwrap_or_default();
-    if !exists {
-        store::upsert_agent(
-            conn,
-            "orchestrator",
-            AgentRole::Primary,
-            &model_ref,
-            "builtin:orchestrator",
-            ORCHESTRATOR_DESCRIPTION,
-            &["explore".into(), "general".into(), "verification".into()],
-        )?;
-        seed_orchestrator_agent_bindings(conn)?;
-        return Ok(());
-    }
-    for tool in core_configurable_tools() {
-        if !agent_has_tool(conn, "orchestrator", tool)? {
-            store::upsert_agent_tool(
-                conn,
-                "orchestrator",
-                tool,
-                &binding_seeded(tool, ToolPreset::All),
-            )?;
-        }
-    }
-    for tool in core_none_tools() {
-        if !agent_has_tool(conn, "orchestrator", tool)? {
-            bind_none(conn, "orchestrator", tool)?;
-        }
-    }
-    Ok(())
-}
-
-/// Undo the mistaken rewrite of `default` into Orchestrator (seed revision 13).
-fn restore_default_if_mistakenly_replaced(conn: &Connection) -> Result<()> {
-    let Some((role, model_ref, system_prompt, description, allowed_json)) = conn.query_row(
-        "SELECT role, model_ref, system_prompt, description, allowed_subagents_json
-             FROM agents WHERE id = 'default'",
-        [],
-        |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-            ))
-        },
-    )
-        .optional()?
-    else {
-        return Ok(());
-    };
-    if role != "primary" || system_prompt.trim() != "builtin:orchestrator" {
-        return Ok(());
-    }
-    let mut allowed: Vec<String> = serde_json::from_str(&allowed_json).unwrap_or_default();
-    allowed.retain(|id| id != "general");
-    if !allowed.iter().any(|id| id == "explore") {
-        allowed.push("explore".into());
-    }
-    let desc = if description == ORCHESTRATOR_DESCRIPTION {
-        DEFAULT_DESCRIPTION
-    } else {
-        description.as_str()
-    };
-    store::upsert_agent(
-        conn,
-        "default",
-        AgentRole::Primary,
-        &model_ref,
-        "builtin:default",
-        desc,
-        &allowed,
-    )
-}
-
-fn agent_has_tool(conn: &Connection, agent_id: &str, tool: &str) -> Result<bool> {
-    Ok(conn
-        .query_row(
-            "SELECT 1 FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
-            rusqlite::params![agent_id, tool],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::migrate::{self};
     use super::*;
+    use crate::config::schema::{AgentRole, ToolPreset};
     use rusqlite::Connection;
-
-    #[test]
-    fn seed_plants_default_orchestrator_explore_and_general() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate::migrate(&conn).unwrap();
-        seed(&conn).unwrap();
-
-        let (role, prompt, allowed, desc): (String, String, String, String) = conn
-            .query_row(
-                "SELECT role, system_prompt, allowed_subagents_json, description FROM agents WHERE id = 'default'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .unwrap();
-        assert_eq!(role, "primary");
-        assert_eq!(prompt, "builtin:default");
-        assert_eq!(desc, DEFAULT_DESCRIPTION);
-        assert!(allowed.contains("explore"));
-        assert!(!allowed.contains("general"));
-
-        let (plan_role, plan_prompt, plan_allowed): (String, String, String) = conn
-            .query_row(
-                "SELECT role, system_prompt, allowed_subagents_json FROM agents WHERE id = 'plan'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(plan_role, "primary");
-        assert_eq!(plan_prompt, "builtin:plan");
-        assert!(plan_allowed.contains("explore"));
-        for tool in ["write", "edit", "plan", "knowledge"] {
-            let n: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'plan' AND tool_id = ?1",
-                    [tool],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(n, 1, "plan must bind {tool}");
-        }
-        let plan_todo: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'plan' AND tool_id = 'todo'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(plan_todo, 0, "plan must not bind todo");
-        for safe_tool in ["exec", "litecode_workspace"] {
-            let preset: Option<String> = conn
-                .query_row(
-                    "SELECT preset FROM agent_tools WHERE agent_id = 'plan' AND tool_id = ?1",
-                    [safe_tool],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(preset.as_deref(), Some("SAFE"), "plan {safe_tool}");
-        }
-
-        let (orch_role, orch_prompt, orch_allowed): (String, String, String) = conn
-            .query_row(
-                "SELECT role, system_prompt, allowed_subagents_json FROM agents WHERE id = 'orchestrator'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(orch_role, "primary");
-        assert_eq!(orch_prompt, "builtin:orchestrator");
-        assert!(orch_allowed.contains("explore"));
-        assert!(orch_allowed.contains("general"));
-        assert!(orch_allowed.contains("verification"));
-
-        let (ver_role, ver_prompt): (String, String) = conn
-            .query_row(
-                "SELECT role, system_prompt FROM agents WHERE id = 'verification'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(ver_role, "subagent");
-        assert_eq!(ver_prompt, "builtin:verification");
-        for allowed_tool in ["read", "grep", "glob", "exec", "knowledge"] {
-            let n: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'verification' AND tool_id = ?1",
-                    [allowed_tool],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(n, 1, "verification must bind {allowed_tool}");
-        }
-        for forbidden_tool in ["write", "edit", "session_search", "litecode_workspace", "todo", "plan", "code_search"] {
-            let n: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'verification' AND tool_id = ?1",
-                    [forbidden_tool],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(n, 0, "verification must not bind {forbidden_tool}");
-        }
-
-        let (explore_role, explore_prompt): (String, String) = conn
-            .query_row(
-                "SELECT role, system_prompt FROM agents WHERE id = 'explore'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(explore_role, "subagent");
-        assert_eq!(explore_prompt, "builtin:explore");
-
-        let write: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'write'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(write, 0);
-
-        // WP-197: explore 默认无旧 shell；有 run SAFE。
-        for tool in [
-            "bash",
-            "wait_shell",
-            "kill_shell",
-            "run_command",
-            "command_output",
-            "command_kill",
-        ] {
-            let n: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'explore' AND tool_id = ?1",
-                    [tool],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(n, 0, "explore must not bind {tool}");
-        }
-
-        let exec_preset: Option<String> = conn
-            .query_row(
-                "SELECT preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'exec'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(exec_preset.as_deref(), Some("SAFE"));
-
-        let (general_role, general_prompt): (String, String) = conn
-            .query_row(
-                "SELECT role, system_prompt FROM agents WHERE id = 'general'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(general_role, "subagent");
-        assert_eq!(general_prompt, "builtin:general");
-
-        let general_write: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'general' AND tool_id = 'write'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(general_write, 1);
-
-        let general_plan: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'general' AND tool_id = 'plan'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(general_plan, 0);
-
-        let general_todo: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'general' AND tool_id = 'todo'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(general_todo, 0);
-
-        for agent in ["default", "orchestrator"] {
-            let knowledge: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'knowledge'",
-                    [agent],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(knowledge, 1, "{agent} should bind knowledge");
-        }
-        for agent in ["explore", "general"] {
-            let knowledge: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'knowledge'",
-                    [agent],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(knowledge, 1, "{agent} should bind knowledge");
-            let workspace: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'litecode_workspace'",
-                    [agent],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(workspace, 1, "{agent} should bind litecode_workspace");
-        }
-
-        for agent in ["default", "orchestrator"] {
-            let capability: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
-                    rusqlite::params![agent, SUBAGENT_CAPABILITY_ID],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(capability, 1, "{agent} should bind one subagent capability");
-        }
-        for agent in ["explore", "general"] {
-            let launch: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'subagent_launch'",
-                    [agent],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            let capability: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
-                    rusqlite::params![agent, SUBAGENT_CAPABILITY_ID],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(launch, 0);
-            assert_eq!(capability, 0);
-        }
-
-        // WP-197: general/default/orchestrator 默认无旧 shell；有 run。
-        for agent in ["general", "default", "orchestrator"] {
-            for tool in [
-                "bash",
-                "wait_shell",
-                "kill_shell",
-                "run_command",
-                "command_output",
-                "command_kill",
-            ] {
-                let n: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
-                        rusqlite::params![agent, tool],
-                        |r| r.get(0),
-                    )
-                    .unwrap();
-                assert_eq!(n, 0, "{agent} must not bind {tool}");
-            }
-            let exec_n: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'exec'",
-                    [agent],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(exec_n, 1, "{agent} should bind exec");
-        }
-    }
-
-    #[test]
-    fn migrates_six_subagent_rows_to_one_capability() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate::migrate(&conn).unwrap();
-        seed(&conn).unwrap();
-
-        conn.execute(
-            "DELETE FROM meta WHERE key = ?1",
-            [SUBAGENT_CAPABILITY_MARKER],
-        )
-        .unwrap();
-        conn.execute(
-            "DELETE FROM agent_tools WHERE agent_id = 'default' AND tool_id = ?1",
-            [SUBAGENT_CAPABILITY_ID],
-        )
-        .unwrap();
-        for (index, member) in SUBAGENT_MEMBER_TOOL_IDS.iter().enumerate() {
-            let mut binding = binding_seeded(member, ToolPreset::All);
-            binding.enabled = index == 1;
-            store::upsert_agent_tool(&conn, "default", member, &binding).unwrap();
-        }
-
-        migrate_subagent_capability_v1(&conn).unwrap();
-
-        let (count, enabled): (i64, i64) = conn
-            .query_row(
-                "SELECT COUNT(*), COALESCE(MAX(enabled), 0) FROM agent_tools WHERE agent_id = 'default' AND tool_id = ?1",
-                [SUBAGENT_CAPABILITY_ID],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
-        assert_eq!(enabled, 1);
-        for member in SUBAGENT_MEMBER_TOOL_IDS {
-            let n: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'default' AND tool_id = ?1",
-                    [member],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(n, 0, "legacy row {member} must be deleted");
-        }
-
-        migrate_subagent_capability_v1(&conn).unwrap();
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'default' AND tool_id = ?1",
-                [SUBAGENT_CAPABILITY_ID],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1, "migration must be idempotent");
-    }
-
-    #[test]
-    fn ensure_core_bindings_keeps_disabled_subagent_capability_disabled() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate::migrate(&conn).unwrap();
-        seed(&conn).unwrap();
-
-        conn.execute(
-            "DELETE FROM meta WHERE key = ?1",
-            [SUBAGENT_CAPABILITY_MARKER],
-        )
-        .unwrap();
-        for agent in ["default", "orchestrator"] {
-            conn.execute(
-                "DELETE FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
-                rusqlite::params![agent, SUBAGENT_CAPABILITY_ID],
-            )
-            .unwrap();
-            for member in SUBAGENT_MEMBER_TOOL_IDS {
-                let mut binding = binding_seeded(member, ToolPreset::All);
-                binding.enabled = false;
-                store::upsert_agent_tool(&conn, agent, member, &binding).unwrap();
-            }
-        }
-
-        ensure_core_bindings(&conn).unwrap();
-
-        for agent in ["default", "orchestrator"] {
-            let enabled: i64 = conn
-                .query_row(
-                    "SELECT enabled FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
-                    rusqlite::params![agent, SUBAGENT_CAPABILITY_ID],
-                    |row| row.get(0),
-                )
-                .unwrap_or(-1);
-            assert_eq!(enabled, 0, "{agent} must stay disabled after upgrade");
-        }
-    }
-
-    #[test]
-    fn migration_backs_up_file_db_before_merge() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("litecode.db");
-        let conn = Connection::open(&path).unwrap();
-        migrate::migrate(&conn).unwrap();
-        seed(&conn).unwrap();
-        conn.execute(
-            "DELETE FROM meta WHERE key = ?1",
-            [SUBAGENT_CAPABILITY_MARKER],
-        )
-        .unwrap();
-        conn.execute(
-            "DELETE FROM agent_tools WHERE agent_id = 'default' AND tool_id = ?1",
-            [SUBAGENT_CAPABILITY_ID],
-        )
-        .unwrap();
-        bind_none(&conn, "default", SUBAGENT_MEMBER_TOOL_IDS[0]).unwrap();
-
-        migrate_subagent_capability_v1(&conn).unwrap();
-
-        let backup = format!("{}.bak-subagent-v1", path.display());
-        assert!(std::path::Path::new(&backup).is_file());
-    }
-
-    #[test]
-    fn ensure_removes_retired_hidden_compaction_profile() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate::migrate(&conn).unwrap();
-        seed(&conn).unwrap();
-        let retired_id = "compaction";
-        store::upsert_agent(
-            &conn,
-            retired_id,
-            AgentRole::Hidden,
-            "",
-            "custom legacy body",
-            "",
-            &[],
-        )
-        .unwrap();
-        bind_none(&conn, retired_id, "read").unwrap();
-
-        ensure_core_bindings(&conn).unwrap();
-
-        let agent_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agents WHERE id = ?1",
-                [retired_id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let binding_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1",
-                [retired_id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(agent_count, 0);
-        assert_eq!(binding_count, 0);
-    }
-
-    #[test]
-    fn ensure_prunes_rows_that_violate_role_rules() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate::migrate(&conn).unwrap();
-        seed(&conn).unwrap();
-
-        // Rows written by older builds: subagent with plan/todo/subagent-series
-        // bindings, hidden agent with bindings, subagent carrying an allowlist.
-        store::upsert_agent(
-            &conn,
-            "legacy_hidden",
-            AgentRole::Hidden,
-            "",
-            "custom hidden body",
-            "",
-            &[],
-        )
-        .unwrap();
-        bind_none(&conn, "legacy_hidden", "read").unwrap();
-        bind_none(&conn, "explore", "plan").unwrap();
-        bind_none(&conn, "explore", "todo").unwrap();
-        bind_none(&conn, "explore", "subagent.wait").unwrap();
-        conn.execute(
-            "UPDATE agents SET allowed_subagents_json = '[\"explore\"]' WHERE id = 'explore'",
-            [],
-        )
-        .unwrap();
-
-        ensure_core_bindings(&conn).unwrap();
-
-        for (agent, tool) in [
-            ("explore", "plan"),
-            ("explore", "todo"),
-            ("explore", "subagent.wait"),
-            ("legacy_hidden", "read"),
-        ] {
-            let n: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
-                    rusqlite::params![agent, tool],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(n, 0, "{agent}/{tool} must be pruned");
-        }
-
-        let kept: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'read'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(kept, 1, "legit subagent bindings survive");
-
-        let primary_plan: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'default' AND tool_id = 'plan'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(primary_plan, 1, "primary keeps plan/todo");
-
-        let allowed: String = conn
-            .query_row(
-                "SELECT allowed_subagents_json FROM agents WHERE id = 'explore'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(allowed, "[]");
-
-        let default_allowed: String = conn
-            .query_row(
-                "SELECT allowed_subagents_json FROM agents WHERE id = 'default'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(default_allowed.contains("explore"));
-
-        let loaded = store::load(&conn).unwrap();
-        crate::config::ConfigManager::validate(&loaded).unwrap();
-    }
-
-    // ---- WP-149: primary agents bind code_search by default ----
-
-    fn cs_enabled(conn: &Connection, agent: &str) -> Option<i64> {
-        conn.query_row(
-            "SELECT enabled FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'code_search'",
-            [agent],
-            |r| r.get(0),
-        )
-        .optional()
-        .unwrap()
-    }
-
-    fn cs_marker(conn: &Connection) -> Option<String> {
-        conn.query_row(
-            "SELECT value FROM meta WHERE key = ?1",
-            [CODE_SEARCH_DEFAULT_MARKER],
-            |r| r.get(0),
-        )
-        .optional()
-        .unwrap()
-    }
-
-    fn cs_rows(conn: &Connection) -> Vec<(String, i64, String)> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT agent_id, enabled, COALESCE(preset, '') FROM agent_tools
-                 WHERE tool_id = 'code_search' ORDER BY agent_id",
-            )
-            .unwrap();
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap()
-    }
 
     fn fresh_seeded() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -1486,165 +152,436 @@ mod tests {
         conn
     }
 
-    /// Simulate a DB created before WP-149: no marker, no code_search rows.
-    fn pre_wp149_db() -> Connection {
+    fn agent_ids(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn.prepare("SELECT id FROM agents ORDER BY id").unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    fn count_bindings_for(conn: &Connection, agent_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1",
+            [agent_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// The DB only stores what the user owns: six agent rows with an empty
+    /// `model_ref`, and no binding rows at all (core + default optional come
+    /// from the spec at read time).
+    #[test]
+    fn seed_plants_the_six_builtin_agents_without_binding_rows() {
         let conn = fresh_seeded();
-        conn.execute("DELETE FROM agent_tools WHERE tool_id = 'code_search'", [])
+
+        assert!(!needs_seed(&conn).unwrap());
+        assert_eq!(
+            agent_ids(&conn),
+            vec![
+                "default",
+                "explore",
+                "general",
+                "orchestrator",
+                "plan",
+                "verification"
+            ]
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM agent_tools", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "core and default-optional bindings must not be planted as rows"
+        );
+
+        let (role, prompt, description, model_ref): (String, String, String, String) = conn
+            .query_row(
+                "SELECT role, system_prompt, description, model_ref FROM agents WHERE id = 'default'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
             .unwrap();
+        assert_eq!(role, "primary");
+        assert_eq!(prompt, "builtin:default");
+        assert_eq!(description, crate::config::global_db::DEFAULT_DESCRIPTION);
+        assert_eq!(model_ref, "", "first boot has no model yet");
+
+        let revision: String = conn
+            .query_row("SELECT value FROM meta WHERE key = 'seed_revision'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(revision, SEED_REVISION);
+    }
+
+    /// D1 + I2: a second boot deletes every agent outside the spec (and its
+    /// bindings), rewrites the identity columns to spec values, keeps
+    /// `model_ref`, and leaves the user's non-core overrides alone.
+    #[test]
+    fn ensure_core_bindings_deletes_agents_outside_the_spec() {
+        let conn = fresh_seeded();
         conn.execute(
-            "DELETE FROM meta WHERE key = ?1",
-            [CODE_SEARCH_DEFAULT_MARKER],
-        )
-        .unwrap();
-        conn
-    }
-
-    #[test]
-    fn migration_fills_missing_primary_code_search_only() {
-        let conn = pre_wp149_db();
-        store::upsert_agent(
-            &conn,
-            "my_primary",
-            AgentRole::Primary,
-            "",
-            "",
-            "",
-            &[],
-        )
-        .unwrap();
-        store::upsert_agent(
-            &conn,
-            "my_sub",
-            AgentRole::Subagent,
-            "",
-            "",
-            "",
-            &[],
-        )
-        .unwrap();
-        ensure_core_bindings(&conn).unwrap();
-        for agent in ["default", "orchestrator", "my_primary"] {
-            assert_eq!(cs_enabled(&conn, agent), Some(1), "{agent}");
-        }
-        for agent in ["explore", "general", "my_sub"] {
-            assert_eq!(cs_enabled(&conn, agent), None, "{agent}");
-        }
-        assert!(cs_marker(&conn).is_some());
-    }
-
-    #[test]
-    fn migration_keeps_existing_false_row() {
-        let conn = pre_wp149_db();
-        let mut off = default_optional_binding("code_search");
-        off.enabled = false;
-        store::upsert_agent_tool(&conn, "default", "code_search", &off).unwrap();
-        let before = cs_rows(&conn);
-        ensure_core_bindings(&conn).unwrap();
-        assert_eq!(cs_enabled(&conn, "default"), Some(0));
-        let after = cs_rows(&conn);
-        let def = |rows: &[(String, i64, String)]| {
-            rows.iter().find(|r| r.0 == "default").cloned().unwrap()
-        };
-        assert_eq!(def(&before), def(&after));
-        assert_eq!(cs_enabled(&conn, "orchestrator"), Some(1));
-    }
-
-    #[test]
-    fn migration_runs_once_on_repeated_startup() {
-        let conn = pre_wp149_db();
-        ensure_core_bindings(&conn).unwrap();
-        let marker = cs_marker(&conn).expect("marker set");
-        let rows = cs_rows(&conn);
-        // Deleting a row after the one-time run must not bring it back.
-        conn.execute(
-            "DELETE FROM agent_tools WHERE agent_id = 'orchestrator' AND tool_id = 'code_search'",
+            "UPDATE agents SET model_ref = 'prov/kept' WHERE id = 'default'",
             [],
         )
         .unwrap();
-        let rows_after_delete = cs_rows(&conn);
-        assert_eq!(rows_after_delete.len(), rows.len() - 1);
-        for _ in 0..3 {
-            ensure_core_bindings(&conn).unwrap();
-            assert_eq!(cs_marker(&conn).as_deref(), Some(marker.as_str()));
-            assert_eq!(cs_rows(&conn), rows_after_delete);
-        }
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM meta WHERE key = ?1",
-                [CODE_SEARCH_DEFAULT_MARKER],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn sync_builtin_presets_v19_overwrites_drifted_rows_while_preserving_model_and_custom() {
-        let conn = fresh_seeded();
-        // Simulate a v18 DB upgrade before v19 marker existed, with user drift on
-        // default/explore plus preserved custom model_ref and custom/lsp tools.
+        // A custom agent from an older build, even with a retired role.
         conn.execute(
-            "DELETE FROM meta WHERE key = ?1",
-            [BUILTIN_PRESETS_V19_MARKER],
+            "INSERT INTO agents (id, role, model_ref, system_prompt, description, allowed_subagents_json)
+             VALUES ('my_custom', 'hidden', 'prov/x', 'HACKED', 'x', '[]')",
+            [],
         )
         .unwrap();
-        conn.execute("DELETE FROM agent_tools WHERE agent_id IN ('plan', 'verification')", [])
-            .unwrap();
-        conn.execute("DELETE FROM agents WHERE id IN ('plan', 'verification')", [])
-            .unwrap();
-        store::upsert_agent(
-            &conn,
-            "default",
-            AgentRole::Primary,
-            "anthropic/claude-opus-4-6",
-            "user custom prompt that should be overwritten",
-            "custom desc",
-            &[],
+        conn.execute(
+            "INSERT INTO agent_tools (agent_id, tool_id, enabled, preset, allowed_tools_json)
+             VALUES ('my_custom', 'read', 1, NULL, NULL)",
+            [],
         )
         .unwrap();
-        bind_none(&conn, "default", "custom_user_tool").unwrap();
-        bind_none(&conn, "default", "lsp").unwrap();
-        store::upsert_agent_tool(
-            &conn,
-            "explore",
-            "litecode_workspace",
-            &binding_seeded("litecode_workspace", ToolPreset::All),
+        // Tampered identity columns on a spec agent.
+        conn.execute(
+            "UPDATE agents SET role = 'subagent', system_prompt = 'HACKED', allowed_subagents_json = '[]'
+             WHERE id = 'explore'",
+            [],
+        )
+        .unwrap();
+        // A user's explicit non-core override must survive the repair.
+        conn.execute(
+            "INSERT INTO agent_tools (agent_id, tool_id, enabled, preset, allowed_tools_json)
+             VALUES ('default', 'code_search', 0, NULL, NULL)",
+            [],
         )
         .unwrap();
 
         ensure_core_bindings(&conn).unwrap();
 
-        let (def_model, def_prompt, def_allowed): (String, String, String) = conn
+        assert_eq!(
+            agent_ids(&conn),
+            vec![
+                "default",
+                "explore",
+                "general",
+                "orchestrator",
+                "plan",
+                "verification"
+            ],
+            "agents outside the spec must be deleted, not just ignored"
+        );
+        assert_eq!(
+            count_bindings_for(&conn, "my_custom"),
+            0,
+            "the deleted agent's bindings must go with it"
+        );
+
+        let (model_ref, prompt, role): (String, String, String) = conn
             .query_row(
-                "SELECT model_ref, system_prompt, allowed_subagents_json FROM agents WHERE id = 'default'",
+                "SELECT model_ref, system_prompt, role FROM agents WHERE id = 'default'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(def_model, "anthropic/claude-opus-4-6");
-        assert_eq!(def_prompt, "builtin:default");
-        assert!(def_allowed.contains("explore"));
-        assert!(agent_has_tool(&conn, "default", "custom_user_tool").unwrap());
-        assert!(agent_has_tool(&conn, "default", "lsp").unwrap());
+        assert_eq!(model_ref, "prov/kept", "the user's model choice survives");
+        assert_eq!(prompt, "builtin:default");
+        assert_eq!(role, "primary");
 
-        let explore_ws_preset: Option<String> = conn
+        let explore_role: String = conn
+            .query_row("SELECT role FROM agents WHERE id = 'explore'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(explore_role, "subagent", "identity columns are rewritten");
+
+        let code_search: i64 = conn
             .query_row(
-                "SELECT preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'litecode_workspace'",
+                "SELECT enabled FROM agent_tools WHERE agent_id = 'default' AND tool_id = 'code_search'",
                 [],
-                |r| r.get(0),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(explore_ws_preset.as_deref(), Some("SAFE"));
+        assert_eq!(code_search, 0, "non-core user intent is untouched");
 
-        assert!(conn
-            .query_row("SELECT 1 FROM agents WHERE id = 'plan'", [], |_| Ok(()))
-            .optional()
-            .unwrap()
-            .is_some());
-        assert!(conn
-            .query_row("SELECT 1 FROM agents WHERE id = 'verification'", [], |_| Ok(()))
-            .optional()
-            .unwrap()
-            .is_some());
+        // Repeated boots are idempotent and never resurrect deleted rows.
+        for _ in 0..3 {
+            ensure_core_bindings(&conn).unwrap();
+        }
+        assert_eq!(agent_ids(&conn).len(), 6);
+        let code_search: i64 = conn
+            .query_row(
+                "SELECT enabled FROM agent_tools WHERE agent_id = 'default' AND tool_id = 'code_search'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(code_search, 0);
+    }
+
+    /// A DB whose `agents` table is empty is the only "needs seed" state, and
+    /// `ensure_core_bindings` alone can rebuild the closed set.
+    #[test]
+    fn ensure_core_bindings_rebuilds_all_six_rows() {
+        let conn = fresh_seeded();
+        conn.execute("DELETE FROM agents", []).unwrap();
+
+        ensure_core_bindings(&conn).unwrap();
+
+        assert_eq!(agent_ids(&conn).len(), 6);
+        for spec in builtin_agents() {
+            let (prompt, role): (String, String) = conn
+                .query_row(
+                    "SELECT system_prompt, role FROM agents WHERE id = ?1",
+                    [spec.id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(prompt, spec.prompt_marker(), "{}", spec.id);
+            assert_eq!(
+                role,
+                match spec.role {
+                    AgentRole::Primary => "primary",
+                    AgentRole::Subagent => "subagent",
+                },
+                "{}",
+                spec.id
+            );
+        }
+    }
+
+    /// I4 guard: the loaded profiles still match the W1/W2 baseline table
+    /// (`seed_reproduces_the_baseline_builtin_bindings` below). This one pins
+    /// the source: spec-only rows equal the loaded profiles even with an empty
+    /// `agent_tools` table.
+    #[test]
+    fn spec_core_and_optional_cover_every_locked_binding() {
+        let conn = fresh_seeded();
+        let settings = super::super::store::load(&conn).unwrap();
+        for spec in builtin_agents() {
+            let profile = settings
+                .agents
+                .get(spec.id)
+                .unwrap_or_else(|| panic!("{} missing", spec.id));
+            let expected: usize = spec.core.len() + spec.default_optional.len();
+            assert_eq!(
+                profile.tools.len(),
+                expected,
+                "{}: empty DB must yield exactly core + default optional",
+                spec.id
+            );
+            for (tool_id, binding) in spec.core_bindings() {
+                assert_eq!(profile.tools[tool_id], binding, "{} {tool_id}", spec.id);
+            }
+            for (tool_id, binding) in spec.default_optional_bindings() {
+                assert_eq!(profile.tools[tool_id], binding, "{} {tool_id}", spec.id);
+            }
+        }
+    }
+
+    // ---- W1 + W2: the spec table must reproduce the frozen seed baseline ----
+    //
+    // The expected values are a hand-transcribed copy of the baseline seed
+    // output (`.tmp/agent-lockdown/golden/bindings.json`, W0), updated for D3:
+    // `webfetch` / `websearch` left the core set and became optional builtins
+    // defaulted on for **every** built-in agent. Five agents therefore gained
+    // those two rows (only `explore` had them before). Everything else must
+    // stay literal: this test is the guard that the table-driven seed did not
+    // move another row.
+
+    struct BaselineAgent {
+        id: &'static str,
+        role: AgentRole,
+        marker: &'static str,
+        description: &'static str,
+        allowed: &'static [&'static str],
+        tools: &'static [(&'static str, Option<ToolPreset>)],
+    }
+
+    const BASELINE: &[BaselineAgent] = &[
+        BaselineAgent {
+            id: "default",
+            role: AgentRole::Primary,
+            marker: "builtin:default",
+            description: "General-purpose software engineering agent. Investigates, implements, verifies, and delivers end-to-end changes.",
+            allowed: &["explore"],
+            tools: &[
+                ("ask_user", None),
+                ("code_search", None),
+                ("edit", Some(ToolPreset::All)),
+                ("exec", Some(ToolPreset::All)),
+                ("glob", Some(ToolPreset::All)),
+                ("grep", Some(ToolPreset::All)),
+                ("knowledge", None),
+                ("litecode_workspace", Some(ToolPreset::All)),
+                ("memory", None),
+                ("plan", None),
+                ("read", Some(ToolPreset::All)),
+                ("session_search", None),
+                ("subagent_tools", None),
+                ("todo", None),
+                ("webfetch", None),
+                ("websearch", None),
+                ("write", Some(ToolPreset::All)),
+            ],
+        },
+        BaselineAgent {
+            id: "plan",
+            role: AgentRole::Primary,
+            marker: "builtin:plan",
+            description: "Read-only software architect and planner. Explores the codebase, clarifies ambiguities, and produces a concrete implementation plan for user approval.",
+            allowed: &["explore"],
+            tools: &[
+                ("ask_user", None),
+                ("code_search", None),
+                ("edit", Some(ToolPreset::All)),
+                ("exec", Some(ToolPreset::Safe)),
+                ("glob", Some(ToolPreset::All)),
+                ("grep", Some(ToolPreset::All)),
+                ("knowledge", None),
+                ("litecode_workspace", Some(ToolPreset::Safe)),
+                ("memory", None),
+                ("plan", None),
+                ("read", Some(ToolPreset::All)),
+                ("session_search", None),
+                ("subagent_tools", None),
+                ("webfetch", None),
+                ("websearch", None),
+                ("write", Some(ToolPreset::All)),
+            ],
+        },
+        BaselineAgent {
+            id: "orchestrator",
+            role: AgentRole::Primary,
+            marker: "builtin:orchestrator",
+            description: "Team coordinator and goal owner. Plans work, delegates bounded tasks to explore/general/verification subagents, enforces independent verification, and owns the final outcome.",
+            allowed: &["explore", "general", "verification"],
+            tools: &[
+                ("ask_user", None),
+                ("code_search", None),
+                ("edit", Some(ToolPreset::All)),
+                ("exec", Some(ToolPreset::All)),
+                ("glob", Some(ToolPreset::All)),
+                ("grep", Some(ToolPreset::All)),
+                ("knowledge", None),
+                ("litecode_workspace", Some(ToolPreset::All)),
+                ("memory", None),
+                ("plan", None),
+                ("read", Some(ToolPreset::All)),
+                ("session_search", None),
+                ("subagent_tools", None),
+                ("todo", None),
+                ("webfetch", None),
+                ("websearch", None),
+                ("write", Some(ToolPreset::All)),
+            ],
+        },
+        BaselineAgent {
+            id: "explore",
+            role: AgentRole::Subagent,
+            marker: "builtin:explore",
+            description: "Fast read-only codebase and source investigator. Searches files, traces implementations, and returns concise, evidence-backed conclusions.",
+            allowed: &[],
+            tools: &[
+                ("code_search", None),
+                ("exec", Some(ToolPreset::Safe)),
+                ("glob", Some(ToolPreset::Safe)),
+                ("grep", Some(ToolPreset::Safe)),
+                ("knowledge", None),
+                ("litecode_workspace", Some(ToolPreset::Safe)),
+                ("read", Some(ToolPreset::Safe)),
+                ("session_search", None),
+                ("webfetch", None),
+                ("websearch", None),
+            ],
+        },
+        BaselineAgent {
+            id: "general",
+            role: AgentRole::Subagent,
+            marker: "builtin:general",
+            description: "Bounded general-purpose implementer. Executes assigned code changes, fixes, and tests within its owned scope and returns a concise evidence-backed report.",
+            allowed: &[],
+            tools: &[
+                ("code_search", None),
+                ("edit", Some(ToolPreset::All)),
+                ("exec", Some(ToolPreset::All)),
+                ("glob", Some(ToolPreset::All)),
+                ("grep", Some(ToolPreset::All)),
+                ("knowledge", None),
+                ("litecode_workspace", Some(ToolPreset::All)),
+                ("read", Some(ToolPreset::All)),
+                ("session_search", None),
+                ("webfetch", None),
+                ("websearch", None),
+                ("write", Some(ToolPreset::All)),
+            ],
+        },
+        BaselineAgent {
+            id: "verification",
+            role: AgentRole::Subagent,
+            marker: "builtin:verification",
+            description: "Independent adversarial verifier. Does not modify project files; runs builds, tests, linters, and adversarial probes to issue an evidence-backed PASS, FAIL, or PARTIAL verdict.",
+            allowed: &[],
+            tools: &[
+                ("exec", Some(ToolPreset::All)),
+                ("glob", Some(ToolPreset::All)),
+                ("grep", Some(ToolPreset::All)),
+                ("knowledge", None),
+                ("read", Some(ToolPreset::All)),
+                ("webfetch", None),
+                ("websearch", None),
+            ],
+        },
+    ];
+
+    #[test]
+    fn seed_reproduces_the_baseline_builtin_bindings() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("litecode.db");
+
+        // First load migrates and seeds a fresh DB; the second load runs the
+        // repair path (`ensure_core_bindings`). A real install sees both.
+        crate::config::ConfigManager::load_global_from(&db).expect("fresh DB seeds");
+        let settings = crate::config::ConfigManager::load_global_from(&db).expect("repair loads");
+
+        assert_eq!(settings.agents.len(), BASELINE.len());
+        for baseline in BASELINE {
+            let profile = settings
+                .agents
+                .get(baseline.id)
+                .unwrap_or_else(|| panic!("{} missing from seeded agents", baseline.id));
+            assert_eq!(profile.role, baseline.role, "{} role", baseline.id);
+            assert_eq!(
+                profile.system_prompt, baseline.marker,
+                "{} prompt marker",
+                baseline.id
+            );
+            assert_eq!(
+                profile.description, baseline.description,
+                "{} description",
+                baseline.id
+            );
+            let allowed: Vec<&str> = profile
+                .allowed_subagents
+                .iter()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                allowed, baseline.allowed,
+                "{} allowed_subagents",
+                baseline.id
+            );
+
+            let mut actual: Vec<(&str, bool, Option<ToolPreset>)> = profile
+                .tools
+                .iter()
+                .map(|(tool, binding)| (tool.as_str(), binding.enabled, binding.preset))
+                .collect();
+            actual.sort_by(|a, b| a.0.cmp(b.0));
+            let mut expected: Vec<(&str, bool, Option<ToolPreset>)> = baseline
+                .tools
+                .iter()
+                .map(|(tool, preset)| (*tool, true, *preset))
+                .collect();
+            expected.sort_by(|a, b| a.0.cmp(b.0));
+            assert_eq!(actual, expected, "{} tool bindings drifted", baseline.id);
+        }
     }
 }

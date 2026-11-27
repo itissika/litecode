@@ -13,10 +13,13 @@ export interface ToolGroup {
 const GROUP_ORDER: readonly AvailableKind[] = ["core", "engine", "custom", "mcp"];
 
 /**
- * Reading order inside the core section: file access → shell → web → session
- * and workspace context → planning → delegation. Ids absent here sort
+ * Reading order inside the core section: file access → shell → session and
+ * workspace context → planning → delegation. Ids absent here sort
  * alphabetically after the listed ones, so a new tool lands in a predictable
  * place without editing this table.
+ *
+ * `webfetch` / `websearch` left this table when they became optional engine
+ * cards (D3); `run` / `bash` were retired tool ids.
  */
 const CORE_ORDER: readonly string[] = [
   "read",
@@ -24,10 +27,6 @@ const CORE_ORDER: readonly string[] = [
   "grep",
   "edit",
   "write",
-  "run",
-  "bash",
-  "webfetch",
-  "websearch",
   "session_search",
   "knowledge",
   "litecode_workspace",

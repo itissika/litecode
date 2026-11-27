@@ -187,7 +187,7 @@ fn no_hidden_compaction_agent_or_prompt_binding() {
     let seed = read("src/config/global_db/seed.rs");
     let seed_production = production_part(&seed);
     assert!(
-        !seed_production.contains("\"compaction\",\n        AgentRole::Hidden"),
+        !seed_production.contains("\"compaction\""),
         "seed must not create a hidden compaction agent"
     );
     let bindings = read("src/tool/agent_bindings.rs");
@@ -202,19 +202,46 @@ fn no_hidden_compaction_agent_or_prompt_binding() {
             relative(&path)
         );
     }
-    let schema = read("src/config/schema.rs");
+    let builtin_agents = read("src/config/global_db/builtin_agents.rs");
+    let builtin_production = production_part(&builtin_agents);
     for id in ["default", "plan", "orchestrator", "explore", "general", "verification"] {
-        assert!(schema.contains(&format!("\"{id}\"")), "schema must protect {id}");
+        assert!(
+            builtin_production.contains(&format!("id: \"{id}\"")),
+            "builtin agent spec must ship {id}"
+        );
     }
-    assert!(!schema.contains("PROTECTED_AGENT_IDS: &[&str] = &[\"default\", \"compaction\"]"));
+    assert!(
+        !builtin_production.contains("\"compaction\""),
+        "the builtin agent spec must not ship a compaction agent"
+    );
     let settings = read("web/src/api/settings.ts");
-    for id in ["default", "plan", "orchestrator", "explore", "general", "verification"] {
-        assert!(settings.contains(&format!("\"{id}\"")), "web settings must protect {id}");
-    }
+    // The web client no longer keeps a hardcoded builtin-agent table: the
+    // backend spec table is the only source (W8). It must also carry no hidden
+    // role, no retired compaction marker, and no client-side delete helper.
+    assert!(
+        !settings.contains("\"hidden\""),
+        "web settings must not reintroduce a hidden agent role"
+    );
     assert!(!settings.contains("isHiddenSettingsAgent"));
+    assert!(!settings.contains("builtin:compaction"));
+    for retired in [
+        "PROTECTED_AGENT_IDS",
+        "isProtectedAgent",
+        "deleteAgent",
+        "applyAgentToolPreset",
+    ] {
+        assert!(
+            !settings.contains(retired),
+            "the web client must not keep the retired agent surface `{retired}`"
+        );
+    }
     let agents_section = read("web/src/dockview/panels/settings/AgentsSection.tsx");
     assert!(!agents_section.contains("isHiddenSettingsAgent"));
     assert!(!agents_section.contains("builtin:compaction"));
+    assert!(
+        !agents_section.contains("\"hidden\""),
+        "the Agents section must not branch on a hidden role"
+    );
 }
 
 #[test]

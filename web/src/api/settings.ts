@@ -1,6 +1,6 @@
 import { apiFetch } from "./auth";
 
-export type AgentRole = "primary" | "subagent" | "hidden";
+export type AgentRole = "primary" | "subagent";
 export type ToolPreset = "ALL" | "SAFE";
 export type AvailableKind = "core" | "engine" | "custom" | "mcp";
 export type ToolOrigin = "builtin" | "global" | "workspace";
@@ -140,6 +140,8 @@ export interface AgentProfile {
   description: string;
   tools: Record<string, AgentToolBinding>;
   allowed_subagents: string[];
+  /** Backend provenance: every agent the settings surface shows is a spec. */
+  builtin?: boolean;
 }
 
 export type PermissionSurface = "preset" | "fixed";
@@ -165,6 +167,12 @@ export interface AvailableTool {
   label?: string;
   /** Role/depth scope. `primary_root_only` is hidden from subagent cards. */
   scope?: BindingScope;
+  /**
+   * Backend says this card is system-tuned: it always stays bound as the spec
+   * dictates. The UI must render it read-only (no toggle, no preset click).
+   * Optional so older fixtures read as "user-configurable".
+   */
+  locked?: boolean;
 }
 
 export type AvailableStatus = "ready" | "warming" | "disabled" | "failed" | "down";
@@ -458,20 +466,6 @@ export async function putAgent(
   );
 }
 
-export async function applyAgentToolPreset(
-  agentId: string,
-  preset: ToolPreset,
-): Promise<RevisionResponse> {
-  return requestJson<RevisionResponse>(
-    `/api/settings/agents/${encodeURIComponent(agentId)}/tools/apply-preset`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ preset }),
-    },
-  );
-}
-
 export async function getAvailableTools(): Promise<AvailableTool[]> {
   const data = await requestJson<{ tools: AvailableTool[] }>(
     "/api/settings/available-tools",
@@ -708,16 +702,9 @@ export interface AgentListItem {
   role: AgentRole;
   description: string;
   allowed_subagents: string[];
+  /** Spec-backed agent: identity, prompt, and core tools are system-tuned. */
+  builtin?: boolean;
 }
-
-export const PROTECTED_AGENT_IDS = new Set([
-  "default",
-  "plan",
-  "orchestrator",
-  "explore",
-  "general",
-  "verification",
-]);
 
 /** One card writes one binding row. */
 export function applyToolEnabled(
@@ -731,29 +718,6 @@ export function applyToolEnabled(
     preset: presetIds.has(toolId) ? "ALL" : null,
   };
   return { ...tools, [toolId]: { ...current, enabled } };
-}
-
-export function isProtectedAgent(id: string): boolean {
-  return PROTECTED_AGENT_IDS.has(id);
-}
-
-export async function deleteAgent(id: string): Promise<RevisionResponse> {
-  const res = await apiFetch(`/api/settings/agents/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
-  if (!res.ok) {
-    try {
-      await parseJson<RevisionResponse>(res);
-    } catch (err) {
-      if (err instanceof SettingsApiError) throw err;
-      throw new SettingsApiError(
-        res.status,
-        "request_failed",
-        `HTTP ${res.status}`,
-      );
-    }
-  }
-  return parseJson<RevisionResponse>(res);
 }
 
 export async function listAgents(): Promise<AgentListItem[]> {

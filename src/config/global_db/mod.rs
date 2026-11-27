@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -19,11 +19,12 @@ pub mod migrate;
 pub const fn current_user_version() -> i32 {
     migrate::CURRENT_USER_VERSION
 }
+mod builtin_agents;
 mod builtin_prompts;
 mod seed;
-pub(crate) use seed::default_optional_binding;
 pub mod tools;
 
+pub use builtin_agents::{BuiltinAgentSpec, builtin_agent, builtin_agents, is_builtin_agent};
 pub use builtin_prompts::{
     CHECKPOINT_PREAMBLE, CITATION_PROMPT, COMPACTION_INSTRUCTION, DEFAULT_DESCRIPTION,
     DEFAULT_PROMPT, EXPLORE_DESCRIPTION, EXPLORE_PROMPT, GENERAL_DESCRIPTION, GENERAL_PROMPT,
@@ -256,6 +257,28 @@ pub fn agent_tools_for(
     store::load_agent_tools(conn, agent_id)
 }
 
+/// `meta` key holding the evaluator's scored tool surface (I6 / D7).
+///
+/// This is a system channel, not a setting: `load_agents` lets it **replace**
+/// the whole tool map of one built-in agent — including core cards, which no
+/// settings write can switch off — and neither the settings UI nor
+/// `SettingsWriter::write_agent` can read or write it. Only
+/// `config profile apply` / `config profile clear` touch this key.
+pub const EVAL_SURFACE_META_KEY: &str = "eval_surface";
+
+/// The evaluator's surface for one built-in agent, as stored under
+/// [`EVAL_SURFACE_META_KEY`].
+///
+/// `cards` is the whole surface: a card missing from the map is off, so the
+/// override never merges with the spec or with the user's non-core toggles.
+/// The presets are the profile's tiers, and a card without a permission dial
+/// carries `None`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EvalSurfaceOverride {
+    pub agent_id: String,
+    pub cards: BTreeMap<String, Option<ToolPreset>>,
+}
+
 /// Boot-time sibling of the per-commit repair in `SettingsWriter`.
 ///
 /// A provider key removed while the app was closed, or a model this build no
@@ -342,6 +365,11 @@ pub mod store {
                 &profile.allowed_subagents,
             )?;
             for (tool_id, binding) in &profile.tools {
+                // Core bindings live in the spec, not in the DB: writing them
+                // back would only leave dead rows the next read has to ignore.
+                if super::tools::is_core_tool(tool_id) {
+                    continue;
+                }
                 upsert_agent_tool(&tx, id, tool_id, binding)?;
             }
         }
@@ -416,39 +444,160 @@ pub mod store {
         Ok(())
     }
 
-    fn load_agents(conn: &Connection) -> Result<HashMap<String, AgentProfile>> {
-        let mut stmt = conn.prepare(
-            "SELECT id, role, model_ref, system_prompt, description, allowed_subagents_json
-             FROM agents",
+    /// The evaluator's override from `meta`, if one is stored (I6 / D7).
+    ///
+    /// A corrupt value is an error, not a silent `None`: dropping it would score
+    /// a run against the full surface, which reads exactly like a model that was
+    /// simply better.
+    pub fn load_eval_surface(conn: &Connection) -> Result<Option<EvalSurfaceOverride>> {
+        let Some(raw) = super::meta_get(conn, super::EVAL_SURFACE_META_KEY)? else {
+            return Ok(None);
+        };
+        let surface: EvalSurfaceOverride = serde_json::from_str(&raw).map_err(|error| {
+            LitecodeError::Config(format!(
+                "invalid `{}` value in the settings database: {error}",
+                super::EVAL_SURFACE_META_KEY
+            ))
+        })?;
+        Ok(Some(surface))
+    }
+
+    /// Replace the stored override wholesale. Never merged: the caller's map is
+    /// the entire surface.
+    pub fn write_eval_surface(conn: &Connection, surface: &EvalSurfaceOverride) -> Result<()> {
+        let raw = serde_json::to_string(surface)?;
+        super::meta_set(conn, super::EVAL_SURFACE_META_KEY, &raw)
+    }
+
+    /// Delete the override. `true` when a row was actually removed.
+    pub fn clear_eval_surface(conn: &Connection) -> Result<bool> {
+        let removed = conn.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            [super::EVAL_SURFACE_META_KEY],
         )?;
-        let mut rows = stmt.query([])?;
+        Ok(removed > 0)
+    }
+
+    /// Build the agent map from the built-in specs, never from the `agents`
+    /// table's identity columns.
+    ///
+    /// The spec is the single source for `role`, `system_prompt`,
+    /// `description`, `allowed_subagents`, every core binding and its preset.
+    /// The DB contributes exactly two things: `model_ref`, and the user's
+    /// overrides for **non-core** bindings (optional builtins, custom tools,
+    /// MCP). Core rows, unknown agent rows and tampered identity columns in the
+    /// DB are ignored here.
+    ///
+    /// Precedence for `tools`, in this order: spec core → spec optional
+    /// defaults → DB rows for this agent (core rows skipped, role-invalid rows
+    /// skipped, dial-less optional presets forced to `None`). A user's explicit
+    /// `enabled=0` row therefore still wins over the spec default.
+    ///
+    /// One exception: an [`EvalSurfaceOverride`] stored under
+    /// [`super::EVAL_SURFACE_META_KEY`] that names this agent **replaces** the
+    /// whole tool map, core cards included. That is the evaluator's channel
+    /// (I6); a settings write cannot reach it, and it does not touch
+    /// `agent_tools`, so `meta` clearing restores the user's surface at once.
+    fn load_agents(conn: &Connection) -> Result<HashMap<String, AgentProfile>> {
+        let eval_surface = load_eval_surface(conn)?;
         let mut map = HashMap::new();
-        while let Some(row) = rows.next()? {
-            let id: String = row.get(0)?;
-            let allowed_json: String = row.get(5)?;
-            let allowed_subagents: Vec<String> =
-                serde_json::from_str(&allowed_json).map_err(|e| {
-                    LitecodeError::Config(format!(
-                        "invalid allowed_subagents_json for agent '{id}': {e}"
-                    ))
-                })?;
-            let mut profile = AgentProfile {
-                role: parse_role(row.get(1)?)?,
-                model_ref: row.get(2)?,
-                system_prompt: row.get(3)?,
-                description: row.get(4)?,
-                tools: HashMap::new(),
-                allowed_subagents,
-            };
-            profile.tools = load_agent_tools(conn, &id)?;
-            map.insert(id, profile);
+        for spec in super::builtin_agents::builtin_agents() {
+            let model_ref: String = conn
+                .query_row(
+                    "SELECT model_ref FROM agents WHERE id = ?1",
+                    [spec.id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or_default();
+
+            let mut tools: HashMap<String, AgentToolBinding> = HashMap::new();
+            let surface = eval_surface
+                .as_ref()
+                .filter(|surface| surface.agent_id == spec.id);
+            match surface {
+                Some(surface) => {
+                    for (card_id, preset) in &surface.cards {
+                        tools.insert(
+                            card_id.clone(),
+                            AgentToolBinding {
+                                enabled: true,
+                                preset: *preset,
+                                allowed_tools: None,
+                            },
+                        );
+                    }
+                }
+                None => {
+                    for (tool_id, binding) in spec.core_bindings() {
+                        tools.insert(tool_id.to_string(), binding);
+                    }
+                    for (tool_id, binding) in spec.default_optional_bindings() {
+                        tools.insert(tool_id.to_string(), binding);
+                    }
+                    for (tool_id, mut binding) in load_non_core_agent_tools(conn, spec.id)? {
+                        if !crate::config::binding_scope::scope_of(&tool_id).allows_role(spec.role) {
+                            continue;
+                        }
+                        if super::tools::is_optional_builtin(&tool_id)
+                            && !crate::permission::has_permission_preset(&tool_id)
+                        {
+                            binding.preset = None;
+                        }
+                        tools.insert(tool_id, binding);
+                    }
+                }
+            }
+
+            map.insert(
+                spec.id.to_string(),
+                AgentProfile {
+                    role: spec.role,
+                    model_ref,
+                    system_prompt: spec.prompt_marker(),
+                    description: spec.description.to_string(),
+                    tools,
+                    allowed_subagents: spec
+                        .allowed_subagents
+                        .iter()
+                        .map(|id| (*id).to_string())
+                        .collect(),
+                },
+            );
         }
         Ok(map)
     }
 
+    /// Every `agent_tools` row for one agent, exactly as stored.
+    ///
+    /// Kept for callers that want the raw table (diagnostics, the settings
+    /// paths that read what the user has). `load_agents` uses
+    /// [`Self::load_non_core_agent_tools`] instead.
     pub fn load_agent_tools(
         conn: &Connection,
         agent_id: &str,
+    ) -> Result<HashMap<String, AgentToolBinding>> {
+        read_agent_tool_rows(conn, agent_id, false)
+    }
+
+    /// The user's overrides for one agent, with core rows dropped **before**
+    /// `preset` and `allowed_tools_json` are parsed.
+    ///
+    /// Core bindings always come from the spec, so a leftover core row (older
+    /// build, hand edit) is dead weight — and one carrying `preset = 'BOGUS'` or
+    /// `allowed_tools_json = 'not-json'` must not be able to break the boot
+    /// load just because it was parsed before being skipped.
+    fn load_non_core_agent_tools(
+        conn: &Connection,
+        agent_id: &str,
+    ) -> Result<HashMap<String, AgentToolBinding>> {
+        read_agent_tool_rows(conn, agent_id, true)
+    }
+
+    fn read_agent_tool_rows(
+        conn: &Connection,
+        agent_id: &str,
+        skip_core: bool,
     ) -> Result<HashMap<String, AgentToolBinding>> {
         let mut stmt = conn.prepare(
             "SELECT tool_id, enabled, preset, allowed_tools_json FROM agent_tools WHERE agent_id = ?1",
@@ -456,7 +605,12 @@ pub mod store {
         let mut rows = stmt.query([agent_id])?;
         let mut map = HashMap::new();
         while let Some(row) = rows.next()? {
+            // The tool id is read first so a skipped row never has its `preset`
+            // or `allowed_tools_json` parsed.
             let tool_id: String = row.get(0)?;
+            if skip_core && super::tools::is_core_tool(&tool_id) {
+                continue;
+            }
             let preset: Option<String> = row.get(2)?;
             let allowed_tools_json: Option<String> = row.get(3)?;
             let allowed_tools = allowed_tools_json
@@ -835,16 +989,6 @@ pub mod store {
         match role {
             AgentRole::Primary => "primary",
             AgentRole::Subagent => "subagent",
-            AgentRole::Hidden => "hidden",
-        }
-    }
-
-    fn parse_role(s: String) -> Result<AgentRole> {
-        match s.as_str() {
-            "primary" => Ok(AgentRole::Primary),
-            "subagent" => Ok(AgentRole::Subagent),
-            "hidden" => Ok(AgentRole::Hidden),
-            _ => Err(LitecodeError::Config(format!("unknown agent role: {s}"))),
         }
     }
 
@@ -947,5 +1091,249 @@ mod open_tests {
             .find(|tool| tool.name == "code_probe")
             .expect("custom tool loaded");
         assert_eq!(custom.command, "echo");
+    }
+}
+
+/// I1 + I2 + I3: the DB cannot redefine a built-in agent.
+///
+/// A tampered database is a first-class scenario (older builds, hand edits):
+/// identity columns, core rows, and extra agents must be ignored on read —
+/// with the one exception that non-core user intent is honored.
+#[cfg(test)]
+mod lockdown_tests {
+    use super::*;
+    use crate::config::schema::ToolPreset;
+    use crate::config::{ConfigManager, WorkspaceState};
+
+    const AGENTS: [&str; 6] = [
+        "default",
+        "plan",
+        "orchestrator",
+        "explore",
+        "general",
+        "verification",
+    ];
+
+    fn put_tool(conn: &Connection, agent: &str, tool: &str, enabled: bool, preset: Option<&str>) {
+        let binding = AgentToolBinding {
+            enabled,
+            preset: preset.map(|value| match value {
+                "ALL" => ToolPreset::All,
+                "SAFE" => ToolPreset::Safe,
+                other => panic!("unknown preset {other}"),
+            }),
+            allowed_tools: None,
+        };
+        store::upsert_agent_tool(conn, agent, tool, &binding).unwrap();
+    }
+
+    #[test]
+    fn a_tampered_db_cannot_redefine_the_builtin_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("litecode.db");
+        // First boot: migrate + seed. Second boot: the repair path.
+        ConfigManager::load_global_from(&db).expect("seed");
+        ConfigManager::load_global_from(&db).expect("repair");
+
+        let spec = builtin_agents()
+            .iter()
+            .find(|spec| spec.id == "default")
+            .expect("default spec");
+        let explore = builtin_agents()
+            .iter()
+            .find(|spec| spec.id == "explore")
+            .expect("explore spec");
+
+        {
+            let conn = open(&db).unwrap();
+            // Identity tampering on `default`.
+            conn.execute(
+                "UPDATE agents SET role = 'subagent', system_prompt = 'HACKED',
+                    description = 'x', allowed_subagents_json = '[]', model_ref = 'prov/m1'
+                 WHERE id = 'default'",
+                [],
+            )
+            .unwrap();
+            // Core tool tampering on `default`.
+            put_tool(&conn, "default", "read", false, None);
+            put_tool(&conn, "default", "exec", true, Some("SAFE"));
+            // Core tool tampering on `explore`: a preset bump plus a tool it
+            // must never bind.
+            put_tool(&conn, "explore", "exec", true, Some("ALL"));
+            put_tool(&conn, "explore", "write", true, Some("ALL"));
+            // A custom agent from an older build, even with a retired role.
+            conn.execute(
+                "INSERT INTO agents (id, role, model_ref, system_prompt, description, allowed_subagents_json)
+                 VALUES ('my_custom', 'hidden', 'prov/x', 'HACKED', 'x', '[]')",
+                [],
+            )
+            .unwrap();
+            put_tool(&conn, "my_custom", "read", true, None);
+            // Non-core user intent on `default`.
+            put_tool(&conn, "default", "code_search", false, None);
+            put_tool(&conn, "default", "lsp", true, None);
+        }
+
+        let settings = load_global_from_path(&db).expect("load after tampering");
+
+        // I2: the closed set. `my_custom` is gone from memory *and* from the DB.
+        assert_eq!(settings.agents.len(), 6);
+        assert!(!settings.agents.contains_key("my_custom"));
+        let mut ids: Vec<&str> = settings.agents.keys().map(String::as_str).collect();
+        ids.sort_unstable();
+        let mut expected = AGENTS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
+        {
+            let conn = open(&db).unwrap();
+            let agents: i64 = conn
+                .query_row("SELECT COUNT(*) FROM agents WHERE id = 'my_custom'", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            let bindings: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'my_custom'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(agents, 0, "the custom agent row must be deleted");
+            assert_eq!(bindings, 0, "its bindings must go with it");
+        }
+
+        // I1: identity, prompt, description, allowed subagents come from the spec.
+        let default = &settings.agents["default"];
+        assert_eq!(default.role, spec.role);
+        assert_eq!(default.system_prompt, spec.prompt_marker());
+        assert_eq!(default.description, spec.description);
+        assert_eq!(
+            default.allowed_subagents,
+            spec.allowed_subagents
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect::<Vec<_>>()
+        );
+        // The model choice is the one thing the DB owns.
+        assert_eq!(default.model_ref, "prov/m1");
+
+        // I4: core bindings and presets stay exactly the spec.
+        assert!(default.tools["read"].enabled, "read stays on");
+        assert_eq!(default.tools["read"].preset, Some(ToolPreset::All));
+        assert_eq!(default.tools["exec"].preset, Some(ToolPreset::All));
+
+        let explore_profile = &settings.agents["explore"];
+        assert_eq!(explore_profile.role, explore.role);
+        assert_eq!(explore_profile.tools["exec"].preset, Some(ToolPreset::Safe));
+        assert!(
+            !explore_profile.tools.contains_key("write"),
+            "explore must never bind write"
+        );
+
+        // I3: non-core intent survives, and a missing row keeps the spec default.
+        assert!(!default.tools["code_search"].enabled, "explicit off sticks");
+        assert!(default.tools["lsp"].enabled);
+        for tool in ["webfetch", "websearch"] {
+            assert!(default.tools[tool].enabled, "{tool} defaults on");
+            assert_eq!(default.tools[tool].preset, None, "{tool} has no dial");
+        }
+
+        // The locked surface still resolves into a valid document.
+        ConfigManager::validate(&settings).expect("tampered DB still validates");
+        let _ = ConfigManager::resolve_without_catalog(settings, WorkspaceState::new(dir.path()));
+    }
+
+    #[test]
+    fn a_database_with_an_unknown_role_cannot_break_the_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("litecode.db");
+        ConfigManager::load_global_from(&db).expect("seed");
+        {
+            let conn = open(&db).unwrap();
+            conn.execute(
+                "INSERT INTO agents (id, role, model_ref, system_prompt, description, allowed_subagents_json)
+                 VALUES ('ghost', 'not-a-role', '', 'x', 'x', 'not json')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO agent_tools (agent_id, tool_id, enabled, preset, allowed_tools_json)
+                 VALUES ('ghost', 'read', 1, 'BOGUS', NULL)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let settings = load_global_from_path(&db).expect("a broken extra row must not fail the load");
+        assert_eq!(settings.agents.len(), 6);
+        assert!(!settings.agents.contains_key("ghost"));
+    }
+
+    /// W3 review #1: a core row is skipped **before** `preset` /
+    /// `allowed_tools_json` are parsed, so garbage left on `'default'`'s core
+    /// rows by an older build or a hand edit cannot break the boot load. The
+    /// binding itself still comes from the spec.
+    #[test]
+    fn a_corrupt_core_binding_row_cannot_break_the_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("litecode.db");
+        ConfigManager::load_global_from(&db).expect("seed");
+        {
+            let conn = open(&db).unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO agent_tools
+                   (agent_id, tool_id, enabled, preset, allowed_tools_json)
+                 VALUES ('default', 'read', 0, 'BOGUS', 'not-json')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO agent_tools
+                   (agent_id, tool_id, enabled, preset, allowed_tools_json)
+                 VALUES ('default', 'exec', 1, 'BOGUS', NULL)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let settings =
+            load_global_from_path(&db).expect("a garbage core row must not fail the load");
+        let default = &settings.agents["default"];
+        assert!(default.tools["read"].enabled, "read comes from the spec");
+        assert_eq!(default.tools["read"].preset, Some(ToolPreset::All));
+        assert_eq!(default.tools["read"].allowed_tools, None);
+        assert_eq!(default.tools["exec"].preset, Some(ToolPreset::All));
+    }
+
+    /// W3 review #2: a full settings save writes the user's **non-core** rows
+    /// only. Core bindings belong to the spec, so a write must not leave a dead
+    /// row behind for every core tool of every agent.
+    #[test]
+    fn a_settings_save_leaves_no_core_rows_in_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("litecode.db");
+        let settings = ConfigManager::load_global_from(&db).expect("seed");
+        save_global(&db, &settings).expect("save");
+
+        let conn = open(&db).unwrap();
+        let mut stmt = conn.prepare("SELECT tool_id FROM agent_tools").unwrap();
+        let ids: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        let core: Vec<&String> = ids
+            .iter()
+            .filter(|id| tools::is_core_tool(id))
+            .collect();
+        assert!(
+            core.is_empty(),
+            "core bindings belong to the spec, not the DB: {core:?}"
+        );
+        // Non-core rows still round-trip, so the user's switches survive a save.
+        assert!(
+            ids.iter().any(|id| id == "code_search"),
+            "the user's non-core rows are still written: {ids:?}"
+        );
     }
 }

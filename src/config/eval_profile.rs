@@ -9,13 +9,14 @@
 //! apply_edits, \`lsp\` = seven), so this module takes model-visible tool
 //! names and requires each touched card to be covered as a whole.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::Deserialize;
 
+use crate::config::global_db::EvalSurfaceOverride;
 use crate::config::resolved::ResolvedConfig;
-use crate::config::schema::{AgentToolBinding, ToolPreset};
+use crate::config::schema::ToolPreset;
 use crate::config::settings_writer::SettingsWriter;
 use crate::permission::has_permission_preset;
 use crate::tool::capability::capability_catalog;
@@ -242,6 +243,13 @@ impl EvalProfile {
 
 /// Bind the profile's tools to the \`default\` agent.
 ///
+/// The scored surface goes through the system channel (\`meta.eval_surface\`,
+/// I6), not through a settings write: the lock on the built-in agents means
+/// \`write_agent\` can no longer switch a core card off, so an ablation written
+/// that way would silently score the full surface. The override **replaces**
+/// the agent's tool map, which is why no "off" rows are needed — a card the
+/// profile does not bind is simply not in the surface, core cards included.
+///
 /// \`web\` carries the adapter's probe result; it is required only when the file
 /// says \`auto\`, because the applier must not guess what the container can reach.
 pub fn apply(
@@ -342,37 +350,14 @@ pub fn apply(
         }
     }
 
-    let settings = writer.load_settings()?;
-    let Some(current) = settings.agents.get(AGENT_ID).cloned() else {
-        return Err(LitecodeError::Config(format!(
-            "agent '{AGENT_ID}' not found; a profile binds to it, it cannot create it"
-        )));
+    let surface = EvalSurfaceOverride {
+        agent_id: AGENT_ID.to_string(),
+        cards: cards
+            .iter()
+            .map(|card_id| (card_id.clone(), presets.get(card_id).copied()))
+            .collect(),
     };
-    let mut next = current;
-    // "Off" is a disabled row, not a missing one: the load-time ensure plants any
-    // missing core binding back enabled, so an absent row would come back on.
-    let mut tools: HashMap<String, AgentToolBinding> = next
-        .tools
-        .iter()
-        .filter(|(card_id, _)| !cards.contains(*card_id))
-        .map(|(card_id, binding)| {
-            let mut off = binding.clone();
-            off.enabled = false;
-            (card_id.clone(), off)
-        })
-        .collect();
-    for card_id in &cards {
-        tools.insert(
-            card_id.clone(),
-            AgentToolBinding {
-                enabled: true,
-                preset: presets.get(card_id).copied(),
-                allowed_tools: None,
-            },
-        );
-    }
-    next.tools = tools;
-    writer.write_agent(AGENT_ID, next)?;
+    writer.write_eval_surface(&surface)?;
 
     let permissions: BTreeMap<String, String> = cards
         .iter()
@@ -392,6 +377,16 @@ pub fn apply(
         permissions,
         knobs: profile.knobs.clone(),
     })
+}
+
+/// Remove the evaluator's surface override.
+///
+/// The \`default\` agent falls straight back to the locked built-in surface, and
+/// the user's own non-core toggles come with it — the override never touched
+/// \`agent_tools\`, so nothing has to be rebuilt. \`true\` when an override was
+/// actually removed.
+pub fn clear(writer: &SettingsWriter) -> Result<bool> {
+    writer.clear_eval_surface()
 }
 
 #[cfg(test)]

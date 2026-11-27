@@ -113,20 +113,88 @@ describe("settings helpers", () => {
     expect(Object.keys(enabled)).toEqual(["suite:deck"]);
   });
 
-  it("identifies protected agents", async () => {
-    const { isProtectedAgent } = await import("./settings");
-    for (const id of [
-      "default",
-      "plan",
-      "orchestrator",
-      "explore",
-      "general",
-      "verification",
-    ]) {
-      expect(isProtectedAgent(id)).toBe(true);
-    }
-    expect(isProtectedAgent("compaction")).toBe(false);
-    expect(isProtectedAgent("reviewer")).toBe(false);
+  it("exposes no agent mutation helpers beyond the profile PUT", async () => {
+    // W8: the backend owns the closed agent set (W7 contract) — the web entry
+    // point is `putAgent` for model/tool edits and nothing else.
+    const mod = await import("./settings");
+    const agentWrites = Object.keys(mod).filter(
+      (key) =>
+        key.toLowerCase().includes("agent") &&
+        /^(put|save|create|delete|remove)/.test(key),
+    );
+    expect(agentWrites).toEqual(["putAgent"]);
+  });
+});
+
+describe("settings agent surface", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("parses builtin on the agent profile and locked on catalog cards", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          builtin: true,
+          role: "primary",
+          model_ref: "prov/m1",
+          system_prompt: "builtin:default",
+          description: "Default agent",
+          tools: {
+            read: { enabled: true, preset: "ALL" },
+            lsp: { enabled: false, preset: null },
+          },
+          allowed_subagents: ["general"],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          tools: [
+            {
+              id: "read",
+              kind: "core",
+              origin: "builtin",
+              permission_surface: "preset",
+              locked: true,
+            },
+            {
+              id: "lsp",
+              kind: "engine",
+              origin: "workspace",
+              permission_surface: "fixed",
+              locked: false,
+            },
+          ],
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getAgent, getAvailableTools } = await import("./settings");
+    const agent = await getAgent("default");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/settings/agents/default");
+    expect(agent.builtin).toBe(true);
+    expect(agent.role).toBe("primary");
+    expect(agent.model_ref).toBe("prov/m1");
+    expect(agent.tools.read).toEqual({ enabled: true, preset: "ALL" });
+
+    const tools = await getAvailableTools();
+    expect(tools.map((tool) => Boolean(tool.locked))).toEqual([true, false]);
+  });
+
+  it("treats a card without the locked flag as user-configurable", async () => {
+    const { settingsToolSwitches } = await import("./settings");
+    const tools = settingsToolSwitches([
+      { id: "read", kind: "core", origin: "builtin", locked: true },
+      { id: "lsp", kind: "engine", origin: "workspace" },
+    ]);
+    expect(tools.map((tool) => Boolean(tool.locked))).toEqual([true, false]);
   });
 });
 

@@ -1,6 +1,4 @@
-use crate::config::global_db::tools::{
-    core_configurable_tools, network_core_tools, optional_builtin_ids,
-};
+use crate::config::global_db::tools::{core_configurable_tools, optional_builtin_ids};
 use crate::config::schema::{PermissionSurface, ToolPreset};
 
 use super::action::PermissionAction;
@@ -42,7 +40,6 @@ pub fn apply_preset_to_tools(preset: ToolPreset) -> Vec<(String, ToolPolicy, Bin
     let mut out = Vec::new();
     for tool in core_configurable_tools()
         .iter()
-        .chain(network_core_tools().iter())
         .chain(optional_builtin_ids().iter())
     {
         if !has_permission_preset(tool) {

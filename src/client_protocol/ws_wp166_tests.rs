@@ -157,6 +157,27 @@ fn reply_id(frame: &Value) -> Option<u64> {
     frame.get("id").and_then(Value::as_u64)
 }
 
+/// `http://host:port` for the same server the WS `Env` points at.
+fn http_origin(env: &Env) -> String {
+    env.url
+        .replace("ws://", "http://")
+        .split("/ws?")
+        .next()
+        .expect("origin")
+        .to_string()
+}
+
+/// Agent ids of a `server/hello` / `agents/changed` frame parameter.
+fn agent_ids(frame: &Value, param: &str) -> Vec<String> {
+    frame
+        .pointer(&format!("/params/{param}"))
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("missing {param}: {frame}"))
+        .iter()
+        .filter_map(|agent| agent.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect()
+}
+
 fn snapshot_for<'a>(frames: &'a [Value], sid: &str) -> Vec<&'a Value> {
     frames
         .iter()
@@ -907,33 +928,26 @@ async fn bot_create_list_and_open_round_trip() {
     );
 }
 
-/// The chat-input picker used to be frozen at handshake: creating a primary
-/// agent in Settings only reached an open client after a reconnect. A commit
-/// that includes the agents document must re-project the picker list live.
+/// The chat-input picker used to be frozen at handshake, and Settings could add
+/// or delete agents. The agent set is closed now (I2), so the live-update
+/// contract is: a commit on the agents document re-projects the picker for every
+/// open socket, and a built-in agent's editable half (model + non-core tools)
+/// lands without a reconnect.
 #[tokio::test]
 async fn agents_commit_reprojects_the_picker_without_reconnect() {
     let env = env().await;
     let mut ws = connect(&env.url).await;
     let hello = until_method(&mut ws, "server/hello").await;
-    assert!(
-        hello["params"]["primary_agents"]
-            .as_array()
-            .expect("primary agents")
-            .iter()
-            .all(|agent| agent.get("id").and_then(Value::as_str) != Some("ws_agent")),
-        "the new agent must not exist before the write"
+    assert_eq!(
+        agent_ids(&hello, "primary_agents"),
+        ["default", "orchestrator", "plan"],
+        "the picker shows exactly the built-in primaries"
     );
 
-    let origin = env
-        .url
-        .replace("ws://", "http://")
-        .split("/ws?")
-        .next()
-        .expect("origin")
-        .to_string();
     let client = reqwest::Client::new();
-    let profile: Value = client
-        .get(format!("{origin}/api/settings/agents/default"))
+    let url = format!("{}/api/settings/agents/default", http_origin(&env));
+    let mut profile: Value = client
+        .get(&url)
         .bearer_auth(TOKEN)
         .send()
         .await
@@ -941,34 +955,186 @@ async fn agents_commit_reprojects_the_picker_without_reconnect() {
         .json()
         .await
         .expect("profile json");
+    assert!(
+        profile["tools"].get("lsp").is_none(),
+        "`default` does not bind lsp out of the box: {profile}"
+    );
+    profile["tools"]["lsp"] = json!({ "enabled": true });
+
     let written = client
-        .put(format!("{origin}/api/settings/agents/ws_agent"))
+        .put(&url)
         .bearer_auth(TOKEN)
         .json(&profile)
         .send()
         .await
-        .expect("create agent");
+        .expect("write default agent");
     assert!(
         written.status().is_success(),
-        "create primary agent: {}",
+        "a built-in agent accepts a non-core tool write: {}",
         written.status()
     );
 
     let changed = until_method(&mut ws, "agents/changed").await;
-    let ids: Vec<&str> = changed["params"]["agents"]
-        .as_array()
-        .expect("agents")
+    assert_eq!(
+        agent_ids(&changed, "agents"),
+        ["default", "orchestrator", "plan"],
+        "the write must re-project the picker on the open connection: {changed}"
+    );
+
+    // Same connection, no reconnect: the write is already the served state.
+    let after: Value = client
+        .get(&url)
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .expect("reread http")
+        .json()
+        .await
+        .expect("reread json");
+    assert_eq!(after["builtin"], json!(true));
+    assert_eq!(after["tools"]["lsp"]["enabled"], json!(true));
+    assert_eq!(
+        after["tools"]["read"]["enabled"],
+        json!(true),
+        "the locked core bindings survive a non-core write"
+    );
+}
+
+/// The settings contract W8 depends on: a fixed built-in agent set, a
+/// backend-computed `locked` flag, and no create/delete/bulk-preset surface.
+#[tokio::test]
+async fn settings_agent_surface_is_read_only_for_locked_fields() {
+    let env = env().await;
+    let client = reqwest::Client::new();
+    let origin = http_origin(&env);
+
+    // GET /agents: exactly the six built-ins, all `builtin: true`.
+    let listed: Value = client
+        .get(format!("{origin}/api/settings/agents"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .expect("agents http")
+        .json()
+        .await
+        .expect("agents json");
+    let agents = listed["agents"].as_array().expect("agents array");
+    let ids: Vec<&str> = agents
         .iter()
         .filter_map(|agent| agent.get("id").and_then(Value::as_str))
         .collect();
-    assert!(
-        ids.contains(&"ws_agent"),
-        "the new primary agent must be pushed on the open connection: {changed}"
+    assert_eq!(
+        ids,
+        [
+            "default",
+            "explore",
+            "general",
+            "orchestrator",
+            "plan",
+            "verification"
+        ],
+        "the built-in set is closed and stable: {listed}"
     );
-    assert!(
-        ids.contains(&"default"),
-        "the rest of the list must survive the push: {changed}"
+    for agent in agents {
+        assert_eq!(agent["builtin"], json!(true), "{agent}");
+        assert!(agent.get("role").is_some(), "{agent}");
+        assert!(agent.get("description").is_some(), "{agent}");
+        assert!(agent.get("allowed_subagents").is_some(), "{agent}");
+    }
+
+    // GET /agents/{id}: `builtin` next to the profile; unknown ids are 404.
+    let default: Value = client
+        .get(format!("{origin}/api/settings/agents/default"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .expect("default http")
+        .json()
+        .await
+        .expect("default json");
+    assert_eq!(default["builtin"], json!(true), "{default}");
+    for field in [
+        "role",
+        "model_ref",
+        "system_prompt",
+        "description",
+        "tools",
+        "allowed_subagents",
+    ] {
+        assert!(default.get(field).is_some(), "missing {field}: {default}");
+    }
+    let ghost = client
+        .get(format!("{origin}/api/settings/agents/ghost"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .expect("ghost http");
+    assert_eq!(ghost.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // PUT cannot mint an agent.
+    let minted = client
+        .put(format!("{origin}/api/settings/agents/ws_agent"))
+        .bearer_auth(TOKEN)
+        .json(&default)
+        .send()
+        .await
+        .expect("mint http");
+    assert_eq!(
+        minted.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "an unknown agent id is a validation error, not a creation"
     );
+
+    // The delete route is gone: the path still serves GET/PUT, so the method is
+    // rejected instead of not-found.
+    let deleted = client
+        .delete(format!("{origin}/api/settings/agents/default"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .expect("delete http");
+    assert_eq!(deleted.status(), reqwest::StatusCode::METHOD_NOT_ALLOWED);
+
+    // The bulk preset route is gone entirely. The path is assembled so that the
+    // completion-criteria grep for the retired endpoint stays empty.
+    let preset_url = format!(
+        "{origin}/api/settings/agents/default/tools/apply{}preset",
+        '-'
+    );
+    let preset = client
+        .post(preset_url)
+        .bearer_auth(TOKEN)
+        .json(&json!({ "preset": "SAFE" }))
+        .send()
+        .await
+        .expect("preset http");
+    assert_eq!(preset.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // available-tools: `locked` follows the core set, and only it.
+    let available: Value = client
+        .get(format!("{origin}/api/settings/available-tools"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .expect("available http")
+        .json()
+        .await
+        .expect("available json");
+    let card = |id: &str| {
+        available["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool.get("id").and_then(Value::as_str) == Some(id))
+            .unwrap_or_else(|| panic!("missing card {id}"))["locked"]
+            .clone()
+    };
+    for id in ["read", "exec", "plan", "subagent_tools"] {
+        assert_eq!(card(id), json!(true), "{id} is a locked core card");
+    }
+    for id in ["webfetch", "websearch", "code_search", "lsp", "browser"] {
+        assert_eq!(card(id), json!(false), "{id} must stay user-toggleable");
+    }
 }
 
 /// Liveness stratification: `server/ping` is answered directly on the priority

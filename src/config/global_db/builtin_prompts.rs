@@ -5,7 +5,7 @@
 //! `include_str!` embeds every file at compile time. Each file ends with one
 //! trailing newline. `DEFAULT_PROMPT` and its siblings are the editable layers
 //! only. `build_system_prompt` splices the harness around them for every
-//! non-hidden agent.
+//! built-in agent.
 
 pub const HARNESS_SYSTEM: &str = include_str!("prompts/harness/system.md");
 pub const HARNESS_CODE_RUNTIME: &str = include_str!("prompts/harness/code_runtime.md");

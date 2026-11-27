@@ -16,7 +16,6 @@ import {
   getWebSearch,
   getSettingsSummary,
   loadSettingsAgentIds,
-  deleteAgent,
   putAgent,
   putLog,
   putExcludes,
@@ -159,8 +158,6 @@ interface SettingsStore extends SettingsStoreState {
   restartMcpServer: (id: string, scope?: ToolScope) => Promise<McpProbeResult>;
   stopMcpServer: (id: string, scope?: ToolScope) => Promise<McpProbeResult>;
   saveAgent: (id: string, profile: AgentProfile) => Promise<void>;
-  createAgent: (id: string, profile: AgentProfile) => Promise<void>;
-  removeAgent: (id: string) => Promise<void>;
   saveLog: (level: string | null) => Promise<void>;
   saveExcludes: (body: WorkspaceExcludesLists) => Promise<void>;
   saveEngines: (file: WorkspaceEnginesDoc) => Promise<void>;
@@ -706,37 +703,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
           agents: { ...s.agents, [id]: normalized },
           docClock: stampClock(s.docClock, ["agents"], revision),
         }));
-      }),
-
-    createAgent: async (id, profile) => {
-      await get().saveAgent(id, profile);
-      set((s) => ({
-        agentIds: s.agentIds.includes(id)
-          ? s.agentIds
-          : [...s.agentIds, id].sort(),
-        selectedAgentId: id,
-      }));
-    },
-
-    removeAgent: (id) =>
-      withTurnGuard(async () => {
-        const { revision } = await deleteAgent(id);
-        const agentIds = await loadSettingsAgentIds();
-        const agents: Record<string, AgentProfile> = {};
-        await Promise.all(
-          agentIds.map(async (agentId) => {
-            agents[agentId] = await getAgent(agentId);
-          }),
-        );
-        set({
-          revision,
-          agentIds,
-          agents,
-          selectedAgentId: agentIds.includes(get().selectedAgentId)
-            ? get().selectedAgentId
-            : (agentIds[0] ?? "default"),
-          docClock: stampClock(get().docClock, ["agents"], revision),
-        });
       }),
 
     saveLog: (level) =>

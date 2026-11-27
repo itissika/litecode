@@ -4,10 +4,8 @@
 //!   records lock.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use litecode::config::TurnGuard;
-use litecode::config::schema::AgentProfile;
 use litecode::session::manager::SessionManager;
 use tempfile::TempDir;
 
@@ -29,20 +27,21 @@ fn concurrent_commit_partial_does_not_lose_updates() {
 
     // 8 threads each commit a DISTINCT settings document entry. Without the
     // commit_partial process mutex (REV-6) the read-modify-write races would
-    // drop all but one. (Provider definitions moved to the catalog, so the
-    // per-id settings document is now the agent map.)
+    // drop all but one. Provider definitions moved to the catalog and the
+    // agent set is now closed (W3), so the per-id settings document used here
+    // is the MCP server map.
     let mut handles = Vec::new();
     for i in 0..8u32 {
         let w = Arc::clone(&writer);
         handles.push(std::thread::spawn(move || {
-            w.write_agent(
-                &format!("agent_{i}"),
-                AgentProfile {
-                    description: format!("concurrent {i}"),
+            w.write_mcp_server(
+                &format!("srv_{i}"),
+                litecode::config::schema::McpServerDefinition {
+                    command: "echo".into(),
                     ..Default::default()
                 },
             )
-            .expect("write agent");
+            .expect("write mcp server");
         }));
     }
     for h in handles {
@@ -52,8 +51,8 @@ fn concurrent_commit_partial_does_not_lose_updates() {
     let settings = writer.load_settings().expect("load settings");
     for i in 0..8u32 {
         assert!(
-            settings.agents.contains_key(&format!("agent_{i}")),
-            "agent_{i} update lost under concurrent commit (REV-6)"
+            settings.mcp_servers.contains_key(&format!("srv_{i}")),
+            "srv_{i} update lost under concurrent commit (REV-6)"
         );
     }
 }

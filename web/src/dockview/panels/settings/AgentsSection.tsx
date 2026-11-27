@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, ArrowClockwise } from "@phosphor-icons/react";
+import { ArrowClockwise } from "@phosphor-icons/react";
 import { useTranslation } from "react-i18next";
 
 import {
   presetToolIds,
   settingsToolSwitches,
-  isProtectedAgent,
   applyToolEnabled,
   type AgentProfile,
+  type AgentRole,
   type AgentToolBinding,
   type CatalogModelDto,
 } from "../../../api/settings";
@@ -17,21 +17,17 @@ import { mergeLayeredMcp } from "../../../stores/settingsDocuments";
 import { ModelSwitcher } from "../../../components/ModelSwitcher";
 import { Select } from "../../../components/ui/Select";
 import { AgentTypeIcon, agentColor } from "../../../components/agentIdentity";
-import { AgentProfileFields } from "../../../components/agent/AgentProfileFields";
 import {
   AgentToolsGrid,
   bindingFor,
 } from "../../../components/agent/AgentToolsGrid";
 import {
   FieldLabel,
-  TextInput,
   SettingsPageShell,
   useSettingsSaveBlocked,
 } from "./shared";
-import { useConfirmDialog } from "../../../components/ui/useConfirmDialog";
 import {
   flushRegisteredSettings,
-  isPersistBusy,
   shouldHydrateDraftFromStore,
   useDocPersist,
   useSettingsPersist,
@@ -49,94 +45,35 @@ function toSwitcherModel(model: CatalogModelDto): ModelInfo {
   };
 }
 
-function AllowedSubagentsSelect({
-  draft,
-  subagentIds,
-  agents,
-  saveBlocked,
-  onChange,
-}: {
-  draft: AgentProfile;
-  subagentIds: string[];
-  agents: Record<string, AgentProfile>;
-  saveBlocked: boolean;
-  onChange: (profile: AgentProfile) => void;
-}) {
-  const { t } = useTranslation();
-  const launchEnabled =
-    (draft.tools.subagent_tools ?? draft.tools.subagent_launch)?.enabled === true;
-  const allowed = new Set(draft.allowed_subagents ?? []);
-
-  const toggle = (id: string) => {
-    const next = new Set(allowed);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    onChange({ ...draft, allowed_subagents: [...next].sort() });
-  };
-
-  return (
-    <div className="space-y-2">
-      <h3 className="settings-section-title">{t("settings.agents.allowedSubagents")}</h3>
-      {launchEnabled && subagentIds.length > 0 && allowed.size === 0 ? (
-        <p className="text-xs text-(--_dk-amber-500)">
-          {t("settings.agents.selectSubagent")}
-        </p>
-      ) : null}
-      {subagentIds.length === 0 ? (
-        <p className="text-sm text-(--_dk-text-disabled)">
-          {t("settings.agents.noSubagentProfiles")}
-        </p>
-      ) : (
-        <div className="settings-card max-h-48 space-y-1 overflow-y-auto p-3">
-          {subagentIds.map((id) => (
-            <label
-              key={id}
-              className="flex cursor-pointer items-start gap-2 text-sm"
-            >
-              <input
-                type="checkbox"
-                checked={allowed.has(id)}
-                disabled={saveBlocked}
-                onChange={() => toggle(id)}
-                className="mt-0.5 accent-(--_dk-accent-hover)"
-              />
-              <span>
-                <span className="font-mono text-(--_dk-text-secondary)">
-                  {id}
-                </span>
-                {agents[id]?.description ? (
-                  <span className="ml-2 text-xs text-(--_dk-text-disabled)">
-                    {agents[id].description}
-                  </span>
-                ) : null}
-              </span>
-            </label>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // Bindings for tools not in this workspace catalog stay on the profile so a PUT
 // does not wipe other-workspace MCP/custom rows. The grid only shows catalog ids.
+/**
+ * Allowed-subagent chip: a primary reads as a filled chip, a subagent as an
+ * empty hairline frame.
+ */
+function agentChipClass(role: AgentRole): string {
+  return role === "primary"
+    ? "tag tag-neutral tag-sm tag-soft"
+    : "tag tag-neutral tag-sm";
+}
+
 function agentPersistPayload(draft: AgentProfile): AgentProfile {
-  if (draft.role === "subagent") {
-    return {
-      ...draft,
-      tools: { ...draft.tools },
-      allowed_subagents: [],
-    };
-  }
   return {
     ...draft,
     tools: { ...draft.tools },
   };
 }
 
+/**
+ * Settings → Agents.
+ *
+ * Every agent here is a LiteCode spec: identity, prompt, and core tools are
+ * system-tuned and read-only (the backend drops those on write). The page keeps
+ * only the two things the user owns — the model and the non-core tool cards
+ * (search, LSP, web, custom, MCP).
+ */
 export function AgentsSection() {
   const { t } = useTranslation();
-  const { confirm, dialog } = useConfirmDialog();
   const availableTools = useSettingsStore((s) => s.availableTools);
   const llm = useSettingsStore((s) => s.llm);
   const activeModels = useMemo(() => llm?.active_models ?? [], [llm]);
@@ -157,23 +94,17 @@ export function AgentsSection() {
   const { persistStatus, setPersistStatus } = useDocPersist("agents");
   const setSelectedAgentId = useSettingsStore((s) => s.setSelectedAgentId);
   const saveAgent = useSettingsStore((s) => s.saveAgent);
-  const createAgent = useSettingsStore((s) => s.createAgent);
-  const removeAgent = useSettingsStore((s) => s.removeAgent);
   const refreshAgents = useSettingsStore((s) => s.refreshAgents);
 
-  const [creating, setCreating] = useState(false);
-  const [newAgentId, setNewAgentId] = useState("");
+  // Picker order only: primary agents first, subagents after (store order
+  // inside a group). The role itself is spec-owned and not user-sortable.
+  const agentOptionIds = useMemo(() => {
+    const rank = (id: string) => (agents[id]?.role === "primary" ? 0 : 1);
+    return [...agentIds].sort((a, b) => rank(a) - rank(b));
+  }, [agentIds, agents]);
 
   const profile = agents[selectedAgentId];
   const [draft, setDraft] = useState<AgentProfile | null>(null);
-
-  const subagentIds = useMemo(
-    () =>
-      agentIds
-        .filter((id) => agents[id]?.role === "subagent")
-        .sort((a, b) => a.localeCompare(b)),
-    [agentIds, agents],
-  );
 
   const switchTools = useMemo(
     () => settingsToolSwitches(availableTools ?? []),
@@ -195,17 +126,17 @@ export function AgentsSection() {
   );
 
   useEffect(() => {
-    if (!profile || creating) return;
+    if (!profile) return;
     if (!shouldHydrateDraftFromStore(persistStatus)) return;
     setDraft({
       ...profile,
       allowed_subagents: profile.allowed_subagents ?? [],
       tools: { ...profile.tools },
     });
-  }, [profile, selectedAgentId, persistStatus, creating]);
+  }, [profile, selectedAgentId, persistStatus]);
 
   useSettingsPersist<AgentProfile | null, AgentProfile>(draft, {
-    enabled: !creating && draft != null,
+    enabled: draft != null,
     debounceMs: 400,
     setStatus: setPersistStatus,
     serialize: (d) => {
@@ -228,6 +159,10 @@ export function AgentsSection() {
 
   const updateBinding = (toolId: string, patch: Partial<AgentToolBinding>) => {
     if (!draft) return;
+    // Locked cards are spec-owned: a stray click must not write a row, whether
+    // it came from the toggle or a preset button.
+    const entry = switchTools.find((tool) => tool.id === toolId);
+    if (entry?.locked) return;
     if (patch.enabled !== undefined) {
       setDraft({
         ...draft,
@@ -250,57 +185,6 @@ export function AgentsSection() {
     });
   };
 
-  const startCreate = () => {
-    setCreating(true);
-    setNewAgentId("");
-    setDraft({
-      role: "subagent",
-      // A new agent starts on the first active catalog model.
-      model_ref: activeModels[0]?.ref ?? "",
-      system_prompt: "",
-      description: "",
-      tools: {},
-      allowed_subagents: [],
-    });
-  };
-
-  const cancelCreate = () => {
-    setCreating(false);
-    setNewAgentId("");
-    if (profile) {
-      setDraft({
-        ...profile,
-        allowed_subagents: profile.allowed_subagents ?? [],
-      });
-    }
-  };
-
-  const onCreate = () => {
-    if (!draft || !newAgentId.trim()) return;
-    const payload = agentPersistPayload(draft);
-    void createAgent(newAgentId.trim(), payload)
-      .then(() => {
-        setCreating(false);
-        setPersistStatus("saved");
-      })
-      .catch(() => {
-        // toast already shown
-      });
-  };
-
-  const onDelete = () => {
-    if (isProtectedAgent(selectedAgentId)) return;
-    void confirm({
-      title: t("common.delete"),
-      body: t("settings.agents.deleteConfirm", { id: selectedAgentId }),
-      danger: true,
-      confirmLabel: t("common.delete"),
-      cancelLabel: t("common.cancel"),
-    }).then((ok) => {
-      if (ok) void removeAgent(selectedAgentId);
-    });
-  };
-
   if (!draft) {
     return (
       <SettingsPageShell title={t('settings.agents.title')}>
@@ -309,192 +193,117 @@ export function AgentsSection() {
     );
   }
 
+  const allowedSubagents = draft.allowed_subagents ?? [];
+
   return (
     <SettingsPageShell
       title={t('settings.agents.title')}
       actions={
-        <>
-          {creating ? (
-            <button
-              type="button"
-              onClick={onCreate}
-              disabled={
-                saveBlocked ||
-                !newAgentId.trim() ||
-                isPersistBusy(persistStatus)
-              }
-              className="btn-primary btn-sm"
-            >
-              {t("common.create")}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={startCreate}
-            disabled={saveBlocked}
-            className="btn btn-icon"
-            aria-label={t("settings.agents.add")}
-            title={t("settings.agents.add")}
-          >
-            <Plus size={16} />
-          </button>
-          <button
-            type="button"
-            onClick={() => void refreshAgents()}
-            className="btn btn-icon"
-            aria-label={t("settings.agents.refresh")}
-            title={t("settings.agents.refresh")}
-          >
-            <ArrowClockwise size={16} />
-          </button>
-        </>
+        <button
+          type="button"
+          onClick={() => void refreshAgents()}
+          className="btn btn-icon"
+          aria-label={t("settings.agents.refresh")}
+          title={t("settings.agents.refresh")}
+        >
+          <ArrowClockwise size={16} />
+        </button>
       }
     >
       <div className="space-y-6">
         <div className="space-y-3">
-          {creating ? (
-            <div className="settings-card space-y-3 p-3">
-              <div>
-                <FieldLabel required>{t("settings.agents.newId")}</FieldLabel>
-                <TextInput
-                  value={newAgentId}
-                  onChange={(e) => setNewAgentId(e.target.value.toLowerCase())}
-                  placeholder="my_agent"
-                  disabled={saveBlocked}
-                  className="font-mono"
-                />
-                <p className="settings-field-hint">
-                  {t("settings.agents.idHint")}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={cancelCreate}
-                  className="btn-ghost"
-                >
-                  {t("common.cancel")}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="settings-card space-y-3 p-3">
-              <div className="flex flex-wrap items-end gap-3">
-                <div className="min-w-[160px] flex-1">
-                  <FieldLabel>{t("common.agent")}</FieldLabel>
-                  <Select
-                    value={selectedAgentId}
-                    onChange={(id) => {
-                      void flushRegisteredSettings().then(() =>
-                        setSelectedAgentId(id),
-                      );
-                    }}
-                    options={agentIds.map((id) => {
-                      const role = agents[id]?.role ?? "primary";
-                      return {
-                        value: id,
-                        label: (
-                          <span className="flex items-center gap-1.5">
-                            <AgentTypeIcon role={role} color={agentColor(id)} />
-                            <span>{id}</span>
-                            {role === "hidden" ? (
-                              <span className="text-(--_dk-text-disabled)">
-                                {t("common.hidden")}
-                              </span>
-                            ) : null}
+          <div className="settings-card space-y-3 p-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="min-w-[160px] flex-1">
+                <FieldLabel>{t("common.agent")}</FieldLabel>
+                <Select
+                  value={selectedAgentId}
+                  onChange={(id) => {
+                    void flushRegisteredSettings().then(() =>
+                      setSelectedAgentId(id),
+                    );
+                  }}
+                  options={agentOptionIds.map((id) => {
+                    const role = agents[id]?.role ?? "primary";
+                    return {
+                      value: id,
+                      label: (
+                        <span className="flex items-center gap-1.5">
+                          <AgentTypeIcon role={role} color={agentColor(id)} />
+                          <span>{id}</span>
+                          {/* The role trails the name at a smaller size, as in
+                              `name -- type`. */}
+                          <span className="flex shrink-0 items-center gap-1 text-[0.65rem]">
+                            <span className="text-(--_dk-text-disabled)">
+                              --
+                            </span>
+                            <span className="text-(--_dk-text-muted)">
+                              {role === "primary"
+                                ? t("settings.agents.primary")
+                                : t("settings.agents.subagentRole")}
+                            </span>
                           </span>
-                        ),
-                      };
-                    })}
-                    className="w-full"
-                  />
-                </div>
-                <div className="min-w-[160px] flex-1">
-                  <FieldLabel>{t("common.model")}</FieldLabel>
-                  <ModelSwitcher
-                    variant="field"
-                    models={switcherModels}
-                    modelId={draft.model_ref || null}
-                    disabled={saveBlocked}
-                    onChange={(model_ref) => setDraft({ ...draft, model_ref })}
-                  />
-                  {activeModels.length === 0 ? (
-                    <p className="settings-field-hint">
-                      {t("settings.agents.configureProvider")}
-                    </p>
-                  ) : null}
-                </div>
-                <div>
-                  <FieldLabel>{t("common.type")}</FieldLabel>
-                  <div className="flex gap-2">
-                    {(["primary", "subagent"] as const).map((role) => (
-                      <button
-                        key={role}
-                        type="button"
-                        disabled={saveBlocked}
-                        onClick={() => setDraft({ ...draft, role })}
-                        className={`flex items-center gap-1 ${draft.role === role ? "btn-primary btn-xs" : "btn-ghost btn-xs"}`}
-                      >
-                        <AgentTypeIcon role={role} />
-                        {role === "primary" ? t("settings.agents.primary") : t("settings.agents.subagentRole")}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                        </span>
+                      ),
+                    };
+                  })}
+                  className="w-full"
+                />
               </div>
-              {!isProtectedAgent(selectedAgentId) ? (
-                <div className="flex justify-end">
-                  <button
-                    type="button"
-                    onClick={onDelete}
-                    disabled={saveBlocked || isPersistBusy(persistStatus)}
-                    className="btn-danger btn-xs"
-                  >
-                    {t("common.delete")}
-                  </button>
-                </div>
-              ) : null}
+              <div className="min-w-[160px] flex-1">
+                <FieldLabel>{t("common.model")}</FieldLabel>
+                <ModelSwitcher
+                  variant="field"
+                  models={switcherModels}
+                  modelId={draft.model_ref || null}
+                  disabled={saveBlocked}
+                  onChange={(model_ref) => setDraft({ ...draft, model_ref })}
+                />
+                {activeModels.length === 0 ? (
+                  <p className="settings-field-hint">
+                    {t("settings.agents.configureProvider")}
+                  </p>
+                ) : null}
+              </div>
             </div>
-          )}
-
-          {creating || draft.role !== "hidden" ? (
-            <AgentProfileFields
-              draft={draft}
-              saveBlocked={saveBlocked}
-              onChange={setDraft}
-            />
-          ) : null}
+            {draft.description || allowedSubagents.length > 0 ? (
+              <div className="flex min-w-0 flex-col gap-1 text-xs text-(--_dk-text-muted)">
+                {draft.description ? (
+                  <span data-agent-description className="min-w-0 truncate">
+                    {draft.description}
+                  </span>
+                ) : null}
+                {allowedSubagents.length > 0 ? (
+                  <span className="flex flex-wrap items-center gap-1">
+                    <span>{t("settings.agents.allowedSubagents")}:</span>
+                    {allowedSubagents.map((id) => {
+                      const role = agents[id]?.role ?? "subagent";
+                      return (
+                        <span key={id} className={agentChipClass(role)}>
+                          <AgentTypeIcon role={role} />
+                          {id}
+                        </span>
+                      );
+                    })}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </div>
 
-        {draft.role === "primary" ? (
-          <>
-            <AllowedSubagentsSelect
-              draft={draft}
-              subagentIds={subagentIds}
-              agents={agents}
-              saveBlocked={saveBlocked}
-              onChange={setDraft}
-            />
-            <AgentToolsGrid
-              draft={draft}
-              bindableTools={bindableToolsPrimary}
-              mcpServers={mcpList}
-              saveBlocked={saveBlocked}
-              onBindingChange={updateBinding}
-            />
-          </>
-        ) : draft.role === "subagent" ? (
-          <AgentToolsGrid
-            draft={draft}
-            bindableTools={bindableToolsSubagent}
-            mcpServers={mcpList}
-            saveBlocked={saveBlocked}
-            onBindingChange={updateBinding}
-            note={t("settings.agents.subagentsNote")}
-          />
-        ) : null}
+        <AgentToolsGrid
+          draft={draft}
+          bindableTools={
+            draft.role === "primary"
+              ? bindableToolsPrimary
+              : bindableToolsSubagent
+          }
+          mcpServers={mcpList}
+          saveBlocked={saveBlocked}
+          onBindingChange={updateBinding}
+        />
       </div>
-      {dialog}
     </SettingsPageShell>
   );
 }
