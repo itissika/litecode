@@ -30,8 +30,6 @@ vi.mock("../../stores/turnStore", () => ({
                 summary: "Run bash command",
                 kind: "permission",
                 free_text: false,
-                options: [],
-                multi_select: false,
                 questions: [],
               },
             ],

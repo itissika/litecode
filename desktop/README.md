@@ -48,11 +48,7 @@ Optional automation attach (no Home UI). Requires the same
 `LITECODE_TOKEN` the remote `serve --require-auth` uses:
 
 ```bash
-# Formal
 LITECODE_REMOTE_URL=http://127.0.0.1:7483 LITECODE_TOKEN=<token> npm run dev
-
-# Legacy alias (same semantics)
-LITECODE_DEV_URL=http://127.0.0.1:7483 LITECODE_TOKEN=<token> npm run dev
 ```
 
 In the packaged app: use the Home hub for workspace switching.

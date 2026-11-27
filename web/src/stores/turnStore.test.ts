@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+﻿import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { isCompactCutRow } from "../api/adapter";
 import { formatLlmReconnect } from "../lib/llmReconnect";
@@ -72,7 +72,6 @@ describe("turnStore convergence", () => {
           {
             ...EMPTY_SLICE,
             contextWindow: 1000,
-            contextTokensEstimate: 100,
             lastTurnPromptTokens: 100,
             compactEligible: true,
           },
@@ -102,7 +101,6 @@ describe("turnStore convergence", () => {
           {
             ...EMPTY_SLICE,
             contextWindow: 1000,
-            contextTokensEstimate: 900,
             lastTurnPromptTokens: 900,
             compactEligible: false,
           },
@@ -262,7 +260,7 @@ describe("turnStore convergence", () => {
       session_id: sessionId,
       trigger: "auto",
       stage: "started",
-      snapshot: { ...snap, compacting: false },
+      snapshot: snap,
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(true);
     expect(useTurnStore.getState().byId.get(sessionId)?.manualCompacting).toBe(
@@ -272,16 +270,17 @@ describe("turnStore convergence", () => {
       session_id: sessionId,
       trigger: "auto",
       stage: "succeeded",
-      snapshot: { ...snap, compacting: false },
+      snapshot: snap,
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
 
-    // Old servers only mark the manual lease; it still blocks the composer.
+    // A lifecycle without a compaction state still marks the manual lease; it
+    // blocks the composer.
     useTurnStore.getState().onCompactLifecycle({
       session_id: sessionId,
       trigger: "manual",
       stage: "started",
-      snapshot: { ...snap, compacting: false },
+      snapshot: snap,
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.manualCompacting).toBe(
       true,
@@ -290,7 +289,7 @@ describe("turnStore convergence", () => {
       session_id: sessionId,
       trigger: "manual",
       stage: "succeeded",
-      snapshot: { ...snap, compacting: false },
+      snapshot: snap,
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.manualCompacting).toBe(
       false,
@@ -308,7 +307,7 @@ describe("turnStore convergence", () => {
       trigger: "auto",
       stage: "started",
       at: 41,
-      snapshot: { ...snap, compacting: true },
+      snapshot: snap,
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compactingAt).toBe(41);
 
@@ -316,7 +315,7 @@ describe("turnStore convergence", () => {
       session_id: sessionId,
       trigger: "auto",
       stage: "succeeded",
-      snapshot: { ...snap, compacting: false },
+      snapshot: snap,
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compactingAt).toBeNull();
   });
@@ -331,7 +330,7 @@ describe("turnStore convergence", () => {
       session_id: sessionId,
       trigger: "auto",
       stage: "started",
-      snapshot: { ...snap, compacting: false },
+      snapshot: snap,
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(true);
 
@@ -339,7 +338,7 @@ describe("turnStore convergence", () => {
       session_id: sessionId,
       trigger: "auto",
       stage: "cancelled",
-      snapshot: { ...snap, compacting: false },
+      snapshot: snap,
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
     expect(useToastStore.getState().toasts).toHaveLength(0);
@@ -398,14 +397,14 @@ describe("turnStore convergence", () => {
       session_id: sessionId,
       trigger: "overflow",
       stage: "started",
-      snapshot: { ...snap, compacting: false },
+      snapshot: snap,
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(true);
     useTurnStore.getState().onCompactLifecycle({
       session_id: sessionId,
       trigger: "overflow",
       stage: "succeeded",
-      snapshot: { ...snap, compacting: false },
+      snapshot: snap,
     });
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
   });
@@ -717,7 +716,6 @@ describe("turnStore convergence", () => {
     useTurnStore.getState().applySnapshotMeter(sessionId, {
       ...snapshot(sessionId),
       context_window: 1000,
-      context_tokens_estimate: 400,
       compact_eligible: true,
       context_meter: {
         context_window: 1000,
@@ -875,7 +873,6 @@ describe("turnStore convergence", () => {
             ...EMPTY_SLICE,
             lastTurnPromptTokens: 50000,
             lastTurnCacheHitTokens: 40000,
-            contextTokensEstimate: 50000,
           },
         ],
       ]),
@@ -883,14 +880,12 @@ describe("turnStore convergence", () => {
     useTurnStore.getState().applySnapshotMeter(sessionId, {
       ...snapshot(sessionId),
       context_window: 128000,
-      context_tokens_estimate: 12000,
       compact_eligible: false,
       // Post-compact snapshots omit last_turn_token_stats.
     });
     const slice = useTurnStore.getState().byId.get(sessionId)!;
     expect(slice.lastTurnPromptTokens).toBe(0);
     expect(slice.lastTurnCacheHitTokens).toBe(0);
-    expect(slice.contextTokensEstimate).toBe(12000);
   });
 
   it("applySnapshotMeter hydrates occupancy mix from item-token breakdown", () => {
@@ -898,7 +893,6 @@ describe("turnStore convergence", () => {
     useTurnStore.getState().applySnapshotMeter(sessionId, {
       ...snapshot(sessionId),
       context_window: 128000,
-      context_tokens_estimate: 12000,
       context_token_breakdown: { tool_output: 9000, conversation: 2000 },
     });
     const slice = useTurnStore.getState().byId.get(sessionId)!;
@@ -1220,8 +1214,6 @@ describe("grantPermission receipt (FE-04)", () => {
                 summary: "Run bash",
                 kind: "permission",
                 free_text: false,
-                options: [],
-                multi_select: false,
                 questions: [],
               },
             ],
@@ -1305,11 +1297,6 @@ describe("grantPermission receipt (FE-04)", () => {
               summary: "Pick one",
               kind: "ask_user",
               free_text: true,
-              options: [
-                { id: "a", label: "A" },
-                { id: "b", label: "B" },
-              ],
-              multi_select: false,
               questions: [
                 {
                   id: "q0",
@@ -1318,7 +1305,6 @@ describe("grantPermission receipt (FE-04)", () => {
                     { id: "a", label: "A" },
                     { id: "b", label: "B" },
                   ],
-                  free_text: true,
                 },
               ],
             },
@@ -1372,8 +1358,6 @@ describe("grantPermission receipt (FE-04)", () => {
               summary: "Confirm a few things",
               kind: "ask_user",
               free_text: false,
-              options: [],
-              multi_select: false,
               questions: [
                 {
                   id: "tone",
@@ -1424,7 +1408,7 @@ describe("grantPermission receipt (FE-04)", () => {
     expect(params).not.toHaveProperty("selected");
   });
 
-  it("onPermissionRequest normalizes legacy options into questions[q0]", () => {
+  it("onPermissionRequest keeps ask_user questions verbatim", () => {
     const sessionId = "s-norm";
     useTurnStore.getState().onPermissionRequest(sessionId, {
       turn_id: "t1",
@@ -1434,17 +1418,14 @@ describe("grantPermission receipt (FE-04)", () => {
       summary: "Pick",
       session_id: sessionId,
       kind: "ask_user",
-      options: [{ id: "x", label: "X" }],
+      questions: [
+        { id: "q0", prompt: "Pick", options: [{ id: "x", label: "X" }] },
+      ],
       free_text: true,
     });
     const pending = useTurnStore.getState().byId.get(sessionId)!.permissionQueue[0]!;
     expect(pending.questions).toEqual([
-      {
-        id: "q0",
-        prompt: "Pick",
-        options: [{ id: "x", label: "X" }],
-        multi_select: undefined,
-      },
+      { id: "q0", prompt: "Pick", options: [{ id: "x", label: "X" }] },
     ]);
   });
 
@@ -1509,8 +1490,6 @@ describe("grantPermission receipt (FE-04)", () => {
                 summary: "Run bash",
                 kind: "permission",
                 free_text: false,
-                options: [],
-                multi_select: false,
                 questions: [],
               },
             ],
@@ -1554,8 +1533,6 @@ describe("grantPermission receipt (FE-04)", () => {
                 summary: "Run bash",
                 kind: "permission",
                 free_text: false,
-                options: [],
-                multi_select: false,
                 questions: [],
               },
             ],

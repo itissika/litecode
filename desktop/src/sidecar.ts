@@ -79,8 +79,8 @@ export async function startSidecar(opts: {
   workspace: string;
   timeoutMs?: number;
   /**
-   * WP-169: abort the boot (e.g. window closed during the skeleton). Kills the
-   * child immediately and rejects with `signal.reason`. Omitted = unchanged.
+   * Abort the boot (e.g. window closed during the skeleton). Kills the child
+   * immediately and rejects with `signal.reason`. Omitted = unchanged.
    */
   signal?: AbortSignal;
 }): Promise<SidecarHandle> {

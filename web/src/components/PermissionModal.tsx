@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 
-import type { AskKind, AskOption, AskQuestion } from "../api/types";
+import type { AskKind, AskQuestion } from "../api/types";
 import { ASK_BUTTON, ASK_FIELD, AskCard, type Grant } from "./AskCard";
 import { AskUserCard } from "./AskUserCard";
 import { glyphFor } from "./ToolIcon";
@@ -15,8 +15,6 @@ interface PermissionCardProps {
   summary: string;
   kind?: AskKind;
   freeText?: boolean;
-  options?: AskOption[];
-  multiSelect?: boolean;
   /** When set (ask_user), one card lists every question. */
   questions?: AskQuestion[];
   onGrant: Grant;
@@ -210,8 +208,6 @@ export function PermissionCard({
   summary,
   kind = "permission",
   freeText = false,
-  options = [],
-  multiSelect = false,
   questions,
   onGrant,
 }: PermissionCardProps) {
@@ -231,10 +227,7 @@ export function PermissionCard({
       <AskUserCard
         tool={tool}
         summary={summary}
-        options={options}
-        multiSelect={multiSelect}
-        freeText={freeText}
-        questions={questions}
+        questions={questions ?? []}
         onGrant={onGrant}
       />
     );

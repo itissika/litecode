@@ -74,6 +74,34 @@ export function devLinuxBundleTar(isPackaged: boolean, desktopDir: string): stri
   return repo ? path.join(repo, "dist", "linux", LINUX_TAR_NAME) : undefined;
 }
 
+/**
+ * Bundled-asset lookup order: the copied dist file (`distRel`) first, then
+ * dev-tree probes (`webRels`, also relative to `desktopDistDir`). Paths derive
+ * from `desktopDistDir` only — cwd must never decide what loads.
+ */
+export function webAssetCandidates(
+  desktopDistDir: string,
+  distRel: string | null,
+  webRels: string[],
+): string[] {
+  const candidates: string[] = [];
+  if (distRel) candidates.push(path.join(desktopDistDir, distRel));
+  for (const rel of webRels) candidates.push(path.join(desktopDistDir, rel));
+  return candidates;
+}
+
+/** Contents of the first readable candidate, else null. */
+export function readBundledAsset(candidates: string[]): Buffer | null {
+  for (const candidate of candidates) {
+    try {
+      return fs.readFileSync(candidate);
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
+
 export function resolveBundledModelDir(opts: {
   sidecarRoot?: string;
   repoRoot?: string;

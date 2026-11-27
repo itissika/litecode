@@ -23,6 +23,6 @@
  * listen for visibility. Cross-panel actions go through this module.
  */
 
-// Only re-exports that have a consumer outside workbench/ (WP-159 / U3).
+// Only re-exports that have a consumer outside workbench/.
 // Other modules import workbench submodules directly.
 export { groupRole } from "./model";

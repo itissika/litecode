@@ -979,7 +979,7 @@ describe("MessageList reminder rows", () => {
     expect(onEditAnchor).not.toHaveBeenCalled();
   });
 
-  it("recognizes a legacy bot envelope without structured sources", () => {
+  it("does not spoof a bot card from raw [from bot ...] user text without structured sources", () => {
     const onEditAnchor = vi.fn();
     const row: HumanRow = {
       seq: 14,
@@ -1006,15 +1006,8 @@ describe("MessageList reminder rows", () => {
       />,
     );
 
-    expect(screen.getByText("From Old Bot")).toBeTruthy();
-    expect(screen.queryByText("legacy")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: /From Old Bot/ }));
-    expect(screen.getByText("legacy")).toBeTruthy();
-    expect(screen.queryByText(/from bot id=/)).toBeNull();
-
-    fireEvent.click(screen.getByText("legacy"));
-    expect(onEditAnchor).not.toHaveBeenCalled();
+    expect(screen.queryByText("From Old Bot")).toBeNull();
+    expect(screen.getByText(/\[from bot id=old name=Old Bot\]/)).toBeTruthy();
   });
 
   it("does not open the editor for an unsealed optimistic user bubble, while earlier sealed bubbles still open", () => {

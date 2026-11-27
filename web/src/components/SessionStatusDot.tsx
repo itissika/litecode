@@ -57,9 +57,9 @@ export function SessionStatusDot({
 }
 
 /**
- * WP-184 / WP-179 §5.2: trust BE `awaiting_permission` bool when present; if
- * the field is absent, derive from local pending_permissions / permissionQueue
- * length. Explicit `false` wins over a non-empty local queue.
+ * Trust the BE `awaiting_permission` bool when present; if the field is absent,
+ * derive from local pending_permissions / permissionQueue length. Explicit
+ * `false` wins over a non-empty local queue.
  */
 export function isAwaitingPermission(
   awaiting: boolean | undefined,
@@ -75,8 +75,7 @@ export function deriveSessionStatus(
   session: Pick<SessionInfo, "running" | "turn" | "status"> | undefined,
   opts?: { pendingPermissionCount?: number },
 ): SessionStatus {
-  // WP-184 Phase B: WireTurnPhase waiting_for_user (or legacy
-  // awaiting_permission object) means the turn is gated on the user.
+  // A `waiting_for_user` phase means the turn is gated on the user.
   if (isWaitingForUserPhase(session?.turn?.phase)) {
     return "pending";
   }

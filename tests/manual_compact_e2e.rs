@@ -131,10 +131,6 @@ async fn manual_compact_failure_e2e_releases_lease_and_retry_starts() {
     let snap = ctrl.snapshot_for(&sid).expect("cold snapshot");
     assert!(snap.context_meter.manual_eligible());
     assert_eq!(snap.compact_eligible, snap.context_meter.manual_eligible());
-    assert_eq!(
-        snap.context_tokens_estimate, snap.context_meter.used_tokens,
-        "legacy display estimate mirrors unified ContextMeter"
-    );
     assert!(
         snap.context_meter.used_tokens > snap.context_envelope.prompt_overhead_tokens,
         "cold local fallback includes the seeded system/tools envelope"

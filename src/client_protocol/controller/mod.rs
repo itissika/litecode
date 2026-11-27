@@ -83,9 +83,6 @@ pub struct Projection {
     pub outgoing: Vec<serde_json::Value>,
     pub turn_completed_emitted: bool,
     pub context_window: usize,
-    /// Unified prompt occupancy from the server-owned ContextMeter. Kept in
-    /// sync with `context_meter.used_tokens`; legacy field for wire consumers.
-    pub context_tokens_estimate: usize,
     /// Authoritative occupancy/pressure snapshot inputs.
     pub context_meter: crate::context_pipeline::ContextMeter,
     /// Server-owned fixed request envelope (instructions/tools/overhead/output)
@@ -274,7 +271,6 @@ impl Projection {
         ) else {
             return;
         };
-        self.context_tokens_estimate = meter.used_tokens;
         self.context_meter = meter;
         // Meter and bucket mix came from the same projection above. Provider
         // usage scales this mix in the ring, so retaining a request-time mix
@@ -357,7 +353,6 @@ impl Projection {
                 crate::session::estimate::ItemTokenBreakdown::default(),
             ),
         };
-        let context_tokens_estimate = context_meter.used_tokens;
         let meter = service.meter(&session_id).unwrap_or_default();
         let latest_bill = service.latest_provider_bill(&session_id).ok().flatten();
         let meta = service.meta(&session_id).ok();
@@ -401,7 +396,6 @@ impl Projection {
             outgoing: Vec::new(),
             turn_completed_emitted: false,
             context_window,
-            context_tokens_estimate,
             context_meter,
             context_envelope,
             request_model,
@@ -512,14 +506,11 @@ impl Projection {
         // Memory-only queue, but still part of the snapshot: a rebuilt panel
         // (subscribed while idle after a cancel) must see it.
         snap.pending_messages = self.service.pending_messages_snapshot(&self.session_id);
-        // WP-186: always present list (may be empty). Authority for FE cards.
+        // Always present list (may be empty). Authority for FE cards.
         let pending = self.service.pending_permissions_snapshot(&self.session_id);
         snap.pending_permissions = project::pending_records_to_wire(&pending);
         if let Some(turn) = snap.turn.as_mut() {
             turn.awaiting_permission = !snap.pending_permissions.is_empty();
-        }
-        if let Some(live) = snap.live.as_mut() {
-            live.awaiting_permission = !snap.pending_permissions.is_empty();
         }
         snap.llm_reconnect = self.service.llm_reconnect(&self.session_id);
         if let Ok(meta) = self.service.meta(&self.session_id) {
@@ -897,7 +888,6 @@ impl Projection {
                 self.context_token_breakdown = token_breakdown.clone();
                 self.context_envelope = context_envelope.clone();
                 self.context_meter = context_meter.clone();
-                self.context_tokens_estimate = context_meter.used_tokens;
                 self.context_unknown = false;
             }
             crate::runtime::observer::InternalEvent::LlmCompleted {
@@ -909,7 +899,6 @@ impl Projection {
                 ..
             } => {
                 self.context_meter = context_meter.clone();
-                self.context_tokens_estimate = context_meter.used_tokens;
                 self.context_unknown = false;
                 self.last_turn_token_stats =
                     Some(crate::client_protocol::protocol::TurnTokenStats {
@@ -1153,14 +1142,11 @@ impl SessionController {
         // (Re)subscribe is the client's sync point for transient bash state.
         snapshot.bash = Some(self.runtime.ide.terminal.jobs.wire_snapshot(session_id));
         snapshot.pending_messages = self.service.pending_messages_snapshot(session_id);
-        // WP-186: re-assert after bash overlay (snapshot() already filled; keep explicit).
+        // Re-assert after the bash overlay (snapshot() already filled it).
         let pending = self.service.pending_permissions_snapshot(session_id);
         snapshot.pending_permissions = project::pending_records_to_wire(&pending);
         if let Some(turn) = snapshot.turn.as_mut() {
             turn.awaiting_permission = !snapshot.pending_permissions.is_empty();
-        }
-        if let Some(live) = snapshot.live.as_mut() {
-            live.awaiting_permission = !snapshot.pending_permissions.is_empty();
         }
         proj.push_outgoing(session_snapshot(snapshot));
 
@@ -1736,7 +1722,6 @@ mod compact_item_wire_tests {
             snap["context_meter"],
             serde_json::to_value(&request_meter).unwrap()
         );
-        assert_eq!(snap["context_tokens_estimate"], 900);
         assert_eq!(snap["compact_eligible"], true);
 
         let completed_meter = meter(1_000, crate::context_pipeline::ContextMeterSource::Provider);
@@ -1766,8 +1751,6 @@ mod compact_item_wire_tests {
             snap["context_meter"],
             serde_json::to_value(&completed_meter).unwrap()
         );
-        assert_eq!(snap["context_tokens_estimate"], 1_000);
-
         // Even with no resolved model in this projection-only test, the step
         // commit must not leave the ring on a stale meter: it still publishes
         // the authoritative current value.

@@ -3,75 +3,48 @@ import path from "node:path";
 
 import { app } from "electron";
 
+import { readBundledAsset, webAssetCandidates } from "./bundle-paths";
 import { initDesktopI18n, t } from "./i18n";
 import { resolveLocale } from "./resolveLocale";
 import { dvThemeAttr, readUiTheme, type UiThemeName } from "./ui-theme";
 
-/** Resolve the product's tokens.css (single source of --_dk-* definitions). */
+// Product tokens.css (single source of --_dk-* definitions); dist copy, then web source.
 function loadThemeTokensCss(): string {
-  const candidates = [
-    path.join(__dirname, "theme-tokens.css"),
-    path.resolve(__dirname, "../../web/src/theme/tokens.css"),
-    path.resolve(process.cwd(), "../web/src/theme/tokens.css"),
-    path.resolve(process.cwd(), "web/src/theme/tokens.css"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      return fs.readFileSync(candidate, "utf8");
-    } catch {
-      // try next
-    }
+  const css = readBundledAsset(
+    webAssetCandidates(__dirname, "theme-tokens.css", ["../../web/src/theme/tokens.css"]),
+  );
+  if (!css) {
+    throw new Error(
+      "theme tokens.css not found (expected desktop/dist/theme-tokens.css or web/src/theme/tokens.css)",
+    );
   }
-  throw new Error(
-    "theme tokens.css not found (expected desktop/dist/theme-tokens.css or web/src/theme/tokens.css)",
+  return css.toString("utf8");
+}
+
+// LiteCode wordmark font (LexendDeca 600) as a base64 data URI; "" when absent.
+function loadLogoFontBase64(): string {
+  return (
+    readBundledAsset(
+      webAssetCandidates(__dirname, null, [
+        "../../web/public/fonts/LexendDeca-600.ttf",
+        "../../web/dist/fonts/LexendDeca-600.ttf",
+        "../web/public/fonts/LexendDeca-600.ttf",
+      ]),
+    )?.toString("base64") ?? ""
   );
 }
 
-/**
- * Resolve the LiteCode wordmark font (LexendDeca 600) as a base64 data URI so
- * the file:// hub page can render the same logo as the web workbench without a
- * server. Mirrors loadThemeTokensCss's fallback chain (dev public / built dist).
- * Returns "" when the font cannot be found — the logo then falls back to the UI font.
- */
-function loadLogoFontBase64(): string {
-  const candidates = [
-    path.resolve(__dirname, "..", "..", "web", "public", "fonts", "LexendDeca-600.ttf"),
-    path.resolve(__dirname, "..", "..", "web", "dist", "fonts", "LexendDeca-600.ttf"),
-    path.resolve(__dirname, "..", "web", "public", "fonts", "LexendDeca-600.ttf"),
-    path.resolve(process.cwd(), "web", "public", "fonts", "LexendDeca-600.ttf"),
-    path.resolve(process.cwd(), "web", "dist", "fonts", "LexendDeca-600.ttf"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      return fs.readFileSync(candidate).toString("base64");
-    } catch {
-      // try next candidate
-    }
-  }
-  return "";
-}
-
-/**
- * Resolve the official app icon (web/public/icon.png) as a base64 data URI so
- * the file:// hub page can render it next to the wordmark (CSP: img-src data:).
- * Mirrors loadLogoFontBase64's fallback chain. Returns "" when not found.
- */
+// Official app icon as a base64 data URI (CSP: img-src data:); "" when absent.
 function loadLogoIconBase64(): string {
-  const candidates = [
-    path.resolve(__dirname, "..", "..", "web", "public", "icon.png"),
-    path.resolve(__dirname, "..", "..", "web", "dist", "icon.png"),
-    path.resolve(__dirname, "..", "web", "public", "icon.png"),
-    path.resolve(process.cwd(), "web", "public", "icon.png"),
-    path.resolve(process.cwd(), "web", "dist", "icon.png"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      return fs.readFileSync(candidate).toString("base64");
-    } catch {
-      // try next candidate
-    }
-  }
-  return "";
+  return (
+    readBundledAsset(
+      webAssetCandidates(__dirname, null, [
+        "../../web/public/icon.png",
+        "../../web/dist/icon.png",
+        "../web/public/icon.png",
+      ]),
+    )?.toString("base64") ?? ""
+  );
 }
 
 /**

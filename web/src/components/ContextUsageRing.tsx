@@ -151,20 +151,15 @@ export function ContextUsageRing({
    *  Compaction action (a write) stays in the human-owned primary panel. */
   readOnly?: boolean;
 }) {
-  // Occupancy is server-owned. `contextMeter` is the single authority for used
-  // tokens and manual eligibility; raw provider prompt is only cache-hit truth.
-  // Legacy context_tokens_estimate is a display fallback when an older server
-  // snapshot omitted the meter, never a local threshold input.
+  // Occupancy is server-owned: `contextMeter` is the single authority for used
+  // tokens and manual eligibility. Raw provider prompt is only cache-hit truth.
   const meter = useTurnStore(
     (s) => s.byId.get(sessionId)?.contextMeter ?? null,
-  );
-  const estimate = useTurnStore(
-    (s) => s.byId.get(sessionId)?.contextTokensEstimate ?? 0,
   );
   const providerPrompt = useTurnStore(
     (s) => s.byId.get(sessionId)?.lastTurnPromptTokens ?? 0,
   );
-  const used = meter?.used_tokens ?? (estimate > 0 ? estimate : null);
+  const used = meter?.used_tokens ?? null;
   const contextWindow = useTurnStore(
     (s) => s.byId.get(sessionId)?.contextWindow ?? 0,
   );

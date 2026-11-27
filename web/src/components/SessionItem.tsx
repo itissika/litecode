@@ -79,10 +79,9 @@ interface SessionItemProps {
  * Pure presentational row for a single session. Single-line layout:
  *   [status dot] [conversation summary] [live summary] [unread · time <-> delete]
  * Owns no store subscriptions — `session` + `now` are supplied by the parent.
- * The `pending` status (WP-184 / WP-186): WireTurnPhase `waiting_for_user`
- * (legacy object key `awaiting_permission`), else trust BE
- * `turn.awaiting_permission` bool; if that field is absent, derive from local
- * `permissionQueue` length.
+ * The `pending` status: WireTurnPhase `waiting_for_user`, else the BE
+ * `turn.awaiting_permission` bool; if that field is absent, derive from the
+ * local `permissionQueue` length.
  */
 export const SessionItem = memo(function SessionItem({
   session,

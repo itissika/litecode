@@ -504,9 +504,8 @@ fn project_with(
             summary,
             kind,
             free_text,
-            options,
-            multi_select,
             questions,
+            ..
         } => Some(notification(
             "agent/permission_request",
             serde_json::json!({
@@ -518,8 +517,6 @@ fn project_with(
                 "summary": summary,
                 "kind": kind,
                 "free_text": free_text,
-                "options": options,
-                "multi_select": multi_select,
                 "questions": questions,
             }),
         )),
@@ -840,7 +837,6 @@ pub fn omit_snapshot_context_fields(msg: &mut serde_json::Value) {
             "context_meter",
             "context_envelope",
             "context_token_breakdown",
-            "context_tokens_estimate",
             "context_window",
             "compact_eligible",
         ] {
@@ -1334,8 +1330,6 @@ pub fn pending_record_to_wire(
         summary: rec.summary.clone(),
         kind: rec.kind,
         free_text: rec.free_text,
-        options: rec.options.clone(),
-        multi_select: rec.multi_select,
         questions: rec.questions.clone(),
     }
 }
@@ -1395,7 +1389,6 @@ pub fn buffer_snapshot(
             plan_slug: None,
             preview: String::new(),
         },
-        live: turn.clone(),
         session_id: session_id.to_string(),
         project: project.to_string(),
         agent_id: binding.agent_id.clone(),
@@ -1409,12 +1402,10 @@ pub fn buffer_snapshot(
         },
         turn,
         context_window: context_meter.context_window,
-        context_tokens_estimate: context_meter.used_tokens,
         context_token_breakdown: crate::session::estimate::ItemTokenBreakdown::default(),
         context_meter: context_meter.clone(),
         context_envelope: context_envelope.clone(),
         compact_eligible: context_meter.manual_eligible(),
-        compacting: compaction.active,
         compaction,
         last_turn_token_stats,
         cumulative_token_stats,
@@ -1562,7 +1553,6 @@ mod wp186_pending_permissions_tests {
     fn empty_snap() -> SessionSnapshot {
         SessionSnapshot {
             meta: Default::default(),
-            live: None,
             session_id: "s".into(),
             project: "p".into(),
             agent_id: "a".into(),
@@ -1576,12 +1566,10 @@ mod wp186_pending_permissions_tests {
             },
             turn: None,
             context_window: 0,
-            context_tokens_estimate: 0,
             context_token_breakdown: Default::default(),
             context_meter: Default::default(),
             context_envelope: Default::default(),
             compact_eligible: false,
-            compacting: false,
             compaction: Default::default(),
             last_turn_token_stats: None,
             cumulative_token_stats: None,
@@ -1642,8 +1630,6 @@ mod wp186_pending_permissions_tests {
             summary: "Choose deploy target".into(),
             kind: AskKind::AskUser,
             free_text: false,
-            options: vec![],
-            multi_select: false,
             questions: vec![AskQuestion {
                 id: "q_env".into(),
                 prompt: "Which environment?".into(),
@@ -1694,8 +1680,6 @@ mod wp186_pending_permissions_tests {
             summary: "x".into(),
             kind: AskKind::Permission,
             free_text: false,
-            options: vec![],
-            multi_select: false,
             questions: vec![],
         });
         assert!(!snap.pending_permissions.is_empty());

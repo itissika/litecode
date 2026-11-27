@@ -1,6 +1,23 @@
 import fs from "node:fs";
 import path from "node:path";
+
 import { app } from "electron";
+
+import { devRepoRoot } from "./bundle-paths";
+
+const DEV_BINARY_DIRS = [
+  path.join("dist", "product"),
+  path.join("target", "debug"),
+  path.join("target", "release"),
+];
+
+function findBinaryIn(dir: string): string | null {
+  for (const name of ["litecode.exe", "litecode"]) {
+    const candidate = path.join(dir, name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
 
 /** Directory that contains litecode.exe + web/dist + models (+ dlls). */
 export function sidecarRoot(): string {
@@ -13,27 +30,18 @@ export function sidecarRoot(): string {
     return path.join(process.resourcesPath, "sidecar");
   }
 
-  // Dev: prefer repo dist/product, then target/debug next to desktop/
-  const repoRoot = path.resolve(__dirname, "..", "..");
-  const product = path.join(repoRoot, "dist", "product");
-  if (fs.existsSync(path.join(product, "litecode.exe")) || fs.existsSync(path.join(product, "litecode"))) {
-    return product;
+  // Dev layout: repo dist/product, then target/debug, then target/release.
+  const repoRoot = devRepoRoot(app.isPackaged, path.resolve(__dirname, ".."));
+  if (!repoRoot) return path.join(process.resourcesPath, "sidecar");
+  const probes = DEV_BINARY_DIRS.map((rel) => path.join(repoRoot, rel));
+  for (const dir of probes) {
+    if (findBinaryIn(dir)) return dir;
   }
-  const debug = path.join(repoRoot, "target", "debug");
-  if (fs.existsSync(path.join(debug, "litecode.exe")) || fs.existsSync(path.join(debug, "litecode"))) {
-    return debug;
-  }
-  const release = path.join(repoRoot, "target", "release");
-  if (fs.existsSync(path.join(release, "litecode.exe")) || fs.existsSync(path.join(release, "litecode"))) {
-    return release;
-  }
-  return product;
+  return probes[0];
 }
 
 export function litecodeBinary(root: string): string {
-  const win = path.join(root, "litecode.exe");
-  if (fs.existsSync(win)) return win;
-  const unix = path.join(root, "litecode");
-  if (fs.existsSync(unix)) return unix;
-  throw new Error(`litecode binary not found under ${root}`);
+  const bin = findBinaryIn(root);
+  if (!bin) throw new Error(`litecode binary not found under ${root}`);
+  return bin;
 }

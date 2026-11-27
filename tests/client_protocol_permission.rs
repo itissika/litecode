@@ -63,8 +63,6 @@ async fn ws_bridge_approval_round_trip_with_free_text() {
         summary: perm.summary.clone(),
         kind: perm.kind,
         free_text: perm.free_text,
-        options: Vec::new(),
-        multi_select: false,
         questions: Vec::new(),
     };
     let req_json = serde_json::to_value(&wire_req).expect("ser");

@@ -28,9 +28,8 @@ const MODALITY_GLYPHS: { token: string; Glyph: typeof ImageIcon }[] = [
  * What a model takes *beyond* text, as glyphs. Shared by the settings model
  * list and the composer's model switcher so both read the same way.
  *
- * Renders nothing for a text-only model, and nothing when the handshake
- * carried no `modalities` at all (older server) — an unknown catalog must not
- * be dressed up as "text only".
+ * Renders nothing when `modalities` is absent: an unknown catalog must not be
+ * dressed up as "text only".
  */
 export function ModalityIcons({ modalities }: { modalities?: string[] }) {
   const present = MODALITY_GLYPHS.filter(({ token }) =>

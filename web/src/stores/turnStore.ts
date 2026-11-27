@@ -9,7 +9,6 @@ import type {
   AgentRunState,
   AskAnswer,
   AskKind,
-  AskOption,
   AskQuestion,
   CompactLifecycle,
   CompactionState,
@@ -33,7 +32,6 @@ import type {
 import { EMPTY_TOKEN_BREAKDOWN } from "../api/types";
 import { debugTrace } from "../lib/debugTrace";
 import { reconnectAfterFinish } from "../lib/llmReconnect";
-import { normalizeAskQuestions } from "../lib/askUser";
 import { isBotSourced } from "../lib/botMessage";
 import { useConnectionStore, attachSiblingStores } from "./connectionStore";
 import { appendComposerText } from "./composerDraft";
@@ -49,26 +47,15 @@ interface PendingPermission {
   summary: string;
   kind: AskKind;
   free_text: boolean;
-  options: AskOption[];
-  multi_select: boolean;
-  /** Normalized ask_user questions (single q0 when wire used top-level options). */
   questions: AskQuestion[];
 }
 
 /**
- * Same normalize + shape as live `onPermissionRequest` (WP-184).
- * Snapshot `pending_permissions` entries require `kind`; live events may omit
- * it (legacy default `"permission"`).
+ * Snapshot `pending_permissions` entries and live `agent/permission_request`
+ * events share one shape; `kind` may be omitted on live events.
  */
 function toPendingPermission(pr: PermissionRequest): PendingPermission {
   const kind = pr.kind ?? "permission";
-  const questions = normalizeAskQuestions(
-    kind,
-    pr.summary,
-    pr.questions,
-    pr.options,
-    pr.multi_select,
-  );
   return {
     turn_id: pr.turn_id,
     request_id: pr.request_id,
@@ -77,9 +64,7 @@ function toPendingPermission(pr: PermissionRequest): PendingPermission {
     summary: pr.summary,
     kind,
     free_text: pr.free_text ?? false,
-    options: pr.options ?? [],
-    multi_select: pr.multi_select ?? false,
-    questions,
+    questions: pr.questions ?? [],
   };
 }
 
@@ -96,7 +81,6 @@ export interface TurnSlice {
   turnStep: number | null;
   turnStepMax: number | null;
   contextWindow: number;
-  contextTokensEstimate: number;
   /** Item-text mix for the ring; occupancy total comes from contextMeter. */
   contextTokenBreakdown: ItemTokenBreakdown;
   /** Server-owned unified meter. Null until a server snapshot provides one. */
@@ -170,7 +154,6 @@ export const EMPTY_SLICE: TurnSlice = {
   turnStep: null,
   turnStepMax: null,
   contextWindow: 0,
-  contextTokensEstimate: 0,
   contextTokenBreakdown: EMPTY_TOKEN_BREAKDOWN,
   contextMeter: null,
   contextEnvelope: null,
@@ -439,17 +422,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       compacting: state.active,
       manualCompacting: state.active && state.trigger === "manual",
       compactingAt: state.active ? (state.at ?? null) : null,
-    });
-  }
-
-  /** Old servers only send the lease-derived bool; keep the dot anchored while
-   *  it is on, because that snapshot never carries the cut seq. */
-  function applyLegacyCompacting(sessionId: string, snap: SessionSnapshot): void {
-    const current = getSlice(get().byId, sessionId);
-    patch(sessionId, {
-      compacting: snap.compacting ?? false,
-      manualCompacting: snap.compacting ?? false,
-      compactingAt: snap.compacting ? (current.compactingAt ?? null) : null,
     });
   }
 
@@ -918,7 +890,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       }
       if (metaUpdate.contextMeter !== undefined) {
         mapped.contextMeter = metaUpdate.contextMeter;
-        mapped.contextTokensEstimate = metaUpdate.contextMeter.used_tokens;
       }
       if (metaUpdate.compactEligible !== undefined) {
         mapped.compactEligible = metaUpdate.compactEligible;
@@ -1041,7 +1012,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
     },
 
     onTurnFinished: (tf) => {
-      const sessionId = tf.session_id || tf.snapshot.session_id;
+      const sessionId = tf.session_id;
       const current = getSlice(get().byId, sessionId);
       const applies = shouldApplyTurnEnd(
         current.currentTurnId,
@@ -1090,8 +1061,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       // not the turn end — decides whether the marker stays.
       if (snap.compaction) {
         applyCompaction(sessionId, snap.compaction);
-      } else {
-        applyLegacyCompacting(sessionId, snap);
       }
 
       patch(sessionId, {
@@ -1103,10 +1072,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         runState: "idle",
         permissionQueue: [],
         contextWindow: snap.context_window ?? 0,
-        contextTokensEstimate:
-          snap.context_meter?.used_tokens ??
-          snap.context_tokens_estimate ??
-          0,
         contextTokenBreakdown:
           snap.context_token_breakdown ?? EMPTY_TOKEN_BREAKDOWN,
         contextMeter: snap.context_meter ?? null,
@@ -1205,17 +1170,10 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         : undefined;
       if (snap.compaction) {
         applyCompaction(sessionId, snap.compaction);
-      } else {
-        applyLegacyCompacting(sessionId, snap);
       }
-      // Snapshot meter is authoritative. The legacy estimate is only a
-      // display fallback for older servers that omitted `context_meter`.
+      // Snapshot meter is authoritative for occupancy.
       patch(sessionId, {
         contextWindow: snap.context_window ?? 0,
-        contextTokensEstimate:
-          snap.context_meter?.used_tokens ??
-          snap.context_tokens_estimate ??
-          0,
         contextTokenBreakdown:
           snap.context_token_breakdown ?? EMPTY_TOKEN_BREAKDOWN,
         contextMeter: snap.context_meter ?? null,

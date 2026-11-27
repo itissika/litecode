@@ -160,11 +160,16 @@ describe("PermissionCard — ask_user", () => {
     summary: "Which approach should we take?",
     kind: "ask_user" as const,
     freeText: true,
-    options: [
-      { id: "a", label: "Option A" },
-      { id: "b", label: "Option B" },
+    questions: [
+      {
+        id: "q0",
+        prompt: "Which approach should we take?",
+        options: [
+          { id: "a", label: "Option A" },
+          { id: "b", label: "Option B" },
+        ],
+      },
     ],
-    multiSelect: false,
   };
 
   it("shows question, options, Submit/Cancel — not Allow/Approve", () => {
@@ -214,13 +219,11 @@ describe("PermissionCard — ask_user", () => {
             id: "one",
             prompt: "First?",
             options: [{ id: "a", label: "A" }],
-            free_text: true,
           },
           {
             id: "two",
             prompt: "Second?",
             options: [{ id: "b", label: "B" }],
-            free_text: true,
           },
         ]}
         onGrant={vi.fn()}
@@ -421,7 +424,11 @@ describe("PermissionCard — ask_user", () => {
     const user = userEvent.setup();
     const onGrant = vi.fn();
     render(
-      <PermissionCard {...ask} multiSelect freeText={false} onGrant={onGrant} />,
+      <PermissionCard
+        {...ask}
+        questions={[{ ...ask.questions[0], multi_select: true }]}
+        onGrant={onGrant}
+      />,
     );
     await user.click(screen.getByRole("button", { name: "Option A" }));
     await user.click(screen.getByRole("button", { name: "Option B" }));
@@ -458,7 +465,6 @@ describe("PermissionCard — ask_user", () => {
               { id: "deep", label: "Deep" },
             ],
             multi_select: true,
-            free_text: true,
           },
         ]}
         onGrant={onGrant}
@@ -508,7 +514,7 @@ describe("PermissionCard — ask_user", () => {
   });
 });
 
-describe("PermissionCard — key remount (W5)", () => {
+describe("PermissionCard — key remount", () => {
   it("key remount clears prior ask picks", async () => {
     const user = userEvent.setup();
     const onGrant = vi.fn();
@@ -517,12 +523,16 @@ describe("PermissionCard — key remount (W5)", () => {
       ruleId: "ask",
       summary: "Pick",
       kind: "ask_user" as const,
-      freeText: false,
-      options: [
-        { id: "a", label: "Option A" },
-        { id: "b", label: "Option B" },
+      questions: [
+        {
+          id: "q0",
+          prompt: "Pick",
+          options: [
+            { id: "a", label: "Option A" },
+            { id: "b", label: "Option B" },
+          ],
+        },
       ],
-      multiSelect: false,
     };
     const { rerender } = render(
       <PermissionCard key="req-1" {...ask} onGrant={onGrant} />,

@@ -196,7 +196,6 @@ async fn first_new_session_snapshot_has_full_server_envelope_and_meter() {
         Some(instructions + tools + overhead),
         "empty cold request is fixed envelope only"
     );
-    assert_eq!(meter["used_tokens"], params["context_tokens_estimate"]);
     assert_eq!(params["compact_eligible"].as_bool(), Some(false));
 
     // The following subscribe is the second sync point and must publish the
@@ -244,10 +243,6 @@ async fn new_session_without_cold_runtime_omits_context_instead_of_faking_zero()
     assert!(params.get("context_envelope").is_none(), "{snapshot}");
     assert!(params.get("context_window").is_none(), "{snapshot}");
     assert!(
-        params.get("context_tokens_estimate").is_none(),
-        "{snapshot}"
-    );
-    assert!(
         params.get("context_token_breakdown").is_none(),
         "{snapshot}"
     );
@@ -277,7 +272,6 @@ async fn new_session_without_cold_runtime_omits_context_instead_of_faking_zero()
     let subscribe_params = subscribe_snapshot.get("params").expect("subscribe params");
     for field in [
         "context_window",
-        "context_tokens_estimate",
         "context_token_breakdown",
         "context_meter",
         "context_envelope",

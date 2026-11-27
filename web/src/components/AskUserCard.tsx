@@ -3,7 +3,6 @@ import i18n from "../i18n";
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -12,8 +11,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import type { AskAnswer, AskOption, AskQuestion } from "../api/types";
-import { normalizeAskQuestions } from "../lib/askUser";
+import type { AskAnswer, AskQuestion } from "../api/types";
 import {
   ASK_FIELD,
   ASK_FLAT_BUTTON,
@@ -82,50 +80,20 @@ function AskProse({ text }: { text: string }) {
 }
 
 /* ── 3/3 · ask_user: one question at a time → Submit / Cancel ──────────
-   The pane renders the question in view and nothing else — one item container
-   per question, as tall as that question, so there is no window to measure and
-   nothing to clip. Three ways to move on, one step each: the wheel, the arrows in
-   the title row (which also carry `current / total`), and — for a single choice -
-   the pick itself, because there the click *is* the answer. The pane slides a
-   hair in the direction of travel. Every question ends in a fixed inline input,
-   「其他（自己填写）」 — not a protocol option (no option id, never in `selected`),
-   always shown whatever `free_text` says. Single choice: the input and the options
-   exclude each other (typing clears the pick; a pick drops the text from the
-   answer). Multi-select: they coexist. Text alone answers a question; text is
-   trimmed, and blank means unanswered. The buttons below the pane belong to the
-   whole ask. Submit waits for an answer to every question; Cancel
-   answers nothing. Its own module, because it is the one ask that carries a state
-   machine — answers per question plus the legacy single-question compat — where
-   the other two carry a receipt. */
+   Renders the question in view only, as tall as that question. Wheel, arrows and
+   (single choice) the pick itself move on one step. Every question ends in a
+   fixed free-text input — not a protocol option, never in `selected`. */
 export function AskUserCard({
   tool,
   summary,
-  options,
-  multiSelect,
-  questions: questionsProp,
+  questions,
   onGrant,
 }: {
   tool: string;
   summary: string;
-  options: AskOption[];
-  multiSelect: boolean;
-  /** Ignored (deprecated): the last-item input is always shown. Kept optional so
-   *  callers that still pass it compile unchanged. */
-  freeText?: boolean;
-  questions?: AskQuestion[];
+  questions: AskQuestion[];
   onGrant: Grant;
 }) {
-  const questions = useMemo(
-    () =>
-      normalizeAskQuestions(
-        "ask_user",
-        summary,
-        questionsProp,
-        options,
-        multiSelect,
-      ),
-    [summary, questionsProp, options, multiSelect],
-  );
 
   const [pickedByQ, setPickedByQ] = useState<Record<string, string[]>>({});
   const [textByQ, setTextByQ] = useState<Record<string, string>>({});
@@ -333,7 +301,7 @@ export function AskUserCard({
       )}
       {!multi && !showIntro && (
         <div className="mt-1.5 min-w-0 text-dk-base text-(--_dk-text-body) [overflow-wrap:anywhere]">
-          <AskProse text={questions[0].prompt || summary} />
+          <AskProse text={questions[0]?.prompt || summary} />
         </div>
       )}
 

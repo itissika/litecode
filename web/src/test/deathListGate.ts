@@ -1,5 +1,5 @@
 /**
- * Shared walk/scan for web death-list gates (WP-045 P3/P13).
+ * Shared walk/scan for web death-list gates.
  * Exemption is an exact gate-file name, not a substring match.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -8,7 +8,7 @@ import { join, relative } from "node:path";
 /** `web/src` — helper lives in `web/src/test/`. */
 export const WEB_SRC = join(__dirname, "..");
 
-/** Exact gate filenames only (e.g. `r5-death-list.test.ts`). */
+/** Exact gate filenames only (e.g. `r9-death-list.test.ts`). */
 const DEATH_LIST_GATE_RE = /^[\w-]+-death-list\.test\.ts$/;
 
 type CollectOptions = {

@@ -637,7 +637,7 @@
     "chartAria": "工作区 token 用量，横轴为{{axis}}，柱高为 prompt 合计，悬停查看单列",
     "providerChartAria": "{{provider}} token 用量，横轴为{{axis}}，柱高为 prompt 合计，悬停查看单列",
     "byProvider": "按 Provider",
-    "providerUnknown": "未知（历史压缩）",
+    "providerUnknown": "未知",
     "noRecordsPeriod": "该时段暂无记录",
     "unavailable": "用量暂不可用",
     "noRecords": "暂无用量记录",

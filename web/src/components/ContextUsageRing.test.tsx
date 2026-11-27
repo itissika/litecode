@@ -28,7 +28,6 @@ function seed(compactEligible: boolean) {
         {
           ...EMPTY_SLICE,
           contextWindow: 1_000,
-          contextTokensEstimate: 900,
           lastTurnPromptTokens: 900,
           contextMeter: meter(compactEligible),
           compactEligible,
@@ -67,7 +66,6 @@ describe("ContextUsageRing server meter", () => {
         currentTurnId: "t-live",
         runState: "running" as const,
         contextMeter: meter(false, 100),
-        contextTokensEstimate: 100,
       });
       return { byId };
     });

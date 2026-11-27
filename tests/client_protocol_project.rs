@@ -42,10 +42,10 @@ fn auto_compaction_is_visible_in_snapshot_with_one_revisioned_state() {
     use litecode::client_protocol::protocol::SessionBindingProjection;
     use litecode::runtime::observer::CompactionTrigger;
 
-    let manager = litecode::session::SessionManager::new_for_test(
+    let manager = std::sync::Arc::new(litecode::session::SessionManager::new_for_test(
         std::sync::Arc::new(litecode::config::TurnGuard::default()),
         String::new(),
-    );
+    ));
     let sid = manager.open_session_sync("", "default", None).unwrap();
     let binding = SessionBindingProjection {
         agent_id: "default".into(),
@@ -58,8 +58,15 @@ fn auto_compaction_is_visible_in_snapshot_with_one_revisioned_state() {
         context_mode: "standard".into(),
     };
 
-    let (revision, id) =
-        manager.begin_compaction_blocking(&sid, None, CompactionTrigger::Auto, Some(41));
+    let lease = manager
+        .try_begin_compaction_episode(&sid, CompactionTrigger::Auto)
+        .expect("begin compaction episode");
+    let (revision, id) = manager.begin_compaction_blocking(
+        &sid,
+        Some(lease.id()),
+        CompactionTrigger::Auto,
+        Some(41),
+    );
     let snapshot = project::buffer_snapshot(
         &sid,
         "/p",
@@ -74,7 +81,6 @@ fn auto_compaction_is_visible_in_snapshot_with_one_revisioned_state() {
         &litecode::context_pipeline::ContextEnvelope::default(),
         project::compaction_state_wire(&manager.compaction_state_blocking(&sid)),
     );
-    assert!(snapshot.compacting, "legacy mirror must stay in sync");
     assert!(snapshot.compaction.active);
     assert_eq!(snapshot.compaction.revision, revision);
     assert_eq!(
@@ -84,7 +90,7 @@ fn auto_compaction_is_visible_in_snapshot_with_one_revisioned_state() {
     assert_eq!(snapshot.compaction.trigger, Some(CompactionTrigger::Auto));
     assert_eq!(snapshot.compaction.at, Some(41));
 
-    manager.end_compaction_blocking(&sid, None, CompactionTrigger::Auto);
+    drop(lease);
     let cleared = project::compaction_state_wire(&manager.compaction_state_blocking(&sid));
     assert!(!cleared.active);
     assert!(cleared.revision > revision);

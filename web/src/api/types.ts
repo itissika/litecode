@@ -564,11 +564,8 @@ export interface TurnSnapshot {
   step: number;
   step_max: number;
   started_at_ms: number;
-  /**
-   * Derived bool (WP-186): prefer `pending_permissions.length > 0` /
-   * phase == waiting_for_user. Field name on the wire stays
-   * `awaiting_permission` (not renamed). UI cards must use the list.
-   */
+  /** Derived bool: prefer `pending_permissions.length > 0` / phase ==
+   *  waiting_for_user. UI cards must read the list, not this flag. */
   awaiting_permission?: boolean;
 }
 
@@ -608,8 +605,6 @@ export interface SessionSnapshot {
   buffer: BufferState;
   turn: TurnSnapshot | null;
   context_window?: number;
-  /** Legacy display mirror of ContextMeter.used_tokens; never a threshold. */
-  context_tokens_estimate?: number;
   /** Item-text mix for the occupancy bar. */
   context_token_breakdown?: ItemTokenBreakdown;
   /** Unified server-side occupancy/pressure snapshot. Authoritative. */
@@ -618,9 +613,7 @@ export interface SessionSnapshot {
   context_envelope?: ContextEnvelope;
   /** Server manual-compaction decision (inclusive 30% gate). */
   compact_eligible?: boolean;
-  /** Legacy mirror of `compaction.active`; old servers only send this. */
-  compacting?: boolean;
-  /** One authoritative compaction state; absent only from old servers. */
+  /** The one authoritative compaction state; may be absent. */
   compaction?: CompactionState;
   /** Last-known provider usage for context ring hydrate after refresh. */
   last_turn_token_stats?: TurnTokenStats | null;
@@ -912,9 +905,6 @@ export interface AskQuestion {
   prompt: string;
   options: AskOption[];
   multi_select?: boolean;
-  /** Deprecated: backend hard-codes true; the web client ignores it — every
-   *  ask_user question always ends in a fixed free-text last item. */
-  free_text?: boolean;
 }
 
 /** Per-question answer on agent/permission submit (answers map value). */
@@ -935,20 +925,14 @@ export interface PermissionRequest {
    * permission = Allow once/Always/Deny;
    * approval = Approve/Reject (+ optional free text);
    * ask_user = questions[] batch (+ answers map on reply).
-   * Live `agent/permission_request` may omit (legacy default permission).
-   * Snapshot `pending_permissions[]` entries: kind is required (WP-179 §5.2).
+   * Live events may omit it; the default is `permission`.
+   * Snapshot `pending_permissions[]` entries always carry it.
    */
   kind?: AskKind;
   /** Approval card free-text flag only; ask_user ignores it. */
   free_text?: boolean;
-  /** Legacy flat options (compat → single question id q0 when questions empty). */
-  options?: AskOption[];
-  /** Legacy multi_select for flat options. */
-  multi_select?: boolean;
   /** ask_user batch (≥1). Empty for permission/approval. */
   questions?: AskQuestion[];
-  /** Present on legacy forwarded subagent events; ignore for main transcript. */
-  parent_session_id?: string;
 }
 
 // --- WireEvent (Rust: #[serde(tag = "type", rename_all = "snake_case")]) ---

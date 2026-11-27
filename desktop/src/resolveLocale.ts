@@ -1,6 +1,6 @@
 /**
  * Map Electron `app.getLocale()` (or any BCP-47 / OS tag) to supported app locales.
- * Rules (WP-217): zh* → zh-CN; en* → en; everything else → en.
+ * Rules: zh* → zh-CN; en* → en; everything else → en.
  */
 export type AppLocale = "en" | "zh-CN";
 

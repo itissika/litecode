@@ -11,8 +11,6 @@ function renderCard(questions: AskQuestion[]) {
     <AskUserCard
       tool="ask_user"
       summary=""
-      options={[]}
-      multiSelect={false}
       questions={questions}
       onGrant={onGrant}
     />,
@@ -35,12 +33,12 @@ const multi: AskQuestion = { ...single, id: "m", multi_select: true };
 describe("AskUserCard last-item free text (WP-082)", () => {
   afterEach(cleanup);
 
-  it("1. every question ends in the input, whatever free_text says", async () => {
+  it("1. every question ends in the input", async () => {
     const user = userEvent.setup();
     renderCard([
-      { ...single, id: "q1", free_text: false },
+      { ...single, id: "q1" },
       { ...single, id: "q2" },
-      { ...single, id: "q3", free_text: true },
+      { ...single, id: "q3" },
     ]);
     for (const id of ["q1", "q2", "q3"]) {
       const input = screen.getByTestId(`ask-user-free-text-${id}`);
@@ -206,8 +204,6 @@ describe("AskUserCard prose: markdown", () => {
       <AskUserCard
         tool="ask_user"
         summary="Which **approach**?"
-        options={[]}
-        multiSelect={false}
         questions={[
           { id: "q", prompt: "Which one?", options: [{ id: "a", label: "A" }] },
         ]}

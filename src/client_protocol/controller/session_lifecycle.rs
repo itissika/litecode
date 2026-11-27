@@ -233,7 +233,6 @@ impl SessionController {
                     proj.context_window = preview.context_window;
                     proj.context_envelope = preview.envelope.clone();
                     proj.context_meter = preview.meter.clone();
-                    proj.context_tokens_estimate = preview.meter.used_tokens;
                     proj.context_token_breakdown = preview.breakdown.clone();
                 }
             })

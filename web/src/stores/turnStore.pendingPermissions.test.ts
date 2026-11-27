@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WP-184 — pending_permissions hydrate / disconnect / turn boundary (Phase A)
  * and waiting_for_user wire / remount presentation (Phase B).
  * Fixture is a copy of `.litecode/ops/artifacts/WP-181/fixtures/pending_permissions.frozen.json`
@@ -115,8 +115,6 @@ describe("WP-184 pending_permissions (Phase A)", () => {
         summary: "from push",
         kind: "permission" as const,
         free_text: false,
-        options: [],
-        multi_select: false,
         questions: [],
       },
     ];
@@ -149,8 +147,6 @@ describe("WP-184 pending_permissions (Phase A)", () => {
                 summary: "old",
                 kind: "permission",
                 free_text: false,
-                options: [],
-                multi_select: false,
                 questions: [],
               },
             ],
@@ -283,8 +279,6 @@ describe("WP-184 pending_permissions (Phase A)", () => {
                 summary: "x",
                 kind: "ask_user",
                 free_text: false,
-                options: [],
-                multi_select: false,
                 questions: [],
               },
             ],
@@ -327,8 +321,6 @@ describe("WP-184 pending_permissions (Phase A)", () => {
                 summary: "Run",
                 kind: "permission",
                 free_text: false,
-                options: [],
-                multi_select: false,
                 questions: [],
               },
             ],

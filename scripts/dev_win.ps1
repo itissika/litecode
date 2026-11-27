@@ -199,7 +199,7 @@ if (-not $env:GITHUB_ACTIONS -and -not $env:ELECTRON_MIRROR) {
   Write-Host "==> ELECTRON_MIRROR=$($env:ELECTRON_MIRROR) (set ELECTRON_MIRROR to override)"
 }
 
-$savedDevUrl = $env:LITECODE_DEV_URL
+$savedRemoteUrl = $env:LITECODE_REMOTE_URL
 $savedUiDevUrl = $env:LITECODE_UI_DEV_URL
 $savedUpstreamFile = $env:LITECODE_DEV_UPSTREAM_FILE
 $savedSidecarDir = $env:LITECODE_SIDECAR_DIR
@@ -222,9 +222,9 @@ try {
     $vite = Start-DevVite -RepoRoot $Root -Port $WebPort -SkipInstall ([bool]$SkipNpmInstall)
   }
 
-  # Electron must spawn the sidecar itself. LITECODE_DEV_URL would attach to a
+  # Electron must spawn the sidecar itself. LITECODE_REMOTE_URL would attach to a
   # remote serve and skip that. LITECODE_UI_DEV_URL only replaces the document.
-  Remove-Item Env:\LITECODE_DEV_URL -ErrorAction SilentlyContinue
+  Remove-Item Env:\LITECODE_REMOTE_URL -ErrorAction SilentlyContinue
   $env:LITECODE_SIDECAR_DIR = $Product
 
   $uiLine = if ($NoHmr) { "static web/dist" } else { $env:LITECODE_UI_DEV_URL }
@@ -240,7 +240,7 @@ try {
   npm run dev
 } finally {
   Stop-DevProcess $vite
-  Restore-EnvValue "LITECODE_DEV_URL" $savedDevUrl
+  Restore-EnvValue "LITECODE_REMOTE_URL" $savedRemoteUrl
   Restore-EnvValue "LITECODE_UI_DEV_URL" $savedUiDevUrl
   Restore-EnvValue "LITECODE_DEV_UPSTREAM_FILE" $savedUpstreamFile
   Restore-EnvValue "LITECODE_SIDECAR_DIR" $savedSidecarDir

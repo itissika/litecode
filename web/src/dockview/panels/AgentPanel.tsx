@@ -512,8 +512,6 @@ export function ComposerDock({
                 summary={pendingPermission.summary}
                 kind={pendingPermission.kind}
                 freeText={pendingPermission.free_text}
-                options={pendingPermission.options}
-                multiSelect={pendingPermission.multi_select}
                 questions={pendingPermission.questions}
                 onGrant={(approved, always, opts) => {
                   grantPermission(sessionId, approved, always, opts);

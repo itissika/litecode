@@ -1,8 +1,7 @@
 /**
  * R9 gate: product-pipeline invariants on the FE side.
  * Complements Rust death_list_gate R9 needles (#1 default Responses, #6 HookMessage ban,
- * plus R3–R6 continuity for tool_start / partialText).
- * Contains R5 needles (partialText / partialReasoning); R5 file kept as ISSUE/regression anchor.
+ * plus R3–R6 continuity for tool_start / partialText / partialReasoning).
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

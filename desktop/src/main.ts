@@ -51,7 +51,7 @@ import {
 } from "./pending-remote";
 import { RecentWorkspaces, type RecentWorkspace } from "./recents";
 import { deleteSecret, getSecret, setSecret } from "./secure-store";
-import { RemoteTargets, type SavedRemoteTarget } from "./remote-targets";
+import { RemoteTargets } from "./remote-targets";
 import {
   ensureComponentForRemote as ensureComponentForRemoteCore,
   type RemoteProgressEvent,
@@ -85,6 +85,7 @@ import {
   REMOTE_DISCONNECTED_CHANNEL,
   REMOTE_PROGRESS_CHANNEL,
   TURN_NOTIFICATION_CLICK_CHANNEL,
+  type RemoteHistoryItem,
 } from "./bridge-contract";
 import {
   ComponentManager,
@@ -198,9 +199,9 @@ function createToken(): string {
 type BootContent = { kind: "hub" } | { kind: "skeleton" };
 
 /**
- * WP-169 skeleton: theme background only, whole page draggable (frameless
- * window), no text, no script. A data: URL is never a trusted IPC surface
- * (ipc-trust only trusts the hub file URL and the workbench origin).
+ * Skeleton: theme background only, whole page draggable (frameless window), no
+ * text, no script. A data: URL is never a trusted IPC surface (ipc-trust only
+ * trusts the hub file URL and the workbench origin).
  */
 const SKELETON_URL =
   "data:text/html;charset=utf-8," +
@@ -717,6 +718,20 @@ async function materializeSshTarget(target: SavedSshTarget): Promise<{
 function emitRemoteProgress(event: RemoteProgressEvent): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send(REMOTE_PROGRESS_CHANNEL, event);
+}
+
+/** Renderer-facing history row: credential and identity fields stay in main. */
+function remoteHistoryItem(target: SavedSshTarget): RemoteHistoryItem {
+  return {
+    id: target.id,
+    label: target.label,
+    host: target.host,
+    ...(target.user ? { user: target.user } : {}),
+    ...(target.port ? { port: target.port } : {}),
+    ...(target.lastWorkspace ? { lastWorkspace: target.lastWorkspace } : {}),
+    ...(typeof target.lastConnectedAt === "number" ? { lastConnectedAt: target.lastConnectedAt } : {}),
+    ...(typeof target.pinned === "boolean" ? { pinned: target.pinned } : {}),
+  };
 }
 
 type TrustedHost = { fingerprint: string; entry: string };
@@ -1521,14 +1536,11 @@ async function connectSavedRemote(targetId: string): Promise<{ ok: true; mode: "
 }
 
 async function boot(): Promise<void> {
-  // Formal remote + legacy DEV escape hatch (same attach semantics).
-  // `LITECODE_UI_DEV_URL` is not that hatch: it only swaps the local document
-  // for Vite. Parse it first so a bad value fails before the sidecar starts.
+  // `LITECODE_REMOTE_URL` attaches to a remote serve. `LITECODE_UI_DEV_URL` only
+  // swaps the local document for Vite, so parse it first — a bad value fails
+  // before the sidecar starts.
   const devUi = devUiDocumentUrl(process.env.LITECODE_UI_DEV_URL);
-  const remoteUrl =
-    process.env.LITECODE_REMOTE_URL?.trim() ||
-    process.env.LITECODE_DEV_URL?.trim() ||
-    "";
+  const remoteUrl = process.env.LITECODE_REMOTE_URL?.trim() ?? "";
   if (!remoteUrl) {
     assertDevUiConfigured(devUi, devUpstreamFilePath());
   }
@@ -1543,7 +1555,7 @@ async function boot(): Promise<void> {
     authToken = token;
     const expected = process.env.LITECODE_WORKSPACE?.trim();
     const expectedWorkspace = expected ? normalizeWorkspace(expected) : null;
-    // S1b: skeleton first; /health only gates loadURL(handshakeUrl).
+    // Skeleton first; /health only gates loadURL(handshakeUrl).
     await runBootSequence<BrowserWindow, null>({
       startBackend: async () => {
         await waitForWorkspaceHealth(healthUrlFromBase(remoteUrl), expectedWorkspace ?? undefined);
@@ -1574,7 +1586,7 @@ async function boot(): Promise<void> {
     await startRegistry(hubWindow, null);
     return;
   }
-  // S1: skeleton window in parallel with the sidecar; READY + attach check +
+  // Skeleton window in parallel with the sidecar; READY + attach check +
   // /health only gate the workbench loadURL into the same window.
   await runBootSequence<BrowserWindow, SidecarHandle>({
     startBackend: (signal) =>
@@ -1604,7 +1616,7 @@ async function boot(): Promise<void> {
       }
     },
     closeSkeleton: closeFailedBootSkeleton,
-    // S2: boot-time recents write only after the workbench loaded.
+    // Boot-time recents write only after the workbench loaded.
     recordRecent: () => recordRecent(workspace),
     onAbort: (cleanup) => {
       bootAbortCleanup = cleanup;
@@ -1928,13 +1940,9 @@ function registerIpc(): void {
     return recents?.remove(String(workspacePath)) ?? [];
   });
 
-  handleTrusted("litecode:list-ssh-targets", "hub", (): SavedSshTarget[] => {
-    return sshTargets?.list() ?? [];
-  });
-
-  handleTrusted("litecode:list-remote-history", "hub", (): SavedSshTarget[] => {
-    return sshTargets?.listConnected() ?? [];
-  });
+  handleTrusted("litecode:list-remote-history", "hub", (): RemoteHistoryItem[] =>
+    (sshTargets?.listConnected() ?? []).map(remoteHistoryItem),
+  );
 
   handleTrusted("litecode:start-remote-session", "hub", async (_e, input: StartRemoteInput) => {
     for (const stale of clearAllPendingRemotes()) {
@@ -1992,10 +2000,6 @@ function registerIpc(): void {
   handleTrusted("litecode:remove-ssh-target", "hub", async (_e, id: string) => {
     const removed = sshTargets?.remove(String(id));
     if (removed?.credentialId) await deleteSecret(removed.credentialId);
-  });
-
-  handleTrusted("litecode:list-remote-targets", "hub", (): SavedRemoteTarget[] => {
-    return remoteTargets?.list() ?? [];
   });
 
   handleTrusted("litecode:connect-saved-remote", "hub", async (_e, id: string) => {
@@ -2251,7 +2255,7 @@ app.whenReady().then(async () => {
   try {
     await boot();
   } catch (err) {
-    // WP-169: the user closed the skeleton; the normal quit path cleans up.
+    // The user closed the skeleton; the normal quit path cleans up.
     if (isBootAborted(err)) return;
     const message = err instanceof Error ? err.message : String(err);
     // DESK-04: if boot fails after the sidecar was spawned (e.g. health
@@ -2287,7 +2291,7 @@ app.on("before-quit", (e) => {
     registry?.stop();
     await browserBridge?.close().catch(() => undefined);
     browserBridge = null;
-    // WP-169: skeleton closed while the sidecar was still starting.
+    // Skeleton closed while the sidecar was still starting.
     await bootAbortCleanup?.catch(() => undefined);
     await sidecarLifecycle.run(async () => {
       await stopSidecar(sidecar);

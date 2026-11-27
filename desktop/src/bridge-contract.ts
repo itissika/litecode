@@ -1,8 +1,8 @@
 /**
- * Desktop preload bridge contract (WP-161). Single source of truth for the
+ * Desktop preload bridge contract. Single source of truth for the
  * `window.litecode` API exposed by `preload.ts`.
  *
- * - Types: `export type`. web (WP-162) consumes these with `import type` only.
+ * - Types: `export type`. web consumes these with `import type` only.
  * - Channel names: `export const`. Desktop-internal; web must not import them.
  *
  * NOTE: the sandboxed preload cannot `require` local files, so `preload.ts`

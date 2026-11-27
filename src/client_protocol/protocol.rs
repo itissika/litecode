@@ -460,8 +460,7 @@ pub struct TurnSnapshot {
     pub step: u64,
     pub step_max: u32,
     pub started_at_ms: i64,
-    /// Derived: prefer `pending_permissions.len() > 0` / phase == waiting_for_user.
-    /// Kept one release for older clients; UI cards must use the list.
+    /// Derived: `pending_permissions` is non-empty at snapshot time.
     #[serde(default)]
     pub awaiting_permission: bool,
 }
@@ -491,8 +490,6 @@ pub struct SessionSnapshot {
     /// snapshot producers are migrated in this release.
     #[serde(default)]
     pub meta: SessionMetaWire,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub live: Option<TurnSnapshot>,
     pub session_id: String,
     pub project: String,
     pub agent_id: String,
@@ -505,10 +502,6 @@ pub struct SessionSnapshot {
     pub turn: Option<TurnSnapshot>,
     #[serde(default)]
     pub context_window: usize,
-    /// Legacy display mirror of [`ContextMeter::used_tokens`]. It is never a
-    /// threshold input; eligibility and occupancy come from `context_meter`.
-    #[serde(default)]
-    pub context_tokens_estimate: usize,
     /// Item-text buckets aligned with the last prepared request when present.
     #[serde(default)]
     pub context_token_breakdown: crate::session::estimate::ItemTokenBreakdown,
@@ -522,9 +515,6 @@ pub struct SessionSnapshot {
     /// Server decision for manual compaction (inclusive 30% gate).
     #[serde(default)]
     pub compact_eligible: bool,
-    /// Legacy bool mirror of `compaction.active`; kept for older clients.
-    #[serde(default)]
-    pub compacting: bool,
     /// The one compaction state both snapshots and lifecycle events project.
     #[serde(default)]
     pub compaction: CompactionStateWire,
@@ -708,11 +698,6 @@ pub struct PermissionRequest {
     pub kind: crate::permission::AskKind,
     #[serde(default)]
     pub free_text: bool,
-    /// Legacy flat options (compat → single question id `q0` when `questions` empty).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub options: Vec<crate::permission::AskOption>,
-    #[serde(default)]
-    pub multi_select: bool,
     /// ask_user batch (≥1). Empty for permission/approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub questions: Vec<crate::permission::AskQuestion>,

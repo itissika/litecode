@@ -1,5 +1,5 @@
 /**
- * WP-169 boot ordering (S1/S1b/S2), kept free of Electron so it can be tested.
+ * Boot ordering, kept free of Electron so it can be tested.
  *
  * 1. The backend (local sidecar / remote health wait) starts and, in parallel,
  *    a skeleton window is created and shown.
@@ -48,7 +48,7 @@ export type BootSequenceDeps<W extends SkeletonWindow, H> = {
   stopBackend(handle: H): Promise<void>;
   /** Close the skeleton on a failed boot (must not count as a user close). */
   closeSkeleton(win: W): void;
-  /** Boot-time recents write (S2). Only called after loadWorkbench succeeds. */
+  /** Boot-time recents write; only called after loadWorkbench succeeds. */
   recordRecent?(): void;
   /** Receives the abort cleanup promise as soon as the user closes the window. */
   onAbort?(cleanup: Promise<void>): void;

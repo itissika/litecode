@@ -317,7 +317,6 @@ describe("sessionStore applySnapshot transcript hydrate", () => {
     useSessionStore.getState().applySnapshot({
       ...snap(sid, 4),
       turn: null,
-      compacting: false,
       last_turn_token_stats: null,
     });
 

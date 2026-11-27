@@ -166,7 +166,6 @@ async fn auto_manual_and_ui_share_provider_plus_suffix_meter() {
     }
     assert!(auto_meter.should_compact());
     assert!(auto_meter.manual_eligible());
-    assert_eq!(snap.context_tokens_estimate, expected);
     assert_eq!(snap.compact_eligible, auto_meter.manual_eligible());
     assert_eq!(snap.context_envelope.output_reserve, 1_024);
 
@@ -396,7 +395,6 @@ async fn local_meter_uses_the_padded_and_capability_projected_request() {
         assert_eq!(meter.source, ContextMeterSource::LocalEnvelope, "{label}");
         assert_eq!(meter.compact_at, auto_meter.compact_at, "{label}");
     }
-    assert_eq!(snap.context_tokens_estimate, expected);
     assert_eq!(snap.compact_eligible, auto_meter.manual_eligible());
 }
 
@@ -542,7 +540,6 @@ async fn step_and_turn_completion_snapshots_keep_breakdown_aligned_with_meter() 
     proj.set_context_envelope(envelope.clone());
     let before = proj.snapshot("/proj", &binding(10_000, 1_024));
     assert_eq!(before.context_meter.used_tokens, 7_000);
-    assert_eq!(before.context_tokens_estimate, 7_000);
 
     // StepCommitted must refresh both sides together after a suffix row lands.
     let first_suffix = user_text("suffix after the completed provider request");

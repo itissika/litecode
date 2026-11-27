@@ -12,10 +12,12 @@ import {
   hashModelDir,
   isModelDirReady,
   litecodeBundlesDir,
+  readBundledAsset,
   resolveBundledModelDir,
   resolveHfModelDir,
   linuxBundleCandidateTars,
   resolveLinuxBundle,
+  webAssetCandidates,
 } from "./bundle-paths";
 
 const saved = {
@@ -247,6 +249,47 @@ describe("dev-only repo fallbacks", () => {
     const packagedCandidates = linuxCandidates(true, desktop);
     assert.ok(!packagedCandidates.some((c) => path.resolve(c).startsWith(path.resolve(repo))));
     assert.ok(linuxCandidates(false, desktop).includes(tar));
+  });
+});
+
+describe("bundled asset resolver", () => {
+  it("builds dist-first candidates from an absolute base, never from cwd", () => {
+    const dist = path.join(os.tmpdir(), "lc-desktop", "dist");
+    assert.deepEqual(
+      webAssetCandidates(dist, "theme-tokens.css", ["../../web/src/theme/tokens.css"]),
+      [
+        path.join(dist, "theme-tokens.css"),
+        path.join(dist, "..", "..", "web", "src", "theme", "tokens.css"),
+      ],
+    );
+    assert.deepEqual(
+      webAssetCandidates(dist, null, ["../../web/public/icon.png", "../web/public/icon.png"]),
+      [
+        path.join(dist, "..", "..", "web", "public", "icon.png"),
+        path.join(dist, "..", "web", "public", "icon.png"),
+      ],
+    );
+    assert.ok(webAssetCandidates(dist, "a.css", ["../../b.css"]).every((p) => path.isAbsolute(p)));
+  });
+
+  it("reads the dist copy first, then falls back to the dev web tree", () => {
+    const root = tmp("lc-assets-");
+    const dist = path.join(root, "desktop", "dist");
+    const webSrc = path.join(root, "web", "src");
+    fs.mkdirSync(dist, { recursive: true });
+    fs.mkdirSync(webSrc, { recursive: true });
+    fs.writeFileSync(path.join(webSrc, "tokens.css"), "from-web");
+
+    const candidates = webAssetCandidates(dist, "theme-tokens.css", ["../../web/src/tokens.css"]);
+    assert.equal(readBundledAsset(candidates)?.toString("utf8"), "from-web");
+
+    fs.writeFileSync(path.join(dist, "theme-tokens.css"), "from-dist");
+    assert.equal(readBundledAsset(candidates)?.toString("utf8"), "from-dist");
+  });
+
+  it("returns null when no candidate is readable", () => {
+    const missing = path.join(tmp("lc-assets-missing-"), "nope.css");
+    assert.equal(readBundledAsset([missing, `${missing}.bak`]), null);
   });
 });
 

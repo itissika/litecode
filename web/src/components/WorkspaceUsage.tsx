@@ -860,8 +860,8 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
         >
           <span className="text-(--_dk-text-secondary)">{i18n.t("usage.byProvider")}</span>
           {providerViews.map(({ provider, buckets: providerBucket, totals: providerTotals }) => {
-            // A real provider id may itself be "unknown"; prefix named ids so
-            // the React key cannot collide with the legacy unknown bucket.
+            // A real provider id may itself be "unknown", so prefix named ids
+            // to keep the React key from colliding with the unknown bucket.
             const key =
               provider.provider_id === null ? "unknown" : "provider:" + provider.provider_id;
             const testId = provider.provider_id ?? "unknown";

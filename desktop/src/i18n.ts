@@ -1,30 +1,25 @@
-import fs from "node:fs";
 import path from "node:path";
 
 import i18n from "i18next";
 
+import { readBundledAsset, webAssetCandidates } from "./bundle-paths";
 import { resolveLocale, type AppLocale } from "./resolveLocale";
 
 type LocaleJson = Record<string, unknown>;
 
-/** Resolve a locale JSON file (dist copy first, then web source fallbacks — same idea as theme tokens). */
+// Locale JSON: dist copy first, then the web source. Same idea as theme tokens.
 function loadLocaleJson(fileName: string): LocaleJson {
-  const candidates = [
-    path.join(__dirname, "i18n", fileName),
-    path.resolve(__dirname, "../../web/src/i18n/locales", fileName),
-    path.resolve(process.cwd(), "../web/src/i18n/locales", fileName),
-    path.resolve(process.cwd(), "web/src/i18n/locales", fileName),
-  ];
-  for (const candidate of candidates) {
-    try {
-      return JSON.parse(fs.readFileSync(candidate, "utf8")) as LocaleJson;
-    } catch {
-      // try next
-    }
-  }
-  throw new Error(
-    `i18n locale not found: ${fileName} (expected desktop/dist/i18n/${fileName} or web/src/i18n/locales/${fileName})`,
+  const raw = readBundledAsset(
+    webAssetCandidates(__dirname, path.join("i18n", fileName), [
+      `../../web/src/i18n/locales/${fileName}`,
+    ]),
   );
+  if (!raw) {
+    throw new Error(
+      `i18n locale not found: ${fileName} (expected desktop/dist/i18n/${fileName} or web/src/i18n/locales/${fileName})`,
+    );
+  }
+  return JSON.parse(raw.toString("utf8")) as LocaleJson;
 }
 
 function loadResources(): { en: LocaleJson; "zh-CN": LocaleJson } {

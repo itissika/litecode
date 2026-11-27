@@ -527,7 +527,7 @@ describe("WorkspaceUsageView", () => {
   it("labels the unknown bucket explicitly", () => {
     render(<WorkspaceUsageView report={withProviders} />);
     fireEvent.click(screen.getByText("Week"));
-    expect(screen.getByText("Unknown (legacy compaction)")).toBeTruthy();
+    expect(screen.getByText("Unknown")).toBeTruthy();
     expect(screen.getByTestId("provider-usage-unknown")).toBeTruthy();
   });
 

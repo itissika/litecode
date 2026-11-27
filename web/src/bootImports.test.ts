@@ -8,7 +8,7 @@ const read = (rel: string) => readFileSync(join(src, rel), "utf8");
 const staticImports = (text: string) =>
   [...text.matchAll(/^import\s+(?:[^;]*?from\s+)?"([^"]+)";/gm)].map((m) => m[1]);
 
-describe("WP-170 boot imports", () => {
+describe("boot imports", () => {
   it("S3: main.tsx and the panel registry do not pull monaco statically", () => {
     expect(staticImports(read("main.tsx"))).not.toContain("./lib/monaco");
     const registry = staticImports(read("dockview/config/registry.ts"));

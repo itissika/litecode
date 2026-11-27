@@ -52,30 +52,6 @@ export function revealEdgePanel(component: string): boolean {
   return true;
 }
 
-/** The Gallery moved from the left rail into an Apps panel; drop the old edge tab. */
-function removeLegacyGalleryPanel(api: DockviewApi): void {
-  const legacy = api.getPanel("workspace-gallery");
-  if (!legacy) return;
-  try {
-    legacy.api.close();
-  } catch {
-    // The panel may already be gone.
-  }
-}
-
-function removeLegacyTerminalPanels(api: DockviewApi): void {
-  const extras = api.panels.filter((panel) =>
-    panel.id.startsWith("workspace-terminal-"),
-  );
-  for (const panel of extras) {
-    try {
-      panel.api.close();
-    } catch {
-      // The panel may already be gone.
-    }
-  }
-}
-
 export function ensureDefaultEdges(api?: DockviewApi | null): void {
   const live = liveApi(api);
   if (!live) return;
@@ -86,8 +62,6 @@ export function ensureDefaultEdges(api?: DockviewApi | null): void {
     if (kind.component === "apps" && !appsAvailable()) continue;
     ensureEdgePanel(kind.component, live);
   }
-  removeLegacyGalleryPanel(live);
-  removeLegacyTerminalPanels(live);
 }
 
 function hasRequiredRails(api: DockviewApi): boolean {

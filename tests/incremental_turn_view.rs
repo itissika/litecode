@@ -184,7 +184,7 @@ fn the_projection_refreshes_its_meter_from_the_extended_view() {
         !projection.last_estimate_incremental(),
         "the first refresh has no fold yet and must build one"
     );
-    let first = projection.context_tokens_estimate;
+    let first = projection.context_meter.used_tokens;
     assert!(first > 0);
 
     fx.insert_items(&sid, &[user_text("row 2")]);
@@ -194,7 +194,7 @@ fn the_projection_refreshes_its_meter_from_the_extended_view() {
         "once a fold exists the refresh must extend it"
     );
     assert!(
-        projection.context_tokens_estimate > first,
+        projection.context_meter.used_tokens > first,
         "the new row has to land in the meter"
     );
 }
@@ -269,7 +269,7 @@ fn a_revert_drops_the_projection_fold() {
         context_mode: "standard".into(),
     };
     projection.bump_buffer_revision("/p", &binding);
-    let full = projection.context_tokens_estimate;
+    let full = projection.context_meter.used_tokens;
     assert!(full > 0);
 
     sessions
@@ -283,7 +283,7 @@ fn a_revert_drops_the_projection_fold() {
         "a revert below the fold must not be extended over"
     );
     assert!(
-        projection.context_tokens_estimate < full,
+        projection.context_meter.used_tokens < full,
         "the meter must drop once the reverted rows are gone"
     );
 }

@@ -79,10 +79,7 @@ export const MessageList = memo(function MessageList({
   userRailLayoutRef,
   userRailNotifyRef,
 }: MessageListProps) {
-  // Transient "compacting now" line: `compacting` is set on started and cleared
-  // on succeeded/failed. Do not key off `turnPhase`, which can stay compacting
-  // after the checkpoint lands. `compactingAt` is the tail the cut froze at, so
-  // the line appears where the checkpoint row will land.
+  // Transient "compacting now" line; see `withCompacting` for state timing.
   const compacting = useTurnStore(
     (s) => s.byId.get(sessionId)?.compacting ?? false,
   );
