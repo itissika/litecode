@@ -163,6 +163,19 @@ impl Tool for KnowledgeCreateTool {
         vec![ResourceKey::File(root)]
     }
 
+    fn effects(
+        &self,
+        _input: &Value,
+        _path_mode: crate::workspace::ToolPathMode,
+        workspace_root: &Path,
+    ) -> crate::tool::resource_gate::ToolEffects {
+        let root = match root::locate(workspace_root) {
+            KnowledgeRoot::Present(root) => root,
+            KnowledgeRoot::Missing => root::PRIVATE_ROOT.to_string(),
+        };
+        crate::tool::resource_gate::ToolEffects::write(ResourceKey::File(root))
+    }
+
     fn execute(
         &self,
         input: Value,

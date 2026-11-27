@@ -38,12 +38,7 @@ fn wire_name<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_default()
 }
 
-/// First line of `code_search` / `session_search` results — the only formatter
-/// (WP-057 sync% contract v2, `.litecode/ops/artifacts/WP-057-sync-pct-contract.md`):
-///
-/// `sync_pct: <value>[ (<label>)][ chunks <done>/<total>]`, value ∈ `<n>%` | `scanning` |
-/// `failed` | `unknown`. `n` comes only from [`CorpusProgress::percent`]; the chunks
-/// segment is emitted only with `<n>%`.
+/// Single formatter for the `sync_pct:` line in `code_search` / `session_search` results.
 pub(crate) fn format_sync_pct_line(
     sync: Option<&crate::engines::progress::CorpusProgress>,
 ) -> String {
@@ -87,6 +82,3 @@ pub(crate) fn sync_pct_for_workspace(
         .or_else(|| engines.code_search().workspace_root())?;
     Some(crate::engines::retrieval_progress_for_workspace(engines, &root).total)
 }
-
-#[cfg(test)]
-mod sync_line_tests {}

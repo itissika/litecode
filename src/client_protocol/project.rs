@@ -358,7 +358,6 @@ fn project_with(
             ciphertexts_stripped,
             rebased_stripped,
             reasoning_dropped,
-            reasoning_wholly_omitted,
             rebased_true_count,
             projection_rewrote,
             severity,
@@ -387,7 +386,6 @@ fn project_with(
                 ciphertexts_stripped: *ciphertexts_stripped,
                 rebased_stripped: *rebased_stripped,
                 reasoning_dropped: *reasoning_dropped,
-                reasoning_wholly_omitted: *reasoning_wholly_omitted,
                 rebased_true_count: *rebased_true_count,
                 projection_rewrote: *projection_rewrote,
                 severity: severity.clone(),
@@ -1618,7 +1616,7 @@ mod wp186_pending_permissions_tests {
     }
 
     #[test]
-    fn wire_phase_writes_waiting_for_user_reads_alias() {
+    fn wire_phase_writes_waiting_for_user() {
         let phase = WireTurnPhase::AwaitingPermission {
             tool: "ask_user".into(),
             rule_id: "ask_user".into(),
@@ -1631,20 +1629,6 @@ mod wp186_pending_permissions_tests {
             "write must use waiting_for_user, got {v}"
         );
         assert!(!obj.contains_key("awaiting_permission"));
-
-        let legacy = serde_json::json!({
-            "awaiting_permission": {
-                "tool": "bash",
-                "rule_id": "bash.exec",
-                "summary": "run"
-            }
-        });
-        // Externally tagged enum: key is the variant name.
-        let decoded: WireTurnPhase = serde_json::from_value(legacy).unwrap();
-        match decoded {
-            WireTurnPhase::AwaitingPermission { tool, .. } => assert_eq!(tool, "bash"),
-            other => panic!("unexpected {other:?}"),
-        }
     }
 
     #[test]

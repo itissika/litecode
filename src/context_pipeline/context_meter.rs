@@ -20,7 +20,7 @@ use crate::session::estimate::{
 };
 use crate::session::manager::SessionManager;
 use crate::session::working::WorkingRow;
-use crate::types::{Item, LitecodeError, Result};
+use crate::types::{Item, Result};
 
 /// Conservative fixed protocol envelope not represented by item/tool payloads.
 /// Provider usage, when present, already contains this cost and is never topped up.

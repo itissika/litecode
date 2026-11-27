@@ -39,38 +39,21 @@ pub use workspace_identity::{
     ensure_workspace_identity, peek_workspace_id, workspace_identity_path, workspace_registry_path,
 };
 
-use serde::Deserialize;
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct AgentConfig {
-    #[serde(default = "default_role")]
     pub role: String,
-    #[serde(default = "default_model_ref")]
     pub model_ref: String,
-    #[serde(default)]
     pub system_prompt: String,
-    #[serde(default)]
     pub description: String,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            role: default_role(),
-            model_ref: default_model_ref(),
+            role: "primary".into(),
+            model_ref: "default".into(),
             system_prompt: String::new(),
             description: String::new(),
         }
     }
 }
-
-fn default_role() -> String {
-    "primary".into()
-}
-
-fn default_model_ref() -> String {
-    "default".into()
-}
-
-#[cfg(test)]
-mod tests {}

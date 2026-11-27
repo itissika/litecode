@@ -11,7 +11,6 @@ export const MODEL_STAMP_FILE = ".model.sha256";
 const HF_TOKENIZER = "tokenizer.json";
 const HF_CONFIG = "config.json";
 const ONNX_Q8Q4 = path.join("artifacts", "ort-lin-q8-emb-q4-bs128-a1.onnx");
-const ONNX_LEGACY = path.join("artifacts", "ort-lin-q8-emb-q4.onnx");
 
 export function litecodeBundlesDir(): string {
   if (process.platform === "win32") {
@@ -26,7 +25,7 @@ export function isModelDirReady(dir: string): boolean {
   return (
     fs.existsSync(path.join(dir, HF_TOKENIZER)) &&
     fs.existsSync(path.join(dir, HF_CONFIG)) &&
-    (fs.existsSync(path.join(dir, ONNX_Q8Q4)) || fs.existsSync(path.join(dir, ONNX_LEGACY)))
+    fs.existsSync(path.join(dir, ONNX_Q8Q4))
   );
 }
 
@@ -36,7 +35,6 @@ const MODEL_HASH_RELS = [
   path.join("1_Pooling", "config.json"),
   ONNX_Q8Q4,
   `${ONNX_Q8Q4}.data`,
-  ONNX_LEGACY,
 ];
 
 /** Stable fingerprint of a ready HF embed directory for remote skip-if-match. */

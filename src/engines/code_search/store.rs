@@ -587,6 +587,7 @@ impl CodeSearchIndex {
     }
 
     /// Vectors held by the ANN (consistency checks).
+    #[cfg(test)]
     pub(crate) fn vector_count(&self) -> usize {
         self.ann.size()
     }
@@ -728,20 +729,8 @@ fn new_ann_index() -> Result<Index> {
     Index::new(&options).map_err(|e| LitecodeError::Config(format!("usearch new: {e}")))
 }
 
-/// Write ANN bytes with `std::fs` instead of usearch's `Index::save(path)`.
-///
-/// The C++ binding opens the path with libc `fopen` / `CreateFileA` (ANSI on
-/// Windows) and stores a temporary `c_str()`. New-workspace warmup then fails
-/// with `No such file or directory` for Unicode roots or a dangling path.
-pub(crate) fn persist_usearch(ann: &Index, path: &Path) -> Result<()> {
-    let mut buf = vec![0u8; ann.serialized_length()];
-    ann.save_to_buffer(&mut buf)
-        .map_err(|e| LitecodeError::Config(format!("save usearch: {e}")))?;
-    std::fs::write(path, buf).map_err(|e| LitecodeError::Config(format!("save usearch: {e}")))
-}
-
 /// Read ANN bytes with `std::fs` instead of usearch's `Index::load(path)`.
-pub(crate) fn restore_usearch(ann: &Index, path: &Path) -> Result<()> {
+fn restore_usearch(ann: &Index, path: &Path) -> Result<()> {
     let buf =
         std::fs::read(path).map_err(|e| LitecodeError::Config(format!("load usearch: {e}")))?;
     ann.load_from_buffer(&buf)

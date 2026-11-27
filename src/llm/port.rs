@@ -26,17 +26,17 @@ use crate::provider_catalog::{EndpointKind, ReasoningReplay, ResolvedModel};
 /// How a target protocol carries prior reasoning back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReasoningPort {
-    /// OpenAI-family Responses: only the producer's own ciphertext replays.
+    /// Responses ciphertext family: only the producer's own ciphertext replays.
     Ciphertext,
     /// Responses host that replays its own item id plus summary text.
     Summary,
-    /// Responses host that accepts plain reasoning text (DeepSeek/MiMo).
-    /// Readable text is portable; producer ownership is irrelevant.
+    /// Responses host that accepts plain reasoning text. Readable text is
+    /// portable; producer ownership is irrelevant.
     ReasoningText,
-    /// Anthropic Messages: a signed thinking block; unsigned text is not sendable.
+    /// Signed thinking block family: unsigned text is not sendable.
     SignedBlock,
-    /// Chat Completions: reasoning goes into a vendor text key. Readable text
-    /// is portable; producer ownership is irrelevant.
+    /// Chat text key family: reasoning goes into a keyed text field. Readable
+    /// text is portable; producer ownership is irrelevant.
     VendorText,
 }
 
@@ -186,7 +186,7 @@ fn has_id(reasoning: &ReasoningItem) -> bool {
         .is_some_and(|id| !id.trim().is_empty())
 }
 
-fn has_replay_text(reasoning: &ReasoningItem) -> bool {
+pub(crate) fn has_replay_text(reasoning: &ReasoningItem) -> bool {
     let from_content = reasoning.content.as_ref().is_some_and(|parts| {
         parts.iter().any(|part| match part {
             ReasoningItemContent::ReasoningText(text) => !text.text.trim().is_empty(),
@@ -197,6 +197,3 @@ fn has_replay_text(reasoning: &ReasoningItem) -> bool {
             SummaryPart::SummaryText(text) => !text.text.trim().is_empty(),
         })
 }
-
-#[cfg(test)]
-mod tests {}

@@ -18,8 +18,7 @@ use crate::workspace::{WorkspaceService, WorkspaceWatcher};
 
 #[derive(Clone)]
 pub struct ServeState {
-    /// Shared IDE service graph. Legacy field aliases below remain while
-    /// adapters migrate to this single ownership boundary.
+    /// Shared IDE service graph; the single ownership boundary for IDE services.
     pub ide: Arc<IdeBaseHandle>,
     pub runtime: Arc<RwLock<RuntimeHandle>>,
     pub engine_manager: Arc<EngineManager>,
@@ -125,7 +124,7 @@ impl ServeState {
             Arc::clone(&terminal_hub),
         );
         let settings_revision = settings_writer.revision_handle();
-        let mut runtime = RuntimeHandle::new(
+        let runtime = RuntimeHandle::new(
             resolved,
             agent_name,
             workspace_state,

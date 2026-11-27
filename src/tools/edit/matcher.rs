@@ -3,19 +3,19 @@ use crate::workspace::text_codec::{self, ByteSpan, ExactSpans};
 pub(super) const PREVIEW_CHARS: usize = 160;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum NoOpKind {
+pub(crate) enum NoOpKind {
     IdenticalStrings,
     ReplacementUnchanged,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum WhitespaceKind {
+pub(crate) enum WhitespaceKind {
     LeadingTrailing,
     InternalSpacing,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum RejectReason {
+pub(crate) enum RejectReason {
     EmptyOldString,
     NoOp {
         kind: NoOpKind,

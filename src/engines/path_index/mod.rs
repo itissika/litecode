@@ -219,10 +219,6 @@ impl PathIndex {
         if self.stop.load(Ordering::SeqCst) {
             return;
         }
-        // WP-167: one-time migration cleanup, off the startup path. `.litecode`
-        // is excluded from the explorer corpus, so running it after the first
-        // fill does not change the index.
-        remove_legacy_text_index(&root);
         self.flush_pending();
         while !self.stop.load(Ordering::SeqCst) {
             let updates = self.wait_updates();
@@ -378,19 +374,6 @@ impl PathIndex {
                     paths.insert(rel, file);
                 }
             }
-        }
-    }
-}
-
-fn remove_legacy_text_index(root: &Path) {
-    let dir = root.join(".litecode").join("text-index");
-    if !dir.is_dir() {
-        return;
-    }
-    match std::fs::remove_dir_all(&dir) {
-        Ok(()) => tracing::info!(path = %dir.display(), "removed legacy text-index"),
-        Err(error) => {
-            tracing::warn!(error = %error, "path_index could not remove legacy text-index");
         }
     }
 }

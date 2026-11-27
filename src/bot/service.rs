@@ -350,9 +350,9 @@ impl BotService {
             }
         }
 
-        // D5: a record written by an older build may hold an expanded built-in
-        // prompt, core tool rows, or an `allowed_subagents` list. Normalize it in
-        // place; the write is silent and idempotent.
+        // D5: a record written by an older build may hold a retired prompt
+        // marker, core tool rows, or an `allowed_subagents` list. Normalize it
+        // in place; the write is silent and idempotent.
         for bot in &mut bots {
             let normalized = normalize_bot_body(bot.body.clone());
             if normalized != bot.body {
@@ -1599,10 +1599,9 @@ mod tests {
         );
     }
 
-    /// D5/Q5: an old `bots.json` may still carry a whole prompt (a built-in pack
-    /// or a retired marker) plus core tool rows. Boot normalizes all of it
-    /// silently: the retired text becomes "no role", real user text survives,
-    /// core rows disappear, non-core rows stay.
+    /// D5: an old `bots.json` may still carry a retired marker plus core tool
+    /// rows. Boot normalizes all of it silently: a marker becomes "no role",
+    /// stored text survives (trimmed), core rows disappear, non-core rows stay.
     #[tokio::test]
     async fn legacy_bot_bodies_are_normalized_on_load() {
         let f = fixture();
@@ -1663,17 +1662,18 @@ mod tests {
         )
         .expect("restart");
 
+        let expected_prompts = [
+            crate::config::global_db::DEFAULT_PROMPT.trim(),
+            crate::config::global_db::ORCHESTRATOR_PROMPT.trim(),
+            "",
+            "You are the release captain.",
+        ];
         for (index, bot) in bots.iter().enumerate() {
             let loaded = restarted.find(&bot.id).expect("loaded bot");
-            if index < 3 {
-                assert!(
-                    loaded.body.system_prompt.is_empty(),
-                    "record {index} kept retired prompt text: {:?}",
-                    loaded.body.system_prompt
-                );
-            } else {
-                assert_eq!(loaded.body.system_prompt, "You are the release captain.");
-            }
+            assert_eq!(
+                loaded.body.system_prompt, expected_prompts[index],
+                "record {index} prompt"
+            );
             assert!(
                 loaded.body.allowed_subagents.is_empty(),
                 "the spec owns allowed_subagents"
@@ -1919,37 +1919,6 @@ mod tests {
         let child_prompt =
             crate::context_pipeline::build_system_prompt("explore", &child_config, None);
         assert!(!child_prompt.contains("You are bot"));
-    }
-
-    #[tokio::test]
-    async fn step_budget_is_engine_level_for_bot_and_normal_sessions() {
-        let f = fixture();
-        let bot = f
-            .bots
-            .create_user_bot("Long task", "", body(""))
-            .await
-            .expect("bot");
-        let resolved = resolved(&f);
-        assert_eq!(
-            crate::bot::step_max_for_session(
-                &resolved,
-                Some(f.bots.as_ref()),
-                &bot.session_id,
-                &bot.id
-            ),
-            crate::bot::BOT_MAX_STEPS
-        );
-        assert!(crate::bot::BOT_MAX_STEPS >= 200_000);
-        assert_ne!(crate::bot::BOT_MAX_STEPS, 50);
-        assert_eq!(
-            crate::bot::step_max_for_session(
-                &resolved,
-                Some(f.bots.as_ref()),
-                "normal-session",
-                "default"
-            ),
-            crate::agent::AGENT_MAX_STEPS
-        );
     }
 
     #[tokio::test]

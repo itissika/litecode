@@ -54,9 +54,6 @@ pub fn err_response(id: serde_json::Value, code: i64, message: String) -> JsonRp
 /// WP-091 K1 / P1 message (frozen with frontend, WP-086 §5).
 pub(crate) const SUBAGENT_READONLY_MESSAGE: &str =
     "subagent sessions are read-only: messages can only come from the parent agent";
-/// WP-091 K4 / P4 message (frozen with frontend, WP-086 §5).
-pub(crate) const DESCENDANT_RUNNING_MESSAGE: &str =
-    "cannot delete: a descendant subagent session is running";
 
 /// `-32000` + `data: StructuredError` (+ optional extra data keys).
 pub(crate) fn structured_error_response(
@@ -2233,13 +2230,6 @@ fn retain_and_clear_pending(
     listed
 }
 
-/// @deprecated name kept for test migration — Cancel semantics are Aborted.
-fn reject_all_pending_asks(
-    pending_asks: &mut HashMap<String, PendingAsk>,
-) -> Vec<(String, String)> {
-    abort_all_pending_asks(pending_asks)
-}
-
 fn emit_permission_resolved(
     session: &mut SessionController,
     response_tx: &UnboundedSender<serde_json::Value>,
@@ -2969,7 +2959,7 @@ mod pending_ask_tests {
 
 #[cfg(test)]
 mod ask_loop_tests {
-    use super::{PendingAsk, SessionRequest, retain_and_clear_pending, run_session_loop};
+    use super::{PendingAsk, SessionRequest, run_session_loop};
     use crate::client_protocol::controller::SessionController;
     use crate::client_protocol::permission_bridge::PendingPermission;
     use crate::client_protocol::protocol::JsonRpcRequestEnvelope;
@@ -3273,7 +3263,7 @@ mod ask_loop_tests {
     }
 
     // ── WP-091 ──
-    use super::{DESCENDANT_RUNNING_MESSAGE, SUBAGENT_READONLY_MESSAGE, handle_jsonrpc};
+    use super::{SUBAGENT_READONLY_MESSAGE, handle_jsonrpc};
 
     async fn wp091_rpc(
         controller: &mut SessionController,
@@ -3592,7 +3582,10 @@ mod ask_loop_tests {
         let reply = wp091_rpc(&mut c, "session/delete", serde_json::json!({"id": parent})).await;
         assert_eq!(reply["error"]["code"], -32000, "{reply}");
         assert_eq!(reply["error"]["data"]["code"], "descendant_running");
-        assert_eq!(reply["error"]["message"], DESCENDANT_RUNNING_MESSAGE);
+        assert_eq!(
+            reply["error"]["message"],
+            "cannot delete: a descendant subagent session is running"
+        );
         assert_eq!(
             reply["error"]["data"]["running_session_ids"],
             serde_json::json!([child])

@@ -595,11 +595,7 @@ impl AgentRuntime {
         })?;
         let agent_config =
             crate::config::bridge::agent_config_from_profile(&resolution.profile);
-        let step_max = if resolution.bot.is_some() {
-            crate::bot::BOT_MAX_STEPS
-        } else {
-            crate::agent::AGENT_MAX_STEPS
-        };
+        let step_max = crate::agent::AGENT_MAX_STEPS;
 
         let binding_count = resolution
             .profile
@@ -728,7 +724,6 @@ impl AgentRuntime {
             *rctx = Arc::clone(&new_ctx);
             pipeline.set_runtime(new_ctx);
         }
-        self.context_pipeline.sync_context(&self.base_ctx);
     }
 
     /// Test helper: simulate provider-reported prompt token usage from the prior LLM call.
@@ -789,21 +784,8 @@ impl AgentRuntime {
         }
     }
 
-    /// Single authority for `TurnCompleted`: Idle gate + emit + join result.
-    ///
-    /// Also drops the in-memory turn working set (`end_turn`). Prefer
-    /// [`Self::emit_turn_completed`] on the main agent path so commit can run
-    /// before `end_turn`.
-    fn finalize_turn(
-        &mut self,
-        turn_id: &str,
-        reason: TurnEndReason,
-        final_text: Option<String>,
-    ) -> Result<String> {
-        self.context_pipeline.end_turn();
-        self.emit_turn_completed(turn_id, reason, final_text, None)
-    }
-
+    /// Emit the single authoritative `TurnCompleted` for a turn: persist the
+    /// terminal session event + context meter, then notify the observer.
     fn emit_turn_completed(
         &mut self,
         turn_id: &str,

@@ -3,7 +3,6 @@
 //! Workspace infrastructure engines (LSP, retrieval) live in [`crate::engines`].
 
 pub mod exa_mcp;
-mod stub_engine;
 mod webfetch_engine;
 mod websearch_engine;
 
@@ -19,7 +18,6 @@ use crate::config::global_db::tools::optional_builtin_ids;
 use crate::config::resolved::ResolvedConfig;
 use crate::types::Result;
 
-pub use stub_engine::StubEngine;
 use webfetch_engine::WebfetchEngine;
 use websearch_engine::WebsearchEngine;
 
@@ -46,14 +44,14 @@ pub struct EngineManager {
     engines: Arc<HashMap<String, Arc<dyn ToolEngine>>>,
     webfetch: Arc<WebfetchEngine>,
     websearch: Arc<WebsearchEngine>,
-    /// WP-167: one client build at a time per engine (see [`Self::ensure_warm`]).
+    /// One client build at a time per engine (see [`Self::ensure_warm`]).
     warm_locks: Arc<HashMap<String, Mutex<()>>>,
     #[cfg(test)]
     builds: Arc<AtomicUsize>,
 }
 
-/// Called by a web tool at the start of every call (WP-167): builds the
-/// client on first use; `Err` when the build failed this time.
+/// Called by a web tool at the start of every call: builds the client on
+/// first use; `Err` when the build failed this time.
 pub type WarmHook = Arc<dyn Fn() -> std::result::Result<(), String> + Send + Sync>;
 
 impl EngineManager {
@@ -192,8 +190,8 @@ impl EngineManager {
         if tool_id == "websearch" {
             self.websearch.configure(resolved.websearch());
         }
-        // WP-167: only a client that already exists is rebuilt; otherwise the
-        // new settings wait for the first call.
+        // Only a client that already exists is rebuilt; otherwise the new
+        // settings wait for the first call.
         // Only reached for an enabled engine (`reconcile` → `should_run_engine`;
         // disabling goes through `stop_engine`). Clear a previous Stopped /
         // Failed record so the next `ensure_warm` builds.
@@ -235,7 +233,7 @@ impl EngineManager {
         }
     }
 
-    /// WP-167: build the engine's client if it is missing; reuse it otherwise.
+    /// Build the engine's client if it is missing; reuse it otherwise.
     /// Idempotent and safe under concurrent calls (one build at a time, and a
     /// waiter that finds a client returns without building). A failure is
     /// recorded as `Failed` + error for this call only: the next call tries
@@ -309,8 +307,8 @@ impl EngineManager {
         Arc::new(move || manager.ensure_warm(tool_id))
     }
 
-    /// WP-167: serve startup. Record the websearch endpoint only (cheap);
-    /// no client is built until the first web tool call.
+    /// Serve startup. Record the websearch endpoint only (cheap); no client is
+    /// built until the first web tool call.
     pub fn defer_reconcile(&self, resolved: &ResolvedConfig) {
         self.websearch.configure(resolved.websearch());
     }

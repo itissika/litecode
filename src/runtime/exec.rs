@@ -252,8 +252,7 @@ fn sealed_trigger_meter(
 
 impl AgentRuntime {
     fn record_compaction_failure(&self) {
-        self.compaction_failed_this_turn
-            .store(true, Ordering::SeqCst);
+        self.compaction_failed_this_turn.store(true, Ordering::SeqCst);
     }
 
     fn clear_compaction_failure(&self) {
@@ -370,8 +369,7 @@ impl AgentDeps for AgentRuntime {
                     ));
                 };
                 if prepared.context_meter.is_over_hard_line() {
-                    self.compaction_failed_this_turn
-                        .store(true, Ordering::SeqCst);
+                    self.record_compaction_failure();
                     return Ok(true);
                 }
                 // Same cleanup as a successful recovery, then one main retry.
@@ -393,8 +391,7 @@ impl AgentDeps for AgentRuntime {
         }
 
         if !matches!(outcome, Some(EpisodeOutcome::Succeeded { .. })) {
-            self.compaction_failed_this_turn
-                .store(true, Ordering::SeqCst);
+            self.record_compaction_failure();
             tracing::warn!(
                 max_overflow_retries =
                     crate::context_pipeline::compact::MAX_CONTEXT_OVERFLOW_RETRIES,
@@ -1273,7 +1270,6 @@ impl AgentRuntime {
             ciphertexts_stripped: health.ciphertexts_stripped,
             rebased_stripped: health.rebased_stripped,
             reasoning_dropped: health.reasoning_dropped,
-            reasoning_wholly_omitted: health.reasoning_wholly_omitted,
             rebased_true_count: health.rebased_true_count,
             projection_rewrote: health.projection_rewrote,
             severity: health.severity.clone(),
@@ -1345,7 +1341,6 @@ impl AgentRuntime {
         let ciphertexts_stripped = report.ciphertext_stripped;
         let rebased_stripped = report.signatures_stripped;
         let reasoning_dropped = report.reasoning_dropped;
-        let reasoning_wholly_omitted = 0u32;
         // Origin is an append-only control-plane row written before the request:
         // items this request produces inherit its provider.
         let origin_seq =
@@ -1361,7 +1356,6 @@ impl AgentRuntime {
             ciphertexts_stripped,
             rebased_stripped,
             reasoning_dropped,
-            reasoning_wholly_omitted,
             tools_count = tool_names.len(),
             tools = ?tool_names,
             item_count = input.len(),
@@ -1390,10 +1384,7 @@ impl AgentRuntime {
             origin_model_ref: model_ref.clone(),
             ciphertexts_stripped,
             rebased_stripped,
-            // The port now counts a wholly-unusable reasoning item as a
-            // drop, so the old separate counter has no producer.
             reasoning_dropped,
-            reasoning_wholly_omitted,
             rebased_true_count,
             projection_rewrote,
         });
@@ -1722,7 +1713,6 @@ pub(crate) struct LlmRequestHealthInput {
     pub ciphertexts_stripped: u32,
     pub rebased_stripped: u32,
     pub reasoning_dropped: u32,
-    pub reasoning_wholly_omitted: u32,
     pub rebased_true_count: u32,
     pub projection_rewrote: bool,
 }
@@ -1741,7 +1731,6 @@ pub(crate) struct LlmRequestHealth {
     pub ciphertexts_stripped: u32,
     pub rebased_stripped: u32,
     pub reasoning_dropped: u32,
-    pub reasoning_wholly_omitted: u32,
     pub rebased_true_count: u32,
     pub projection_rewrote: bool,
     pub severity: String,
@@ -1749,14 +1738,10 @@ pub(crate) struct LlmRequestHealth {
     pub message: String,
 }
 
-/// Rank debug > silent. Cross-model thinking loss and a sticky-binding
-/// mismatch stay on the request log. They are not this model's own turn
-/// dropping its thinking, so they do not toast. Stable `code` values match
-/// WP-191 plan §3.2 / §4.
+/// Rank debug > silent. Cross-model thinking loss and sticky-binding mismatch
+/// stay on the request log rather than toasting.
 pub(crate) fn classify_llm_request_health(input: LlmRequestHealthInput) -> LlmRequestHealth {
-    let (severity, code, message) = if input.reasoning_dropped > 0
-        || input.reasoning_wholly_omitted > 0
-    {
+    let (severity, code, message) = if input.reasoning_dropped > 0 {
         (
             "debug",
             "thinking_not_refilled",
@@ -1802,7 +1787,6 @@ pub(crate) fn classify_llm_request_health(input: LlmRequestHealthInput) -> LlmRe
         ciphertexts_stripped: input.ciphertexts_stripped,
         rebased_stripped: input.rebased_stripped,
         reasoning_dropped: input.reasoning_dropped,
-        reasoning_wholly_omitted: input.reasoning_wholly_omitted,
         rebased_true_count: input.rebased_true_count,
         projection_rewrote: input.projection_rewrote,
         severity: severity.into(),
@@ -1810,9 +1794,6 @@ pub(crate) fn classify_llm_request_health(input: LlmRequestHealthInput) -> LlmRe
         message: message.into(),
     }
 }
-
-#[cfg(test)]
-mod should_stop_tests {}
 
 #[cfg(test)]
 mod estimate_body_bytes_tests {

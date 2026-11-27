@@ -83,12 +83,7 @@ pub fn try_begin_pending_flush(
     let project = service
         .project(sid)
         .unwrap_or_else(|| workspace_root.display().to_string());
-    let step_max = crate::bot::step_max_for_session(
-        &runtime.resolved,
-        runtime.bots().map(|bots| bots.as_ref()),
-        sid,
-        &primary_agent,
-    );
+    let step_max = crate::agent::AGENT_MAX_STEPS;
     let turn_id = uuid::Uuid::new_v4().to_string();
     if use_follow_up {
         let input = match service.reserve_follow_up_auto_turn(

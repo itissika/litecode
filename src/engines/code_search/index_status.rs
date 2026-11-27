@@ -253,8 +253,6 @@ fn done_floor(workspace_root: &Path) -> u64 {
     }
 }
 
-/// Report chunk-exact progress for the in-flight job (keeps status + legacy
-/// progress). `total == None` = still scanning. No-op without a running job.
 #[cfg(test)]
 thread_local! {
     /// Test-only trace of every chunk progress report on this thread.
@@ -262,6 +260,7 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// Report chunk-exact progress for the in-flight job. `total == None` means scanning.
 pub fn update_chunk_progress(workspace_root: &Path, done: u64, total: Option<u64>) {
     #[cfg(test)]
     CHUNK_PROGRESS_TRACE.with(|t| t.borrow_mut().push((done, total)));

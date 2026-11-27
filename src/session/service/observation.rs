@@ -57,15 +57,6 @@ impl SessionService {
         self.sessions.data().latest_turn_end_blocking(session_id)
     }
 
-    pub(crate) fn latest_turn_end_reason(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<(String, String)>> {
-        self.sessions
-            .data()
-            .latest_turn_end_reason_blocking(session_id)
-    }
-
     pub(crate) fn is_turn_running_blocking(&self, session_id: &str) -> bool {
         self.sessions.is_turn_running_blocking(session_id)
     }

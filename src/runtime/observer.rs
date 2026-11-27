@@ -244,8 +244,6 @@ pub enum InternalEvent {
         #[serde(default)]
         reasoning_dropped: u32,
         #[serde(default)]
-        reasoning_wholly_omitted: u32,
-        #[serde(default)]
         rebased_true_count: u32,
         #[serde(default)]
         projection_rewrote: bool,

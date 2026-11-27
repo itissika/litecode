@@ -14,8 +14,6 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use tokio_util::sync::CancellationToken;
-
 use crate::llm::item_id_of;
 use crate::session::manager::SessionManager;
 use crate::session::store::Session;
@@ -100,7 +98,6 @@ fn take_sync_read_failure() -> bool {
 
 pub struct ContextPipeline {
     budget: BudgetPolicy,
-    compact: CompactPolicy,
     data_root: PathBuf,
     /// Mutex so a subagent turn can run as a `Send` tool future on the parent runtime.
     state: Mutex<PipelineState>,
@@ -335,7 +332,6 @@ impl ContextPipeline {
     pub fn new(context_window: usize, _ctx: Context, data_root: PathBuf) -> Self {
         Self {
             budget: BudgetPolicy::new(context_window),
-            compact: CompactPolicy,
             data_root,
             state: Mutex::new(PipelineState {
                 hot: HotView::new(),
@@ -399,8 +395,6 @@ impl ContextPipeline {
         );
         Ok((meter, rows))
     }
-
-    pub fn sync_context(&self, _ctx: &Context) {}
 
     /// Freeze the fixed request envelope without running compaction. Production
     /// calls this through the compaction episode; tests use it to measure a prepared view.
@@ -582,12 +576,6 @@ impl ContextPipeline {
         state.prepared = None;
     }
 
-    /// Compact when the budget says so. Does not build the model view.
-    ///
-    /// Returns whether the compaction stage changed the durable surface (a
-    /// checkpoint or a mechanical prune). Callers that compact sync the request
-    /// seam again before [`Self::build_view`], so restored reminders land after
-    /// the rewritten prefix.
     /// Build the ephemeral model view from the current working set.
     ///
     /// Reloads the log first so reminders appended after compaction are in the

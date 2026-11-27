@@ -130,7 +130,6 @@ fn member(id: &str) -> MemberSpec {
     MemberSpec { id: id.to_string() }
 }
 
-/// Surface of a builtin card, derived from the generated contract the runtime
 fn custom_overridden(resolved: &ResolvedConfig, name: &str) -> bool {
     resolved.workspace_custom_tools().contains_key(name)
         && resolved
@@ -176,7 +175,6 @@ fn push_capability(catalog: &mut CapabilityCatalog, capability: Capability) {
 
 fn push_builtin(
     catalog: &mut CapabilityCatalog,
-    _resolved: &ResolvedConfig,
     id: &str,
     members: &[&str],
     kind: CapabilityKind,
@@ -326,7 +324,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
         match *id {
             "exec" => push_builtin(
                 &mut catalog,
-                resolved,
                 "exec",
                 &["exec_command"],
                 CapabilityKind::Core,
@@ -334,7 +331,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
             ),
             "edit" => push_builtin(
                 &mut catalog,
-                resolved,
                 "edit",
                 &["apply_edits"],
                 CapabilityKind::Core,
@@ -342,7 +338,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
             ),
             "litecode_workspace" => push_builtin(
                 &mut catalog,
-                resolved,
                 "litecode_workspace",
                 WORKSPACE_TOOL_IDS,
                 CapabilityKind::Core,
@@ -350,7 +345,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
             ),
             _ => push_builtin(
                 &mut catalog,
-                resolved,
                 id,
                 &[*id],
                 CapabilityKind::Core,
@@ -380,7 +374,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
             ),
             "memory" => push_builtin(
                 &mut catalog,
-                resolved,
                 "memory",
                 MEMORY_TOOL_IDS,
                 CapabilityKind::Core,
@@ -388,7 +381,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
             ),
             "todo" => push_builtin(
                 &mut catalog,
-                resolved,
                 "todo",
                 TODO_TOOL_IDS,
                 CapabilityKind::Core,
@@ -396,7 +388,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
             ),
             "plan" => push_builtin(
                 &mut catalog,
-                resolved,
                 "plan",
                 PLAN_TOOL_IDS,
                 CapabilityKind::Core,
@@ -404,7 +395,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
             ),
             "knowledge" => push_builtin(
                 &mut catalog,
-                resolved,
                 "knowledge",
                 KNOWLEDGE_TOOL_IDS,
                 CapabilityKind::Core,
@@ -412,7 +402,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
             ),
             _ => push_builtin(
                 &mut catalog,
-                resolved,
                 id,
                 &[*id],
                 CapabilityKind::Core,
@@ -428,7 +417,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
             // stay `ToolOrigin::Builtin` now that they are optional cards.
             "webfetch" | "websearch" => push_builtin(
                 &mut catalog,
-                resolved,
                 id,
                 &[*id],
                 CapabilityKind::Engine,
@@ -470,7 +458,6 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
             ),
             _ => push_builtin(
                 &mut catalog,
-                resolved,
                 id,
                 &[*id],
                 CapabilityKind::Engine,

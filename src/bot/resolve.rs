@@ -13,16 +13,12 @@ use crate::config::ResolvedConfig;
 use crate::config::binding_scope::scope_of;
 use crate::config::global_db::tools::{is_core_tool, is_optional_builtin};
 use crate::config::global_db::{
-    BuiltinAgentSpec, builtin_agent, builtin_agents, is_builtin_prompt_marker,
+    BuiltinAgentSpec, builtin_agent, is_builtin_prompt_marker,
 };
 use crate::config::schema::{AgentProfile, AgentToolBinding, CustomToolDefinition};
 use crate::config::suite_bindings::collapse_custom_suite_bindings;
 
 use super::{BotRecord, BotService};
-
-/// Engine-level step budget for a bot session. Max steps is not a bot config
-/// item; a bot keeps the long-task headroom its legacy profile declared.
-pub const BOT_MAX_STEPS: u32 = 200_000_000;
 
 /// The one base a bot may sit on (D2). `orchestrator` is no longer selectable
 /// as a bot base and a bot can never carry an arbitrary prompt pack.
@@ -30,22 +26,15 @@ pub(super) fn default_bot_spec() -> &'static BuiltinAgentSpec {
     builtin_agent("default").expect("default built-in spec")
 }
 
-/// Q5/D5: turn a stored `system_prompt` into the bot's role text.
+/// Turn a stored `system_prompt` into the bot's role text.
 ///
-/// Older records stored a whole prompt: a `builtin` / `builtin:*` marker, or the
-/// full text of one of the six built-in packs (a bot used to snapshot a settings
-/// profile). That text is not user intent, so it normalizes to the empty role
+/// Older records stored a whole prompt: a `builtin` / `builtin:*` marker or its
+/// full text. That text is not user intent, so it normalizes to the empty role
 /// and the bot silently keeps the locked `DEFAULT_PROMPT` base. Anything else is
 /// the user's own role/identity description and is kept, trimmed.
 pub fn normalize_bot_role_instructions(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() || is_builtin_prompt_marker(trimmed) {
-        return String::new();
-    }
-    if builtin_agents()
-        .iter()
-        .any(|spec| spec.prompt.trim() == trimmed)
-    {
         return String::new();
     }
     trimmed.to_string()
@@ -72,23 +61,6 @@ When the task is complete, stop. Do not send a courtesy message just to be polit
         name = bot.name,
         id = bot.id,
     )
-}
-
-/// Engine-level step budget for one session. Bot sessions use the bot budget;
-/// every other session uses the normal agent budget.
-pub fn step_max_for_session(
-    resolved: &ResolvedConfig,
-    bots: Option<&BotService>,
-    session_id: &str,
-    agent_id: &str,
-) -> u32 {
-    if resolve_agent_for_session(resolved, bots, session_id, agent_id)
-        .is_some_and(|resolution| resolution.is_bot())
-    {
-        BOT_MAX_STEPS
-    } else {
-        crate::agent::AGENT_MAX_STEPS
-    }
 }
 
 /// The effective agent for one session/turn, plus the bot record when the
@@ -270,10 +242,10 @@ mod tests {
         }
     }
 
-    /// Q5: every retired shape of a stored prompt collapses to the empty role,
-    /// while a user's own text survives trimmed.
+    /// Every retired marker shape of a stored prompt collapses to the empty
+    /// role, while a user's own text survives trimmed.
     #[test]
-    fn role_instructions_blank_out_markers_and_builtin_packs() {
+    fn role_instructions_blank_out_markers() {
         for raw in [
             "",
             "   ",
@@ -289,22 +261,6 @@ mod tests {
                 normalize_bot_role_instructions(raw),
                 "",
                 "{raw:?} must not become a role segment"
-            );
-        }
-
-        for spec in builtin_agents() {
-            assert_eq!(
-                normalize_bot_role_instructions(spec.prompt),
-                "",
-                "{} pack text must normalize to empty",
-                spec.id
-            );
-            let padded = format!("\n  {}\t\n", spec.prompt);
-            assert_eq!(
-                normalize_bot_role_instructions(&padded),
-                "",
-                "{} padded pack text must normalize to empty",
-                spec.id
             );
         }
 
@@ -331,8 +287,8 @@ mod tests {
         bot.body.system_prompt = "   ".into();
         assert_eq!(bot_role_instructions(&bot), None);
 
-        bot.body.system_prompt = crate::config::global_db::ORCHESTRATOR_PROMPT.into();
-        assert_eq!(bot_role_instructions(&bot), None, "retired pack text");
+        bot.body.system_prompt = "builtin:orchestrator".into();
+        assert_eq!(bot_role_instructions(&bot), None, "retired builtin marker");
 
         bot.body.system_prompt = "  You are the release captain. ".into();
         assert_eq!(

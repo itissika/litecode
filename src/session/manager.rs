@@ -1115,10 +1115,6 @@ impl SessionManager {
             .unwrap_or(0)
     }
 
-    pub fn entry_buffer_len_blocking(&self, session_id: &str) -> usize {
-        self.entry_buffer_len(session_id)
-    }
-
     pub fn entry_truncate_epoch(&self, session_id: &str) -> u64 {
         self.data.truncate_epoch_blocking(session_id).unwrap_or(0)
     }
@@ -1264,16 +1260,14 @@ impl SessionManager {
 
     /// One settled `read` / `write` / `edit` of the active plan file.
     ///
-    /// Direct and nested calls both reach this from the shared tool entry.
-    /// `read` names the file `path`. `write` and `edit` name it `path` now, and
-    /// still accept the historical `file_path` recorded in old transcripts.
+    /// Direct and nested calls both reach this from the shared tool entry, and
+    /// all three name the file `path`.
     pub fn note_plan_tool_touch(&self, session_id: &str, call: &crate::types::FunctionToolCall) {
         let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
             return;
         };
         let raw = match call.name.as_str() {
-            "read" => args.get("path"),
-            "write" | "edit" => args.get("path").or_else(|| args.get("file_path")),
+            "read" | "write" | "edit" => args.get("path"),
             _ => return,
         };
         let Some(raw) = raw.and_then(|value| value.as_str()) else {
@@ -3491,7 +3485,7 @@ impl SessionManager {
     }
 
     /// Snapshot of the replay buffer (bounded at EVENT_BUFFER_CAPACITY). Each
-    /// subscriber gets the same recent events 锟?draining on first consume would
+    /// subscriber gets the same recent events — draining on first consume would
     /// lose replay for every later subscriber (6a-6j).
     pub fn event_buffer_snapshot(&self, session_id: &str) -> Vec<InternalEnvelope> {
         let records = self.records.lock().unwrap();

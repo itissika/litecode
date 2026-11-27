@@ -62,7 +62,7 @@ pub fn optional_builtin_ids() -> &'static [&'static str] {
     &["code_search", "lsp", "browser", "webfetch", "websearch"]
 }
 
-/// Optional builtins that primary-role agents bind by default (WP-146 §B).
+/// Optional builtins that primary-role agents bind by default.
 pub fn default_bound_optional_builtins() -> &'static [&'static str] {
     &["code_search"]
 }
@@ -141,7 +141,7 @@ mod tests {
 
     const WEB_TOOLS: [&str; 2] = ["webfetch", "websearch"];
 
-    /// D3: the web cards are optional builtins, not core tools. Their names are
+    /// The web cards are optional builtins, not core tools. Their names are
     /// still reserved so a custom tool or an MCP server cannot take them.
     #[test]
     fn web_engines_are_optional_builtins_with_reserved_names() {

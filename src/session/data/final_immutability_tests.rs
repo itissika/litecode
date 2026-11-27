@@ -286,11 +286,6 @@ fn stream_micro_writes_do_not_accumulate_operation_or_dirty_rows() {
         "sealing makes the row searchable and must wake the index"
     );
     assert_eq!(f.count_rows("session_dirty"), 1, "dirty state is coalesced");
-    assert_eq!(
-        f.count_rows("session_change_log"),
-        0,
-        "the legacy per-mutation log must stay retired"
-    );
 }
 
 #[test]
@@ -603,7 +598,6 @@ fn metadata_only_mutations_keep_receipts_but_do_not_wake_search() {
 
     assert_eq!(f.count_rows("session_operations"), receipts_before + 1);
     assert_eq!(f.latest_change_id(), dirty_before);
-    assert_eq!(f.count_rows("session_change_log"), 0);
 }
 
 /// The invariant the projection's whole change-detection strategy rests on.

@@ -1,6 +1,6 @@
 //! Shared write connection. Lives only on the SessionData writer thread.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
@@ -13,7 +13,6 @@ pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct SharedDb {
     conn: Connection,
-    path: PathBuf,
 }
 
 impl SharedDb {
@@ -25,12 +24,10 @@ impl SharedDb {
             .map_err(|e| LitecodeError::SessionStorage(format!("open sessions.db: {e}")))?;
         schema::configure_write(&conn)?;
         schema::ensure_session_schema(&conn)?;
-        Ok(Self {
-            conn,
-            path: path.to_path_buf(),
-        })
+        Ok(Self { conn })
     }
 
+    #[cfg(test)]
     pub fn open_ephemeral() -> Result<Self> {
         Self::open_shared_memory(&format!(
             "file:session-mem-{}?mode=memory&cache=shared",
@@ -52,18 +49,11 @@ impl SharedDb {
         })?;
         schema::configure_write(&conn)?;
         schema::ensure_session_schema(&conn)?;
-        Ok(Self {
-            conn,
-            path: PathBuf::from(uri),
-        })
+        Ok(Self { conn })
     }
 
     pub fn conn(&self) -> &Connection {
         &self.conn
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     pub fn checkpoint(&self) -> Result<()> {

@@ -777,16 +777,6 @@ fn load_working_view(
 /// `None` means "no checkpoint, or the anchored fold refused" — the caller then
 /// takes the full log. A refusal is logged: it is a store shape this code does not
 /// understand, not a normal path.
-fn load_working_set_anchored(
-    conn: &Connection,
-    session_id: &str,
-    data_root: &std::path::Path,
-) -> Result<Option<Vec<WorkingRow>>> {
-    Ok(load_working_set_anchored_view(conn, session_id, data_root)?
-        .map(|view| view.rows())
-        .transpose()?)
-}
-
 fn load_working_set_anchored_view(
     conn: &Connection,
     session_id: &str,
@@ -838,7 +828,7 @@ mod anchored_load_tests {
 
     use tempfile::TempDir;
 
-    use super::{load_working_set, load_working_set_anchored};
+    use super::{load_working_set, load_working_set_anchored_view};
     use crate::session::data::sqlite::conn::open_readonly;
     use crate::session::{SessionData, WorkspaceWriteLease};
     use crate::types::user_text;
@@ -893,9 +883,11 @@ mod anchored_load_tests {
         fx.append("d");
         fx.compact("second", Some(2));
         let conn = open_readonly(&fx.dir.path().join("sessions.db")).expect("ro");
-        let anchored = load_working_set_anchored(&conn, &fx.sid, fx.dir.path())
+        let anchored = load_working_set_anchored_view(&conn, &fx.sid, fx.dir.path())
             .expect("anchored")
-            .expect("a compacted session must anchor, not fall back");
+            .expect("a compacted session must anchor, not fall back")
+            .rows()
+            .expect("rows");
         let full = load_working_set(&conn, &fx.sid, fx.dir.path()).expect("full");
         assert_eq!(anchored, full);
         assert_eq!(full.len(), 3, "checkpoint + the two kept rows");

@@ -240,12 +240,10 @@ fn one_range_read_equals_per_seq_reads() {
     assert_eq!(per_seq, filtered, "same rows, same order");
 }
 
-/// Claim 6: the legacy `session_change_log` is written by nothing and read by
-/// nothing at schema v8 — dirty state is `session_dirty` alone. Rows planted in
-/// the legacy table therefore cannot move an indexer's answer, which is what
-/// makes deleting them a pure cleanup.
+/// Dirty tracking uses `session_dirty` exclusively; the retired
+/// `session_change_log` table must not exist in fresh schemas.
 #[test]
-fn legacy_change_log_rows_do_not_reach_dirty_sessions() {
+fn session_change_log_table_is_absent_and_dirty_sessions_coalesce() {
     use common::SessionDataFixture;
 
     let fixture = SessionDataFixture::new();
@@ -253,47 +251,29 @@ fn legacy_change_log_rows_do_not_reach_dirty_sessions() {
     fixture.insert_items(&session_id, &[user_text("indexable text")]);
     let reader = fixture.reader();
 
-    let before: Vec<(i64, String)> = reader
+    let dirty: Vec<(i64, String)> = reader
         .dirty_sessions_since_blocking(0)
         .expect("dirty sessions")
         .into_iter()
         .map(|row| (row.change_id, row.session_id))
         .collect();
     assert!(
-        !before.is_empty(),
+        !dirty.is_empty(),
         "a write must coalesce into session_dirty, otherwise this test is vacuous"
     );
 
-    // New writes never append to the legacy table.
     let conn = rusqlite::Connection::open(fixture.db_path()).expect("open db");
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .expect("busy timeout");
-    let legacy_after_writes: i64 = conn
-        .query_row("SELECT COUNT(*) FROM session_change_log", [], |row| {
-            row.get(0)
-        })
-        .expect("count legacy rows");
+    let table_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_change_log'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query sqlite_master");
     assert_eq!(
-        legacy_after_writes, 0,
-        "the v8 writer must not append to the legacy change log"
-    );
-
-    // Plant pre-upgrade history: the answer must not move.
-    conn.execute_batch(
-        "INSERT INTO session_change_log (session_id, revision, kind, created_at)
-         VALUES ('ghost', 1, 'appended', 0), ('ghost', 2, 'sealed', 0)",
-    )
-    .expect("plant legacy rows");
-
-    let after: Vec<(i64, String)> = reader
-        .dirty_sessions_since_blocking(0)
-        .expect("dirty sessions")
-        .into_iter()
-        .map(|row| (row.change_id, row.session_id))
-        .collect();
-
-    assert_eq!(
-        before, after,
-        "legacy rows must not feed dirty-session discovery"
+        table_count, 0,
+        "retired session_change_log table must not be created"
     );
 }

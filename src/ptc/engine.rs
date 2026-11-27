@@ -993,23 +993,8 @@ fn install_namespace(
     define_const(ctx, &namespace.name, value)
 }
 
-/// Hides unknown members behind the contract.
-///
-/// A call that does not hold must fail at the point the program names it, not
-/// later with V8's "not a function" (a catchable TypeError that also hides which
-/// name was wrong). Every object level is proxied and cached, so `tools.deck`
-/// is the same object each time a custom suite is read, `tools.readx` /
-/// `tools.deck.bad` fail at property access, and flat built-ins pass through
-/// untouched.
-///
-/// Candidates come from this namespace's own members, which the binding layer
-/// filled from the generated contract: the list is never hard-coded here.
-///
-/// Intentional behaviour change: `typeof tools.nope` now ends the run. Reading
-/// a name that does not exist is a call that does not hold, so it is judged
-/// before the program can branch on the result.
-/// The JS side of the contract channel: one native, shared by the namespace
-/// proxy and the result proxy, so both fail through `contract_fail`.
+/// Contract failure native hook shared by namespace and result proxies.
+/// Reading an unknown tool member fails immediately at property access.
 fn contract_fail_native<'js>(
     ctx: &Ctx<'js>,
     faults: &Arc<Faults>,

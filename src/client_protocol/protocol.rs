@@ -125,9 +125,8 @@ pub enum WireTurnPhase {
     CallingLlm,
     Streaming,
     ExecutingTools,
-    /// Wire name is `waiting_for_user` (WP-186). Rust variant kept for internal continuity.
-    /// Reads legacy `awaiting_permission` once for older clients.
-    #[serde(rename = "waiting_for_user", alias = "awaiting_permission")]
+    /// Wire name is `waiting_for_user`; the Rust variant name is internal only.
+    #[serde(rename = "waiting_for_user")]
     AwaitingPermission {
         tool: String,
         rule_id: String,
@@ -780,8 +779,6 @@ pub enum WireEvent {
         rebased_stripped: u32,
         #[serde(default)]
         reasoning_dropped: u32,
-        #[serde(default)]
-        reasoning_wholly_omitted: u32,
         #[serde(default)]
         rebased_true_count: u32,
         #[serde(default)]

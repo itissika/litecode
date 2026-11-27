@@ -1,8 +1,8 @@
 use serde_json::Value;
 
 use super::action::PermissionAction;
-use super::matchers::{ArgMatcher, MatchContext, matches};
-use super::policy::{DEFAULT_RULE_ID, PolicyRule, ToolPolicy};
+use super::matchers::{MatchContext, matches};
+use super::policy::{PolicyRule, ToolPolicy};
 
 pub struct EvalResult {
     pub rule_id: String,
@@ -47,6 +47,8 @@ pub fn evaluate_rules(
 
 #[cfg(test)]
 mod tests {
+    use super::super::matchers::ArgMatcher;
+    use super::super::policy::DEFAULT_RULE_ID;
     use super::*;
     use crate::permission::policy::ToolPolicy;
 

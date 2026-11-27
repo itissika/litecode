@@ -493,7 +493,7 @@ impl WorkspaceEngines {
         query: &str,
         offset: usize,
         filters: RetrievalFilters,
-        workspace_root: Option<PathBuf>,
+        _workspace_root: Option<PathBuf>,
     ) -> Result<SessionSearchBundle> {
         let reader = if let Some(r) = filters.session.clone() {
             r

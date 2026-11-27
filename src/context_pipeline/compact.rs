@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+﻿use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
@@ -1854,7 +1854,7 @@ mod tests {
         }
     }
 
-    /// Silent provider whose stream call never resolves — the failure mode that
+    /// Silent provider whose stream call never resolves 鈥?the failure mode that
     /// used to pend the turn forever.
     struct PendingProvider;
 
@@ -1902,7 +1902,7 @@ mod tests {
         }
     }
 
-    /// Counts unified-stream entry calls — proves compact LLM uses
+    /// Counts unified-stream entry calls 鈥?proves compact LLM uses
     /// `complete_with_stream_events` (ISSUE-013), not a bypass path.
     struct CountingProvider {
         calls: std::sync::atomic::AtomicUsize,
@@ -2734,7 +2734,7 @@ max_output = 8192
         sessions
             .record_provider_usage(&sid, header, &bill(1_000))
             .unwrap();
-        let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+        let rows = sessions.data().working_set_blocking(&sid).unwrap();
         let budget = BudgetPolicy::new(10_000);
         let baseline = ProviderPromptBaseline::default();
         let local = crate::context_pipeline::estimate::compute_token_estimate(

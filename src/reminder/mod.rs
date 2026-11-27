@@ -7,7 +7,6 @@ mod engine;
 mod file_tracker;
 mod kinds;
 pub mod knowledge_status;
-pub mod migrate;
 mod sources;
 
 pub use engine::{
@@ -55,12 +54,6 @@ mod tests {
 }
 
 /// `true` when HumanView must not render this log kind.
-///
-/// Live kinds come from [`ReminderKind::hidden`]. `reminder/model` and
-/// `reminder/step_budget` are retired: old rows stay in the log and are hidden,
-/// and they no longer enter the spine.
 pub fn hidden_kind(kind: &str) -> bool {
-    kind == "reminder/model"
-        || kind == "reminder/step_budget"
-        || ReminderKind::parse_wire(kind).is_some_and(ReminderKind::hidden)
+    ReminderKind::parse_wire(kind).is_some_and(ReminderKind::hidden)
 }

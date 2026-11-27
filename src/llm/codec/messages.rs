@@ -22,7 +22,7 @@ use crate::authority::responses::{
 use crate::llm::http_runtime::{self, RouteKey};
 use crate::llm::provider::LlmProvider;
 use crate::llm::request::ModelRequest;
-use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
+use crate::platform_knobs::ThinkingSpec;
 use crate::provider_catalog::{Modality, ResolvedModel};
 use crate::session::media_tokens::classify_input_file;
 use crate::types::{LitecodeError, Result, StreamEvents};
@@ -174,9 +174,7 @@ impl MessagesCodec {
                     _ => (Some(adaptive_thinking(None)), None),
                 };
             }
-            ThinkingSpec::Tier(ThinkingTier::Low) => tiers.low.as_str(),
-            ThinkingSpec::Tier(ThinkingTier::Medium) => tiers.medium.as_str(),
-            ThinkingSpec::Tier(ThinkingTier::High) => tiers.high.as_str(),
+            ThinkingSpec::Tier(tier) => tiers.tier_literal(tier),
         };
         if self.model.reasoning_off.as_deref() == Some(effort) {
             return (Some(serde_json::json!({"type": effort})), None);

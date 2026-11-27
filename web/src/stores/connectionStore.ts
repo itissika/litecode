@@ -63,7 +63,6 @@ interface SiblingStores {
   terminalCloseAll?: () => void;
 }
 
-/** Legacy forwarded subagent events — must not mutate the parent session UI. */
 /** Pick the notification title's bot identity. `null` is explicit no-bot and
  * must not fall back to a stale directory record; only a missing field does. */
 export function sessionTitleBot(
@@ -72,29 +71,6 @@ export function sessionTitleBot(
 ): { name?: string } | null | undefined {
   if (row && row.bot !== undefined) return row.bot;
   return directory;
-}
-
-export function shouldIgnoreForwardedSubagentEvent(
-  method: string,
-  params: Record<string, unknown> | undefined,
-): boolean {
-  if (
-    typeof params?.parent_session_id !== "string" ||
-    params.parent_session_id.length === 0
-  ) {
-    return false;
-  }
-  switch (method) {
-    case "agent/turn_started":
-    case "agent/turn_event":
-    case "agent/turn_finished":
-    case "buffer/item":
-    case "buffer/reverted":
-    case "agent/permission_request":
-      return true;
-    default:
-      return false;
-  }
 }
 
 const siblingStores: SiblingStores = {};
@@ -267,12 +243,6 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
         const params: Record<string, unknown> | undefined = env.params;
 
         if (!method) {
-          return;
-        }
-
-        // Legacy forwarded-subagent defense: backend no longer emits parent_session_id
-        // on parent-session turn/buffer events, but ignore if a stale peer still does.
-        if (shouldIgnoreForwardedSubagentEvent(method, params)) {
           return;
         }
 

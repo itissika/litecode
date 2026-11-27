@@ -1,13 +1,8 @@
 //! Static specs for the six built-in agents.
 //!
-//! This table is the one place that states who the built-in agents are: role,
-//! description, prompt pack, allowed subagents, and which tool bindings the
-//! system owns (`core`, locked later) versus which the user may still toggle
-//! (`default_optional`).
-//!
-//! W1 (pure refactor) uses it to generate exactly the rows the old per-agent
-//! seed functions wrote, so the resulting DB is byte-identical. Later work
-//! reads runtime profiles from here as well.
+//! This table is the single source for built-in identity: role, description,
+//! prompt pack, allowed subagents, and which tool bindings the system owns
+//! (`core`) versus which the user may still toggle (`default_optional`).
 
 use crate::config::schema::{AgentRole, AgentToolBinding, ToolPreset};
 
@@ -26,9 +21,9 @@ pub struct BuiltinAgentSpec {
     /// `builtin:<id>` marker, never as text.
     pub prompt: &'static str,
     pub allowed_subagents: &'static [&'static str],
-    /// Core tool bindings (system-locked in W3). `(tool_id, preset)`.
+    /// System-locked bindings. `(tool_id, preset)`.
     pub core: &'static [(&'static str, Option<ToolPreset>)],
-    /// Default optional builtin bindings (user-overridable in W3). `(tool_id, preset)`.
+    /// Default optional builtin bindings the user may override.
     pub default_optional: &'static [(&'static str, Option<ToolPreset>)],
 }
 
@@ -132,9 +127,8 @@ const VERIFICATION_CORE: &[(&str, Option<ToolPreset>)] = &[
 ];
 
 /// Optional defaults for the five agents that bind `code_search` plus the two
-/// web engines. `webfetch` / `websearch` are optional builtins (D3): on by
-/// default, user-toggleable, and locked out of custom/MCP name reuse by
-/// `is_reserved_builtin`.
+/// web engines. On by default, user-toggleable, and protected from custom/MCP
+/// name reuse by `is_reserved_builtin`.
 const CODE_SEARCH_AND_WEB_OPTIONAL: &[(&str, Option<ToolPreset>)] = &[
     ("code_search", None),
     ("webfetch", None),
@@ -325,8 +319,8 @@ mod tests {
         assert!(builtin_agent("my_agent").is_none());
     }
 
-    /// D3: the web engines left `core` and joined every agent's
-    /// `default_optional` — on by default, user-toggleable, no permission dial.
+    /// The web engines are optional builtins on every agent: on by default,
+    /// user-toggleable, never core, no permission dial.
     #[test]
     fn all_builtin_agents_default_to_the_web_engines() {
         for spec in builtin_agents() {
@@ -346,8 +340,7 @@ mod tests {
         }
     }
 
-    /// `code_search` stays on the five agents the W1 baseline gave it to;
-    /// `verification` still must not bind it.
+    /// `code_search` is on for every agent except `verification`.
     #[test]
     fn code_search_defaults_are_unchanged() {
         for spec in builtin_agents() {

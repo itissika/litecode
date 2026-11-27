@@ -24,7 +24,7 @@ use crate::authority::responses::{
 use crate::llm::http_runtime::{self, RouteKey};
 use crate::llm::provider::LlmProvider;
 use crate::llm::request::ModelRequest;
-use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
+use crate::platform_knobs::ThinkingSpec;
 use crate::provider_catalog::{ProviderQuirk, ReasoningReplay, ResolvedModel};
 use crate::session::media_tokens::classify_input_file;
 use crate::types::{LitecodeError, Result, StreamEvents};
@@ -54,15 +54,7 @@ impl ResponsesCodec {
 
     /// Vendor effort literal for this platform intent, if the model takes one.
     fn effort(&self, thinking: ThinkingSpec) -> Option<&str> {
-        let tiers = self.model.reasoning.as_ref()?;
-        match thinking {
-            // Thinking off sends the catalog's own off literal when declared;
-            // without one the whole control is omitted.
-            ThinkingSpec::Off => self.model.reasoning_off.as_deref(),
-            ThinkingSpec::Tier(ThinkingTier::Low) => Some(tiers.low.as_str()),
-            ThinkingSpec::Tier(ThinkingTier::Medium) => Some(tiers.medium.as_str()),
-            ThinkingSpec::Tier(ThinkingTier::High) => Some(tiers.high.as_str()),
-        }
+        self.model.effort_literal(thinking)
     }
 
     /// Whether this request makes the vendor think. A tier whose literal is the
@@ -741,26 +733,28 @@ endpoint_type = "responses"
             assistant_text("answer"),
         ];
         let target = codec.model.as_ref();
+        let (instructions_digest, tools_digest) =
+            crate::llm::fixed_prefix_digests(&request.instructions, &request.tools);
         let producers: Vec<_> = request
             .input
             .iter()
             .map(|_| {
                 Some(crate::llm::ItemProducer {
                     provider_id: target.provider_id.clone(),
-                    endpoint_type: Some("responses".into()),
-                    model_ref: Some(target.reference.clone()),
-                    instructions_digest: None,
-                    tools_digest: None,
+                    endpoint_type: "responses".into(),
+                    model_ref: target.reference.clone(),
+                    instructions_digest: instructions_digest.clone(),
+                    tools_digest: tools_digest.clone(),
                 })
             })
             .collect();
         let mut producers = producers;
         producers[1] = Some(crate::llm::ItemProducer {
             provider_id: "other".into(),
-            endpoint_type: Some("responses".into()),
-            model_ref: Some("other/model".into()),
-            instructions_digest: None,
-            tools_digest: None,
+            endpoint_type: "responses".into(),
+            model_ref: "other/model".into(),
+            instructions_digest: instructions_digest.clone(),
+            tools_digest: tools_digest.clone(),
         });
         producers[2] = producers[1].clone();
         let session_copy = request.input.clone();

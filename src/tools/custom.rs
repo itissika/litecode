@@ -671,6 +671,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn test_exec(cancel: CancellationToken) -> crate::tool::trait_::ToolExecutionContext {
         crate::tool::trait_::ToolExecutionContext {
             path_mode: crate::workspace::ToolPathMode::All,

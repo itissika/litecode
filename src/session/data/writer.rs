@@ -892,9 +892,9 @@ fn execute_inner(
         Err(e) => {
             let _ = ops::rollback(state.db.conn());
             state.deleted_files.clear();
-            // The legacy live projection is updated while dispatching.  A
-            // rolled-back command must never leave that projection ahead of
-            // disk; lazily hydrate it again on the next accepted command.
+            // Invalidate cached live session handle on rollback. A rolled-back
+            // command must never leave that projection ahead of disk; lazily
+            // hydrate it again on the next accepted command.
             if let Some(session_id) = affected_session {
                 state.live.remove(&session_id);
             }

@@ -16,7 +16,7 @@ use crate::authority::responses::{FunctionCallOutput, Item, MessageItem};
 use crate::llm::http_runtime::{self, RouteKey};
 use crate::llm::provider::LlmProvider;
 use crate::llm::request::ModelRequest;
-use crate::platform_knobs::{ThinkingSpec, ThinkingTier};
+use crate::platform_knobs::ThinkingSpec;
 use crate::provider_catalog::ResolvedModel;
 use crate::types::{LitecodeError, Result, StreamEvents};
 
@@ -45,15 +45,7 @@ impl ChatCompletionsCodec {
 
     /// Vendor effort literal for this platform intent, if the model takes one.
     fn effort(&self, thinking: ThinkingSpec) -> Option<&str> {
-        let tiers = self.model.reasoning.as_ref()?;
-        match thinking {
-            // Thinking off sends the catalog's own off literal when declared;
-            // without one the whole control is omitted.
-            ThinkingSpec::Off => self.model.reasoning_off.as_deref(),
-            ThinkingSpec::Tier(ThinkingTier::Low) => Some(tiers.low.as_str()),
-            ThinkingSpec::Tier(ThinkingTier::Medium) => Some(tiers.medium.as_str()),
-            ThinkingSpec::Tier(ThinkingTier::High) => Some(tiers.high.as_str()),
-        }
+        self.model.effort_literal(thinking)
     }
 
     fn encode_body(&self, params: &ModelRequest, stream: bool) -> Result<Value> {

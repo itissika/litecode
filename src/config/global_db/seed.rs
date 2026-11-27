@@ -1,18 +1,8 @@
 //! Global DB seeding.
 //!
-//! The DB no longer defines the built-in agents. `builtin_agents.rs` is the
-//! single source for identity, prompt marker, description, allowed subagents,
-//! core bindings and their presets — `global_db::store::load_agents` applies
-//! that spec at read time. What the DB still owns:
-//!
-//! - `agents.model_ref` per built-in agent (the user's model choice);
-//! - `agent_tools` rows for the user's **non-core** bindings (optional
-//!   builtins, custom tools, MCP), so an on/off intent survives.
-//!
-//! Core rows, extra agent rows and the other identity columns are ignored on
-//! read. `seed_agents` keeps writing spec values into those columns, and a
-//! later full settings save may rewrite the in-memory (spec) bindings as rows:
-//! that is persistence redundancy, never a second source of truth.
+//! `builtin_agents.rs` is the single source for built-in identity, prompts,
+//! descriptions and bindings. The DB only owns each agent's `model_ref` and the
+//! user's non-core `agent_tools` overrides.
 
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
 
@@ -21,35 +11,23 @@ use crate::types::Result;
 use super::builtin_agents::builtin_agents;
 use super::store;
 
-pub const SEED_REVISION: &str = "19";
-
 /// First boot: plant the six built-in agent rows.
 ///
-/// No binding rows are planted. Core and default-optional bindings come from
-/// the spec at read time, so `agent_tools` only ever holds user overrides.
+/// Core and default-optional bindings come from the spec at read time, so
+/// `agent_tools` only ever holds user overrides.
 pub fn seed(conn: &Connection) -> Result<()> {
-    strip_direct_shell_bindings(conn)?;
-    seed_agents(conn)?;
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES ('seed_revision', ?1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [SEED_REVISION],
-    )?;
-    Ok(())
+    write_builtin_agent_rows(conn, false)
 }
 
-/// Every later boot: the agent set is closed, so drop data for agents this
-/// build does not ship (custom agents from older versions) and make sure the
-/// six built-in rows exist with their `model_ref` intact.
+/// Every later boot: drop agent data this build does not ship and keep the six
+/// built-in rows (and their `model_ref`) in place.
 pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
-    strip_direct_shell_bindings(conn)?;
     prune_agents_outside_the_spec(conn)?;
-    seed_agents_preserving_models(conn)?;
-    Ok(())
+    write_builtin_agent_rows(conn, true)
 }
 
-/// D1: a custom agent row and its bindings are deleted outright. Spec ids are
-/// the only agents the runtime can address, so anything else is dead weight.
+/// A custom agent row and its bindings are deleted outright: spec ids are the
+/// only agents the runtime can address.
 fn prune_agents_outside_the_spec(conn: &Connection) -> Result<()> {
     let ids: Vec<&str> = builtin_agents().iter().map(|spec| spec.id).collect();
     let placeholders = vec!["?"; ids.len()].join(", ");
@@ -69,14 +47,6 @@ fn prune_agents_outside_the_spec(conn: &Connection) -> Result<()> {
         );
     }
     Ok(())
-}
-
-fn seed_agents(conn: &Connection) -> Result<()> {
-    write_builtin_agent_rows(conn, false)
-}
-
-fn seed_agents_preserving_models(conn: &Connection) -> Result<()> {
-    write_builtin_agent_rows(conn, true)
 }
 
 /// Write the six agent rows. Every column except `model_ref` mirrors the spec
@@ -108,26 +78,6 @@ fn write_builtin_agent_rows(conn: &Connection, preserve_models: bool) -> Result<
             spec.description,
             &allowed,
         )?;
-    }
-    Ok(())
-}
-
-/// Drop leftover retired shell bindings (Direct triad + WP-196 run_command
-/// suite). The names stay reserved, so these rows can only come from older
-/// builds.
-fn strip_direct_shell_bindings(conn: &Connection) -> Result<()> {
-    for tool in [
-        "bash",
-        "wait_shell",
-        "kill_shell",
-        "run_command",
-        "command_output",
-        "command_kill",
-        "run",
-        "wait",
-        "kill",
-    ] {
-        conn.execute("DELETE FROM agent_tools WHERE tool_id = ?1", [tool])?;
     }
     Ok(())
 }
@@ -169,9 +119,8 @@ mod tests {
         .unwrap()
     }
 
-    /// The DB only stores what the user owns: six agent rows with an empty
-    /// `model_ref`, and no binding rows at all (core + default optional come
-    /// from the spec at read time).
+    /// The DB stores only what the user owns: six agent rows with an empty
+    /// `model_ref`, and no binding rows at all.
     #[test]
     fn seed_plants_the_six_builtin_agents_without_binding_rows() {
         let conn = fresh_seeded();
@@ -206,18 +155,11 @@ mod tests {
         assert_eq!(prompt, "builtin:default");
         assert_eq!(description, crate::config::global_db::DEFAULT_DESCRIPTION);
         assert_eq!(model_ref, "", "first boot has no model yet");
-
-        let revision: String = conn
-            .query_row("SELECT value FROM meta WHERE key = 'seed_revision'", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(revision, SEED_REVISION);
     }
 
-    /// D1 + I2: a second boot deletes every agent outside the spec (and its
-    /// bindings), rewrites the identity columns to spec values, keeps
-    /// `model_ref`, and leaves the user's non-core overrides alone.
+    /// A second boot deletes every agent outside the spec (and its bindings),
+    /// rewrites the identity columns to spec values, keeps `model_ref`, and
+    /// leaves the user's non-core overrides alone.
     #[test]
     fn ensure_core_bindings_deletes_agents_outside_the_spec() {
         let conn = fresh_seeded();
@@ -347,10 +289,8 @@ mod tests {
         }
     }
 
-    /// I4 guard: the loaded profiles still match the W1/W2 baseline table
-    /// (`seed_reproduces_the_baseline_builtin_bindings` below). This one pins
-    /// the source: spec-only rows equal the loaded profiles even with an empty
-    /// `agent_tools` table.
+    /// Guard: with an empty `agent_tools` table the loaded profiles are exactly
+    /// the spec's core plus default-optional bindings.
     #[test]
     fn spec_core_and_optional_cover_every_locked_binding() {
         let conn = fresh_seeded();
@@ -376,15 +316,10 @@ mod tests {
         }
     }
 
-    // ---- W1 + W2: the spec table must reproduce the frozen seed baseline ----
+    // ---- the spec table must reproduce the frozen seed baseline ----
     //
-    // The expected values are a hand-transcribed copy of the baseline seed
-    // output (`.tmp/agent-lockdown/golden/bindings.json`, W0), updated for D3:
-    // `webfetch` / `websearch` left the core set and became optional builtins
-    // defaulted on for **every** built-in agent. Five agents therefore gained
-    // those two rows (only `explore` had them before). Everything else must
-    // stay literal: this test is the guard that the table-driven seed did not
-    // move another row.
+    // Hand-transcribed from the locked seed output: this is the guard that the
+    // table-driven seed did not move a binding.
 
     struct BaselineAgent {
         id: &'static str,

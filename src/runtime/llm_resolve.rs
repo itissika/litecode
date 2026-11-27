@@ -203,29 +203,35 @@ pub(crate) fn item_seq_window(
 /// preview and the next turn cannot disagree about who produced what. The
 /// caller passes the window's origins; this function does not care how many
 /// headers the session has.
+///
+/// A header missing any identity field (`provider_id`, `endpoint_type`,
+/// `model_ref`, `instructions_digest`, `tools_digest`) is skipped: partial
+/// identity is no identity, and the item then replays as an unknown producer.
 pub(crate) fn producers_from_origins(
     origins: Vec<(crate::session::event::Seq, serde_json::Value)>,
     item_seqs: &[Option<crate::session::event::Seq>],
 ) -> Vec<Option<crate::llm::ItemProducer>> {
     let headers = origins
         .into_iter()
-        .map(|(seq, body)| {
+        .filter_map(|(seq, body)| {
             let field = |key: &str| {
                 body.get(key)
                     .and_then(serde_json::Value::as_str)
                     .filter(|value| !value.is_empty())
                     .map(str::to_string)
             };
-            (
+            // A header missing any identity field proves no producer: the item
+            // then has no owner and its ciphertext is stripped.
+            Some((
                 seq,
                 crate::llm::ItemProducer {
-                    provider_id: field("provider_id").unwrap_or_default(),
-                    endpoint_type: field("endpoint_type"),
-                    model_ref: field("model_ref"),
-                    instructions_digest: field("instructions_digest"),
-                    tools_digest: field("tools_digest"),
+                    provider_id: field("provider_id")?,
+                    endpoint_type: field("endpoint_type")?,
+                    model_ref: field("model_ref")?,
+                    instructions_digest: field("instructions_digest")?,
+                    tools_digest: field("tools_digest")?,
                 },
-            )
+            ))
         })
         .collect::<Vec<_>>();
     crate::llm::producers_for_seqs(item_seqs, &headers)

@@ -48,11 +48,7 @@ export type TurnPhaseWaitingPayload = {
   summary: string;
 };
 
-/**
- * Wire TurnPhase (externally tagged).
- * WP-186: AwaitingPermission serializes as `waiting_for_user`;
- * legacy clients may still send `awaiting_permission` — accept both on read.
- */
+/** Wire TurnPhase (externally tagged). */
 export type TurnPhase =
   | "idle"
   | "starting"
@@ -63,27 +59,25 @@ export type TurnPhase =
   | "cancelling"
   | "finalizing"
   | { waiting_for_user: TurnPhaseWaitingPayload }
-  | { awaiting_permission: TurnPhaseWaitingPayload } // legacy read alias
   | { failed: { code: ErrorCode } };
 
-/** True when phase is the user-gate object (canonical or legacy wire key). */
+/** True when phase is the user-gate object. */
 export function isWaitingForUserPhase(
   phase: TurnPhase | null | undefined,
 ): boolean {
   return (
     typeof phase === "object" &&
     phase !== null &&
-    ("waiting_for_user" in phase || "awaiting_permission" in phase)
+    "waiting_for_user" in phase
   );
 }
 
-/** Payload from either wire key; null if phase is not a user-gate object. */
+/** Payload for the user-gate phase; null otherwise. */
 export function waitingForUserPayload(
   phase: TurnPhase | null | undefined,
 ): TurnPhaseWaitingPayload | null {
   if (typeof phase !== "object" || phase === null) return null;
   if ("waiting_for_user" in phase) return phase.waiting_for_user;
-  if ("awaiting_permission" in phase) return phase.awaiting_permission;
   return null;
 }
 

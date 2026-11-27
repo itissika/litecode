@@ -159,9 +159,9 @@ fn one_context_meter_and_token_breakdown_source() {
         "breakdown math must have one implementation"
     );
     assert_eq!(
-        owners("context_window as f64 * 0.8"),
+        owners("pub const COMPACTION_BUDGET_PERCENT: usize"),
         vec!["src/session/estimate.rs".to_string()],
-        "the 0.8 threshold formula must live in the single estimate helper"
+        "the compaction budget percentage constant must have one origin"
     );
 }
 
@@ -375,7 +375,8 @@ fn pr7_uses_provider_capacity_and_minimal_summary_acceptance() {
     let meter = read("src/context_pipeline/context_meter.rs");
     let production = production_part(&meter);
     assert!(production.contains("context_window.saturating_sub(output_reserve)"));
-    assert!(production.contains("(context_window.saturating_mul(4) / 5).min(prompt_limit)"));
+    assert!(production.contains("autocompact_threshold(context_window)"));
+    assert!(production.contains(".min(prompt_limit)"));
     for removed in ["safety_headroom", "MAX_SAFETY_HEADROOM_TOKENS"] {
         assert!(
             !production.contains(removed),

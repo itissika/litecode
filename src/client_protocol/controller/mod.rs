@@ -1415,17 +1415,8 @@ impl SessionController {
         Ok(runtime.compaction_request_context()?)
     }
 
-    pub(super) fn runtime_step_max(&self, session_id: &str) -> u32 {
-        let primary = self
-            .service
-            .agent_id(session_id)
-            .unwrap_or_else(|| self.runtime.desired_primary_agent().to_string());
-        crate::bot::step_max_for_session(
-            &self.runtime.resolved,
-            self.runtime.bots().map(|bots| bots.as_ref()),
-            session_id,
-            &primary,
-        )
+    pub(super) fn runtime_step_max(&self, _session_id: &str) -> u32 {
+        crate::agent::AGENT_MAX_STEPS
     }
 
     /// Bind this connection as the session's current permission route. Called
@@ -1628,7 +1619,6 @@ mod compact_item_wire_tests {
             ciphertexts_stripped: 0,
             rebased_stripped: 0,
             reasoning_dropped: 0,
-            reasoning_wholly_omitted: 0,
             rebased_true_count: 0,
             projection_rewrote: false,
             severity: String::new(),

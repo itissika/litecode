@@ -42,11 +42,6 @@ pub(crate) struct Batch {
     pub blocks: Vec<FunctionToolCall>,
 }
 
-enum Schedule {
-    Effects(ToolEffects),
-    Legacy { keys: Vec<ResourceKey> },
-}
-
 pub(crate) fn partition_tool_calls(
     tool_uses: &[FunctionToolCall],
     tools: &[Arc<dyn Tool>],
@@ -58,20 +53,20 @@ pub(crate) fn partition_tool_calls(
     for tu in tool_uses {
         let tu_input = serde_json::from_str(&tu.arguments).unwrap_or(serde_json::Value::Null);
         let tool = tools.iter().find(|t| t.name() == tu.name);
-        let (is_safe, schedule) = match tool {
+        let (is_safe, effects) = match tool {
             Some(tool) => tool_schedule(
                 tool.as_ref(),
                 &tu_input,
                 path_mode_for(&tu.name),
                 workspace_root,
             ),
-            None => (false, Schedule::Legacy { keys: Vec::new() }),
+            None => (false, ToolEffects::default()),
         };
 
         if is_safe
             && batches.last().is_some_and(|b| {
                 b.is_concurrency_safe
-                    && !batch_conflicts_with(b, &schedule, tools, workspace_root, &path_mode_for)
+                    && !batch_conflicts_with(b, &effects, tools, workspace_root, &path_mode_for)
             })
         {
             batches.last_mut().unwrap().blocks.push(tu.clone());
@@ -91,24 +86,19 @@ fn tool_schedule(
     input: &serde_json::Value,
     path_mode: crate::workspace::ToolPathMode,
     workspace_root: &Path,
-) -> (bool, Schedule) {
+) -> (bool, ToolEffects) {
     let effects = tool.effects(input, path_mode, workspace_root);
     if effects.declares() {
         let safe = effects.writes.is_empty();
-        (safe, Schedule::Effects(effects))
+        (safe, effects)
     } else {
-        (
-            tool.is_concurrency_safe(input),
-            Schedule::Legacy {
-                keys: tool.resource_keys(input, path_mode, workspace_root),
-            },
-        )
+        (tool.is_concurrency_safe(input), ToolEffects::default())
     }
 }
 
 fn batch_conflicts_with(
     batch: &Batch,
-    schedule: &Schedule,
+    effects: &ToolEffects,
     tools: &[Arc<dyn Tool>],
     workspace_root: &Path,
     path_mode_for: &impl Fn(&str) -> crate::workspace::ToolPathMode,
@@ -118,30 +108,17 @@ fn batch_conflicts_with(
         let Some(tool) = tools.iter().find(|t| t.name() == existing.name) else {
             continue;
         };
-        let (_, existing_schedule) = tool_schedule(
+        let (_, existing_effects) = tool_schedule(
             tool.as_ref(),
             &input,
             path_mode_for(&existing.name),
             workspace_root,
         );
-        if schedules_conflict(schedule, &existing_schedule) {
+        if effects_conflict(effects, &existing_effects) {
             return true;
         }
     }
     false
-}
-
-fn schedules_conflict(left: &Schedule, right: &Schedule) -> bool {
-    match (left, right) {
-        (Schedule::Effects(left), Schedule::Effects(right)) => effects_conflict(left, right),
-        (Schedule::Legacy { keys: left }, Schedule::Legacy { keys: right }) => {
-            resource_keys_conflict(left, right)
-        }
-        (Schedule::Effects(effects), Schedule::Legacy { keys })
-        | (Schedule::Legacy { keys }, Schedule::Effects(effects)) => {
-            legacy_effects_conflict(keys, effects)
-        }
-    }
 }
 
 fn effects_conflict(left: &ToolEffects, right: &ToolEffects) -> bool {
@@ -151,14 +128,6 @@ fn effects_conflict(left: &ToolEffects, right: &ToolEffects) -> bool {
     overlaps(&left.writes, &right.writes)
         || overlaps(&left.writes, &right.reads)
         || overlaps(&left.reads, &right.writes)
-}
-
-fn legacy_effects_conflict(keys: &[ResourceKey], effects: &ToolEffects) -> bool {
-    if keys.iter().any(|key| matches!(key, ResourceKey::Workspace)) || involves_workspace(effects) {
-        return !keys.is_empty() && effects.declares();
-    }
-    keys.iter()
-        .any(|key| effects.reads.contains(key) || effects.writes.contains(key))
 }
 
 fn involves_workspace(effects: &ToolEffects) -> bool {
@@ -171,20 +140,6 @@ fn involves_workspace(effects: &ToolEffects) -> bool {
 
 fn overlaps(left: &[ResourceKey], right: &[ResourceKey]) -> bool {
     left.iter().any(|key| right.contains(key))
-}
-
-fn resource_keys_conflict(a: &[ResourceKey], b: &[ResourceKey]) -> bool {
-    for x in a {
-        for y in b {
-            if x == y {
-                return true;
-            }
-            if matches!(x, ResourceKey::Workspace) || matches!(y, ResourceKey::Workspace) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn timeout_budget_label(budget: Duration) -> String {
@@ -1669,7 +1624,7 @@ mod code_caller_contract_tests {
         std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
         let result = run_program(
             dir.path(),
-            "return await tools.read({ path: \"a.txt\", nope: true });",
+            "inspect(await tools.read({ path: \"a.txt\", nope: true }));",
         )
         .await;
         assert!(

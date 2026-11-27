@@ -157,20 +157,17 @@ fn session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept() {
     );
     let commit_plan = fn_item_body(&compact, "fn commit_plan");
     assert!(
-        commit_plan.contains("commit_summary_plan")
-            && commit_plan.contains("commit_mechanical_plan"),
-        "commit_plan must commit both branches"
+        commit_plan.contains("commit_summary_plan"),
+        "commit_plan must commit summary plans via SessionMutation::Compact"
     );
     assert!(
-        !commit_plan.contains("rebuild_summary_surface")
-            && !commit_plan.contains("rebuild_mechanical_surface"),
+        !commit_plan.contains("rebuild_summary_surface"),
         "commit_plan must not read the surface back; commit and rebuild are separate stages"
     );
     let rebuild = fn_item_body(&compact, "fn rebuild_committed_surface");
     assert!(
-        rebuild.contains("rebuild_summary_surface")
-            && rebuild.contains("rebuild_mechanical_surface"),
-        "rebuild_committed_surface must read both branches back from the durable surface"
+        rebuild.contains("rebuild_summary_surface"),
+        "rebuild_committed_surface must read the summary branch back from the durable surface"
     );
     let read = fn_item_body(&compact, "fn read_compaction_state_result");
     assert!(

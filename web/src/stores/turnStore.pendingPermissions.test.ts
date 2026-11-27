@@ -397,23 +397,13 @@ describe("WP-184 Phase B — waiting_for_user wire + remount (WP-186)", () => {
     },
   };
 
-  const legacyPhase: TurnPhase = {
-    awaiting_permission: {
-      tool: "bash",
-      rule_id: "bash.exec",
-      summary: "Run: grep -R 'TODO' src",
-    },
-  };
-
-  it("isWaitingForUserPhase accepts waiting_for_user and legacy awaiting_permission", () => {
+  it("isWaitingForUserPhase accepts waiting_for_user only", () => {
     expect(isWaitingForUserPhase(waitingPhase)).toBe(true);
-    expect(isWaitingForUserPhase(legacyPhase)).toBe(true);
     expect(isWaitingForUserPhase("streaming")).toBe(false);
     expect(isWaitingForUserPhase({ failed: { code: "internal" as never } })).toBe(
       false,
     );
     expect(waitingForUserPayload(waitingPhase)?.tool).toBe("ask_user");
-    expect(waitingForUserPayload(legacyPhase)?.tool).toBe("bash");
   });
 
   it("remount/hydrate with WP-186-shaped snapshot remounts cards + pending status", () => {
@@ -500,24 +490,6 @@ describe("WP-184 Phase B — waiting_for_user wire + remount (WP-186)", () => {
             step_max: 8,
             started_at_ms: 1,
             awaiting_permission: false,
-          },
-        },
-        { pendingPermissionCount: 0 },
-      ),
-    ).toBe("pending");
-  });
-
-  it("deriveSessionStatus: legacy awaiting_permission phase object → pending", () => {
-    expect(
-      deriveSessionStatus(
-        {
-          running: true,
-          turn: {
-            turn_id: "t",
-            phase: legacyPhase,
-            step: 1,
-            step_max: 8,
-            started_at_ms: 1,
           },
         },
         { pendingPermissionCount: 0 },

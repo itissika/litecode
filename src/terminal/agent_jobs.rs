@@ -205,7 +205,6 @@ pub struct AgentJobRecord {
     workspace_root: PathBuf,
     /// Stderr log. `bash/tail` reads stdout; the tool result reads both.
     stderr_path: PathBuf,
-    stderr_tee: Arc<Mutex<BoundedTee>>,
     pid: Option<u32>,
     /// Kill scope for the tree. Set by the supervisor right after spawn on
     /// Windows; fixtures and Unix jobs fall back to `pid`.
@@ -1026,7 +1025,8 @@ impl AgentJobRegistry {
         let (stdout_path, stderr_path) = pipe_log_paths(workspace_root, id);
         std::fs::create_dir_all(pipe_log_dir(workspace_root)).map_err(|e| e.to_string())?;
         let stdout = BoundedTee::create(stdout_path.clone()).map_err(|e| e.to_string())?;
-        let stderr = BoundedTee::create(stderr_path.clone()).map_err(|e| e.to_string())?;
+        // Fixture jobs only need the stderr log file to exist; no reader owns it.
+        let _stderr = BoundedTee::create(stderr_path.clone()).map_err(|e| e.to_string())?;
         self.insert(
             id.to_string(),
             AgentJobRecord {
@@ -1044,7 +1044,6 @@ impl AgentJobRegistry {
                 tool_killed: false,
                 workspace_root: workspace_root.to_path_buf(),
                 stderr_path,
-                stderr_tee: Arc::new(Mutex::new(stderr)),
                 pid: None,
                 tree: None,
                 detached: true,
@@ -1310,7 +1309,6 @@ async fn run_pipe_supervisor(
             tool_killed: false,
             workspace_root: request.workspace_root.clone(),
             stderr_path,
-            stderr_tee: Arc::clone(&stderr_tee),
             pid,
             tree,
             detached: false,
@@ -1678,7 +1676,7 @@ mod tests {
         tee: BoundedTee,
     ) -> AgentJobRecord {
         let stderr_path = path.with_extension("stderr");
-        let stderr = BoundedTee::create(stderr_path.clone()).unwrap();
+        let _stderr = BoundedTee::create(stderr_path.clone()).unwrap();
         AgentJobRecord {
             session_id: session.into(),
             call_id: call.into(),
@@ -1693,7 +1691,6 @@ mod tests {
             tool_killed: false,
             workspace_root: workspace.to_path_buf(),
             stderr_path,
-            stderr_tee: Arc::new(Mutex::new(stderr)),
             pid: None,
             tree: None,
             detached: false,

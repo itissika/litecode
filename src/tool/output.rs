@@ -32,51 +32,11 @@ pub fn spill_full_text(
     stem: &str,
     full_text: &str,
 ) -> std::io::Result<String> {
-    let dir = workspace_root.join(".litecode").join("run");
+    let dir = workspace_root.join(RUN_SPILL_DIR);
     fs::create_dir_all(&dir)?;
     let name = format!("{}_{}.txt", sanitize_stem(stem), crate::terminal::bash_nonce());
     fs::write(dir.join(&name), full_text.as_bytes())?;
     Ok(format!("{RUN_SPILL_DIR}/{name}"))
-}
-
-/// Unified omission notice pointing at the complete on-disk output file.
-pub fn full_output_notice(total_bytes: usize, full_path: Option<&str>) -> String {
-    match full_path {
-        Some(path) => format!("… {total_bytes} bytes total; full output: {path}"),
-        None => format!("… {total_bytes} bytes total"),
-    }
-}
-
-/// Cut `text` with a simple 50% head + 50% tail UTF-8-safe split and the
-/// single unified notice marker.
-pub fn cut_head_tail_with_notice(text: &str, max_bytes: usize, full_path: Option<&str>) -> String {
-    cut_head_tail_with_total(text, max_bytes, text.len(), full_path)
-}
-
-fn cut_head_tail_with_total(
-    text: &str,
-    max_bytes: usize,
-    total_bytes: usize,
-    full_path: Option<&str>,
-) -> String {
-    if text.len() <= max_bytes {
-        return text.to_string();
-    }
-    let notice = full_output_notice(total_bytes, full_path);
-    if max_bytes <= notice.len() {
-        return notice;
-    }
-    let preview_budget = max_bytes.saturating_sub(notice.len() + 2);
-    let head_budget = preview_budget / 2;
-    let tail_budget = preview_budget - head_budget;
-    let head = prefix_utf8(text, head_budget);
-    let tail = suffix_utf8(&text[head.len()..], tail_budget);
-    match (head.is_empty(), tail.is_empty()) {
-        (false, false) => format!("{head}\n{notice}\n{tail}"),
-        (false, true) => format!("{head}\n{notice}"),
-        (true, false) => format!("{notice}\n{tail}"),
-        (true, true) => notice,
-    }
 }
 
 /// Result of spilling and clipping a `run_code` model view stream.
@@ -237,27 +197,6 @@ pub fn cut_and_spill_lines(
         total_lines,
         total_bytes,
     }
-}
-
-/// Unified spill helper: return `text` untouched if it fits `max_bytes`,
-/// otherwise persist the full text under `.litecode/run/` and keep 50/50 head+tail.
-pub fn cut_and_spill_full(
-    text: &str,
-    max_bytes: usize,
-    workspace_root: Option<&Path>,
-    stem: &str,
-) -> String {
-    if text.len() <= max_bytes {
-        return text.to_string();
-    }
-    let full_path = workspace_root.and_then(|root| match spill_full_text(root, stem, text) {
-        Ok(rel) => Some(rel),
-        Err(error) => {
-            tracing::warn!(error = %error, stem, "failed to spill full tool output");
-            None
-        }
-    });
-    cut_head_tail_with_notice(text, max_bytes, full_path.as_deref())
 }
 
 pub fn materialize_media_parts(
@@ -423,38 +362,3 @@ pub fn resolve_single_blob(body: &str, blob_dir: &Path) -> Option<String> {
     fs::read_to_string(blob_path).ok()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cut_and_spill_full_writes_complete_text_to_litecode_run_and_keeps_50_50_ends() {
-        let dir = tempfile::tempdir().unwrap();
-        let body = format!("HEAD_X\n{}MID_X\n{}TAIL_X", "a".repeat(2_000), "b".repeat(2_000));
-        let rendered = cut_and_spill_full(&body, 400, Some(dir.path()), "probe");
-        assert!(rendered.len() <= 400, "rendered len={}", rendered.len());
-        assert!(rendered.contains("HEAD_X"), "{rendered}");
-        assert!(rendered.contains("TAIL_X"), "{rendered}");
-        assert!(rendered.contains(&format!("{} bytes total; full output: .litecode/run/probe_", body.len())), "{rendered}");
-
-        let rel = rendered
-            .split_once("full output: ")
-            .unwrap()
-            .1
-            .lines()
-            .next()
-            .unwrap();
-        let disk = fs::read_to_string(dir.path().join(rel)).unwrap();
-        assert_eq!(disk, body);
-    }
-
-    #[test]
-    fn cut_and_spill_respects_utf8_boundaries() {
-        let dir = tempfile::tempdir().unwrap();
-        let content = format!("头{}🚀{}尾", "中".repeat(5_000), "🙂".repeat(5_000));
-        let rendered = cut_and_spill_full(&content, 600, Some(dir.path()), "utf8");
-        assert!(rendered.len() <= 600, "{}", rendered.len());
-        assert!(rendered.contains('头') && rendered.contains('尾'), "{rendered}");
-        assert!(!rendered.contains('\u{FFFD}'));
-    }
-}

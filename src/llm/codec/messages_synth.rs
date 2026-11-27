@@ -82,6 +82,7 @@ impl MessagesSynth {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn thinking_dropped(&self, reason: &str) -> usize {
         self.thinking_dropped.get(reason).copied().unwrap_or(0)
     }

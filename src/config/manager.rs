@@ -150,7 +150,6 @@ impl ConfigManager {
     ) -> Result<ResolvedConfig> {
         let catalog = provider_catalog::shared_for_db(db_path)?;
         global_db::with_conn(db_path, |conn| {
-            global_db::legacy::migrate_once(conn, &catalog)?;
             global_db::repair_agent_models_on_boot(conn, &catalog)
         })?;
         let global = Self::load_global_from(db_path)?;

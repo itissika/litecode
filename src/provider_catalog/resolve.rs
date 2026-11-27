@@ -78,6 +78,17 @@ impl ResolvedModel {
         self.quirks.contains(&quirk)
     }
 
+    /// Vendor effort literal for a platform thinking intent, if this model takes
+    /// one. `Off` sends the catalog's own off literal when declared; without a
+    /// literal the whole control is omitted.
+    pub fn effort_literal(&self, thinking: crate::platform_knobs::ThinkingSpec) -> Option<&str> {
+        let tiers = self.reasoning.as_ref()?;
+        match thinking {
+            crate::platform_knobs::ThinkingSpec::Off => self.reasoning_off.as_deref(),
+            crate::platform_knobs::ThinkingSpec::Tier(tier) => Some(tiers.tier_literal(tier)),
+        }
+    }
+
     /// Display label, falling back to the wire id.
     pub fn display_label(&self) -> &str {
         if self.label.is_empty() {

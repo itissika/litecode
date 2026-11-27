@@ -13,9 +13,8 @@ use serde::{Deserialize, Serialize};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
 use crate::engines::code_search::{
-    AtomicPart, EMBED_DIM, Embedder, MODEL_ID, PIPELINE_VERSION, append_durable,
-    atomic_write_bytes, atomic_write_set, production_embedder_id, restore_usearch,
-    sweep_atomic_tmp, truncate_to_committed,
+    EMBED_DIM, Embedder, MODEL_ID, PIPELINE_VERSION, append_durable, atomic_write_bytes,
+    production_embedder_id, sweep_atomic_tmp, truncate_to_committed,
 };
 use crate::types::{LitecodeError, Result};
 
@@ -80,8 +79,8 @@ pub struct SessionIndexMeta {
     #[serde(default)]
     pub keys_hash: u64,
     /// WP-144 on-disk layout: 1 = append-only `vectors.log` / `chunks.jsonl` /
-    /// `source_state.jsonl` with this meta as the checkpoint. 0/absent = the
-    /// old whole-file layout, rebuilt once (resumably) on upgrade.
+    /// `source_state.jsonl` with this meta as the checkpoint. Any other value
+    /// is incompatible and rebuilt from scratch.
     #[serde(default)]
     pub layout: u32,
     /// Committed byte lengths of the three append logs. A resume truncates each
@@ -136,11 +135,6 @@ fn meta_path(workspace_root: &Path) -> PathBuf {
 /// durable form is this log and the ANN graph is rebuilt in RAM on load.
 fn vectors_path(workspace_root: &Path) -> PathBuf {
     session_index_dir(workspace_root).join("vectors.log")
-}
-
-/// Pre-WP-144 whole-file ANN dump; removed when a rebuild starts.
-fn legacy_vectors_path(workspace_root: &Path) -> PathBuf {
-    session_index_dir(workspace_root).join("vectors.usearch")
 }
 
 fn chunks_path(workspace_root: &Path) -> PathBuf {
@@ -329,8 +323,6 @@ enum CrashAt {
     BeforeCheckpoint(usize),
     /// After commit N's checkpoint.
     AfterCommit(usize),
-    /// Migration: logs rewritten, layout-0 meta not yet replaced.
-    MidMigration,
 }
 
 #[cfg(test)]
@@ -671,92 +663,6 @@ impl SessionSemanticIndex {
         )
     }
 
-    /// One-time upgrade of a pre-WP-144 index (whole-file `vectors.usearch`,
-    /// layout 0) to the append-only layout without re-embedding: vectors are
-    /// read back out of the old ANN dump. Idempotent until the new meta lands.
-    fn migrate_legacy_layout(workspace_root: &Path) -> Result<bool> {
-        let Some(meta) = read_meta(workspace_root)? else {
-            return Ok(false);
-        };
-        let compatible_otherwise = meta.pipeline_version == PIPELINE_VERSION
-            && meta.model_id == MODEL_ID
-            && meta.embedder_id == production_embedder_id()
-            && meta.embed_dim == EMBED_DIM
-            && meta.doc_schema == DOC_SCHEMA;
-        let legacy = legacy_vectors_path(workspace_root);
-        if meta.layout != 0 || !compatible_otherwise || !legacy.is_file() {
-            return Ok(false);
-        }
-        let ann = new_ann_index()?;
-        restore_usearch(&ann, &legacy)?;
-        let body = std::fs::read_to_string(chunks_path(workspace_root)).unwrap_or_default();
-        let mut vbuf = Vec::new();
-        let mut cbuf = String::new();
-        let mut kept = 0usize;
-        let mut vector = vec![0f32; EMBED_DIM];
-        for line in body.lines().filter(|l| !l.trim().is_empty()) {
-            let chunk: SessionChunk = serde_json::from_str(line)
-                .map_err(|e| LitecodeError::Config(format!("parse session chunk: {e}")))?;
-            if ann.get(chunk.id, &mut vector).unwrap_or(0) == 0 {
-                continue;
-            }
-            vbuf.extend_from_slice(&chunk.id.to_le_bytes());
-            for v in &vector {
-                vbuf.extend_from_slice(&v.to_le_bytes());
-            }
-            cbuf.push_str(line);
-            cbuf.push('\n');
-            kept += 1;
-        }
-        // The old settled file is whole rows, which the log format reads as-is.
-        let sbody = std::fs::read(settled_path(workspace_root)).unwrap_or_default();
-        let (vp, cp, sp) = (
-            vectors_path(workspace_root),
-            chunks_path(workspace_root),
-            settled_path(workspace_root),
-        );
-        let put = |bytes: &[u8], w: &mut dyn std::io::Write| {
-            w.write_all(bytes)
-                .map_err(|e| LitecodeError::Config(e.to_string()))
-        };
-        atomic_write_set(&[
-            AtomicPart {
-                target: &vp,
-                write: &|w| put(&vbuf, w),
-            },
-            AtomicPart {
-                target: &cp,
-                write: &|w| put(cbuf.as_bytes(), w),
-            },
-            AtomicPart {
-                target: &sp,
-                write: &|w| put(&sbody, w),
-            },
-        ])?;
-        // The layout-0 meta and the legacy file still stand: a crash here
-        // reruns the (idempotent) migration on the next load.
-        #[cfg(test)]
-        crash_point(|_| CrashAt::MidMigration)?;
-        write_meta(
-            workspace_root,
-            &SessionIndexMeta {
-                last_change_id: meta.last_change_id,
-                keys_hash: meta.keys_hash,
-                vectors_len: vbuf.len() as u64,
-                chunks_len: cbuf.len() as u64,
-                settled_len: sbody.len() as u64,
-                building: false,
-                ..SessionIndexMeta::shell(&meta.embedder_id, kept)
-            },
-        )?;
-        let _ = std::fs::remove_file(&legacy);
-        tracing::info!(
-            chunks = kept,
-            "session index migrated to append-only layout"
-        );
-        Ok(true)
-    }
-
     /// Start a first build / rebuild (WP-144): empty logs plus a compatible
     /// meta with the watermark at zero and `building` set. From here the index
     /// is formal and searchable, and an interrupted build resumes from its last
@@ -764,7 +670,6 @@ impl SessionSemanticIndex {
     fn begin_build(workspace_root: &Path) -> Result<Self> {
         let dir = session_index_dir(workspace_root);
         std::fs::create_dir_all(&dir).map_err(|e| LitecodeError::Config(e.to_string()))?;
-        let _ = std::fs::remove_file(legacy_vectors_path(workspace_root));
         for path in [
             vectors_path(workspace_root),
             chunks_path(workspace_root),
@@ -1291,7 +1196,6 @@ fn read_settled_lenient(
 
 fn index_files_exist(workspace_root: &Path) -> bool {
     vectors_path(workspace_root).is_file() && chunks_path(workspace_root).is_file()
-        || legacy_vectors_path(workspace_root).is_file()
 }
 
 // ---- WP-135: session job record -------------------------------------------
@@ -1588,7 +1492,6 @@ pub fn session_corpus_progress(
 
 /// Absent / unloadable / embedder mismatch — warmup auto-rebuilds this corpus only.
 pub fn session_should_rebuild(workspace_root: &Path) -> bool {
-    let files = index_files_exist(workspace_root);
     // R3-1: an unreadable meta is not a missing one. A parse failure was
     // already turned into a deleted meta by `check_meta_or_drop` (-> None ->
     // rebuild); a pure I/O error must never send `begin_build` to wipe the
@@ -1596,12 +1499,9 @@ pub fn session_should_rebuild(workspace_root: &Path) -> bool {
     match read_meta(workspace_root) {
         Err(_) => false,
         Ok(None) => true,
-        Ok(Some(m)) =>
         // Layout 1 logs may be missing or short: `load` salvages them (M1).
-        // Only a legacy index needs its whole-file vectors to exist.
-        {
-            needs_rebuild(&m) || (m.layout == 0 && !files)
-        }
+        // An incompatible layout is a clean rebuild, never a migration.
+        Ok(Some(m)) => needs_rebuild(&m),
     }
 }
 
@@ -1680,9 +1580,6 @@ pub fn load_session_index(workspace_root: &Path) -> Result<SessionSemanticIndex>
     // Worker load only: leftovers of an interrupted atomic write.
     sweep_atomic_tmp(&dir);
     check_meta_or_drop(workspace_root)?;
-    if let Err(error) = SessionSemanticIndex::migrate_legacy_layout(workspace_root) {
-        tracing::warn!(error = %error, "session index layout migration failed; kept legacy layout; retrying");
-    }
     if session_should_rebuild(workspace_root) {
         return SessionSemanticIndex::new_empty();
     }

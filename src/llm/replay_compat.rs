@@ -4,14 +4,11 @@
 //!    host's own reasoning id. Codecs omit every other id. `call_id` is a
 //!    pairing key, not an identity, and always survives.
 //! 2. Reasoning ciphertext (`encrypted_content`) is readable only by the producer
-//!    that minted it. Producer identity is the provider, the protocol, the
-//!    model when the origin recorded a `model_ref`, and the fixed prefix
-//!    (instructions and tool list) when the origin recorded those digests: the
+//!    that minted it. Producer identity is all five recorded fields: provider,
+//!    protocol, model, and the fixed prefix (instructions and tool list) — the
 //!    same model under a different system prompt or tool set rejects the old
-//!    signature. A row with no `endpoint_type`, or no `model_ref`, keeps the
-//!    previous rule: it returns to the same provider on Responses and Chat, and
-//!    is dropped for Messages. A row without prefix digests keeps the rule from
-//!    before the prefix was recorded.
+//!    signature. A header missing any field proves no producer, so its
+//!    ciphertext is stripped.
 //! 3. Reasoning text is never dropped by the ciphertext strip. Each codec writes
 //!    it in its own dialect; a target declaring `reasoning.replay = "text"`
 //!    receives readable text from any producer.
@@ -35,19 +32,20 @@ use crate::llm::request::ToolDef;
 
 /// Who produced one input item, read from the newest `request/header` at or
 /// before its seq.
+///
+/// Every field is required: a header missing one proves no producer, and the
+/// caller drops that header instead of recording a partial identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemProducer {
     pub provider_id: String,
-    /// Absent when the origin row predates protocol recording.
-    pub endpoint_type: Option<String>,
-    /// Catalog reference `{provider}/{model}`. Absent on older rows.
-    pub model_ref: Option<String>,
-    /// Digest of the instructions the producing request sent. Absent on rows
-    /// that predate prefix recording.
-    pub instructions_digest: Option<String>,
-    /// Digest of the tool list the producing request sent. Absent on rows that
-    /// predate prefix recording.
-    pub tools_digest: Option<String>,
+    /// Protocol the producing request spoke.
+    pub endpoint_type: String,
+    /// Catalog reference `{provider}/{model}`.
+    pub model_ref: String,
+    /// Digest of the instructions the producing request sent.
+    pub instructions_digest: String,
+    /// Digest of the tool list the producing request sent.
+    pub tools_digest: String,
 }
 
 /// The fixed prefix a request sends before any item: its instructions and its
@@ -100,10 +98,9 @@ pub fn producers_for_seqs(
         .collect()
 }
 
-/// Ciphertext belongs to this request when the provider, protocol, model, and
-/// fixed prefix match. A missing protocol, or a missing model on a non-Messages
-/// row, keeps the rule from before those fields were recorded; a row without
-/// prefix digests keeps the rule from before the prefix was recorded.
+/// Ciphertext belongs to this request when provider, protocol, model, and the
+/// fixed prefix all match. Every field is durable, so a recorded producer that
+/// differs on any of them is foreign — there is no legacy fallback.
 fn ciphertext_is_own(
     producer: &ItemProducer,
     provider_id: &str,
@@ -111,65 +108,29 @@ fn ciphertext_is_own(
     model_ref: &str,
     prefix: Option<FixedPrefix<'_>>,
 ) -> bool {
-    if producer.provider_id != provider_id {
+    if producer.provider_id != provider_id
+        || producer.endpoint_type != endpoint_type
+        || producer.model_ref != model_ref
+    {
         return false;
     }
-    let same_model = match producer.endpoint_type.as_deref() {
-        None => endpoint_type != "messages",
-        Some(kind) if kind != endpoint_type => return false,
-        Some(_) => match producer.model_ref.as_deref() {
-            Some(minted) => minted == model_ref,
-            None => endpoint_type != "messages",
-        },
-    };
-    if !same_model {
-        return false;
-    }
+    // A caller with no request prefix (the switch preview) can only check the
+    // three durable identity fields.
     let Some(prefix) = prefix else {
         return true;
     };
-    let same_prefix = producer
-        .instructions_digest
-        .as_deref()
-        .is_none_or(|minted| minted == prefix.instructions_digest)
-        && producer
-            .tools_digest
-            .as_deref()
-            .is_none_or(|minted| minted == prefix.tools_digest);
-    same_prefix
+    producer.instructions_digest == prefix.instructions_digest
+        && producer.tools_digest == prefix.tools_digest
 }
 
-/// Read-only counters from [`strip_foreign_ciphertext`]. Strip behaviour is
-/// unchanged: ciphertext is cleared, text and summary stay on the Item.
+/// Read-only counter from [`strip_foreign_ciphertext`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StripCiphertextStats {
-    /// How many `encrypted_content` blobs were cleared.
     pub ciphertexts_stripped: usize,
-    /// How many of those clearings leave no wire-usable thinking for this
-    /// endpoint: Messages needs a signature (encode drops the block without
-    /// one), and any endpoint with neither ciphertext nor retained text has
-    /// nothing left to send. Does not change what strip mutates.
-    pub reasoning_wholly_omitted: usize,
-}
-
-fn reasoning_has_text(reasoning: &crate::authority::responses::ReasoningItem) -> bool {
-    use crate::authority::responses::{ReasoningItemContent, SummaryPart};
-    let from_content = reasoning.content.as_ref().is_some_and(|parts| {
-        parts.iter().any(|part| match part {
-            ReasoningItemContent::ReasoningText(text) => !text.text.trim().is_empty(),
-        })
-    });
-    if from_content {
-        return true;
-    }
-    reasoning.summary.iter().any(|part| match part {
-        SummaryPart::SummaryText(text) => !text.text.trim().is_empty(),
-    })
 }
 
 /// Rule 2 on the request copy: remove reasoning ciphertext this request cannot
-/// read. Text and summary stay. Returns strip counts only — never changes
-/// keep/drop policy.
+/// read. Text and summary stay.
 pub fn strip_foreign_ciphertext(
     items: &mut [Item],
     producers: &[Option<ItemProducer>],
@@ -195,12 +156,6 @@ pub fn strip_foreign_ciphertext(
         if !own {
             reasoning.encrypted_content = None;
             stats.ciphertexts_stripped += 1;
-            // Messages encode requires a signature; without it the whole
-            // thinking block is omitted even when text remains on the Item.
-            // Elsewhere, wholly-omitted means no text/summary left either.
-            if endpoint_type == "messages" || !reasoning_has_text(reasoning) {
-                stats.reasoning_wholly_omitted += 1;
-            }
         }
     }
     stats
@@ -233,44 +188,21 @@ pub fn strip_rebased_signatures(
     stripped
 }
 
-/// Rule 4 on the request copy: drop reasoning this provider did not produce.
-/// An unknown producer is foreign. Non-reasoning items stay. Returns how many
-/// reasoning items were removed.
-pub fn retain_own_reasoning(
-    items: &mut Vec<Item>,
-    producers: &[Option<ItemProducer>],
-    provider_id: &str,
-) -> usize {
-    let mut dropped = 0;
-    let mut kept = Vec::with_capacity(items.len());
-    for (index, item) in items.drain(..).enumerate() {
-        let foreign = matches!(item, Item::Reasoning(_))
-            && !producers
-                .get(index)
-                .and_then(Option::as_ref)
-                .is_some_and(|producer| producer.provider_id == provider_id);
-        if foreign {
-            dropped += 1;
-            continue;
-        }
-        kept.push(item);
-    }
-    *items = kept;
-    dropped
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::authority::responses::{ReasoningItem, ReasoningItemContent, ReasoningTextContent};
 
-    fn produced(provider: &str, endpoint: Option<&str>, model: Option<&str>) -> ItemProducer {
+    /// A fully recorded producer. Every identity field is durable, so tests
+    /// never build a partial one.
+    fn produced(provider: &str, endpoint: &str, model: &str) -> ItemProducer {
+        let (instructions_digest, tools_digest) = fixed_prefix_digests("sys", &[]);
         ItemProducer {
             provider_id: provider.to_string(),
-            endpoint_type: endpoint.map(str::to_string),
-            model_ref: model.map(str::to_string),
-            instructions_digest: None,
-            tools_digest: None,
+            endpoint_type: endpoint.to_string(),
+            model_ref: model.to_string(),
+            instructions_digest,
+            tools_digest,
         }
     }
 
@@ -299,8 +231,8 @@ mod tests {
     #[test]
     fn producer_is_the_newest_header_at_or_before_the_item() {
         let headers = vec![
-            (5, produced("a", Some("responses"), Some("a/m"))),
-            (12, produced("b", Some("messages"), Some("b/claude"))),
+            (5, produced("a", "responses", "a/m")),
+            (12, produced("b", "messages", "b/claude")),
         ];
         let producers = producers_for_seqs(&[None, Some(3), Some(5), Some(10), Some(14)], &headers);
         let ids: Vec<_> = producers
@@ -315,8 +247,49 @@ mod tests {
         assert_eq!(
             producers[4]
                 .as_ref()
-                .and_then(|producer| producer.model_ref.as_deref()),
+                .map(|producer| producer.model_ref.as_str()),
             Some("b/claude")
+        );
+    }
+
+    #[test]
+    fn a_missing_producer_or_prefix_strips_ciphertext() {
+        // A header missing any identity field is dropped upstream, so the item
+        // reaches the strip with no producer and loses its ciphertext.
+        let mut items = vec![reasoning(Some("sig"))];
+        assert_eq!(
+            strip_foreign_ciphertext(&mut items, &[None], "p", "responses", "p/m", None)
+                .ciphertexts_stripped,
+            1
+        );
+        assert!(matches!(
+            &items[0],
+            Item::Reasoning(reasoning) if reasoning.encrypted_content.is_none()
+        ));
+
+        // A recorded producer whose prefix differs is foreign, not legacy.
+        let (instructions_digest, tools_digest) = fixed_prefix_digests("sys", &[tool("read")]);
+        let producer = ItemProducer {
+            instructions_digest: instructions_digest.clone(),
+            tools_digest: tools_digest.clone(),
+            ..produced("p", "responses", "p/m")
+        };
+        let (other_instructions, _) = fixed_prefix_digests("sys v2", &[tool("read")]);
+        let mut items = vec![reasoning(Some("sig"))];
+        assert_eq!(
+            strip_foreign_ciphertext(
+                &mut items,
+                &[Some(producer)],
+                "p",
+                "responses",
+                "p/m",
+                Some(FixedPrefix {
+                    instructions_digest: &other_instructions,
+                    tools_digest: &tools_digest,
+                }),
+            )
+            .ciphertexts_stripped,
+            1
         );
     }
 
@@ -328,8 +301,8 @@ mod tests {
             reasoning(Some("unknown")),
         ];
         let producers = vec![
-            Some(produced("p", Some("responses"), Some("p/m"))),
-            Some(produced("q", Some("responses"), Some("q/m"))),
+            Some(produced("p", "responses", "p/m")),
+            Some(produced("q", "responses", "q/m")),
             None,
         ];
         assert_eq!(
@@ -353,54 +326,14 @@ mod tests {
     }
 
     #[test]
-    fn summary_replay_keeps_only_this_providers_reasoning() {
-        let mut items = vec![
-            reasoning(Some("own")),
-            crate::types::user_text("stay"),
-            reasoning(Some("foreign")),
-            reasoning(None),
-        ];
-        let producers = vec![
-            Some(produced(
-                "aliyun-token",
-                Some("responses"),
-                Some("aliyun-token/qwen"),
-            )),
-            Some(produced(
-                "aliyun-token",
-                Some("responses"),
-                Some("aliyun-token/qwen"),
-            )),
-            Some(produced("openai", Some("responses"), Some("openai/gpt"))),
-            None,
-        ];
-        assert_eq!(
-            retain_own_reasoning(&mut items, &producers, "aliyun-token"),
-            2
-        );
-        assert_eq!(items.len(), 2);
-        match &items[0] {
-            Item::Reasoning(reasoning) => {
-                assert_eq!(reasoning.encrypted_content.as_deref(), Some("own"));
-            }
-            other => panic!("expected own reasoning, got {other:?}"),
-        }
-        assert_eq!(crate::types::item_text_preview(&items[1]), "stay");
-    }
-
-    #[test]
     fn ciphertext_does_not_cross_protocols_on_the_same_provider() {
         let mut to_messages = vec![reasoning(Some("gpt-cipher")), reasoning(Some("claude-sig"))];
         let producers = vec![
+            Some(produced("opencode", "responses", "opencode/gpt-6-luna")),
             Some(produced(
                 "opencode",
-                Some("responses"),
-                Some("opencode/gpt-6-luna"),
-            )),
-            Some(produced(
-                "opencode",
-                Some("messages"),
-                Some("opencode/claude-sonnet-5-5"),
+                "messages",
+                "opencode/claude-sonnet-5-5",
             )),
         ];
         assert_eq!(
@@ -447,9 +380,9 @@ mod tests {
     fn the_fixed_prefix_decides_whether_a_signature_is_still_valid() {
         let base = vec![tool("read"), tool("grep")];
         let (instructions_digest, tools_digest) = fixed_prefix_digests("sys", &base);
-        let mut producer = produced("p", Some("responses"), Some("p/m"));
-        producer.instructions_digest = Some(instructions_digest.clone());
-        producer.tools_digest = Some(tools_digest.clone());
+        let mut producer = produced("p", "responses", "p/m");
+        producer.instructions_digest = instructions_digest.clone();
+        producer.tools_digest = tools_digest.clone();
 
         // Same provider, protocol, model and prefix: the signature still holds.
         let mut same = vec![reasoning(Some("sig"))];
@@ -515,34 +448,12 @@ mod tests {
     }
 
     #[test]
-    fn a_row_without_prefix_digests_keeps_the_rule_from_before_recording() {
-        let legacy = produced("p", Some("responses"), Some("p/m"));
-        let mut items = vec![reasoning(Some("sig"))];
-        let (instructions_digest, tools_digest) = fixed_prefix_digests("sys", &[tool("read")]);
-        assert_eq!(
-            strip_foreign_ciphertext(
-                &mut items,
-                &[Some(legacy)],
-                "p",
-                "responses",
-                "p/m",
-                Some(FixedPrefix {
-                    instructions_digest: &instructions_digest,
-                    tools_digest: &tools_digest,
-                }),
-            )
-            .ciphertexts_stripped,
-            0
-        );
-    }
-
-    #[test]
     fn a_cross_model_switch_drops_the_old_signature() {
         let tools = vec![tool("read")];
         let (instructions_digest, tools_digest) = fixed_prefix_digests("sys", &tools);
-        let mut producer = produced("p", Some("responses"), Some("p/old"));
-        producer.instructions_digest = Some(instructions_digest.clone());
-        producer.tools_digest = Some(tools_digest.clone());
+        let mut producer = produced("p", "responses", "p/old");
+        producer.instructions_digest = instructions_digest.clone();
+        producer.tools_digest = tools_digest.clone();
         let mut items = vec![reasoning(Some("sig"))];
         assert_eq!(
             strip_foreign_ciphertext(

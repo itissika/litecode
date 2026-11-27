@@ -10,7 +10,7 @@ use litecode::config::global_db::{self, EvalSurfaceOverride, store};
 use litecode::config::resolved::{ResolvedConfig, WorkspaceState};
 use litecode::config::schema::{AgentToolBinding, GlobalSettings, ToolPreset};
 use litecode::config::{ConfigManager, SettingsWriter, TurnGuard};
-use litecode::tool::availability::available_tools;
+use litecode::tool::availability::available_tools_payload;
 use litecode::tool::capability::capability_catalog;
 use litecode::types::Result;
 use rusqlite::OptionalExtension;
@@ -32,7 +32,8 @@ fn registry_ids() -> BTreeSet<String> {
         GlobalSettings::default(),
         WorkspaceState::new(dir.path()),
     );
-    let mut ids: BTreeSet<String> = available_tools(&resolved)
+    let mut ids: BTreeSet<String> = available_tools_payload(&resolved, Default::default())
+        .tools
         .into_iter()
         .flat_map(|tool| tool.members)
         .collect();

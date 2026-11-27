@@ -135,15 +135,6 @@ pub fn list_pending(conn: &Connection, session_id: &str) -> Result<Vec<PendingPe
     Ok(out)
 }
 
-pub fn remove_pending(conn: &Connection, session_id: &str, request_id: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM session_pending_permissions WHERE session_id = ?1 AND request_id = ?2",
-        params![session_id, request_id],
-    )
-    .map_err(|e| LitecodeError::SessionStorage(format!("remove pending: {e}")))?;
-    Ok(())
-}
-
 pub fn clear_pending(conn: &Connection, session_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM session_pending_permissions WHERE session_id = ?1",

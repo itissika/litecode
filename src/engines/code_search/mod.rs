@@ -68,13 +68,12 @@ pub use meta::{
     IndexMeta, index_dir, init_workspace_index, meta_path, needs_rebuild, read_meta, write_meta,
 };
 pub use reconcile::{queue_reconcile_dirty, queue_reconcile_from_stamps, sync_index_with_disk};
-pub use retrieve::{CODE_SEMANTIC_CC_ALPHA, SEARCH_MODE_BM25_CC, SEARCH_MODE_BM25_RRF, SearchHit};
+pub use retrieve::{CODE_SEMANTIC_CC_ALPHA, SEARCH_MODE_BM25_CC, SearchHit};
 pub use scan_policy::{
     MAX_INDEX_FILE_BYTES, SKIP_DIRS, is_indexable_rel_path, is_scannable_rel_path, looks_binary,
 };
 pub use semantic_engine::SemanticEngine;
 pub use store::{CodeSearchIndex, index_files_exist};
-pub(crate) use store::{persist_usearch, restore_usearch};
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

@@ -4,7 +4,6 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use crate::session::snapshot;
-use crate::session::snapshot_paths::purge_legacy_in_workspace_snapshots;
 use crate::types::{LitecodeError, Result};
 
 use serde::{Deserialize, Serialize};
@@ -482,11 +481,6 @@ pub fn init_workspace(workspace_root: &Path) -> Result<()> {
         crate::config::guides::WORKSPACE_README,
     )
     .map_err(|e| LitecodeError::Config(e.to_string()))?;
-
-    // File-revert snapshots live under ~/.litecode/snapshots — never in-tree.
-    if let Err(e) = purge_legacy_in_workspace_snapshots(workspace_root) {
-        tracing::warn!(error = %e, "failed to purge legacy in-workspace snapshots");
-    }
 
     // Persist / reconcile stable workspace_id (move vs copy).
     super::workspace_identity::ensure_workspace_identity(workspace_root)?;

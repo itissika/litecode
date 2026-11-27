@@ -255,6 +255,17 @@ pub struct ReasoningTiers {
     pub high: String,
 }
 
+impl ReasoningTiers {
+    /// Vendor literal for one platform tier.
+    pub fn tier_literal(&self, tier: crate::platform_knobs::ThinkingTier) -> &str {
+        match tier {
+            crate::platform_knobs::ThinkingTier::Low => self.low.as_str(),
+            crate::platform_knobs::ThinkingTier::Medium => self.medium.as_str(),
+            crate::platform_knobs::ThinkingTier::High => self.high.as_str(),
+        }
+    }
+}
+
 /// Model-level reasoning declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

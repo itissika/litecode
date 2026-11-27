@@ -3,7 +3,6 @@
 #[cfg(test)]
 mod tests {
     use super::super::{ArchiveFormat, github};
-    use sha2::Digest;
 
     // -----------------------------------------------------------------------
     // asset_pattern matching

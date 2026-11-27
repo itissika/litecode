@@ -25,12 +25,6 @@ fn project_capability(capability: &Capability) -> AvailableTool {
     }
 }
 
-/// All cards declared in this workspace. Engine state is intentionally absent:
-/// cards are definitions, not runtime readiness.
-pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
-    project_catalog(&capability_catalog(resolved))
-}
-
 fn project_catalog(catalog: &crate::tool::capability::CapabilityCatalog) -> Vec<AvailableTool> {
     let mut out: Vec<AvailableTool> = catalog
         .capabilities
@@ -283,7 +277,7 @@ mod tests {
     /// the same capability kind the runtime selection uses.
     #[test]
     fn available_tools_marks_only_core_capabilities_as_locked() {
-        let tools = available_tools(&resolved_with_custom_and_mcp());
+        let tools = available_tools_payload(&resolved_with_custom_and_mcp(), HashMap::new()).tools;
         assert!(!tools.is_empty());
         for tool in &tools {
             assert_eq!(
@@ -319,14 +313,14 @@ mod tests {
 
     #[test]
     fn settings_has_one_lsp_card_with_seven_members() {
-        let tools = available_tools(&resolved());
+        let tools = available_tools_payload(&resolved(), HashMap::new()).tools;
         let lsp = tools.iter().find(|tool| tool.id == "lsp").expect("lsp");
         assert_eq!(lsp.members.len(), 7);
     }
 
     #[test]
     fn code_transport_is_not_a_card() {
-        let tools = available_tools(&resolved());
+        let tools = available_tools_payload(&resolved(), HashMap::new()).tools;
         assert!(!tools.iter().any(|tool| tool.id == "run_code"));
     }
 
@@ -341,7 +335,7 @@ mod tests {
             .find(|tool| tool.id == "lsp")
             .expect("lsp card");
         assert_eq!(lsp.status, Some(AvailableStatus::Failed));
-        assert_eq!(payload.tools.len(), available_tools(&resolved).len());
+        assert_eq!(payload.tools.len(), available_tools_payload(&resolved, HashMap::new()).tools.len());
     }
 
     #[test]

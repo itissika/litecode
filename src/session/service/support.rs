@@ -284,10 +284,6 @@ impl SessionService {
         self.sessions.has_follow_ups(session_id)
     }
 
-    pub(crate) fn follow_ups_len(&self, session_id: &str) -> usize {
-        self.sessions.follow_ups_len(session_id)
-    }
-
     pub(crate) fn reserve_follow_up_auto_turn(
         &self,
         session_id: &str,

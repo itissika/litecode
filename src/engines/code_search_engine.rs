@@ -18,6 +18,7 @@ pub const SEARCH_WORKER_BUSY: &str = "code_search worker is busy; semantic searc
 /// Bounded wait for a search already inside the code tool. Cancellation is
 /// checked between polls, so a run_code deadline never waits for this budget.
 pub const SEARCH_QUEUE_WAIT: Duration = Duration::from_secs(20);
+#[cfg(test)]
 const SEARCH_QUEUE_POLL: Duration = Duration::from_millis(20);
 /// Returned when the execution token fires while waiting for search.
 pub const SEARCH_CANCELLED: &str = "code_search cancelled";

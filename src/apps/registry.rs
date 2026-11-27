@@ -34,16 +34,6 @@ impl RegistryError {
             message,
         }
     }
-
-    fn warning(source: &str, file: &str, app_id: Option<String>, message: String) -> Self {
-        Self {
-            severity: "warning",
-            source: source.into(),
-            file: file.into(),
-            app_id,
-            message,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -281,14 +271,6 @@ impl AppRegistry {
         };
         for (app_id, message) in parsed.errors {
             errors.push(RegistryError::error(
-                source.as_str(),
-                &file,
-                app_id,
-                message,
-            ));
-        }
-        for (app_id, message) in parsed.warnings {
-            errors.push(RegistryError::warning(
                 source.as_str(),
                 &file,
                 app_id,

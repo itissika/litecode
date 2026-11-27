@@ -4,8 +4,7 @@
 //! or `~/.litecode/snapshots`. Never under `<workspace>/.litecode/`.
 //!
 //! Prefer the persisted workspace identity (`config::workspace_identity`) as
-//! `workspace_id`. Path-derived [`workspace_snapshot_id`] remains for migration
-//! and tests that have not ensured identity yet.
+//! `workspace_id`; [`workspace_snapshot_id`] is the path-derived bootstrap id.
 
 use std::path::{Path, PathBuf};
 
@@ -22,7 +21,7 @@ pub fn snapshots_dir_for_id(workspace_id: &str) -> PathBuf {
     snapshots_root().join(workspace_id)
 }
 
-/// Resolve snapshots dir using path-derived legacy id (tests / pre-identity).
+/// Resolve the snapshots dir from the path-derived id (tests / pre-identity).
 pub fn snapshots_dir_for_workspace(workspace_root: &Path) -> PathBuf {
     snapshots_dir_for_id(&workspace_snapshot_id(workspace_root))
 }
@@ -111,20 +110,6 @@ pub fn assert_snapshots_isolated(workspace: &Path, snapshots_dir: &Path) -> Resu
         ));
     }
     Ok(())
-}
-
-/// Remove legacy in-workspace snapshot repos (never migrate; old layout was unsafe).
-pub fn purge_legacy_in_workspace_snapshots(workspace_root: &Path) -> std::io::Result<bool> {
-    let legacy = workspace_root.join(".litecode").join("snapshots");
-    if !legacy.exists() {
-        return Ok(false);
-    }
-    std::fs::remove_dir_all(&legacy)?;
-    tracing::warn!(
-        path = %legacy.display(),
-        "purged legacy in-workspace snapshot repo (now stored under ~/.litecode/snapshots)"
-    );
-    Ok(true)
 }
 
 fn litecode_home_from_env() -> Option<PathBuf> {

@@ -523,7 +523,7 @@ pub fn trust_preview(def: &AppDefinition, source: AppSource) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Registry parsing (version 2, with a read-only path for version 1)
+// Registry parsing (version 2)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default)]
@@ -531,8 +531,6 @@ pub struct ParsedRegistry {
     pub apps: Vec<(String, AppDefinition)>,
     /// Definition-level problems: the rest of the file still loads.
     pub errors: Vec<(Option<String>, String)>,
-    /// Loaded, but worth telling the user about.
-    pub warnings: Vec<(Option<String>, String)>,
 }
 
 /// Parse a registry file. A broken app is reported per entry; only a broken
@@ -552,125 +550,14 @@ pub fn parse_registry_file(text: &str) -> Result<ParsedRegistry, String> {
         let definition = match version {
             2 => serde_json::from_value::<AppDefinition>(raw.clone())
                 .map_err(|err| format!("invalid definition: {err}")),
-            1 => serde_json::from_value::<LegacyAppDefinition>(raw.clone())
-                .map_err(|err| format!("invalid definition: {err}"))
-                .and_then(LegacyAppDefinition::into_definition),
-            other => return Err(format!("unsupported version {other} (expected 1 or 2)")),
+            other => return Err(format!("unsupported version {other} (expected 2)")),
         };
         match definition {
             Ok(definition) => parsed.apps.push((id.clone(), definition)),
             Err(message) => parsed.errors.push((Some(id.clone()), message)),
         }
     }
-    if version == 1 {
-        parsed.warnings.push((
-            None,
-            "registry version 1 is deprecated; rewrite it as version 2 (install, data, summary, homepage, and readme_url are ignored)"
-                .into(),
-        ));
-    }
     Ok(parsed)
-}
-
-#[derive(Debug, Deserialize)]
-struct LegacyAppDefinition {
-    name: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    description_i18n: BTreeMap<String, String>,
-    category: AppCategory,
-    icon: String,
-    launch: LegacyLaunch,
-    #[serde(default)]
-    single_instance: bool,
-    #[serde(default)]
-    permissions: Vec<Permission>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum LegacyLaunch {
-    Builtin {
-        view: BuiltinView,
-    },
-    Process {
-        command: String,
-        #[serde(default)]
-        args: Vec<String>,
-        #[serde(default)]
-        cwd: Option<String>,
-        #[serde(default)]
-        env: BTreeMap<String, String>,
-        #[serde(default)]
-        port: PortSpec,
-        url: String,
-        #[serde(default)]
-        ready_path: Option<String>,
-        #[serde(default = "default_launch_timeout")]
-        timeout_ms: u64,
-    },
-    Static {
-        #[serde(default)]
-        spa: bool,
-    },
-}
-
-impl LegacyAppDefinition {
-    fn into_definition(self) -> Result<AppDefinition, String> {
-        let launch = match self.launch {
-            LegacyLaunch::Builtin { view } => LaunchSpec::Builtin { view },
-            LegacyLaunch::Process {
-                command,
-                args,
-                cwd,
-                env,
-                port,
-                url,
-                ready_path,
-                timeout_ms,
-            } => {
-                let cwd = match cwd.as_deref() {
-                    None | Some("") | Some("workspace") => "{workspace}".to_string(),
-                    Some("app") => {
-                        return Err(
-                            "launch.cwd \"app\" is no longer supported; use \"{workspace}\" or a path relative to the workspace"
-                                .into(),
-                        )
-                    }
-                    Some(value) => value.to_string(),
-                };
-                LaunchSpec::Process {
-                    command,
-                    args,
-                    cwd,
-                    env,
-                    port,
-                    url,
-                    ready_path,
-                    timeout_ms,
-                }
-            }
-            LegacyLaunch::Static { .. } => {
-                return Err(
-                    "launch.kind \"static\" now needs \"dir\": point it at the directory that holds index.html"
-                        .into(),
-                )
-            }
-        };
-        Ok(AppDefinition {
-            name: self.name,
-            description: self.description,
-            description_i18n: self.description_i18n,
-            category: self.category,
-            icon: self.icon,
-            repo: None,
-            docs: None,
-            launch,
-            single_instance: self.single_instance,
-            permissions: self.permissions,
-        })
-    }
 }
 
 #[cfg(test)]
@@ -738,7 +625,6 @@ mod tests {
         .expect("parse");
         assert_eq!(parsed.apps.len(), 1);
         assert!(parsed.errors.is_empty());
-        assert!(parsed.warnings.is_empty());
         match &parsed.apps[0].1.launch {
             LaunchSpec::Process { cwd, port, .. } => {
                 assert_eq!(cwd, "{workspace}");
@@ -776,57 +662,22 @@ mod tests {
     }
 
     #[test]
-    fn version_one_is_converted_with_a_warning() {
-        let parsed = parse_registry_file(
+    fn version_one_is_rejected() {
+        let err = parse_registry_file(
             r#"{
                 "version": 1,
                 "apps": {
                     "notes": {
                         "name": "Notes",
-                        "description": "Local notes.",
                         "category": "general",
                         "icon": "N",
-                        "summary": "ignored",
-                        "install": { "kind": "none", "installed": true },
-                        "data": "app",
-                        "launch": { "kind": "process", "command": "node", "args": ["server.js"], "cwd": "workspace", "url": "http://127.0.0.1:{port}/" }
+                        "launch": { "kind": "static", "dir": "site" }
                     }
                 }
             }"#,
         )
-        .expect("parse");
-        assert_eq!(parsed.apps.len(), 1);
-        assert_eq!(parsed.warnings.len(), 1);
-        match &parsed.apps[0].1.launch {
-            LaunchSpec::Process { cwd, .. } => assert_eq!(cwd, "{workspace}"),
-            other => panic!("unexpected launch {other:?}"),
-        }
-    }
-
-    #[test]
-    fn version_one_reports_the_app_directory_cwd() {
-        let parsed = parse_registry_file(
-            r#"{
-                "version": 1,
-                "apps": {
-                    "notes": {
-                        "name": "Notes",
-                        "description": "Local notes.",
-                        "category": "general",
-                        "icon": "N",
-                        "launch": { "kind": "process", "command": "node", "cwd": "app", "url": "http://127.0.0.1:{port}/" }
-                    }
-                }
-            }"#,
-        )
-        .expect("parse");
-        assert!(parsed.apps.is_empty());
-        assert_eq!(parsed.errors.len(), 1);
-        assert!(
-            parsed.errors[0].1.contains("launch.cwd"),
-            "{:?}",
-            parsed.errors
-        );
+        .expect_err("version 1 must be rejected");
+        assert!(err.contains("expected 2"), "{err}");
     }
 
     #[test]

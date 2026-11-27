@@ -17,12 +17,9 @@ use super::RETRIEVE_K;
 use super::bm25::Bm25Index;
 use super::store::CodeSearchIndex;
 
-/// Industry-default RRF constant (Cormack et al. / Elastic). Eval / ablation only.
-pub const RRF_K: usize = 60;
 /// Candidates per leg before fusion.
 pub const RETRIEVE_POOL: usize = 50;
 
-pub const SEARCH_MODE_BM25_RRF: &str = "bm25_rrf";
 /// Soft-complement hybrid (Bruch CC) — Code corpus production mode.
 pub const SEARCH_MODE_BM25_CC: &str = "bm25_cc";
 
@@ -66,59 +63,6 @@ pub fn semantic_search(
         let score = 1.0 / (1.0 + dist as f64);
         let dense_similarity = dense_similarity_from_distance(dist);
         if let Some(h) = hit_from_chunk(index, id, score, dense_similarity, false) {
-            hits.push(h);
-        }
-    }
-    Ok(path_dedupe(hits, top_k))
-}
-
-/// Consensus hybrid: BM25 ∥ dense → RRF(k=60), then path-dedupe to top_k.
-pub fn bm25_rrf_search(
-    index: &CodeSearchIndex,
-    bm25: &Bm25Index,
-    query: &str,
-    query_vec: &[f32],
-    glob_filter: Option<&str>,
-    top_k: usize,
-) -> Result<Vec<SearchHit>> {
-    let pool = RETRIEVE_POOL.max(top_k.saturating_mul(4));
-    let dense = index.ann_search(query_vec, pool)?;
-    let sparse = bm25.search(query, pool)?;
-
-    let mut rrf: HashMap<u64, f64> = HashMap::new();
-    let mut dense_similarity: HashMap<u64, f64> = HashMap::new();
-    let mut lexical: HashSet<u64> = HashSet::new();
-    for (rank, (id, dist)) in dense.iter().enumerate() {
-        if !apply_glob(index, *id, glob_filter) {
-            continue;
-        }
-        dense_similarity.insert(*id, dense_similarity_from_distance(*dist));
-        *rrf.entry(*id).or_insert(0.0) += 1.0 / (RRF_K as f64 + rank as f64 + 1.0);
-    }
-    for (rank, (id, _)) in sparse.iter().enumerate() {
-        if !apply_glob(index, *id, glob_filter) {
-            continue;
-        }
-        lexical.insert(*id);
-        *rrf.entry(*id).or_insert(0.0) += 1.0 / (RRF_K as f64 + rank as f64 + 1.0);
-    }
-
-    let mut ranked: Vec<(u64, f64, f64, bool)> = rrf
-        .into_iter()
-        .map(|(id, score)| {
-            (
-                id,
-                score,
-                dense_similarity.get(&id).copied().unwrap_or(0.0),
-                lexical.contains(&id),
-            )
-        })
-        .collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    let mut hits = Vec::new();
-    for (id, score, dense_similarity, lexical_match) in ranked {
-        if let Some(h) = hit_from_chunk(index, id, score, dense_similarity, lexical_match) {
             hits.push(h);
         }
     }

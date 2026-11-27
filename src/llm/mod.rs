@@ -20,19 +20,14 @@ pub use request::{
 };
 
 /// Replay rules: ids stay off the wire except a summary-replay host's own
-/// reasoning id, ciphertext only to the provider, protocol, and model that
-/// minted it, summary replay drops reasoning any other provider produced, and
-/// a rewritten Messages prefix drops the signature minted against that prefix.
+/// reasoning id; ciphertext and signatures only travel to the producer that
+/// minted them.
 pub(crate) use replay_compat::{
     FixedPrefix, ItemProducer, fixed_prefix_digests, producers_for_seqs,
 };
 
-/// Replay primitives are exercised directly by their own unit tests. The
-/// production path reaches them only through `port`.
 #[cfg(test)]
-pub(crate) use replay_compat::{
-    retain_own_reasoning, strip_foreign_ciphertext, strip_rebased_signatures,
-};
+pub(crate) use replay_compat::strip_rebased_signatures;
 
 /// Folding a provider's stream into canonical `Item`s.
 ///

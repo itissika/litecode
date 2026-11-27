@@ -1,7 +1,7 @@
 //! Declarative provider catalog - the single source of truth for LLM providers
 //! and models.
 //!
-//! `provider-catalog.toml` states endpoints, protocols, auth modes, context
+//! `default_catalog.toml` states endpoints, protocols, auth modes, context
 //! windows, modalities and reasoning mappings. Rust owns exactly two things:
 //! the catalog contract (this module) and one codec per
 //! [EndpointKind](schema::EndpointKind). Adding a provider that speaks an

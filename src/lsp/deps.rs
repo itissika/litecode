@@ -813,6 +813,7 @@ pub async fn ensure_servers(ids: &[String], install: bool) -> (Vec<String>, Vec<
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     /// Writing an executable while other test threads fork can make exec fail

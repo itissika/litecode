@@ -11,7 +11,6 @@ use crate::config::schema::{
 };
 use crate::types::{LitecodeError, Result};
 
-pub mod legacy;
 pub mod migrate;
 
 /// Current global DB schema version (exposed for tests/consumers to assert
@@ -55,28 +54,13 @@ fn xdg_default_db_path() -> PathBuf {
         .join("litecode.db")
 }
 
-/// Windows: prefer `%LOCALAPPDATA%\litecode\litecode.db`.
-///
-/// If that file does not exist yet but the legacy XDG-style path under the user
-/// profile already has a DB, keep using the legacy path so existing installs are
-/// not silently split across two databases. New installs get LOCALAPPDATA.
+/// Windows: `%LOCALAPPDATA%\litecode\litecode.db`.
 #[cfg(windows)]
 fn windows_default_db_path() -> PathBuf {
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|p| p.join("litecode").join("litecode.db"));
-
-    let legacy = xdg_default_db_path();
-
-    if let Some(ref local_path) = local {
-        if local_path.is_file() {
-            return local_path.clone();
-        }
+    match std::env::var_os("LOCALAPPDATA") {
+        Some(local) => PathBuf::from(local).join("litecode").join("litecode.db"),
+        None => xdg_default_db_path(),
     }
-    if legacy.is_file() {
-        return legacy;
-    }
-    local.unwrap_or(legacy)
 }
 
 pub fn open(path: &Path) -> Result<Connection> {
@@ -86,11 +70,8 @@ pub fn open(path: &Path) -> Result<Connection> {
 
     if path.is_file() {
         let old = peek_user_version(path)?;
-        if old != 0 && !migrate::can_migrate_in_place(old) {
+        if old != 0 && old != migrate::CURRENT_USER_VERSION {
             rebuild_incompatible_db(path, old)?;
-        }
-        if old != 0 && old != migrate::CURRENT_USER_VERSION && old > 0 {
-            backup_before_epoch_migration(path, old)?;
         }
     }
 
@@ -144,64 +125,57 @@ fn peek_user_version(path: &Path) -> Result<i32> {
     Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)
 }
 
-/// Epoch migrations are one-way (including the Phase 4 column drop). Keep a
-/// consistent snapshot before the in-place migration so rollback never depends
-/// on reading the new schema.
-fn backup_before_epoch_migration(path: &Path, old_version: i32) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let bak = parent.join(format!("litecode.db.bak-v{old_version}-{stamp}"));
-    let conn = Connection::open(path)?;
-    conn.execute("VACUUM INTO ?1", [bak.to_string_lossy().as_ref()])?;
-    tracing::info!(
-        from = %path.display(),
-        backup = %bak.display(),
-        "backed up global DB before agent preset migration"
-    );
-    Ok(())
+/// Carry credentials across a rebuild.
+///
+/// Best-effort: a missing table or a corrupt file yields no rows. Credentials
+/// are the only user state that survives an epoch break.
+fn salvage_provider_credentials(path: &Path) -> Vec<(String, String)> {
+    let Ok(conn) = Connection::open(path) else {
+        return Vec::new();
+    };
+    let sql = "SELECT provider_id, api_key FROM provider_credentials";
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return Vec::new();
+    };
+    rows.flatten()
+        .filter(|(_, api_key)| !api_key.trim().is_empty())
+        .collect()
 }
 
-/// Delete-and-rebuild: archive the incompatible file, drop SQLite sidecars, leave path empty.
+/// A DB from another schema epoch is never migrated in place: delete the file
+/// (and its SQLite sidecars), rebuild from `schema.sql`, seed, and restore the
+/// salvaged provider credentials. No archive files are kept.
 fn rebuild_incompatible_db(path: &Path, old_version: i32) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let bak_name = format!("litecode.db.bak-v{old_version}-{stamp}");
-    let bak = parent.join(bak_name);
-
-    // Close any lingering WAL before rename by removing sidecars after rename.
-    match std::fs::rename(path, &bak) {
-        Ok(()) => {
-            tracing::warn!(
-                old_version,
-                current = migrate::CURRENT_USER_VERSION,
-                from = %path.display(),
-                backup = %bak.display(),
-                "incompatible global DB; archived and will recreate (delete-and-rebuild)"
-            );
-        }
-        Err(e) => {
-            // Fallback: delete in place if rename fails (e.g. cross-volume).
-            tracing::warn!(
-                old_version,
-                error = %e,
-                path = %path.display(),
-                "incompatible global DB; rename failed, deleting in place"
-            );
-            std::fs::remove_file(path).map_err(|rm| {
-                LitecodeError::Config(format!(
-                    "failed to remove incompatible global DB {}: {rm} (rename error: {e})",
-                    path.display()
-                ))
-            })?;
-        }
-    }
+    let salvaged = salvage_provider_credentials(path);
+    tracing::warn!(
+        old_version,
+        current = migrate::CURRENT_USER_VERSION,
+        path = %path.display(),
+        salvaged = salvaged.len(),
+        "incompatible global DB; deleting and rebuilding from the current schema"
+    );
+    std::fs::remove_file(path).map_err(|e| {
+        LitecodeError::Config(format!(
+            "failed to remove incompatible global DB {}: {e}",
+            path.display()
+        ))
+    })?;
     remove_sqlite_sidecars(path);
+
+    let conn = Connection::open(path)?;
+    migrate::migrate(&conn)?;
+    seed::seed(&conn)?;
+    for (provider_id, api_key) in &salvaged {
+        conn.execute(
+            "INSERT OR REPLACE INTO provider_credentials (provider_id, api_key) VALUES (?1, ?2)",
+            params![provider_id, api_key],
+        )?;
+    }
     Ok(())
 }
 
@@ -257,7 +231,7 @@ pub fn agent_tools_for(
     store::load_agent_tools(conn, agent_id)
 }
 
-/// `meta` key holding the evaluator's scored tool surface (I6 / D7).
+/// `meta` key holding the evaluator's scored tool surface.
 ///
 /// This is a system channel, not a setting: `load_agents` lets it **replace**
 /// the whole tool map of one built-in agent — including core cards, which no
@@ -389,8 +363,7 @@ pub mod store {
         Ok(())
     }
 
-    /// Credentials only. The one-shot legacy migration uses this instead of the
-    /// full settings load, so it never depends on tables it does not touch.
+    /// Credentials only, without the full settings load.
     pub(crate) fn provider_credentials(conn: &Connection) -> Result<HashMap<String, String>> {
         let mut stmt = conn.prepare("SELECT provider_id, api_key FROM provider_credentials")?;
         let rows = stmt.query_map([], |row| {
@@ -444,7 +417,7 @@ pub mod store {
         Ok(())
     }
 
-    /// The evaluator's override from `meta`, if one is stored (I6 / D7).
+    /// The evaluator's override from `meta`, if one is stored.
     ///
     /// A corrupt value is an error, not a silent `None`: dropping it would score
     /// a run against the full surface, which reads exactly like a model that was
@@ -495,8 +468,8 @@ pub mod store {
     ///
     /// One exception: an [`EvalSurfaceOverride`] stored under
     /// [`super::EVAL_SURFACE_META_KEY`] that names this agent **replaces** the
-    /// whole tool map, core cards included. That is the evaluator's channel
-    /// (I6); a settings write cannot reach it, and it does not touch
+    /// whole tool map, core cards included. That is the evaluator's channel;
+    /// a settings write cannot reach it, and it does not touch
     /// `agent_tools`, so `meta` clearing restores the user's surface at once.
     fn load_agents(conn: &Connection) -> Result<HashMap<String, AgentProfile>> {
         let eval_surface = load_eval_surface(conn)?;
@@ -1014,51 +987,65 @@ mod open_tests {
     use crate::config::schema::ToolSchema;
 
     #[test]
-    fn every_migratable_epoch_is_backed_up_once_before_upgrading() {
-        for old_version in crate::config::global_db::migrate::MIGRATABLE_FROM {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("litecode.db");
-            {
-                let conn = open(&path).unwrap();
-                seed::seed(&conn).unwrap();
-                conn.execute_batch(&format!("PRAGMA user_version = {old_version};"))
-                    .unwrap();
-            }
-            {
-                let conn = open(&path).unwrap();
-                let version: i32 = conn
-                    .query_row("PRAGMA user_version", [], |row| row.get(0))
-                    .unwrap();
-                assert_eq!(
-                    version,
-                    crate::config::global_db::migrate::CURRENT_USER_VERSION
-                );
-            }
-            let backups: Vec<_> = std::fs::read_dir(dir.path())
-                .unwrap()
-                .flatten()
-                .filter(|entry| {
-                    entry
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with(&format!("litecode.db.bak-v{old_version}-"))
-                })
-                .collect();
-            assert_eq!(backups.len(), 1, "v{old_version} must be backed up once");
-
-            let _ = open(&path).unwrap();
-            let backups: Vec<_> = std::fs::read_dir(dir.path())
-                .unwrap()
-                .flatten()
-                .filter(|entry| {
-                    entry
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with("litecode.db.bak-v")
-                })
-                .collect();
-            assert_eq!(backups.len(), 1, "a current DB must not be backed up again");
+    fn an_incompatible_db_is_deleted_and_rebuilt_keeping_only_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("litecode.db");
+        {
+            let conn = open(&path).unwrap();
+            seed::seed(&conn).unwrap();
+            store::set_provider_credential(&conn, "openai", "sk-keep-me").unwrap();
+            conn.execute("UPDATE agents SET model_ref = 'legacy/model' WHERE id = 'default'", [])
+                .unwrap();
+            conn.execute_batch("PRAGMA user_version = 4;").unwrap();
         }
+
+        let settings = load_global_from_path(&path).expect("an incompatible DB is rebuilt");
+
+        let conn = open(&path).unwrap();
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, migrate::CURRENT_USER_VERSION);
+        assert_eq!(settings.agents.len(), 6, "the rebuild seeds the six agents");
+        assert_eq!(
+            settings.agents["default"].model_ref, "",
+            "everything except credentials is discarded, not carried over"
+        );
+        assert_eq!(
+            settings
+                .provider_credentials
+                .get("openai")
+                .map(String::as_str),
+            Some("sk-keep-me"),
+            "provider credentials survive the rebuild"
+        );
+
+        let archives: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".bak"))
+            .collect();
+        assert!(
+            archives.is_empty(),
+            "a rebuild leaves no archive files behind: {archives:?}"
+        );
+    }
+
+    #[test]
+    fn an_incompatible_db_without_a_credentials_table_still_rebuilds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("litecode.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE junk (id TEXT); PRAGMA user_version = 4;")
+                .unwrap();
+        }
+
+        let settings = load_global_from_path(&path).expect("a failed salvage must not block");
+
+        assert_eq!(settings.agents.len(), 6);
+        assert!(settings.provider_credentials.is_empty());
     }
 
     #[test]
@@ -1094,11 +1081,11 @@ mod open_tests {
     }
 }
 
-/// I1 + I2 + I3: the DB cannot redefine a built-in agent.
+/// The DB cannot redefine a built-in agent.
 ///
 /// A tampered database is a first-class scenario (older builds, hand edits):
-/// identity columns, core rows, and extra agents must be ignored on read —
-/// with the one exception that non-core user intent is honored.
+/// identity columns, core rows, and extra agents are ignored on read — with the
+/// one exception that non-core user intent is honored.
 #[cfg(test)]
 mod lockdown_tests {
     use super::*;
@@ -1176,7 +1163,7 @@ mod lockdown_tests {
 
         let settings = load_global_from_path(&db).expect("load after tampering");
 
-        // I2: the closed set. `my_custom` is gone from memory *and* from the DB.
+        // The closed set. `my_custom` is gone from memory *and* from the DB.
         assert_eq!(settings.agents.len(), 6);
         assert!(!settings.agents.contains_key("my_custom"));
         let mut ids: Vec<&str> = settings.agents.keys().map(String::as_str).collect();
@@ -1202,7 +1189,7 @@ mod lockdown_tests {
             assert_eq!(bindings, 0, "its bindings must go with it");
         }
 
-        // I1: identity, prompt, description, allowed subagents come from the spec.
+        // Identity, prompt, description, allowed subagents come from the spec.
         let default = &settings.agents["default"];
         assert_eq!(default.role, spec.role);
         assert_eq!(default.system_prompt, spec.prompt_marker());
@@ -1217,7 +1204,7 @@ mod lockdown_tests {
         // The model choice is the one thing the DB owns.
         assert_eq!(default.model_ref, "prov/m1");
 
-        // I4: core bindings and presets stay exactly the spec.
+        // Core bindings and presets stay exactly the spec.
         assert!(default.tools["read"].enabled, "read stays on");
         assert_eq!(default.tools["read"].preset, Some(ToolPreset::All));
         assert_eq!(default.tools["exec"].preset, Some(ToolPreset::All));
@@ -1230,7 +1217,7 @@ mod lockdown_tests {
             "explore must never bind write"
         );
 
-        // I3: non-core intent survives, and a missing row keeps the spec default.
+        // Non-core intent survives, and a missing row keeps the spec default.
         assert!(!default.tools["code_search"].enabled, "explicit off sticks");
         assert!(default.tools["lsp"].enabled);
         for tool in ["webfetch", "websearch"] {
@@ -1269,10 +1256,9 @@ mod lockdown_tests {
         assert!(!settings.agents.contains_key("ghost"));
     }
 
-    /// W3 review #1: a core row is skipped **before** `preset` /
-    /// `allowed_tools_json` are parsed, so garbage left on `'default'`'s core
-    /// rows by an older build or a hand edit cannot break the boot load. The
-    /// binding itself still comes from the spec.
+    /// A core row is skipped **before** `preset` / `allowed_tools_json` are
+    /// parsed, so garbage on `'default'`'s core rows cannot break the boot load.
+    /// The binding itself still comes from the spec.
     #[test]
     fn a_corrupt_core_binding_row_cannot_break_the_load() {
         let dir = tempfile::tempdir().unwrap();
@@ -1305,9 +1291,8 @@ mod lockdown_tests {
         assert_eq!(default.tools["exec"].preset, Some(ToolPreset::All));
     }
 
-    /// W3 review #2: a full settings save writes the user's **non-core** rows
-    /// only. Core bindings belong to the spec, so a write must not leave a dead
-    /// row behind for every core tool of every agent.
+    /// A full settings save writes the user's **non-core** rows only. Core
+    /// bindings belong to the spec, so no dead row is written per core tool.
     #[test]
     fn a_settings_save_leaves_no_core_rows_in_the_database() {
         let dir = tempfile::tempdir().unwrap();

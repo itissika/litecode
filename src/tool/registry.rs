@@ -16,10 +16,11 @@ use crate::session::manager::SessionManager;
 use crate::tool::capability::{CapabilitySource, MemberSpec, capability_catalog};
 use crate::tool::project::project_tools;
 use crate::tool::trait_::Tool;
+#[cfg(test)]
+use crate::tools::bot::{BotCreateTool, BotListTool, BotSendTool};
 use crate::tools::{
     apply_edits::ApplyEditsTool,
     ask_user::AskUserTool,
-    bot::{BotCreateTool, BotListTool, BotSendTool},
     browser,
     code::{CodeTool, CodeToolHost},
     code_search::CodeSearchTool,
@@ -621,6 +622,7 @@ fn strip_reserved_transport_names(tools: Vec<Arc<dyn Tool>>) -> Vec<Arc<dyn Tool
         .collect()
 }
 
+#[cfg(test)]
 pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
     let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ReadTool::default()),
@@ -631,7 +633,7 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(ExecCommandTool::new(Arc::new(
             crate::terminal::AgentJobRegistry::new(),
         ))),
-        // WP-203: network tools are Code-only (cold stubs for settings admission).
+        // Network tools are Code-only (cold stubs for settings admission).
         Arc::new(WebFetchTool::new(Arc::new(std::sync::RwLock::new(None)))),
         Arc::new(WebSearchTool::new(
             Arc::new(std::sync::RwLock::new(None)),
@@ -669,7 +671,7 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         // and for the generated SDK contract.
         Arc::new(SessionSearchTool::new(WorkspaceEngines::new())),
     ];
-    // WP-210 I: the seven LSP navigation tools are Code-surface too (cold
+    // The seven LSP navigation tools are Code-surface too (cold
     // engines; admission only needs their contracts).
     tools.extend(lsp::all_code_tools(
         crate::engines::WorkspaceEngines::new(),
