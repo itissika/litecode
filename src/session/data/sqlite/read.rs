@@ -75,6 +75,9 @@ pub fn execute(
         SessionRead::ListChildIds { parent_session_id } => {
             Ok(ReadValue::Ids(list_child_ids(conn, &parent_session_id)?))
         }
+        SessionRead::DescendantIds { session_id } => Ok(ReadValue::Ids(
+            session::load_descendant_ids_on(conn, &session_id)?,
+        )),
         SessionRead::ListOrphanChildSessions => Ok(ReadValue::Ids(list_orphan_child_ids(conn)?)),
         SessionRead::ChildForCall {
             parent_session_id,
@@ -160,6 +163,9 @@ pub fn execute(
         )?)),
         SessionRead::LatestProviderBill { session_id } => Ok(ReadValue::ProviderBill(
             latest_provider_bill(conn, &session_id)?,
+        )),
+        SessionRead::LatestTurnEnd { session_id } => Ok(ReadValue::LatestTurnEnd(
+            session::load_latest_turn_end_on(conn, &session_id, data_root)?,
         )),
         SessionRead::LatestRequestEnvelope { session_id } => Ok(ReadValue::RequestEnvelope(
             latest_request_envelope(conn, &session_id)?,
@@ -1458,7 +1464,7 @@ mod workspace_usage_tests {
         (dir, manager, db_path)
     }
 
-    fn bill(manager: &SessionManager, session_id: &str, provider_id: &str, amount: u64) {
+    async fn bill(manager: &SessionManager, session_id: &str, provider_id: &str, amount: u64) {
         let header = manager
             .append_request_origin(
                 session_id,
@@ -1468,21 +1474,25 @@ mod workspace_usage_tests {
                     "model_ref": "test/model",
                 }),
             )
+            .await
             .expect("request header");
         manager
             .record_provider_usage(session_id, header, &usage(amount, amount / 2, 10))
+            .await
             .expect("request bill");
     }
 
-    fn compact_as(
+    async fn compact_as(
         manager: &SessionManager,
         session_id: &str,
         provider_id: Option<&str>,
         amount: u64,
     ) {
+        // Async writer seam: the writer has no Tokio bridge any more, so a test
+        // running on a worker must await instead of blocking it.
         manager
-            .data()
-            .insert_items(session_id, &[user_text("seed")])
+            .insert_detail_rows(session_id, &[user_text("seed")])
+            .await
             .expect("seed row");
         let rows = manager
             .data()
@@ -1490,7 +1500,7 @@ mod workspace_usage_tests {
             .expect("working set");
         let expected_from = rows.first().and_then(|row| row.log_seq).expect("seed row");
         manager
-            .mutate_blocking(SessionMutation::Compact {
+            .mutate(SessionMutation::Compact {
                 session_id: session_id.to_string(),
                 operation_id: MutationId::new(),
                 summary: format!("summary-{}", provider_id.unwrap_or("unknown")),
@@ -1502,6 +1512,7 @@ mod workspace_usage_tests {
                 usage: Some(usage(amount, amount / 2, 5)),
                 provider_id: provider_id.map(str::to_string),
             })
+            .await
             .expect("compact bill");
     }
 
@@ -1509,17 +1520,17 @@ mod workspace_usage_tests {
         provider.days.iter().map(|day| day.prompt).sum()
     }
 
-    #[test]
-    fn groups_request_and_compaction_bills_by_provider_and_reconciles_totals() {
+    #[tokio::test]
+    async fn groups_request_and_compaction_bills_by_provider_and_reconciles_totals() {
         let (_dir, manager, db_path) = manager_fixture();
-        let first = manager.open_session_sync("/p", "default", None).unwrap();
-        let second = manager.open_session_sync("/p", "default", None).unwrap();
+        let first = manager.open_session("/p", "default", None).await.unwrap();
+        let second = manager.open_session("/p", "default", None).await.unwrap();
 
-        bill(&manager, &first, "alpha", 100);
-        bill(&manager, &first, "beta", 200);
-        bill(&manager, &second, "alpha", 50);
-        compact_as(&manager, &first, Some("alpha"), 10);
-        compact_as(&manager, &second, None, 500);
+        bill(&manager, &first, "alpha", 100).await;
+        bill(&manager, &first, "beta", 200).await;
+        bill(&manager, &second, "alpha", 50).await;
+        compact_as(&manager, &first, Some("alpha"), 10).await;
+        compact_as(&manager, &second, None, 500).await;
 
         let conn = open_readonly(Path::new(&db_path)).expect("read connection");
         let workspace = workspace_usage(&conn).expect("workspace usage");
@@ -1572,11 +1583,11 @@ mod workspace_usage_tests {
         );
     }
 
-    #[test]
-    fn invalid_body_degrades_to_unknown_instead_of_failing_the_read() {
+    #[tokio::test]
+    async fn invalid_body_degrades_to_unknown_instead_of_failing_the_read() {
         let (_dir, manager, db_path) = manager_fixture();
-        let session_id = manager.open_session_sync("/p", "default", None).unwrap();
-        bill(&manager, &session_id, "alpha", 42);
+        let session_id = manager.open_session("/p", "default", None).await.unwrap();
+        bill(&manager, &session_id, "alpha", 42).await;
 
         let write = rusqlite::Connection::open(&db_path).expect("write connection");
         write
@@ -1598,11 +1609,11 @@ mod workspace_usage_tests {
         assert_eq!(provider_prompt(&workspace.providers[0]), 42);
     }
 
-    #[test]
-    fn non_text_provider_id_degrades_to_unknown_instead_of_failing_the_read() {
+    #[tokio::test]
+    async fn non_text_provider_id_degrades_to_unknown_instead_of_failing_the_read() {
         let (_dir, manager, db_path) = manager_fixture();
-        let session_id = manager.open_session_sync("/p", "default", None).unwrap();
-        bill(&manager, &session_id, "alpha", 42);
+        let session_id = manager.open_session("/p", "default", None).await.unwrap();
+        bill(&manager, &session_id, "alpha", 42).await;
 
         let write = rusqlite::Connection::open(&db_path).expect("write connection");
         write

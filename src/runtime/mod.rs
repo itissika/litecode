@@ -787,7 +787,7 @@ impl AgentRuntime {
 
     /// Emit the single authoritative `TurnCompleted` for a turn: persist the
     /// terminal session event + context meter, then notify the observer.
-    fn emit_turn_completed(
+    async fn emit_turn_completed(
         &mut self,
         turn_id: &str,
         reason: TurnEndReason,
@@ -814,7 +814,7 @@ impl AgentRuntime {
                 cache_miss_tokens: stats.cache_miss_tokens,
                 ..Default::default()
             };
-            if let Err(e) = self.sessions.save_context_meter(&self.session_id, &meter) {
+            if let Err(e) = self.sessions.save_context_meter(&self.session_id, &meter).await {
                 tracing::warn!(
                     session_id = %self.session_id,
                     error = %e,
@@ -838,18 +838,22 @@ impl AgentRuntime {
         if let Some(by) = cancelled_by {
             turn_end["cancelled_by"] = serde_json::json!(by.as_str());
         }
-        if let Err(error) = self.sessions.apply(
-            &self.session_id,
-            SessionApply::Append(EventDraft {
-                time: chrono::Utc::now().timestamp_millis(),
-                event_type: EventType::TurnEnd,
-                data: turn_end,
-                surface_op: None,
-                source_seqs: None,
-                ignorable: false,
-                state: crate::session::LogState::Final,
-            }),
-        ) {
+        if let Err(error) = self
+            .sessions
+            .apply(
+                &self.session_id,
+                SessionApply::Append(EventDraft {
+                    time: chrono::Utc::now().timestamp_millis(),
+                    event_type: EventType::TurnEnd,
+                    data: turn_end,
+                    surface_op: None,
+                    source_seqs: None,
+                    ignorable: false,
+                    state: crate::session::LogState::Final,
+                }),
+            )
+            .await
+        {
             tracing::warn!(session_id = %self.session_id, %error, "failed to append turn/end");
         }
         let _ = self.sessions.finish_turn(&self.session_id, turn_id);
@@ -898,8 +902,8 @@ impl AgentRuntime {
     /// trigger. A cancelled turn, a failed one, a step limit and a clean finish all
     /// leave the session at rest; otherwise a storage fault or a row opened by an
     /// older writer would stay in flight with nothing left to close it.
-    fn seal_rows_still_in_flight(&mut self) {
-        match self.sessions.seal_in_progress_items(&self.session_id) {
+    async fn seal_rows_still_in_flight(&mut self) {
+        match self.sessions.seal_in_progress_items(&self.session_id).await {
             Ok(seqs) if !seqs.is_empty() => {
                 self.emit_internal(InternalEvent::BufferRestamp { seqs });
             }
@@ -914,31 +918,37 @@ impl AgentRuntime {
         }
     }
 
-    fn finalize_agent_outcome(&mut self, turn_id: &str, outcome: TurnOutcome) -> Result<String> {
-        self.seal_rows_still_in_flight();
+    async fn finalize_agent_outcome(&mut self, turn_id: &str, outcome: TurnOutcome) -> Result<String> {
+        self.seal_rows_still_in_flight().await;
         match outcome {
             TurnOutcome::Completed { final_text } => {
                 self.emit_turn_completed(turn_id, TurnEndReason::Completed, Some(final_text), None)
+                    .await
             }
-            TurnOutcome::Cancelled { final_text } => self.emit_turn_completed(
-                turn_id,
-                TurnEndReason::Cancelled,
-                (!final_text.is_empty()).then_some(final_text),
-                None,
-            ),
+            TurnOutcome::Cancelled { final_text } => {
+                self.emit_turn_completed(
+                    turn_id,
+                    TurnEndReason::Cancelled,
+                    (!final_text.is_empty()).then_some(final_text),
+                    None,
+                )
+                .await
+            }
             TurnOutcome::MaxSteps { final_text } => {
                 self.emit_turn_completed(
                     turn_id,
                     TurnEndReason::MaxSteps,
                     (!final_text.is_empty()).then_some(final_text),
                     None,
-                )?;
+                )
+                .await?;
                 Err(LitecodeError::MaxStepsReached)
             }
             TurnOutcome::Error(err) => {
                 let error_kind = turn_error_kind(&err);
                 let msg = err.to_string();
                 self.emit_turn_completed(turn_id, TurnEndReason::Error, Some(msg), error_kind)
+                    .await
             }
         }
     }
@@ -1135,18 +1145,20 @@ impl AgentRuntime {
         // the turn with an empty (silently truncated) transcript.
         let begin_lap = crate::telemetry::latency::lap("begin_turn");
         let mut working = {
-            self.sessions.apply(
-                &sid,
-                SessionApply::Append(EventDraft {
-                    time: chrono::Utc::now().timestamp_millis(),
-                    event_type: EventType::TurnStart,
-                    data: serde_json::json!({ "turn": turn_id }),
-                    surface_op: None,
-                    source_seqs: None,
-                    ignorable: false,
-                    state: crate::session::LogState::Final,
-                }),
-            )?;
+            self.sessions
+                .apply(
+                    &sid,
+                    SessionApply::Append(EventDraft {
+                        time: chrono::Utc::now().timestamp_millis(),
+                        event_type: EventType::TurnStart,
+                        data: serde_json::json!({ "turn": turn_id }),
+                        surface_op: None,
+                        source_seqs: None,
+                        ignorable: false,
+                        state: crate::session::LogState::Final,
+                    }),
+                )
+                .await?;
             self.context_pipeline.begin_turn_with_id(
                 &self.sessions,
                 &sid,
@@ -1164,19 +1176,20 @@ impl AgentRuntime {
         let fresh_user_seq;
         {
             let commit_lap = crate::telemetry::latency::lap("commit_step.user");
-            let commit_outcome = self.context_pipeline.commit_step(
-                &self.sessions,
-                &self.session_id,
-                &mut working,
-            )?;
+            let commit_outcome = self
+                .context_pipeline
+                .commit_step(&self.sessions, &self.session_id, &mut working)
+                .await?;
             commit_lap.done();
             if commit_outcome.discarded {
-                return self.finalize_agent_outcome(
-                    turn_id,
-                    crate::agent::TurnOutcome::Cancelled {
-                        final_text: String::new(),
-                    },
-                );
+                return self
+                    .finalize_agent_outcome(
+                        turn_id,
+                        crate::agent::TurnOutcome::Cancelled {
+                            final_text: String::new(),
+                        },
+                    )
+                    .await;
             }
             if commit_outcome.committed {
                 self.emit_internal(crate::runtime::observer::InternalEvent::StepCommitted);
@@ -1193,10 +1206,12 @@ impl AgentRuntime {
                 None
             };
             if !wake && commit_outcome.committed {
-                self.sessions.append_knowledge_status_for(
-                    &self.session_id,
-                    self.runtime_handle.workspace_root(),
-                );
+                self.sessions
+                    .append_knowledge_status_for(
+                        &self.session_id,
+                        self.runtime_handle.workspace_root(),
+                    )
+                    .await;
             }
             if !commit_outcome.sealed_seqs.is_empty() {
                 self.emit_internal(crate::runtime::observer::InternalEvent::BufferRestamp {
@@ -1273,14 +1288,14 @@ impl AgentRuntime {
                 .any(|row| row.log_seq.is_none())
         {
             let mut pending = self.context_pipeline.working_set();
-            let commit_outcome = match self.context_pipeline.commit_step(
-                &self.sessions,
-                &self.session_id,
-                &mut pending,
-            ) {
+            let commit_outcome = match self
+                .context_pipeline
+                .commit_step(&self.sessions, &self.session_id, &mut pending)
+                .await
+            {
                 Ok(outcome) => outcome,
                 Err(error) => {
-                    self.seal_rows_still_in_flight();
+                    self.seal_rows_still_in_flight().await;
                     return Err(error);
                 }
             };
@@ -1306,7 +1321,7 @@ impl AgentRuntime {
         }
 
         // Idle + TurnCompleted before workspace patch so Running never spans patch I/O.
-        let finalize_result = self.finalize_agent_outcome(turn_id, outcome);
+        let finalize_result = self.finalize_agent_outcome(turn_id, outcome).await;
 
         // Ensure track finished even when the turn had no tools (join is idempotent).
         self.await_pending_snapshot_track().await;

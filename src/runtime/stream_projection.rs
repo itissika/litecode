@@ -77,12 +77,56 @@ use crate::types::{LitecodeError, Result, StreamEvents};
 pub(crate) const FLUSH_INTERVAL: Duration = Duration::from_millis(80);
 
 /// One model call's stream, projected onto the session's rows.
+///
+/// The SSE callback runs on a non-async closure, so it cannot await a durable
+/// write. This handle therefore only *feeds* events into an unbounded channel;
+/// a spawned worker task owns the projection state and performs every
+/// `begin_stream_item` / `update_stream_items` / `seal_stream_item` by awaiting
+/// the writer actor. Coalescing (80 ms) and seq semantics are unchanged.
 pub(crate) struct StreamProjection {
+    tx: tokio::sync::mpsc::UnboundedSender<WorkerMsg>,
+    handle: Mutex<Option<tokio::task::JoinHandle<Result<()>>>>,
+}
+
+/// What the SSE callback hands the worker.
+enum WorkerMsg {
+    Event(StreamEvents),
+    /// The call is over: settle every open row with `returned` as the
+    /// authoritative item list, then exit.
+    Settle(Option<Vec<Item>>),
+    /// Test-only: force the flush window open (or shut).
+    #[cfg(test)]
+    ForceFlush(Instant),
+    /// Test-only: mark rows dirty without a provider delta.
+    #[cfg(test)]
+    MarkDirty(Vec<String>),
+    /// Test-only: flush now and report the post-flush state.
+    #[cfg(test)]
+    FlushNow(tokio::sync::oneshot::Sender<ProbeSnapshot>),
+    /// Test-only: wait until all prior queued messages have been processed.
+    #[cfg(test)]
+    Barrier(tokio::sync::oneshot::Sender<()>),
+}
+
+/// Test-only view of the worker's post-flush state.
+#[cfg(test)]
+struct ProbeSnapshot {
+    dirty_before: usize,
+    dirty_after: usize,
+    failed: bool,
+    message: Option<String>,
+}
+
+/// Owns the projection state. Lives inside the worker task only.
+///
+/// The state is a local of the worker task (not a field) so the spawned future
+/// stays `Send`: a `std::sync::MutexGuard` held across a write is not, while
+/// `&mut ProjectionState` is.
+struct ProjectionWorker {
     sessions: Arc<SessionManager>,
     observer: Arc<dyn RuntimeObserver>,
     session_id: String,
     turn_id: String,
-    state: Mutex<ProjectionState>,
 }
 
 /// The `seq` a streamed item owns for the rest of its life.
@@ -94,12 +138,12 @@ struct OpenRow {
 
 #[derive(Default)]
 struct ProjectionState {
-    /// Provider item id → the row opened for it. Scoped to this call.
+    /// Provider item id — the row opened for it. Scoped to this call.
     open: HashMap<String, OpenRow>,
-    /// Provider output index → item id. The reverse map makes the per-call
+    /// Provider output index — item id. The reverse map makes the per-call
     /// one-to-one association enforceable rather than merely documented.
     by_index: HashMap<u32, String>,
-    /// Provider item id → the payload received so far.
+    /// Provider item id — the payload received so far.
     seen: StreamItemAccumulator,
     /// Items whose own `output_item.done` arrived. That payload is the item's
     /// terminal, so a missing batch terminal must not downgrade it.
@@ -123,12 +167,58 @@ impl StreamProjection {
         session_id: String,
         turn_id: String,
     ) -> SharedStreamProjection {
-        Arc::new(Self {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<WorkerMsg>();
+        let worker = ProjectionWorker {
             sessions,
             observer,
             session_id,
             turn_id,
-            state: Mutex::new(ProjectionState::default()),
+        };
+        let handle = tokio::spawn(async move {
+            let mut state = ProjectionState::default();
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    WorkerMsg::Event(event) => worker.observe(&mut state, &event).await,
+                    WorkerMsg::Settle(returned) => {
+                        return worker.settle(&mut state, returned.as_deref()).await;
+                    }
+                    #[cfg(test)]
+                    WorkerMsg::ForceFlush(at) => {
+                        state.last_flush = Some(at);
+                    }
+                    #[cfg(test)]
+                    WorkerMsg::MarkDirty(ids) => {
+                        state.dirty.extend(ids);
+                    }
+                    #[cfg(test)]
+                    WorkerMsg::FlushNow(reply) => {
+                        let dirty_before = state.dirty.len();
+                        worker.flush(&mut state).await;
+                        let snapshot = ProbeSnapshot {
+                            dirty_before,
+                            dirty_after: state.dirty.len(),
+                            failed: state.failed.is_some(),
+                            message: state.failed.as_ref().map(|error| error.to_string()),
+                        };
+                        let _ = reply.send(snapshot);
+                    }
+                    #[cfg(test)]
+                    WorkerMsg::Barrier(reply) => {
+                        let _ = reply.send(());
+                    }
+                }
+            }
+            // Sender dropped without an explicit settle: seal what is open so a
+            // dropped projection cannot leave rows in flight forever.
+            if state.open.is_empty() {
+                Ok(())
+            } else {
+                worker.settle(&mut state, None).await
+            }
+        });
+        Arc::new(Self {
+            tx,
+            handle: Mutex::new(Some(handle)),
         })
     }
 
@@ -137,8 +227,76 @@ impl StreamProjection {
     /// The stream callback cannot return an error, so the first failure is kept
     /// and handed back by [`Self::settle`]. Every later event is ignored: once a
     /// row could not be written, continuing would only widen the disagreement.
+    ///
+    /// Never blocks: the event is queued for the worker task.
     pub(crate) fn observe(&self, event: &StreamEvents) {
-        let mut state = self.lock();
+        let _ = self.tx.send(WorkerMsg::Event(event.clone()));
+    }
+
+    /// Settle every row this call opened.
+    ///
+    /// `returned` is the call's authoritative item list: `Some` when the call
+    /// produced one (completed/incomplete output, or the partial items attached
+    /// to an interrupted stream), `None` when it did not. With `Some`, an item
+    /// the stream opened but the call did not return is a contract breach — the
+    /// log would keep a row the transcript never replays. With `None` there is
+    /// nothing authoritative to compare against, so every open row keeps the
+    /// content it received and settles as incomplete.
+    pub(crate) async fn settle(&self, returned: Option<&[Item]>) -> Result<()> {
+        let _ = self
+            .tx
+            .send(WorkerMsg::Settle(returned.map(<[Item]>::to_vec)));
+        let handle = self
+            .handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        match handle {
+            Some(handle) => match handle.await {
+                Ok(result) => result,
+                Err(error) => Err(LitecodeError::SessionStorage(format!(
+                    "stream projection worker failed: {error}"
+                ))),
+            },
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(test)]
+    fn set_flush_window(&self, at: Instant) {
+        let _ = self.tx.send(WorkerMsg::ForceFlush(at));
+    }
+
+    #[cfg(test)]
+    fn mark_dirty(&self, ids: &[String]) {
+        let _ = self.tx.send(WorkerMsg::MarkDirty(ids.to_vec()));
+    }
+
+    #[cfg(test)]
+    async fn sync_worker(&self) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.tx.send(WorkerMsg::Barrier(tx));
+        let _ = rx.await;
+    }
+
+    #[cfg(test)]
+    async fn flush_now(&self) -> ProbeSnapshot {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.tx.send(WorkerMsg::FlushNow(tx));
+        match rx.await {
+            Ok(snapshot) => snapshot,
+            Err(error) => ProbeSnapshot {
+                dirty_before: 0,
+                dirty_after: 0,
+                failed: true,
+                message: Some(format!("projection worker is gone: {error}")),
+            },
+        }
+    }
+}
+
+impl ProjectionWorker {
+    async fn observe(&self, state: &mut ProjectionState, event: &StreamEvents) {
         if state.failed.is_some() {
             return;
         }
@@ -150,49 +308,56 @@ impl StreamProjection {
                 let Some(id) = item_id_of(&item) else {
                     return;
                 };
-                self.ensure_open(&mut state, &id, &item, added.output_index);
+                self.ensure_open(state, &id, &item, added.output_index)
+                    .await;
             }
             StreamEvents::ResponseOutputItemDone(ev) => {
                 let item = Item::from(ev.item.clone());
-                if let Some(id) = item_id_of(&item)
-                    && self.ensure_open(&mut state, &id, &item, ev.output_index)
-                {
+                let id = item_id_of(&item);
+                let opened = match &id {
+                    Some(id) => self
+                        .ensure_open(state, id, &item, ev.output_index)
+                        .await,
+                    None => false,
+                };
+                if opened {
+                    let id = id.expect("opened implies an item id");
                     state.settled_by_provider.insert(id.clone());
-                    self.checkpoint(&mut state, &id, ev.output_index);
+                    self.checkpoint(state, &id, ev.output_index).await;
                 }
             }
             // A segment the provider itself declared finished. The row stays in
             // flight — only the call's own copy settles it — but the content
             // lands now, so a process that dies here keeps what it had received.
             StreamEvents::ResponseOutputTextDone(ev) => {
-                self.checkpoint(&mut state, &ev.item_id, ev.output_index)
+                self.checkpoint(state, &ev.item_id, ev.output_index).await
             }
             StreamEvents::ResponseReasoningTextDone(ev) => {
-                self.checkpoint(&mut state, &ev.item_id, ev.output_index)
+                self.checkpoint(state, &ev.item_id, ev.output_index).await
             }
             StreamEvents::ResponseReasoningSummaryTextDone(ev) => {
-                self.checkpoint(&mut state, &ev.item_id, ev.output_index)
+                self.checkpoint(state, &ev.item_id, ev.output_index).await
             }
             StreamEvents::ResponseReasoningSummaryPartDone(ev) => {
-                self.checkpoint(&mut state, &ev.item_id, ev.output_index)
+                self.checkpoint(state, &ev.item_id, ev.output_index).await
             }
             StreamEvents::ResponseReasoningSummaryPartAdded(ev) => {
-                self.touch(&mut state, &ev.item_id, ev.output_index)
+                self.touch(state, &ev.item_id, ev.output_index).await
             }
             StreamEvents::ResponseFunctionCallArgumentsDone(ev) => {
-                self.checkpoint(&mut state, &ev.item_id, ev.output_index)
+                self.checkpoint(state, &ev.item_id, ev.output_index).await
             }
             StreamEvents::ResponseOutputTextDelta(ev) => {
-                self.touch(&mut state, &ev.item_id, ev.output_index)
+                self.touch(state, &ev.item_id, ev.output_index).await
             }
             StreamEvents::ResponseReasoningTextDelta(ev) => {
-                self.touch(&mut state, &ev.item_id, ev.output_index)
+                self.touch(state, &ev.item_id, ev.output_index).await
             }
             StreamEvents::ResponseReasoningSummaryTextDelta(ev) => {
-                self.touch(&mut state, &ev.item_id, ev.output_index)
+                self.touch(state, &ev.item_id, ev.output_index).await
             }
             StreamEvents::ResponseFunctionCallArgumentsDelta(ev) => {
-                self.touch(&mut state, &ev.item_id, ev.output_index)
+                self.touch(state, &ev.item_id, ev.output_index).await
             }
             // The batch terminal names the items the call is returning. An item
             // the stream never announced still has a place in the log, and that
@@ -201,12 +366,12 @@ impl StreamProjection {
             StreamEvents::ResponseCompleted(ev) => {
                 let items: Vec<Item> = ev.response.output.iter().cloned().map(Item::from).collect();
                 state.terminal_observed = true;
-                self.adopt_terminal(&mut state, &items)
+                self.adopt_terminal(state, &items).await
             }
             StreamEvents::ResponseIncomplete(ev) => {
                 let items: Vec<Item> = ev.response.output.iter().cloned().map(Item::from).collect();
                 state.terminal_observed = true;
-                self.adopt_terminal(&mut state, &items)
+                self.adopt_terminal(state, &items).await
             }
             _ => {}
         }
@@ -221,26 +386,19 @@ impl StreamProjection {
     /// log would keep a row the transcript never replays. With `None` there is
     /// nothing authoritative to compare against, so every open row keeps the
     /// content it received and settles as incomplete.
-    pub(crate) fn settle(&self, returned: Option<&[Item]>) -> Result<()> {
-        let mut state = self.lock();
+    async fn settle(&self, state: &mut ProjectionState, returned: Option<&[Item]>) -> Result<()> {
         if state.failed.is_none()
             && !state.terminal_observed
             && let Some(items) = returned
         {
-            self.adopt_terminal(&mut state, items);
+            self.adopt_terminal(state, items).await;
         }
         let observed = state.failed.take();
-        let outcome = self.settle_open(&mut state, returned);
+        let outcome = self.settle_open(state, returned).await;
         match observed.or_else(|| state.failed.take()) {
             Some(first) => Err(first),
             None => outcome,
         }
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, ProjectionState> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn fail(&self, state: &mut ProjectionState, error: LitecodeError) {
@@ -264,8 +422,8 @@ impl StreamProjection {
         }
     }
 
-    /// Establish or validate the call-local `index ↔ id ↔ type ↔ seq` identity.
-    fn ensure_open(
+    /// Establish or validate the call-local `index → id → type → seq` identity.
+    async fn ensure_open(
         &self,
         state: &mut ProjectionState,
         id: &str,
@@ -296,7 +454,7 @@ impl StreamProjection {
             }
             // Tool-name patches legitimately re-announce the same association.
             state.dirty.insert(id.to_string());
-            self.flush(state);
+            self.flush(state).await;
             return state.failed.is_none();
         }
         if let Some(held) = state.by_index.get(&output_index) {
@@ -308,14 +466,21 @@ impl StreamProjection {
             );
             return false;
         }
-        self.begin(state, id, item, output_index);
+        self.begin(state, id, item, output_index).await;
         state.failed.is_none()
     }
 
-    fn begin(&self, state: &mut ProjectionState, id: &str, item: &Item, output_index: u32) {
+    async fn begin(
+        &self,
+        state: &mut ProjectionState,
+        id: &str,
+        item: &Item,
+        output_index: u32,
+    ) {
         match self
             .sessions
             .begin_stream_item(&self.session_id, item, &self.turn_id)
+            .await
         {
             Ok(seq) => {
                 state.open.insert(
@@ -333,12 +498,17 @@ impl StreamProjection {
         }
     }
 
-    fn validate_reference(&self, state: &mut ProjectionState, id: &str, output_index: u32) -> bool {
+    async fn validate_reference(
+        &self,
+        state: &mut ProjectionState,
+        id: &str,
+        output_index: u32,
+    ) -> bool {
         if !state.open.contains_key(id) {
             let Some(item) = state.seen.get(id).cloned() else {
                 return false;
             };
-            if !self.ensure_open(state, id, &item, output_index) {
+            if !self.ensure_open(state, id, &item, output_index).await {
                 return false;
             }
         }
@@ -357,8 +527,8 @@ impl StreamProjection {
     }
 
     /// Mark content as arrived, publishing it if the coalescing window elapsed.
-    fn touch(&self, state: &mut ProjectionState, id: &str, output_index: u32) {
-        if id.is_empty() || !self.validate_reference(state, id, output_index) {
+    async fn touch(&self, state: &mut ProjectionState, id: &str, output_index: u32) {
+        if id.is_empty() || !self.validate_reference(state, id, output_index).await {
             return;
         }
         state.dirty.insert(id.to_string());
@@ -366,22 +536,22 @@ impl StreamProjection {
             .last_flush
             .is_none_or(|at| at.elapsed() >= FLUSH_INTERVAL)
         {
-            self.flush(state);
+            self.flush(state).await;
         }
     }
 
     /// Publish `id` now: a segment the provider declared finished is a natural
     /// boundary, so it is not made to wait for the coalescing window.
-    fn checkpoint(&self, state: &mut ProjectionState, id: &str, output_index: u32) {
-        if id.is_empty() || !self.validate_reference(state, id, output_index) {
+    async fn checkpoint(&self, state: &mut ProjectionState, id: &str, output_index: u32) {
+        if id.is_empty() || !self.validate_reference(state, id, output_index).await {
             return;
         }
         state.dirty.insert(id.to_string());
-        self.flush(state);
+        self.flush(state).await;
     }
 
     /// Write every dirty open row, then publish the rows that changed.
-    fn flush(&self, state: &mut ProjectionState) {
+    async fn flush(&self, state: &mut ProjectionState) {
         if state.dirty.is_empty() {
             return;
         }
@@ -417,7 +587,11 @@ impl StreamProjection {
                     (!preview.is_empty()).then_some(preview)
                 })
                 .last();
-            match self.sessions.update_stream_items(&self.session_id, chunk) {
+            match self
+                .sessions
+                .update_stream_items(&self.session_id, chunk)
+                .await
+            {
                 Ok(()) => {
                     if let Some(preview) = chunk_preview {
                         assistant_preview = Some(preview);
@@ -437,7 +611,7 @@ impl StreamProjection {
     }
 
     /// Open rows for terminal items the stream never announced, then flush.
-    fn adopt_terminal(&self, state: &mut ProjectionState, output: &[Item]) {
+    async fn adopt_terminal(&self, state: &mut ProjectionState, output: &[Item]) {
         let mut terminal_ids = HashSet::new();
         for (index, item) in output.iter().enumerate() {
             let Some(id) = item_id_of(item) else {
@@ -459,7 +633,7 @@ impl StreamProjection {
                 return;
             }
             if let Some(held_index) = state.open.get(&id).map(|open| open.output_index) {
-                if !self.ensure_open(state, &id, item, index as u32) {
+                if !self.ensure_open(state, &id, item, index as u32).await {
                     return;
                 }
                 debug_assert_eq!(held_index, index as u32);
@@ -479,15 +653,20 @@ impl StreamProjection {
                 );
                 return;
             }
-            if !self.ensure_open(state, &id, item, index as u32) {
+            if !self.ensure_open(state, &id, item, index as u32).await {
                 return;
             }
         }
-        state.dirty.extend(state.open.keys().cloned());
-        self.flush(state);
+        let all_open: Vec<String> = state.open.keys().cloned().collect();
+        state.dirty.extend(all_open);
+        self.flush(state).await;
     }
 
-    fn settle_open(&self, state: &mut ProjectionState, returned: Option<&[Item]>) -> Result<()> {
+    async fn settle_open(
+        &self,
+        state: &mut ProjectionState,
+        returned: Option<&[Item]>,
+    ) -> Result<()> {
         let mut ids: Vec<String> = state.open.keys().cloned().collect();
         ids.sort_by_key(|id| state.open[id].seq);
         let mut unsealed: Vec<String> = Vec::new();
@@ -532,6 +711,7 @@ impl StreamProjection {
             match self
                 .sessions
                 .seal_stream_item(&self.session_id, seq, &payload)
+                .await
             {
                 Ok(()) => {
                     seqs.push(seq);
@@ -643,7 +823,7 @@ mod tests {
     }
 
     impl Fixture {
-        fn open() -> Self {
+        async fn open() -> Self {
             let dir = TempDir::new().expect("tempdir");
             let db = dir.path().join("sessions.db");
             let sessions = Arc::new(SessionManager::new_for_test(
@@ -651,7 +831,8 @@ mod tests {
                 db.to_string_lossy().into_owned(),
             ));
             let sid = sessions
-                .open_session_sync("/p", "default", Some("m"))
+                .open_session("/p", "default", Some("m"))
+                .await
                 .expect("session");
             Self {
                 _dir: dir,
@@ -684,12 +865,12 @@ mod tests {
         }
 
         /// One call: fold every event, then settle with the call's own items.
-        fn run_call(&self, events: &[ResponseStreamEvent], turn: &str) -> Result<()> {
+        async fn run_call(&self, events: &[ResponseStreamEvent], turn: &str) -> Result<()> {
             let items = terminal_items(events);
-            self.run_call_with(events, Some(&items), turn)
+            self.run_call_with(events, Some(&items), turn).await
         }
 
-        fn run_call_with(
+        async fn run_call_with(
             &self,
             events: &[ResponseStreamEvent],
             returned: Option<&[Item]>,
@@ -704,7 +885,7 @@ mod tests {
             for event in events {
                 projection.observe(event);
             }
-            projection.settle(returned)
+            projection.settle(returned).await
         }
     }
 
@@ -801,11 +982,11 @@ mod tests {
 
     /// The whole point: one row per item, in the order the model produced them,
     /// carrying the authoritative copy, attributed to the turn that ran.
-    #[test]
-    fn a_streamed_item_settles_into_the_row_it_opened() {
+    #[tokio::test]
+    async fn a_streamed_item_settles_into_the_row_it_opened() {
         let events = fixture_events();
-        let f = Fixture::open();
-        f.run_call(&events, "turn-1").expect("call");
+        let f = Fixture::open().await;
+        f.run_call(&events, "turn-1").await.expect("call");
 
         let rows = f.rows();
         assert_eq!(rows.len(), 13, "twelve reasoning items and one message");
@@ -846,8 +1027,8 @@ mod tests {
     /// A stream that dies mid-item keeps what it received: the item that never got
     /// a terminal of its own settles as incomplete, and the ones the provider did
     /// finish keep the payload the provider gave them.
-    #[test]
-    fn an_item_the_call_never_confirmed_settles_incomplete() {
+    #[tokio::test]
+    async fn an_item_the_call_never_confirmed_settles_incomplete() {
         let mut events = fixture_events();
         // Drop the batch terminal and the message's own terminal: the reasoning
         // items were confirmed one by one, the text never was.
@@ -862,8 +1043,10 @@ mod tests {
                         )
                 )
         });
-        let f = Fixture::open();
-        f.run_call_with(&events, None, "turn-1").expect("call");
+        let f = Fixture::open().await;
+        f.run_call_with(&events, None, "turn-1")
+            .await
+            .expect("call");
 
         let rows = f.rows();
         assert_eq!(rows.len(), 13, "every opened item is still on record");
@@ -895,16 +1078,16 @@ mod tests {
     /// One call's identity map does not outlive it. A later call is free to reuse
     /// the provider's id: that is a different item and it gets its own row, in its
     /// own place, and it streams while it arrives.
-    #[test]
-    fn a_call_that_reuses_a_provider_id_opens_a_new_row() {
-        let f = Fixture::open();
+    #[tokio::test]
+    async fn a_call_that_reuses_a_provider_id_opens_a_new_row() {
+        let f = Fixture::open().await;
         let events = fixture_events();
-        f.run_call(&events, "turn-1").expect("first call");
+        f.run_call(&events, "turn-1").await.expect("first call");
         let first = f.rows();
         assert_eq!(first.len(), 13);
 
         // A second call reuses every id from the first.
-        f.run_call(&events, "turn-2").expect("second call");
+        f.run_call(&events, "turn-2").await.expect("second call");
         let rows = f.rows();
         assert_eq!(
             rows.len(),
@@ -928,16 +1111,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn same_call_identity_conflicts_fail_closed() {
-        let f = Fixture::open();
+    #[tokio::test]
+    async fn same_call_identity_conflicts_fail_closed() {
+        let f = Fixture::open().await;
 
         let moved = projection_for(&f);
         moved.observe(&added_event("msg_1", 0, false));
         moved.observe(&added_event("msg_1", 1, false));
         assert!(
             moved
-                .settle(None)
+                .settle(None).await
                 .expect_err("one id may not move indexes")
                 .to_string()
                 .contains("moved from output index")
@@ -948,7 +1131,7 @@ mod tests {
         reused.observe(&added_event("msg_3", 0, false));
         assert!(
             reused
-                .settle(None)
+                .settle(None).await
                 .expect_err("one index may not identify two items")
                 .to_string()
                 .contains("belongs to provider item")
@@ -959,16 +1142,16 @@ mod tests {
         changed.observe(&added_event("same", 0, true));
         assert!(
             changed
-                .settle(None)
+                .settle(None).await
                 .expect_err("one item may not change type")
                 .to_string()
                 .contains("changed type")
         );
     }
 
-    #[test]
-    fn terminal_duplicate_id_fails_closed() {
-        let f = Fixture::open();
+    #[tokio::test]
+    async fn terminal_duplicate_id_fails_closed() {
+        let f = Fixture::open().await;
         let projection = projection_for(&f);
         let items = [
             match added_event("dup", 0, false) {
@@ -982,7 +1165,7 @@ mod tests {
         ];
         assert!(
             projection
-                .settle(Some(&items))
+                .settle(Some(&items)).await
                 .expect_err("terminal ids must be unique")
                 .to_string()
                 .contains("more than once")
@@ -991,9 +1174,9 @@ mod tests {
 
     /// A write that cannot happen is reported, not swallowed: the row would
     /// otherwise sit in flight with nothing left to settle it.
-    #[test]
-    fn a_write_the_session_refuses_fails_the_call() {
-        let f = Fixture::open();
+    #[tokio::test]
+    async fn a_write_the_session_refuses_fails_the_call() {
+        let f = Fixture::open().await;
         let events = fixture_events();
         let projection = StreamProjection::new(
             Arc::clone(&f.sessions),
@@ -1004,6 +1187,7 @@ mod tests {
         for event in &events {
             projection.observe(event);
         }
+        projection.sync_worker().await;
         // Settle the first row behind the projection's back. Its own settle now
         // has nothing legitimate to write, and a silent `continue` would leave the
         // remaining rows in flight while the turn looked successful.
@@ -1014,10 +1198,11 @@ mod tests {
             .expect("the first item");
         f.sessions
             .seal_stream_item(&f.sid, first, &settled)
+            .await
             .expect("settle behind the projection");
 
         let error = projection
-            .settle(Some(&terminal_items(&events)))
+            .settle(Some(&terminal_items(&events))).await
             .expect_err("the refused write must surface");
         assert!(
             error.to_string().contains("only a row in flight"),
@@ -1027,11 +1212,12 @@ mod tests {
 
     /// UpdateStreamItem failure must fail `settle` (so the call/turn stops) and
     /// must still attempt to seal open rows rather than leave them in flight.
-    #[test]
-    fn update_stream_item_failure_fails_settle_and_still_seals() {
-        let f = Fixture::open();
+    #[tokio::test]
+    async fn update_stream_item_failure_fails_settle_and_still_seals() {
+        let f = Fixture::open().await;
         let projection = projection_for(&f);
         projection.observe(&added_event("msg_upd", 0, false));
+        projection.sync_worker().await;
         assert_eq!(f.rows().len(), 1);
         assert_eq!(f.rows()[0].state, "in_progress");
 
@@ -1040,7 +1226,7 @@ mod tests {
         projection.observe(&done_event("msg_upd", 0));
 
         let err = projection
-            .settle(None)
+            .settle(None).await
             .expect_err("update write failure must surface through settle");
         assert!(
             err.to_string().contains("before commit")
@@ -1059,27 +1245,25 @@ mod tests {
 
     /// A multi-row batch is one transaction: the injected failure must leave
     /// every row in flight, and settle must still seal all of them.
-    #[test]
-    fn flush_batch_failure_does_not_publish_and_settle_seals() {
-        let f = Fixture::open();
+    #[tokio::test]
+    async fn flush_batch_failure_does_not_publish_and_settle_seals() {
+        let f = Fixture::open().await;
         let observer = Arc::new(RecordingObserver::default());
         let projection = projection_with_observer(&f, observer.clone());
         projection.observe(&added_event("msg_a", 0, false));
         projection.observe(&added_event("msg_b", 1, false));
+        projection.sync_worker().await;
         assert_eq!(f.rows().len(), 2);
         let restamps_before_flush = observer.restamps().len();
 
         f.sessions.data().hooks().inject(FaultKind::BeforeCommit);
-        {
-            let mut state = projection.lock();
-            state.dirty.insert("msg_a".into());
-            state.dirty.insert("msg_b".into());
-            projection.flush(&mut state);
-            assert!(
-                state.failed.is_some(),
-                "the batch write failure must be retained"
-            );
-        }
+        projection
+            .mark_dirty(&["msg_a".to_string(), "msg_b".to_string()]);
+        let snapshot = projection.flush_now().await;
+        assert!(
+            snapshot.failed,
+            "the batch write failure must be retained"
+        );
         assert_eq!(
             observer.restamps().len(),
             restamps_before_flush,
@@ -1087,7 +1271,7 @@ mod tests {
         );
 
         let err = projection
-            .settle(None)
+            .settle(None).await
             .expect_err("batch write failure must surface through settle");
         assert!(
             err.to_string().contains("before commit")
@@ -1106,9 +1290,9 @@ mod tests {
 
     /// More dirty rows than the cap must be written in multiple chunks without
     /// losing any row or leaving the projection failed.
-    #[test]
-    fn flush_chunks_above_the_batch_cap_and_publishes_once() {
-        let f = Fixture::open();
+    #[tokio::test]
+    async fn flush_chunks_above_the_batch_cap_and_publishes_once() {
+        let f = Fixture::open().await;
         let observer = Arc::new(RecordingObserver::default());
         let projection = projection_with_observer(&f, observer.clone());
         let ids: Vec<String> = (0..MAX_STREAM_BATCH_ROWS + 2)
@@ -1117,17 +1301,13 @@ mod tests {
         for (index, id) in ids.iter().enumerate() {
             projection.observe(&added_event(id, index as u32, false));
         }
+        projection.sync_worker().await;
         let restamps_before_flush = observer.restamps().len();
 
-        {
-            let mut state = projection.lock();
-            for id in &ids {
-                state.dirty.insert(id.clone());
-            }
-            projection.flush(&mut state);
-            assert!(state.failed.is_none(), "chunked flush must not fail");
-            assert!(state.dirty.is_empty(), "every dirty row must be drained");
-        }
+        projection.mark_dirty(&ids);
+        let snapshot = projection.flush_now().await;
+        assert!(!snapshot.failed, "chunked flush must not fail");
+        assert_eq!(snapshot.dirty_after, 0, "every dirty row must be drained");
 
         let rows = f.rows();
         assert_eq!(rows.len(), ids.len());
@@ -1148,7 +1328,7 @@ mod tests {
             "chunked flush must publish all rows in one restamp"
         );
 
-        projection.settle(None).expect("settle chunked rows");
+        projection.settle(None).await.expect("settle chunked rows");
         let rows = f.rows();
         assert_eq!(rows.len(), ids.len());
         assert!(
@@ -1159,14 +1339,14 @@ mod tests {
 
     /// One flush carrying reasoning, a message, and a tool call must commit all
     /// three rows before it publishes them.
-    #[test]
-    fn flush_batches_open_rows_and_publishes_after_commit() {
+    #[tokio::test]
+    async fn flush_batches_open_rows_and_publishes_after_commit() {
         use crate::authority::responses::{
             FunctionToolCall, OutputItem, OutputStatus, ResponseFunctionCallArgumentsDeltaEvent,
             ResponseOutputItemAddedEvent, ResponseReasoningTextDeltaEvent, ResponseTextDeltaEvent,
         };
 
-        let f = Fixture::open();
+        let f = Fixture::open().await;
         let observer = Arc::new(RecordingObserver::default());
         let projection = projection_with_observer(&f, observer.clone());
         let tool_added =
@@ -1186,9 +1366,8 @@ mod tests {
         projection.observe(&added_event("msg_1", 1, false));
         projection.observe(&tool_added);
         {
-            let mut state = projection.lock();
             // Hold the coalescing window so the three deltas land in one flush.
-            state.last_flush = Some(Instant::now() + Duration::from_secs(60));
+            projection.set_flush_window(Instant::now() + Duration::from_secs(60));
         }
         projection.observe(&ResponseStreamEvent::ResponseReasoningTextDelta(
             ResponseReasoningTextDeltaEvent {
@@ -1217,13 +1396,13 @@ mod tests {
                 delta: r#"{"cmd":"echo hi"}"#.into(),
             },
         ));
+        projection.sync_worker().await;
         let restamps_before_flush = observer.restamps().len();
 
         {
-            let mut state = projection.lock();
-            assert_eq!(state.dirty.len(), 3, "one flush must see all three rows");
-            projection.flush(&mut state);
-            assert!(state.failed.is_none(), "batch flush must not fail");
+            let snapshot = projection.flush_now().await;
+            assert_eq!(snapshot.dirty_before, 3, "one flush must see all three rows");
+            assert!(!snapshot.failed, "batch flush must not fail");
         }
 
         let rows = f.rows();
@@ -1251,17 +1430,16 @@ mod tests {
 
     /// A settled row inside a batch must roll back earlier rows in the same
     /// transaction instead of leaving a partial update.
-    #[test]
-    fn flush_batch_with_settled_row_fails_without_partial_write() {
+    #[tokio::test]
+    async fn flush_batch_with_settled_row_fails_without_partial_write() {
         use crate::authority::responses::ResponseTextDeltaEvent;
 
-        let f = Fixture::open();
+        let f = Fixture::open().await;
         let projection = projection_for(&f);
         projection.observe(&added_event("msg_a", 0, false));
         projection.observe(&added_event("msg_b", 1, false));
         {
-            let mut state = projection.lock();
-            state.last_flush = Some(Instant::now() + Duration::from_secs(60));
+            projection.set_flush_window(Instant::now() + Duration::from_secs(60));
         }
         projection.observe(&ResponseStreamEvent::ResponseOutputTextDelta(
             ResponseTextDeltaEvent {
@@ -1274,9 +1452,9 @@ mod tests {
             },
         ));
         {
-            let mut state = projection.lock();
-            state.dirty.insert("msg_b".into());
+            projection.mark_dirty(&["msg_b".to_string()]);
         }
+        projection.sync_worker().await;
 
         let rows = f.rows();
         let before_a = rows[0].body.clone();
@@ -1287,15 +1465,15 @@ mod tests {
         let item = Item::from(done.item);
         f.sessions
             .seal_stream_item(&f.sid, seq_b, &item)
+            .await
             .expect("settle msg_b behind the projection");
 
         {
-            let mut state = projection.lock();
-            assert_eq!(state.dirty.len(), 2, "both rows must be in the batch");
-            projection.flush(&mut state);
-            let error = state.failed.as_ref().expect("the settled row must fail");
+            let snapshot = projection.flush_now().await;
+            assert_eq!(snapshot.dirty_before, 2, "both rows must be in the batch");
+            let error = snapshot.message.expect("the settled row must fail");
             assert!(
-                error.to_string().contains("in flight"),
+                error.contains("in flight"),
                 "the refusal must come from the settled row, got {error}"
             );
         }

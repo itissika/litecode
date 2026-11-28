@@ -391,7 +391,16 @@ impl BotService {
             match service.meta(&bot.session_id) {
                 Ok(meta) => {
                     if meta.agent_id != bot.id {
-                        service.bind_bot_agent_id(&bot.session_id, bot.id.clone())?;
+                        if tokio::runtime::Handle::try_current().is_ok() {
+                            let svc = Arc::clone(&service);
+                            let sid = bot.session_id.clone();
+                            let bid = bot.id.clone();
+                            std::thread::spawn(move || svc.bind_bot_agent_id(&sid, bid))
+                                .join()
+                                .map_err(|_| BotError::Session("bot rebind thread panicked".into()))??;
+                        } else {
+                            service.bind_bot_agent_id(&bot.session_id, bot.id.clone())?;
+                        }
                     }
                 }
                 Err(crate::types::LitecodeError::SessionNotFound(_)) => {}
@@ -1399,6 +1408,7 @@ mod tests {
             .bots
             .service()
             .create_session_folder("Team", true)
+            .await
             .expect("bot folder");
         let parent = f
             .bots
@@ -1489,6 +1499,7 @@ mod tests {
             .expect("bot");
         f.manager
             .set_agent_id(&bot.session_id, "legacy_identity".into())
+            .await
             .expect("old agent id");
         // W3: `write_agent` refuses ids outside the built-in spec, so the legacy
         // profile is planted the way an older build left it: a raw DB row.
@@ -2024,6 +2035,7 @@ mod tests {
 
         let error = service
             .set_agent_id(&bot.session_id, "default".into())
+            .await
             .expect_err("ordinary agent switch must reject a bot session");
         assert!(matches!(
             error,
@@ -2078,6 +2090,7 @@ mod tests {
         ));
         let error = service
             .remove_session(&bot.session_id)
+            .await
             .expect_err("the raw service remove also refuses a bot session");
         assert!(matches!(
             error,
@@ -2086,6 +2099,7 @@ mod tests {
         let error = f
             .manager
             .remove_session(&bot.session_id)
+            .await
             .expect_err("the low-level remove primitive also refuses a bot session");
         assert!(matches!(
             error,
@@ -2094,10 +2108,12 @@ mod tests {
 
         let normal = f
             .manager
-            .open_session_sync("/proj", "default", None)
+            .open_session("/proj", "default", None)
+            .await
             .expect("normal session");
         let error = service
             .set_agent_id(&normal, bot.id.clone())
+            .await
             .expect_err("a normal session cannot select a bot id");
         assert!(matches!(
             error,
@@ -2175,6 +2191,7 @@ mod tests {
             .expect("child");
         f.manager
             .remove_session_unchecked(&parent.session_id)
+            .await
             .expect("simulate externally deleted session");
 
         let registry = f.dir.path().join("bots.json");
@@ -2278,6 +2295,7 @@ mod tests {
             .bots
             .service()
             .create_session_folder("Work", true)
+            .await
             .expect("bot folder");
         assert!(is_bot_folder_id(&folder_id));
         let updated = f
@@ -2317,6 +2335,7 @@ mod tests {
             .bots
             .service()
             .create_session_folder("Sessions", false)
+            .await
             .expect("session folder");
         let error = f
             .bots

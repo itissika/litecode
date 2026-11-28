@@ -133,24 +133,9 @@ pub enum CommitKind {
     Compacted {
         seq: Seq,
     },
-    /// Replay-safe surface replacements appended by mechanical pruning.
-    Replaced {
-        seqs: Vec<Seq>,
-    },
     MetaUpdated,
     Deleted,
     Idempotent,
-}
-
-/// One append-only, replay-safe surface replacement. `start`/`end` identify
-/// the shadowed surface node(s); the new event cites `source_seqs` so the
-/// original log row remains intact.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SurfaceReplacement {
-    pub start: Seq,
-    pub end: Seq,
-    pub item: Item,
-    pub source_seqs: Vec<Seq>,
 }
 
 /// One row rewrite in a batch of in-flight stream checkpoints.
@@ -294,13 +279,6 @@ pub enum SessionMutation {
         /// checkpoints and callers that predate provider attribution.
         provider_id: Option<String>,
     },
-    /// One atomic batch of mechanical-prune surface replacements. Every
-    /// replacement is a new log event; the original rows are never deleted.
-    ReplaceSurface {
-        session_id: String,
-        operation_id: MutationId,
-        replacements: Vec<SurfaceReplacement>,
-    },
     SaveTaskState {
         session_id: String,
         expected_revision: u64,
@@ -416,7 +394,6 @@ impl SessionMutation {
             | Self::SealInProgress { operation_id, .. }
             | Self::CommitTurnDelta { operation_id, .. }
             | Self::Compact { operation_id, .. }
-            | Self::ReplaceSurface { operation_id, .. }
             | Self::SaveTaskState { operation_id, .. }
             | Self::SaveMemory { operation_id, .. }
             | Self::SaveContextMeter { operation_id, .. }
@@ -455,7 +432,6 @@ impl SessionMutation {
             | Self::SealInProgress { session_id, .. }
             | Self::CommitTurnDelta { session_id, .. }
             | Self::Compact { session_id, .. }
-            | Self::ReplaceSurface { session_id, .. }
             | Self::SaveTaskState { session_id, .. }
             | Self::SaveMemory { session_id, .. }
             | Self::SaveContextMeter { session_id, .. }
@@ -476,7 +452,6 @@ impl SessionMutation {
             Self::Create { .. }
             | Self::RecordProviderUsage { .. }
             | Self::Compact { .. }
-            | Self::ReplaceSurface { .. }
             | Self::SetTitle { .. }
             | Self::SetFolder { .. }
             | Self::CreateFolder { .. }
@@ -598,6 +573,11 @@ pub enum SessionRead {
     ListChildIds {
         parent_session_id: String,
     },
+    /// Every durable descendant of a session, resolved in one recursive query.
+    /// The caller merges in-memory children separately.
+    DescendantIds {
+        session_id: String,
+    },
     ListOrphanChildSessions,
     ChildForCall {
         parent_session_id: String,
@@ -667,6 +647,11 @@ pub enum SessionRead {
     /// The newest recorded bill on a `request/header` row. Occupancy only needs
     /// this one: a bill is a point measurement of the prompt, not a sum.
     LatestProviderBill {
+        session_id: String,
+    },
+    /// The newest `turn/end` row, and nothing else. Reading the whole log to
+    /// find it made every `session/list` row cost a full transcript load.
+    LatestTurnEnd {
         session_id: String,
     },
     /// The newest `request/header` body that carries a `context_envelope`. A
@@ -761,6 +746,8 @@ pub enum ReadValue {
     RequestOrigins(Vec<(i64, serde_json::Value)>),
     /// `(seq, usage)` of the newest billed `request/header`, or `None`.
     ProviderBill(Option<(i64, crate::session::store::ProviderUsage)>),
+    /// The newest `turn/end` event, without loading the rest of the log.
+    LatestTurnEnd(Option<crate::session::event::SessionEvent>),
     /// The newest `request/header` body carrying a `context_envelope`.
     RequestEnvelope(Option<serde_json::Value>),
     ProviderUsageSeries(ProviderUsageSeries),

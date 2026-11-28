@@ -139,9 +139,9 @@ async fn delete_session_tree_inner<C: RemovedSessionCleanup + ?Sized>(
         })?;
 
     let removed = if allow_bot {
-        sessions.remove_session_unchecked(session_id)
+        sessions.remove_session_unchecked(session_id).await
     } else {
-        sessions.remove_session(session_id)
+        sessions.remove_session(session_id).await
     }
     .map_err(DeleteSessionError::Other)?;
     // Explicit, idempotent cleanup for every removed id; the hub router also
@@ -175,12 +175,14 @@ mod tests {
         let root = m.open_session("/proj", "default", None).await.unwrap();
         let a = m
             .open_child_session("/proj", "default", None, &root, "c1")
+            .await
             .unwrap();
         let b = m
             .open_child_session("/proj", "default", None, &a, "c2")
+            .await
             .unwrap();
         let mut rx = m.subscribe_lifecycle();
-        let removed = m.remove_session(&root).unwrap();
+        let removed = m.remove_session(&root).await.unwrap();
         let mut desc = vec![a.clone(), b.clone()];
         desc.sort();
         desc.push(root.clone());
@@ -209,6 +211,7 @@ mod tests {
             let root = m.open_session("/proj", "default", None).await.unwrap();
             let child = m
                 .open_child_session("/proj", "default", None, &root, "call_x")
+                .await
                 .unwrap();
             let out = delete_session_tree(&m, &|_: &str| {}, &child)
                 .await

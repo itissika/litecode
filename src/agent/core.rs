@@ -36,7 +36,7 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
         }
 
         deps.begin_step(step);
-        if let Err(error) = deps.sync_request_seam(step) {
+        if let Err(error) = deps.sync_request_seam(step).await {
             return TurnOutcome::Error(error);
         }
 
@@ -48,7 +48,7 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
             }
             Err(e) => return TurnOutcome::Error(e),
         };
-        if compacted && let Err(error) = deps.sync_request_seam(step) {
+        if compacted && let Err(error) = deps.sync_request_seam(step).await {
             return TurnOutcome::Error(error);
         }
         if let Err(error) = deps.prepare_view(step) {
@@ -75,7 +75,7 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
                 );
                 let mut step_items = partial;
                 step_items.extend(pads);
-                if let Some(outcome) = persist_or_stop(deps, &step_items, &[], &final_text) {
+                if let Some(outcome) = persist_or_stop(deps, &step_items, &[], &final_text).await {
                     return outcome;
                 }
                 return TurnOutcome::Error(LitecodeError::Llm(message));
@@ -119,7 +119,7 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
             final_text = text;
         }
 
-        if let Some(outcome) = persist_or_stop(deps, &output, &[], &final_text) {
+        if let Some(outcome) = persist_or_stop(deps, &output, &[], &final_text).await {
             return outcome;
         }
 
@@ -132,7 +132,7 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
                 &tool_uses,
                 "the user cancelled the turn before a result arrived",
             );
-            if let Some(outcome) = persist_or_stop(deps, &pads, &[], &final_text) {
+            if let Some(outcome) = persist_or_stop(deps, &pads, &[], &final_text).await {
                 return outcome;
             }
             return TurnOutcome::Cancelled { final_text };
@@ -148,7 +148,7 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
                 Ok(()) => {}
                 Err(LitecodeError::Canceled) => {
                     if let Some(outcome) =
-                        persist_or_stop(deps, &outputs, &result_data, &final_text)
+                        persist_or_stop(deps, &outputs, &result_data, &final_text).await
                     {
                         return outcome;
                     }
@@ -156,7 +156,7 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
                 }
                 Err(e) => return TurnOutcome::Error(e),
             }
-            if let Some(outcome) = persist_or_stop(deps, &outputs, &result_data, &final_text) {
+            if let Some(outcome) = persist_or_stop(deps, &outputs, &result_data, &final_text).await {
                 return outcome;
             }
             deps.emit_todo_progress();
@@ -187,7 +187,7 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
 
     TurnOutcome::Completed { final_text }
 }
-fn persist_or_stop(
+async fn persist_or_stop(
     deps: &impl AgentDeps,
     items: &[Item],
     result_data: &[ToolResultData],
@@ -196,7 +196,7 @@ fn persist_or_stop(
     if items.is_empty() {
         return None;
     }
-    match deps.persist_new(items, result_data) {
+    match deps.persist_new(items, result_data).await {
         Err(e) => Some(TurnOutcome::Error(e)),
         // `true` means persist skipped a write because the log shrank (回退).
         // User 取消 is `is_cancelled()` plus 封口, not projection length.
@@ -293,7 +293,11 @@ mod pending_continue_tests {
             10
         }
 
-        fn persist_new(&self, _items: &[Item], _result_data: &[ToolResultData]) -> Result<bool> {
+        async fn persist_new(
+            &self,
+            _items: &[Item],
+            _result_data: &[ToolResultData],
+        ) -> Result<bool> {
             Ok(false)
         }
 

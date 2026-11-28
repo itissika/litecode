@@ -1,6 +1,6 @@
 //! Platform semantics for thinking intensity and context window mode.
 //!
-//! See `knowledge/contracts/platform-knobs.md`. UI / session persist platform
+//! See `knowledge/contracts/config/platform-knobs.md`. UI / session persist platform
 //! enums; the provider catalog maps them onto vendor wire literals.
 
 use serde::{Deserialize, Serialize};

@@ -60,19 +60,19 @@ impl SessionService {
     /// User Stop is one business operation: invalidate durable asks before
     /// cancelling the turn, so no permission card survives the stop.
     pub(crate) async fn stop_turn_async(&self, session_id: &str, by: StopOrigin) -> CancelOutcome {
-        self.clear_pending_permissions(session_id);
+        self.clear_pending_permissions(session_id).await;
         self.cancel_turn_async(session_id, by).await
     }
 
     /// Revert the transcript to a user anchor as one business operation: take
     /// the exclusive lease, truncate, then discard messages queued for the
     /// state that was just removed. The lease lives until the operation ends.
-    pub(crate) fn revert_to_user_anchor(
+    pub(crate) async fn revert_to_user_anchor(
         &self,
         session_id: &str,
         seq: u64,
     ) -> std::result::Result<RevertGuard, RevertError> {
-        let lease = match self.sessions.try_begin_revert(session_id) {
+        let lease = match self.sessions.try_begin_revert(session_id).await {
             Ok(lease) => lease,
             Err(LitecodeError::AgentAlreadyRunning) => return Err(RevertError::Busy),
             Err(error) => return Err(RevertError::Fatal(error)),
@@ -84,6 +84,7 @@ impl SessionService {
         match self
             .sessions
             .entry_revert_to_user_anchor(session_id, anchor)
+            .await
         {
             Ok(()) => {
                 if let Some(lease) = lease.as_ref() {
@@ -137,12 +138,12 @@ impl SessionService {
 
     // ── Message delivery / cancellation ───────────────────────────────────
 
-    pub(crate) fn append_plan_execute(
+    pub(crate) async fn append_plan_execute(
         &self,
         session_id: &str,
         item: &crate::types::Item,
     ) -> anyhow::Result<()> {
-        self.sessions.append_plan_execute(session_id, item)
+        self.sessions.append_plan_execute(session_id, item).await
     }
 
     pub(crate) fn enqueue_follow_up(
@@ -200,7 +201,9 @@ impl SessionService {
             let default_primary = runtime.desired_primary_agent();
             let agent_id =
                 self.resolve_primary_agent_for_session(&runtime, session_id, default_primary)?;
-            let _ = self.ensure_session_model(&runtime.resolved, session_id, &agent_id);
+            let _ = self
+                .ensure_session_model(&runtime.resolved, session_id, &agent_id)
+                .await;
 
             let depth = self.meta(session_id)?.subagent_depth;
             let mut compaction_runtime = self.build_runtime(
@@ -325,8 +328,10 @@ impl SessionService {
 
         let mut input = input.into();
         if plan_execution && let TurnInput::User(user) = &input {
-            match self.append_plan_execute(session_id, &crate::types::user_text(&user.text)) {
-                Ok(()) => {
+            match self
+                .append_plan_execute(session_id, &crate::types::user_text(&user.text))
+                .await
+            {                Ok(()) => {
                     input = TurnInput::Wake {
                         anchor_user_seq: None,
                     }

@@ -179,12 +179,14 @@ mod tests {
     async fn child_facts_delegate_to_the_same_manager() {
         let (_dir, manager, service) = fixture();
         let parent = manager
-            .open_session_sync("/proj", "default", None)
+            .open_session("/proj", "default", None)
+            .await
             .expect("parent");
         let child = service
             .open_child_session_with_responsibility(
                 "/proj", "reviewer", None, &parent, "call-1", "review",
             )
+            .await
             .expect("child");
 
         assert_eq!(service.project(&child).as_deref(), Some("/proj"));
@@ -214,6 +216,7 @@ mod tests {
 
         service
             .set_context_mode(&session, crate::platform_knobs::ContextMode::Max)
+            .await
             .expect("set mode");
         assert_eq!(
             service.context_mode(&session),
@@ -232,7 +235,8 @@ mod tests {
     async fn ui_facts_delegate_without_projection_state() {
         let (_dir, manager, service) = fixture();
         let session = manager
-            .open_session_sync("/proj", "default", None)
+            .open_session("/proj", "default", None)
+            .await
             .expect("session");
         assert_eq!(service.entry_wire_seq_cursor(&session).1, 0);
         assert!(
@@ -246,6 +250,7 @@ mod tests {
 
         let folder = service
             .create_session_folder("Inbox", false)
+            .await
             .expect("folder");
         assert!(
             service
@@ -256,9 +261,11 @@ mod tests {
         );
         service
             .set_session_folder(&session, Some(&folder))
+            .await
             .expect("move");
         service
             .set_session_title(&session, Some("Renamed"))
+            .await
             .expect("rename");
         let meta = service.meta(&session).expect("meta");
         assert_eq!(meta.folder_id.as_deref(), Some(folder.as_str()));
@@ -270,7 +277,8 @@ mod tests {
     async fn revert_is_one_business_operation_with_pending_cleanup() {
         let (_dir, manager, service) = fixture();
         let session = manager
-            .open_session_sync("/proj", "default", None)
+            .open_session("/proj", "default", None)
+            .await
             .expect("session");
         manager
             .insert_detail_rows(
@@ -280,6 +288,7 @@ mod tests {
                     crate::types::user_text("second"),
                 ],
             )
+            .await
             .expect("rows");
         let events = manager.data().events_blocking(&session).expect("events");
         let anchor = events
@@ -294,6 +303,7 @@ mod tests {
 
         let guard = service
             .revert_to_user_anchor(&session, anchor)
+            .await
             .expect("revert");
         assert!(
             manager
@@ -313,12 +323,14 @@ mod tests {
     async fn delete_tree_uses_the_same_manager_and_cleanup() {
         let (_dir, manager, service) = fixture();
         let parent = manager
-            .open_session_sync("/proj", "default", None)
+            .open_session("/proj", "default", None)
+            .await
             .expect("parent");
         let child = service
             .open_child_session_with_responsibility(
                 "/proj", "reviewer", None, &parent, "call-2", "review",
             )
+            .await
             .expect("child");
         let removed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let seen = Arc::clone(&removed);

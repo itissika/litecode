@@ -828,7 +828,7 @@ impl CliConversation {
         // written once, on the row the context meter reads. A new session
         // already carries the default, so only another mode is a write.
         if context_mode != ContextMode::default() {
-            service.set_context_mode(&session_id, context_mode)?;
+            service.set_context_mode_sync(&session_id, context_mode)?;
         }
         // The run's tokens are the session meter's move across it. A run is a
         // fresh session today, but the delta is what makes the number "this

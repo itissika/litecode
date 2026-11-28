@@ -508,13 +508,13 @@ pub struct SessionRecord {
     /// never claimed at a step seam, memory-only (ISSUE on restart loss).
     follow_ups: VecDeque<crate::types::UserInput>,
     subscriber_count: usize,
-    /// Sticky agent selection 锟?isomorphic with `sessions.agent_id`.
+    /// Sticky agent selection — isomorphic with `sessions.agent_id`.
     pub agent_id: String,
-    /// Sticky model catalog id 锟?isomorphic with `sessions.model_id` (NULL = unset).
+    /// Sticky model catalog id — isomorphic with `sessions.model_id` (NULL = unset).
     pub model_id: Option<String>,
-    /// Platform thinking tier 锟?isomorphic with `sessions.thinking_tier`.
+    /// Platform thinking tier — isomorphic with `sessions.thinking_tier`.
     pub thinking_tier: crate::platform_knobs::ThinkingTier,
-    /// Platform context mode 锟?isomorphic with `sessions.context_mode`.
+    /// Platform context mode — isomorphic with `sessions.context_mode`.
     pub context_mode: crate::platform_knobs::ContextMode,
     /// Parent session when this is a subagent child; `None` for root sessions.
     pub parent_session_id: Option<String>,
@@ -603,6 +603,11 @@ pub struct SessionManager {
     /// connection currently bound here, so a reconnect does not strand it.
     permission_routes: std::sync::Mutex<HashMap<String, crate::permission::PermissionRoute>>,
     activity_changed: Condvar,
+    /// Async twin of [`Self::activity_changed`]. `try_begin_revert` awaits this
+    /// instead of parking a Tokio worker on the `Condvar`; every place that
+    /// calls `activity_changed.notify_all()` also calls
+    /// `activity_notify.notify_waiters()`.
+    activity_notify: tokio::sync::Notify,
     /// Process-wide settings write gate. `begin_turn` only from
     /// `reserve_turn` / `reserve_turn_and_claim_pending` / `begin_turn`;
     /// `end_turn` only from `release_turn_reservation` / `finish_turn` /
@@ -692,6 +697,7 @@ impl SessionManager {
             records: std::sync::Mutex::new(HashMap::new()),
             permission_routes: std::sync::Mutex::new(HashMap::new()),
             activity_changed: Condvar::new(),
+            activity_notify: tokio::sync::Notify::new(),
             turn_guard,
             data,
             _test_lease: test_lease,
@@ -710,6 +716,7 @@ impl SessionManager {
             records: std::sync::Mutex::new(HashMap::new()),
             permission_routes: std::sync::Mutex::new(HashMap::new()),
             activity_changed: Condvar::new(),
+            activity_notify: tokio::sync::Notify::new(),
             turn_guard,
             data,
             _test_lease: None,
@@ -811,6 +818,13 @@ impl SessionManager {
         self.data.revision_blocking(session_id).unwrap_or(0)
     }
 
+    /// Async twin of [`Self::expected_revision`] for `async fn` bodies: the
+    /// async methods below must not park a Tokio worker on a SQLite read
+    /// either. A failed read is `0`, exactly like the blocking twin.
+    async fn expected_revision_async(&self, session_id: &str) -> u64 {
+        self.data.revision(session_id).await.unwrap_or(0)
+    }
+
     fn note_receipt(&self, receipt: &crate::session::data::command::CommitReceipt) {
         if receipt.session_id.is_empty() {
             return;
@@ -830,6 +844,18 @@ impl SessionManager {
         mutation: SessionMutation,
     ) -> Result<crate::session::data::command::CommitReceipt> {
         let receipt = self.data.mutate_blocking(mutation)?;
+        self.note_receipt(&receipt);
+        Ok(receipt)
+    }
+
+    /// Async twin of [`Self::mutate_blocking`]. Prefer this from `async fn`:
+    /// it awaits the writer actor instead of parking a Tokio worker on a
+    /// blocking send/recv pair.
+    pub async fn mutate(
+        &self,
+        mutation: SessionMutation,
+    ) -> Result<crate::session::data::command::CommitReceipt> {
+        let receipt = self.data.mutate(mutation).await?;
         self.note_receipt(&receipt);
         Ok(receipt)
     }
@@ -882,7 +908,6 @@ impl SessionManager {
                 context_mode: "standard".into(),
                 updated_at: 0,
                 compacted_seq: None,
-                surface_rewrite_seq: 0,
                 spine_from: 0,
                 todos: Vec::new(),
                 plan_slug: None,
@@ -929,7 +954,52 @@ impl SessionManager {
         agent_id: &str,
         model_id: Option<&str>,
     ) -> Result<String> {
-        self.open_session_sync(project, agent_id, model_id)
+        let receipt = self
+            .mutate(SessionMutation::Create {
+                operation_id: MutationId::new(),
+                project: project.to_string(),
+                agent_id: agent_id.to_string(),
+                model_id: model_id.map(|s| s.to_string()),
+                parent_session_id: None,
+                parent_call_id: None,
+                responsibility: String::new(),
+            })
+            .await?;
+        let sid = receipt.session_id.clone();
+        let meta = self.data.meta(&sid).await?;
+        let mut task_state = TaskReminders {
+            todos: meta
+                .todos
+                .iter()
+                .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                .collect(),
+            active_plan: meta.plan_slug.as_ref().map(|slug| {
+                crate::session::task_state::PlanRef::with_revision(slug, meta.plan_revision.clone())
+            }),
+        };
+        let mut revision = receipt.revision;
+        let plan_dir = self.plan_dir_path();
+        if prune_stale_active_plan(&mut task_state, &plan_dir) {
+            match self
+                .mutate(SessionMutation::SaveTaskState {
+                    session_id: sid.clone(),
+                    expected_revision: revision,
+                    operation_id: MutationId::new(),
+                    state: task_state.clone(),
+                })
+                .await
+            {
+                // Record is not in `records` yet, so note_receipt cannot sync it (S1).
+                Ok(saved) => revision = saved.revision,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to persist pruned active plan on open")
+                }
+            }
+        }
+        let mut record = SessionRecord::from_meta(&meta, task_state, revision);
+        record.project = Some(project.to_string());
+        self.records.lock().unwrap().insert(sid.clone(), record);
+        Ok(sid)
     }
 
     pub fn open_session_sync(
@@ -982,7 +1052,7 @@ impl SessionManager {
     }
 
     /// Open a durable child session linked to a parent `subagent_launch` call.
-    pub fn open_child_session(
+    pub async fn open_child_session(
         &self,
         project: &str,
         agent_id: &str,
@@ -998,9 +1068,10 @@ impl SessionManager {
             parent_call_id,
             "",
         )
+        .await
     }
 
-    pub fn open_child_session_with_responsibility(
+    pub async fn open_child_session_with_responsibility(
         &self,
         project: &str,
         agent_id: &str,
@@ -1014,27 +1085,32 @@ impl SessionManager {
                 "open_child_session requires a workspace SessionManager".into(),
             ));
         }
-        let receipt = self.mutate_blocking(SessionMutation::Create {
-            operation_id: MutationId::new(),
-            project: project.to_string(),
-            agent_id: agent_id.to_string(),
-            model_id: model_id.map(|s| s.to_string()),
-            parent_session_id: Some(parent_session_id.to_string()),
-            parent_call_id: Some(parent_call_id.to_string()),
-            responsibility: responsibility.to_string(),
-        })?;
+        let receipt = self
+            .mutate(SessionMutation::Create {
+                operation_id: MutationId::new(),
+                project: project.to_string(),
+                agent_id: agent_id.to_string(),
+                model_id: model_id.map(|s| s.to_string()),
+                parent_session_id: Some(parent_session_id.to_string()),
+                parent_call_id: Some(parent_call_id.to_string()),
+                responsibility: responsibility.to_string(),
+            })
+            .await?;
         let sid = receipt.session_id.clone();
-        let meta = self.data.meta_blocking(&sid)?;
+        let meta = self.data.meta(&sid).await?;
         let mut task_state = TaskReminders::default();
         let mut revision = receipt.revision;
         let plan_dir = self.plan_dir_path();
         if prune_stale_active_plan(&mut task_state, &plan_dir) {
-            match self.mutate_blocking(SessionMutation::SaveTaskState {
-                session_id: sid.clone(),
-                expected_revision: revision,
-                operation_id: MutationId::new(),
-                state: task_state.clone(),
-            }) {
+            match self
+                .mutate(SessionMutation::SaveTaskState {
+                    session_id: sid.clone(),
+                    expected_revision: revision,
+                    operation_id: MutationId::new(),
+                    state: task_state.clone(),
+                })
+                .await
+            {
                 // Record is not in `records` yet, so note_receipt cannot sync it (S1).
                 Ok(saved) => revision = saved.revision,
                 Err(e) => {
@@ -1060,12 +1136,16 @@ impl SessionManager {
     pub async fn resume_session(&self, session_id: &str) -> Result<()> {
         #[cfg(test)]
         resume_gate_for_test::wait(session_id).await;
-        let mut records = self.records.lock().unwrap();
-        if records.contains_key(session_id) {
+        // P1-7: the registry lock is the one process-wide lock every session
+        // shares. Holding it across the SQLite reads below (and the optional
+        // `synchronous=FULL` write after them) serialized all parallel
+        // subscribes behind one disk round trip. Nothing is held here except
+        // this fast membership probe.
+        if self.records.lock().unwrap().contains_key(session_id) {
             return Ok(());
         }
-        let meta = self.data.meta_blocking(session_id)?;
-        let mut revision = self.data.revision_blocking(session_id).unwrap_or(0);
+        let meta = self.data.meta(session_id).await?;
+        let mut revision = self.data.revision(session_id).await.unwrap_or(0);
         let mut task_state = TaskReminders {
             todos: meta
                 .todos
@@ -1078,14 +1158,18 @@ impl SessionManager {
         };
         let plan_dir = self.plan_dir_path();
         if prune_stale_active_plan(&mut task_state, &plan_dir) {
-            // `records` is locked here: call data directly (note_receipt would
-            // re-lock `records` and self-deadlock). Revision synced below (S1).
-            match self.data.mutate_blocking(SessionMutation::SaveTaskState {
-                session_id: session_id.to_string(),
-                expected_revision: revision,
-                operation_id: MutationId::new(),
-                state: task_state.clone(),
-            }) {
+            // No lock is held, so this is the ordinary async path: the write
+            // queues on the writer actor and the caller awaits it.
+            match self
+                .data
+                .mutate(SessionMutation::SaveTaskState {
+                    session_id: session_id.to_string(),
+                    expected_revision: revision,
+                    operation_id: MutationId::new(),
+                    state: task_state.clone(),
+                })
+                .await
+            {
                 // Record is not in `records` yet, so note_receipt cannot sync it (S1).
                 Ok(saved) => revision = saved.revision,
                 Err(e) => {
@@ -1097,7 +1181,12 @@ impl SessionManager {
         record.project = None;
         // B: the sidecar is a live-turn marker. A resumed session has no live
         // turn in this process, so it must not rehydrate a card from the DB.
-        records.insert(session_id.to_string(), record);
+        // Re-check under the lock: a concurrent resume may have won the race
+        // while this one was reading. First insert wins; both agree on content.
+        let mut records = self.records.lock().unwrap();
+        if !records.contains_key(session_id) {
+            records.insert(session_id.to_string(), record);
+        }
         Ok(())
     }
 
@@ -1136,14 +1225,15 @@ impl SessionManager {
             .events_range_blocking(session_id, from_seq as i64, to_seq as i64)
     }
 
-    pub fn entry_revert_to_user_anchor(&self, session_id: &str, seq: i64) -> Result<()> {
-        let expected = self.expected_revision(session_id);
-        self.mutate_blocking(SessionMutation::Apply {
+    pub async fn entry_revert_to_user_anchor(&self, session_id: &str, seq: i64) -> Result<()> {
+        let expected = self.expected_revision_async(session_id).await;
+        self.mutate(SessionMutation::Apply {
             session_id: session_id.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),
             op: SessionApply::Truncate { anchor_seq: seq },
-        })?;
+        })
+        .await?;
         Ok(())
     }
 
@@ -1192,7 +1282,7 @@ impl SessionManager {
         self.records.try_lock().is_ok()
     }
 
-    pub fn save_task_state(&self, session_id: &str) -> anyhow::Result<()> {
+    pub async fn save_task_state(&self, session_id: &str) -> anyhow::Result<()> {
         let state = {
             let records = self.records.lock().unwrap();
             let entry = records
@@ -1200,13 +1290,14 @@ impl SessionManager {
                 .ok_or_else(|| anyhow::anyhow!("session entry not found: {}", session_id))?;
             entry.task_state.clone()
         };
-        let expected = self.expected_revision(session_id);
-        self.mutate_blocking(SessionMutation::SaveTaskState {
+        let expected = self.expected_revision_async(session_id).await;
+        self.mutate(SessionMutation::SaveTaskState {
             session_id: session_id.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),
             state,
-        })?;
+        })
+        .await?;
         Ok(())
     }
 
@@ -1215,10 +1306,19 @@ impl SessionManager {
         self.data.memory_blocking(session_id)
     }
 
+    /// Async twin of [`Self::load_memory`].
+    pub async fn load_memory_async(&self, session_id: &str) -> Result<SessionMemory> {
+        self.data.memory(session_id).await
+    }
+
     /// Read-modify-write memory under the durable revision CAS. A conflict
     /// means another writer (for example a parallel tool call) got there first,
     /// so re-read and re-apply instead of overwriting their entries.
-    pub fn update_memory<F, T>(&self, session_id: &str, mut apply: F) -> Result<(SessionMemory, T)>
+    pub async fn update_memory<F, T>(
+        &self,
+        session_id: &str,
+        mut apply: F,
+    ) -> Result<(SessionMemory, T)>
     where
         F: FnMut(&mut SessionMemory) -> Result<T>,
     {
@@ -1226,15 +1326,18 @@ impl SessionManager {
             // Read the CAS revision before the snapshot. If a writer commits
             // between the two reads, the snapshot is newer than `expected` and
             // the save conflicts instead of overwriting that writer.
-            let expected = self.expected_revision(session_id);
-            let mut memory = self.load_memory(session_id)?;
+            let expected = self.expected_revision_async(session_id).await;
+            let mut memory = self.load_memory_async(session_id).await?;
             let value = apply(&mut memory)?;
-            match self.mutate_blocking(SessionMutation::SaveMemory {
-                session_id: session_id.to_string(),
-                expected_revision: expected,
-                operation_id: MutationId::new(),
-                memory: memory.clone(),
-            }) {
+            match self
+                .mutate(SessionMutation::SaveMemory {
+                    session_id: session_id.to_string(),
+                    expected_revision: expected,
+                    operation_id: MutationId::new(),
+                    memory: memory.clone(),
+                })
+                .await
+            {
                 Ok(_) => {
                     self.publish_internal(
                         session_id,
@@ -1262,7 +1365,11 @@ impl SessionManager {
     ///
     /// Direct and nested calls both reach this from the shared tool entry, and
     /// all three name the file `path`.
-    pub fn note_plan_tool_touch(&self, session_id: &str, call: &crate::types::FunctionToolCall) {
+    pub fn note_plan_tool_touch(
+        self: &Arc<Self>,
+        session_id: &str,
+        call: &crate::types::FunctionToolCall,
+    ) {
         let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
             return;
         };
@@ -1286,13 +1393,40 @@ impl SessionManager {
             return;
         }
         let path = self.plan_dir_path().join(format!("{}.md", plan.slug));
-        if let Some(revision) = crate::session::task_state::plan_file_revision(&path) {
-            let _ = self.update_active_plan_revision(session_id, &plan.slug, &revision);
+        let Some(revision) = crate::session::task_state::plan_file_revision(&path) else {
+            return;
+        };
+        // This runs inside the sync `PlanTouch` callback the tool executor
+        // invokes from a Tokio worker, so it must not write here. Hand the
+        // durable revision bump to the runtime. The tool call already holds the
+        // workspace write lock, so a lossy touch only costs a later re-touch.
+        let manager = Arc::clone(self);
+        let session_id = session_id.to_string();
+        let slug = plan.slug.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    if let Err(error) = manager
+                        .update_active_plan_revision(&session_id, &slug, &revision)
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id,
+                            error = %error,
+                            "failed to persist active plan revision"
+                        );
+                    }
+                });
+            }
+            Err(_) => tracing::warn!(
+                session_id,
+                "plan touch outside a runtime; revision not persisted"
+            ),
         }
     }
 
     /// Update the content hash the session last saw for its active plan.
-    pub fn update_active_plan_revision(
+    pub async fn update_active_plan_revision(
         &self,
         session_id: &str,
         slug: &str,
@@ -1306,7 +1440,7 @@ impl SessionManager {
             }
             Ok(())
         })?;
-        self.save_task_state(session_id)
+        self.save_task_state(session_id).await
     }
 
     /// Drop an active-plan pointer whose plan file is gone, just before a model call.
@@ -1319,7 +1453,7 @@ impl SessionManager {
     /// The plan directory is resolved from this manager's own data root, never
     /// from thread-local `active_paths()`: manual compaction runs on shared
     /// worker threads that have no workspace context.
-    pub fn settle_stale_plan(&self, session_id: &str) -> anyhow::Result<TaskReminders> {
+    pub async fn settle_stale_plan(&self, session_id: &str) -> anyhow::Result<TaskReminders> {
         let plan_dir = self.plan_dir_path();
         let (state, changed) = self.with_entry_task_state_mut(session_id, |s| {
             let changed = prune_stale_active_plan(s, &plan_dir);
@@ -1328,7 +1462,7 @@ impl SessionManager {
         if !changed {
             return Ok(state);
         }
-        if let Err(e) = self.save_task_state(session_id) {
+        if let Err(e) = self.save_task_state(session_id).await {
             tracing::warn!(session_id, error = %e, "failed to persist cleared active plan");
         }
         if !self.publish_internal(
@@ -1586,6 +1720,7 @@ impl SessionManager {
             cancelled_by,
         });
         self.activity_changed.notify_all();
+        self.activity_notify.notify_waiters();
         self.fire_turn_status(session_id, status_after);
         Some(progress)
     }
@@ -1966,7 +2101,7 @@ impl SessionManager {
     /// B: register one live ask in memory + the sidecar marker. Returns false
     /// when the owning turn is no longer live; the caller must reply Aborted
     /// instead of showing a card.
-    pub fn upsert_pending_permission(
+    pub async fn upsert_pending_permission(
         &self,
         rec: crate::session::pending::PendingPermissionRecord,
     ) -> bool {
@@ -2009,12 +2144,12 @@ impl SessionManager {
                 record.pending_permissions.push(rec);
             }
         }
-        self.persist_pending_permissions(&session_id);
+        self.persist_pending_permissions_async(&session_id).await;
         true
     }
 
     /// B: remove one pending ask (user answered / cancelled that request).
-    pub fn remove_pending_permission(&self, session_id: &str, request_id: &str) {
+    pub async fn remove_pending_permission(&self, session_id: &str, request_id: &str) {
         let changed = {
             let mut records = self.records.lock().unwrap();
             let Some(record) = records.get_mut(session_id) else {
@@ -2027,12 +2162,12 @@ impl SessionManager {
             record.pending_permissions.len() != before
         };
         if changed {
-            self.persist_pending_permissions(session_id);
+            self.persist_pending_permissions_async(session_id).await;
         }
     }
 
     /// B: clear all pending asks (Cancel → Aborted path).
-    pub fn clear_pending_permissions(&self, session_id: &str) {
+    pub async fn clear_pending_permissions(&self, session_id: &str) {
         let changed = {
             let mut records = self.records.lock().unwrap();
             let Some(record) = records.get_mut(session_id) else {
@@ -2045,11 +2180,15 @@ impl SessionManager {
             true
         };
         if changed {
-            self.persist_pending_permissions(session_id);
+            self.persist_pending_permissions_async(session_id).await;
         }
     }
 
     /// B: a finished turn's asks can never be answered again.
+    ///
+    /// Sync by contract: [`Self::finish_turn`] is sync and reachable from both
+    /// a Tokio worker and the fanout thread. The durable rewrite is handed to
+    /// the runtime, so no worker ever runs it inline.
     pub fn clear_pending_permissions_for_turn(&self, session_id: &str, turn_id: &str) {
         let changed = {
             let mut records = self.records.lock().unwrap();
@@ -2063,7 +2202,7 @@ impl SessionManager {
             record.pending_permissions.len() != before
         };
         if changed {
-            self.persist_pending_permissions(session_id);
+            self.spawn_persist_pending_permissions(session_id);
         }
     }
 
@@ -2071,37 +2210,127 @@ impl SessionManager {
     /// report the session so the caller can resolve the card. `None` means the
     /// turn is still live (another connection may own the ask) or no row
     /// matches (an early grant).
-    pub fn clear_pending_permission_if_turn_dead(&self, request_id: &str) -> Option<String> {
-        let mut records = self.records.lock().unwrap();
-        let mut hit: Option<(String, String)> = None;
-        for (session_id, record) in records.iter() {
-            if let Some(pending) = record
+    pub async fn clear_pending_permission_if_turn_dead(&self, request_id: &str) -> Option<String> {
+        let session_id = {
+            let mut records = self.records.lock().unwrap();
+            let mut hit: Option<(String, String)> = None;
+            for (session_id, record) in records.iter() {
+                if let Some(pending) = record
+                    .pending_permissions
+                    .iter()
+                    .find(|p| p.request_id == request_id)
+                {
+                    hit = Some((session_id.clone(), pending.turn_id.clone()));
+                    break;
+                }
+            }
+            let (session_id, turn_id) = hit?;
+            let live = records
+                .get(&session_id)
+                .is_some_and(|record| match &record.activity {
+                    SessionActivity::RunningTurn(live) => live.turn_id.as_str() == turn_id.as_str(),
+                    SessionActivity::StartingTurn { turn_id: t, .. } => t.as_str() == turn_id.as_str(),
+                    _ => false,
+                });
+            if live {
+                return None;
+            }
+            let record = records.get_mut(&session_id)?;
+            record
                 .pending_permissions
-                .iter()
-                .find(|p| p.request_id == request_id)
+                .retain(|p| p.request_id != request_id);
+            session_id
+        };
+        self.persist_pending_permissions_async(&session_id).await;
+        Some(session_id)
+    }
+
+    /// Rewrite the sidecar from the in-memory list on the writer actor.
+    ///
+    /// The durable revision is the CAS authority; a concurrent turn write may
+    /// win between the list snapshot and the save, so on conflict recapture and
+    /// retry.
+    async fn persist_pending_permissions_async(&self, session_id: &str) -> bool {
+        for _ in 0..3 {
+            let pending = {
+                let records = self.records.lock().unwrap();
+                let Some(record) = records.get(session_id) else {
+                    return false;
+                };
+                record.pending_permissions.clone()
+            };
+            let expected = self.expected_revision_async(session_id).await;
+            match self
+                .data
+                .save_pending_permissions(session_id, expected, pending)
+                .await
             {
-                hit = Some((session_id.clone(), pending.turn_id.clone()));
-                break;
+                Ok(receipt) => {
+                    self.note_receipt(&receipt);
+                    return true;
+                }
+                Err(LitecodeError::SessionConflict { .. }) => continue,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        session_id,
+                        "persist pending_permissions failed"
+                    );
+                    return false;
+                }
             }
         }
-        let (session_id, turn_id) = hit?;
-        let live = records
-            .get(&session_id)
-            .is_some_and(|record| match &record.activity {
-                SessionActivity::RunningTurn(live) => live.turn_id.as_str() == turn_id.as_str(),
-                SessionActivity::StartingTurn { turn_id: t, .. } => t.as_str() == turn_id.as_str(),
-                _ => false,
-            });
-        if live {
-            return None;
-        }
-        let record = records.get_mut(&session_id)?;
-        record
-            .pending_permissions
-            .retain(|p| p.request_id != request_id);
-        drop(records);
-        self.persist_pending_permissions(&session_id);
-        Some(session_id)
+        tracing::warn!(
+            session_id,
+            "persist pending_permissions kept conflicting; gave up"
+        );
+        false
+    }
+
+    /// Rewrite the sidecar without blocking the caller.
+    ///
+    /// Only reachable from sync code that a Tokio worker can call. The write
+    /// itself is spawned onto the current runtime, so the worker keeps running;
+    /// off-runtime (plain thread) callers keep the blocking path.
+    fn spawn_persist_pending_permissions(&self, session_id: &str) {
+        let pending = {
+            let records = self.records.lock().unwrap();
+            match records.get(session_id) {
+                Some(record) => record.pending_permissions.clone(),
+                None => return,
+            }
+        };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            let expected = self.data.revision_blocking(session_id).unwrap_or(0);
+            let _ = self
+                .data
+                .save_pending_permissions_blocking(session_id, expected, pending);
+            return;
+        };
+        let data = Arc::clone(&self.data);
+        let session_id = session_id.to_string();
+        handle.spawn(async move {
+            for _ in 0..3 {
+                let Ok(expected) = data.revision(&session_id).await else {
+                    return;
+                };
+                match data
+                    .save_pending_permissions(&session_id, expected, pending.clone())
+                    .await
+                {
+                    Ok(_) => return,
+                    Err(LitecodeError::SessionConflict { .. }) => continue,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "persist pending_permissions failed"
+                        );
+                        return;
+                    }
+                }
+            }
+            tracing::warn!("persist pending_permissions kept conflicting; gave up");
+        });
     }
 
     /// B: rewrite the sidecar from the in-memory list. The durable revision is
@@ -2449,83 +2678,118 @@ impl SessionManager {
     /// Acquire the revert lease. If a turn is running, signal cancellation and
     /// wait until `finish_turn` atomically hands this request exclusive ownership.
     /// No Idle state is observable between the old turn and the truncate.
-    pub fn try_begin_revert(
+    ///
+    /// Async: the wait is a `tokio::sync::Notify`, never a `Condvar`, so a serve
+    /// worker is not pinned while a turn winds down.
+    pub async fn try_begin_revert(
         self: &Arc<Self>,
         session_id: &str,
     ) -> Result<Option<SessionOperationLease>> {
         self.cancel_descendant_turns(session_id);
         let operation_id = uuid::Uuid::new_v4().to_string();
-        let mut records = self.records.lock().unwrap();
         loop {
-            let record = records.get_mut(session_id).ok_or_else(|| {
-                LitecodeError::ToolExecution(format!("session {session_id} not found"))
-            })?;
-            match &mut record.activity {
-                SessionActivity::Idle => {
-                    record.activity = SessionActivity::Exclusive {
-                        operation_id: operation_id.clone(),
-                        kind: SessionOperationKind::Revert,
-                    };
-                    drop(records);
-                    self.cancel_compaction_and_wait_blocking(session_id);
-                    return Ok(Some(SessionOperationLease {
-                        manager: Arc::clone(self),
-                        session_id: session_id.to_string(),
-                        operation_id,
-                    }));
-                }
-                SessionActivity::RunningTurn(live) => {
-                    match &record.pending_revert {
-                        Some(pending) if pending != &operation_id => {
-                            return Err(LitecodeError::AgentAlreadyRunning);
-                        }
-                        Some(_) => {}
-                        None => record.pending_revert = Some(operation_id.clone()),
-                    }
-                    live.stopping = true;
-                    live.cancel.cancel();
-                }
-                SessionActivity::StartingTurn { .. } => {
-                    record.activity = SessionActivity::Exclusive {
-                        operation_id: operation_id.clone(),
-                        kind: SessionOperationKind::Revert,
-                    };
-                    drop(records);
-                    self.turn_guard.end_turn();
-                    self.cancel_compaction_and_wait_blocking(session_id);
-                    return Ok(Some(SessionOperationLease {
-                        manager: Arc::clone(self),
-                        session_id: session_id.to_string(),
-                        operation_id,
-                    }));
-                }
-                SessionActivity::Exclusive { .. } => {
-                    return Err(LitecodeError::AgentAlreadyRunning);
-                }
+            // Register before observing state: a notify that lands between the
+            // probe and the await is then not lost.
+            let notified = self.activity_notify.notified();
+            enum Step {
+                Owned,
+                StartingOwned,
+                Wait,
             }
-            records = self
-                .activity_changed
-                .wait(records)
-                .unwrap_or_else(|error| error.into_inner());
-            let Some(record) = records.get(session_id) else {
-                return Err(LitecodeError::ToolExecution(format!(
-                    "session {session_id} not found"
-                )));
+            let step = {
+                let mut records = self.records.lock().unwrap();
+                let record = records.get_mut(session_id).ok_or_else(|| {
+                    LitecodeError::ToolExecution(format!("session {session_id} not found"))
+                })?;
+                match &mut record.activity {
+                    SessionActivity::Idle => {
+                        record.activity = SessionActivity::Exclusive {
+                            operation_id: operation_id.clone(),
+                            kind: SessionOperationKind::Revert,
+                        };
+                        Step::Owned
+                    }
+                    SessionActivity::RunningTurn(live) => {
+                        match &record.pending_revert {
+                            Some(pending) if pending != &operation_id => {
+                                return Err(LitecodeError::AgentAlreadyRunning);
+                            }
+                            Some(_) => {}
+                            None => record.pending_revert = Some(operation_id.clone()),
+                        }
+                        live.stopping = true;
+                        live.cancel.cancel();
+                        Step::Wait
+                    }
+                    SessionActivity::StartingTurn { .. } => {
+                        record.activity = SessionActivity::Exclusive {
+                            operation_id: operation_id.clone(),
+                            kind: SessionOperationKind::Revert,
+                        };
+                        Step::StartingOwned
+                    }
+                    SessionActivity::Exclusive { .. } => {
+                        return Err(LitecodeError::AgentAlreadyRunning);
+                    }
+                }
             };
-            if matches!(
-                &record.activity,
-                SessionActivity::Exclusive {
-                    operation_id: active,
-                    kind: SessionOperationKind::Revert,
-                } if active == &operation_id
-            ) {
-                drop(records);
-                self.cancel_compaction_and_wait_blocking(session_id);
+            match step {
+                Step::Owned => {
+                    self.cancel_compaction_and_wait(session_id).await;
+                    return Ok(Some(SessionOperationLease {
+                        manager: Arc::clone(self),
+                        session_id: session_id.to_string(),
+                        operation_id,
+                    }));
+                }
+                Step::StartingOwned => {
+                    self.turn_guard.end_turn();
+                    self.cancel_compaction_and_wait(session_id).await;
+                    return Ok(Some(SessionOperationLease {
+                        manager: Arc::clone(self),
+                        session_id: session_id.to_string(),
+                        operation_id,
+                    }));
+                }
+                Step::Wait => notified.await,
+            }
+            // `finish_turn` hands a queued revert the lease directly. Take it
+            // only when the exclusive owner is this operation.
+            let owns_revert = {
+                let records = self.records.lock().unwrap();
+                records.get(session_id).is_some_and(|record| {
+                    matches!(
+                        &record.activity,
+                        SessionActivity::Exclusive {
+                            operation_id: active,
+                            kind: SessionOperationKind::Revert,
+                        } if active == &operation_id
+                    )
+                })
+            };
+            if owns_revert {
+                self.cancel_compaction_and_wait(session_id).await;
                 return Ok(Some(SessionOperationLease {
                     manager: Arc::clone(self),
                     session_id: session_id.to_string(),
                     operation_id,
                 }));
+            }
+            if !self.records.lock().unwrap().contains_key(session_id) {
+                return Err(LitecodeError::ToolExecution(format!(
+                    "session {session_id} not found"
+                )));
+            }
+            // Someone else moved the session out of the pending state (a
+            // competing exclusive operation won): fail like the blocking twin.
+            let blocked = {
+                let records = self.records.lock().unwrap();
+                records.get(session_id).is_some_and(|record| {
+                    matches!(record.activity, SessionActivity::Exclusive { .. })
+                })
+            };
+            if blocked {
+                return Err(LitecodeError::AgentAlreadyRunning);
             }
         }
     }
@@ -2840,14 +3104,19 @@ impl SessionManager {
         existing.or_else(|| done.and_then(|done| done.wait()))
     }
 
-    pub fn cancel_compaction(&self, session_id: &str) {
-        let records = self.records.lock().unwrap();
-        if let Some(episode) = records
-            .get(session_id)
-            .and_then(|record| record.episode.as_ref())
-        {
-            episode.cancel.cancel();
-        }
+    /// Cancel and wait for the terminal. Used by revert/delete after they own
+    /// the session exclusively; it never mutates a surface itself.
+    pub async fn cancel_compaction_and_wait(&self, session_id: &str) -> Option<EpisodeOutcome> {
+        let (id, cancel) = {
+            let records = self.records.lock().unwrap();
+            let record = records.get(session_id)?;
+            let episode = record.episode.as_ref()?;
+            (episode.id.clone(), episode.cancel.clone())
+        };
+        cancel.cancel();
+        self.wait_compaction(session_id, &id)
+            .await
+            .or_else(|| self.last_episode_outcome(session_id, &id))
     }
 
     /// Cancel and wait for the terminal. Used by revert/delete after they own
@@ -2912,6 +3181,7 @@ impl SessionManager {
         if matches {
             record.activity = SessionActivity::Idle;
             self.activity_changed.notify_all();
+            self.activity_notify.notify_waiters();
         }
     }
 
@@ -3037,7 +3307,7 @@ impl SessionManager {
             {
                 continue;
             }
-            let _ = self.remove_session(&session_id);
+            let _ = self.remove_session(&session_id).await;
         }
     }
 
@@ -3065,9 +3335,40 @@ impl SessionManager {
             Ok(ReadValue::Ids(ids)) => ids,
             _ => return 0,
         };
+        if ids.is_empty() {
+            return 0;
+        }
+        // Runs from the sync constructor, which is itself reached inside a
+        // Tokio runtime in `serve`. The registry is still empty here, so the
+        // delete needs nothing but the durable cascade: hand it to the runtime
+        // instead of parking a worker on the writer actor.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let data = Arc::clone(&self.data);
+            handle.spawn(async move {
+                for id in ids {
+                    let expected = data.revision(&id).await.unwrap_or(0);
+                    let _ = data
+                        .mutate(SessionMutation::Delete {
+                            session_id: id,
+                            expected_revision: expected,
+                            operation_id: MutationId::new(),
+                        })
+                        .await;
+                }
+            });
+            return 0;
+        }
         let mut removed = 0usize;
         for id in ids {
-            if self.remove_session(&id).is_ok() {
+            let expected = self.expected_revision(&id);
+            if self
+                .mutate_blocking(SessionMutation::Delete {
+                    session_id: id,
+                    expected_revision: expected,
+                    operation_id: MutationId::new(),
+                })
+                .is_ok()
+            {
                 removed += 1;
             }
         }
@@ -3077,34 +3378,45 @@ impl SessionManager {
     /// Collect the durable subtree ids (children first order is not required)
     /// plus any in-memory child records so a delete cannot leak a live turn.
     fn collect_child_ids_blocking(&self, session_id: &str) -> Vec<String> {
-        let mut seen = std::collections::HashSet::new();
-        let mut queue = std::collections::VecDeque::new();
-        queue.push_back(session_id.to_string());
-        let mut out = Vec::new();
+        // One recursive query resolves the whole durable subtree. The old shape
+        // opened one connection per visited node, so a parent with twenty
+        // children paid twenty SQLite opens to answer one `session/status`.
+        let mut out = self
+            .data
+            .descendant_ids_blocking(session_id)
+            .unwrap_or_default();
+        // A child that was spawned but has not committed yet has no row, so it
+        // cannot appear above. Merge the in-memory registry on top: the union is
+        // the whole subtree a caller may act on.
+        let in_memory: Vec<(String, String)> = {
+            let records = self.records.lock().unwrap();
+            records
+                .iter()
+                .filter_map(|(id, record)| {
+                    record
+                        .parent_session_id
+                        .as_ref()
+                        .map(|parent| (id.clone(), parent.clone()))
+                })
+                .collect()
+        };
+        if in_memory.is_empty() {
+            return out;
+        }
+        let mut children_of: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for (id, parent) in in_memory {
+            children_of.entry(parent).or_default().push(id);
+        }
+        let mut seen: std::collections::HashSet<String> = out.iter().cloned().collect();
+        seen.insert(session_id.to_string());
+        let mut queue = std::collections::VecDeque::from([session_id.to_string()]);
         while let Some(parent) = queue.pop_front() {
-            let mut children: Vec<String> =
-                match self.data.read_blocking(SessionRead::ListChildIds {
-                    parent_session_id: parent.clone(),
-                }) {
-                    Ok(ReadValue::Ids(ids)) => ids,
-                    _ => Vec::new(),
-                };
-            {
-                let records = self.records.lock().unwrap();
-                for (id, record) in records.iter() {
-                    if record.parent_session_id.as_deref() == Some(parent.as_str())
-                        && !children.iter().any(|existing| existing == id)
-                    {
-                        children.push(id.clone());
-                    }
+            for child in children_of.remove(&parent).unwrap_or_default() {
+                if seen.insert(child.clone()) {
+                    out.push(child.clone());
+                    queue.push_back(child);
                 }
-            }
-            for child in children {
-                if child == session_id || !seen.insert(child.clone()) {
-                    continue;
-                }
-                out.push(child.clone());
-                queue.push_back(child);
             }
         }
         out
@@ -3181,16 +3493,16 @@ impl SessionManager {
 
     /// Public remove primitive. Bot-owned sessions are refused here too; the
     /// bot lifecycle uses [`Self::remove_session_unchecked`].
-    pub(crate) fn remove_session(&self, session_id: &str) -> Result<Vec<String>> {
+    pub(crate) async fn remove_session(&self, session_id: &str) -> Result<Vec<String>> {
         if let Some(owner) = self.bot_owner_for_session(session_id) {
             return Err(LitecodeError::BotOwnedSession(owner.bot_id));
         }
-        self.remove_session_unchecked(session_id)
+        self.remove_session_unchecked(session_id).await
     }
 
     /// Bot-lifecycle remove. Only `session::delete::delete_session_tree_for_bot`
     /// reaches this crate-private entry.
-    pub(crate) fn remove_session_unchecked(&self, session_id: &str) -> Result<Vec<String>> {
+    pub(crate) async fn remove_session_unchecked(&self, session_id: &str) -> Result<Vec<String>> {
         // Returns every removed session id: descendants (sorted) first, root last
         // (WP-090 interface v1 §2; implementation owned by Session / WP-091).
         // The idempotent SessionNotFound path returns the ids it could still
@@ -3215,9 +3527,9 @@ impl SessionManager {
         // Cancel and wait for every episode in the subtree *before* the rows
         // disappear. A worker that already passed its cancel check must land
         // its terminal (and any commit) before the delete starts.
-        self.cancel_compaction_and_wait_blocking(session_id);
+        self.cancel_compaction_and_wait(session_id).await;
         for child_id in &known_children {
-            self.cancel_compaction_and_wait_blocking(child_id);
+            self.cancel_compaction_and_wait(child_id).await;
         }
 
         // WP-091 R7: parents must be read before the rows go.
@@ -3232,12 +3544,15 @@ impl SessionManager {
         }
 
         // Durable cascade (children first) via SessionData delete.
-        let expected = self.expected_revision(session_id);
-        match self.mutate_blocking(SessionMutation::Delete {
-            session_id: session_id.to_string(),
-            expected_revision: expected,
-            operation_id: MutationId::new(),
-        }) {
+        let expected = self.expected_revision_async(session_id).await;
+        match self
+            .mutate(SessionMutation::Delete {
+                session_id: session_id.to_string(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+            })
+            .await
+        {
             // Second arm is idempotent: already gone from the durable store.
             Ok(_) | Err(LitecodeError::SessionNotFound(_)) => {
                 let removed_children = self.take_removed_sessions(session_id, &known_children);
@@ -3307,7 +3622,29 @@ impl SessionManager {
         parent_session_id: &str,
         call_id: &str,
     ) -> Result<String> {
-        self.open_child_session(project, "default", None, parent_session_id, call_id)
+        // Several modules use this from synchronous test helpers, so bridge to
+        // the async open path on a short-lived thread instead of making every
+        // caller async (and instead of parking the caller's test runtime).
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("test child session runtime");
+                    rt.block_on(self.open_child_session(
+                        project,
+                        "default",
+                        None,
+                        parent_session_id,
+                        call_id,
+                    ))
+                })
+                .join()
+                .map_err(|_| {
+                    LitecodeError::SessionStorage("child session thread panicked".into())
+                })?
+        })
     }
 
     /// WP-091 R8: broadcast an aggregate status change (Session's R8 hook).
@@ -3481,12 +3818,16 @@ impl SessionManager {
     }
 
     /// Persist sticky session model catalog id. Does not touch `agent_id`.
-    pub fn set_session_model_id(&self, session_id: &str, model_id: Option<String>) -> Result<()> {
-        self.set_session_model_id_inner(session_id, model_id)?;
+    pub async fn set_session_model_id(
+        &self,
+        session_id: &str,
+        model_id: Option<String>,
+    ) -> Result<()> {
+        self.set_session_model_id_inner(session_id, model_id).await?;
         Ok(())
     }
 
-    fn set_session_model_id_inner(
+    async fn set_session_model_id_inner(
         &self,
         session_id: &str,
         model_id: Option<String>,
@@ -3496,13 +3837,15 @@ impl SessionManager {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
-        let expected = self.expected_revision(session_id);
-        let receipt = self.mutate_blocking(SessionMutation::SetModel {
-            session_id: session_id.to_string(),
-            expected_revision: expected,
-            operation_id: MutationId::new(),
-            model_id: normalized.clone(),
-        })?;
+        let expected = self.expected_revision_async(session_id).await;
+        let receipt = self
+            .mutate(SessionMutation::SetModel {
+                session_id: session_id.to_string(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+                model_id: normalized.clone(),
+            })
+            .await?;
         if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
             record.model_id = normalized;
         }
@@ -3516,7 +3859,24 @@ impl SessionManager {
 
     /// Persist the agent-id mirror. Crate-private: only bot lifecycle/startup
     /// reconciliation and the guarded primary-agent setter may write it.
-    pub(crate) fn set_agent_id(&self, session_id: &str, agent_id: String) -> Result<()> {
+    pub(crate) async fn set_agent_id(&self, session_id: &str, agent_id: String) -> Result<()> {
+        let expected = self.expected_revision_async(session_id).await;
+        self.mutate(SessionMutation::SetAgent {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            agent_id: agent_id.clone(),
+        })
+        .await?;
+        if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
+            record.agent_id = agent_id;
+        }
+        Ok(())
+    }
+
+    /// Blocking twin of [`Self::set_agent_id`]. Only for callers that provably
+    /// run outside Tokio (`BotService::new` startup reconciliation).
+    pub(crate) fn set_agent_id_sync(&self, session_id: &str, agent_id: String) -> Result<()> {
         let expected = self.expected_revision(session_id);
         self.mutate_blocking(SessionMutation::SetAgent {
             session_id: session_id.to_string(),
@@ -3545,25 +3905,47 @@ impl SessionManager {
         records.get(session_id).map(|r| r.context_mode)
     }
 
-    pub fn set_thinking_tier(
+    pub async fn set_thinking_tier(
         &self,
         session_id: &str,
         tier: crate::platform_knobs::ThinkingTier,
     ) -> Result<()> {
-        let expected = self.expected_revision(session_id);
-        self.mutate_blocking(SessionMutation::SetThinkingTier {
+        let expected = self.expected_revision_async(session_id).await;
+        self.mutate(SessionMutation::SetThinkingTier {
             session_id: session_id.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),
             tier,
-        })?;
+        })
+        .await?;
         if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
             record.thinking_tier = tier;
         }
         Ok(())
     }
 
-    pub fn set_context_mode(
+    pub async fn set_context_mode(
+        &self,
+        session_id: &str,
+        mode: crate::platform_knobs::ContextMode,
+    ) -> Result<()> {
+        let expected = self.expected_revision_async(session_id).await;
+        self.mutate(SessionMutation::SetContextMode {
+            session_id: session_id.to_string(),
+            expected_revision: expected,
+            operation_id: MutationId::new(),
+            mode,
+        })
+        .await?;
+        if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
+            record.context_mode = mode;
+        }
+        Ok(())
+    }
+
+    /// Blocking twin of [`Self::set_context_mode`]. Only for callers that
+    /// provably run outside Tokio (`CliConversation::open` pre-runtime).
+    pub fn set_context_mode_sync(
         &self,
         session_id: &str,
         mode: crate::platform_knobs::ContextMode,
@@ -3615,17 +3997,20 @@ impl SessionManager {
         Ok(agent_id)
     }
 
-    pub fn register_session(&self, session_id: &str, mut task_state: TaskReminders) {
-        let meta = self.data.meta_blocking(session_id).ok();
-        let mut revision = self.data.revision_blocking(session_id).unwrap_or(0);
+    pub async fn register_session(&self, session_id: &str, mut task_state: TaskReminders) {
+        let meta = self.data.meta(session_id).await.ok();
+        let mut revision = self.data.revision(session_id).await.unwrap_or(0);
         let plan_dir = self.plan_dir_path();
         if prune_stale_active_plan(&mut task_state, &plan_dir) {
-            match self.mutate_blocking(SessionMutation::SaveTaskState {
-                session_id: session_id.to_string(),
-                expected_revision: revision,
-                operation_id: MutationId::new(),
-                state: task_state.clone(),
-            }) {
+            match self
+                .mutate(SessionMutation::SaveTaskState {
+                    session_id: session_id.to_string(),
+                    expected_revision: revision,
+                    operation_id: MutationId::new(),
+                    state: task_state.clone(),
+                })
+                .await
+            {
                 // Record is not in `records` yet, so note_receipt cannot sync it (S1).
                 Ok(saved) => revision = saved.revision,
                 Err(e) => {
@@ -3653,28 +4038,35 @@ impl SessionManager {
         self.data.data_root().to_path_buf()
     }
 
-    pub fn apply(
+    pub async fn apply(
         &self,
         session_id: &str,
         op: SessionApply,
     ) -> anyhow::Result<crate::session::data::command::CommitReceipt> {
-        let expected = self.expected_revision(session_id);
-        Ok(self.mutate_blocking(SessionMutation::Apply {
-            session_id: session_id.to_string(),
-            expected_revision: expected,
-            operation_id: MutationId::new(),
-            op,
-        })?)
+        let expected = self.expected_revision_async(session_id).await;
+        Ok(self
+            .mutate(SessionMutation::Apply {
+                session_id: session_id.to_string(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+                op,
+            })
+            .await?)
     }
 
-    pub fn persist_item(&self, session_id: &str, item: &crate::types::Item) -> anyhow::Result<()> {
-        let expected = self.expected_revision(session_id);
-        self.mutate_blocking(SessionMutation::PersistItem {
+    pub async fn persist_item(
+        &self,
+        session_id: &str,
+        item: &crate::types::Item,
+    ) -> anyhow::Result<()> {
+        let expected = self.expected_revision_async(session_id).await;
+        self.mutate(SessionMutation::PersistItem {
             session_id: session_id.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),
             item: item.clone(),
-        })?;
+        })
+        .await?;
         Ok(())
     }
 
@@ -3686,7 +4078,7 @@ impl SessionManager {
     /// token and retry. The writer's per-row `in_progress` check remains the
     /// correctness guard: if a different writer settled or removed the row,
     /// that error is returned rather than retried.
-    fn mutate_stream_checkpoint(
+    async fn mutate_stream_checkpoint(
         &self,
         session_id: &str,
         mut make: impl FnMut(u64) -> SessionMutation,
@@ -3694,8 +4086,8 @@ impl SessionManager {
         const MAX_ATTEMPTS: usize = 3;
         let mut last_conflict = None;
         for attempt in 0..MAX_ATTEMPTS {
-            let expected = self.expected_revision(session_id);
-            match self.mutate_blocking(make(expected)) {
+            let expected = self.expected_revision_async(session_id).await;
+            match self.mutate(make(expected)).await {
                 Ok(receipt) => return Ok(receipt),
                 Err(error @ LitecodeError::SessionConflict { .. })
                     if attempt + 1 < MAX_ATTEMPTS =>
@@ -3721,21 +4113,21 @@ impl SessionManager {
     ///
     /// The returned seq is the item's identity for the rest of its life: every
     /// later update and the final seal address it, and the client orders by it.
-    pub fn begin_stream_item(
+    pub async fn begin_stream_item(
         &self,
         session_id: &str,
         item: &crate::types::Item,
         turn_id: &str,
     ) -> crate::types::Result<crate::session::event::Seq> {
-        let receipt = self.mutate_stream_checkpoint(session_id, |expected| {
-            SessionMutation::BeginStreamItem {
+        let receipt = self
+            .mutate_stream_checkpoint(session_id, |expected| SessionMutation::BeginStreamItem {
                 session_id: session_id.to_string(),
                 expected_revision: expected,
                 operation_id: MutationId::new(),
                 item: item.clone(),
                 turn_id: turn_id.to_string(),
-            }
-        })?;
+            })
+            .await?;
         match receipt.outcome {
             crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
             other => Err(crate::types::LitecodeError::InvalidSessionEvent(format!(
@@ -3749,7 +4141,7 @@ impl SessionManager {
     /// The stream keeps one provider callback's coalesced batch together, so
     /// one flush can never pay a revision per row. The writer still validates
     /// the batch and applies it atomically.
-    pub fn update_stream_items(
+    pub async fn update_stream_items(
         &self,
         session_id: &str,
         rows: Vec<crate::session::data::StreamItemUpdate>,
@@ -3762,11 +4154,12 @@ impl SessionManager {
             expected_revision: expected,
             operation_id: MutationId::new(),
             rows: rows.clone(),
-        })?;
+        })
+        .await?;
         Ok(())
     }
 
-    pub fn update_stream_item(
+    pub async fn update_stream_item(
         &self,
         session_id: &str,
         seq: crate::session::event::Seq,
@@ -3778,12 +4171,13 @@ impl SessionManager {
             operation_id: MutationId::new(),
             seq,
             item: item.clone(),
-        })?;
+        })
+        .await?;
         Ok(())
     }
 
     /// Settle a streaming row with its authoritative (terminal) payload.
-    pub fn seal_stream_item(
+    pub async fn seal_stream_item(
         &self,
         session_id: &str,
         seq: crate::session::event::Seq,
@@ -3795,22 +4189,25 @@ impl SessionManager {
             operation_id: MutationId::new(),
             seq,
             item: item.clone(),
-        })?;
+        })
+        .await?;
         Ok(())
     }
 
-    pub fn append_reminder(
+    pub async fn append_reminder(
         &self,
         session_id: &str,
         reminder: &crate::reminder::Reminder,
     ) -> anyhow::Result<crate::session::event::Seq> {
-        let expected = self.expected_revision(session_id);
-        let receipt = self.mutate_blocking(SessionMutation::AppendReminder {
-            session_id: session_id.to_string(),
-            expected_revision: expected,
-            operation_id: MutationId::new(),
-            reminder: reminder.clone(),
-        })?;
+        let expected = self.expected_revision_async(session_id).await;
+        let receipt = self
+            .mutate(SessionMutation::AppendReminder {
+                session_id: session_id.to_string(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+                reminder: reminder.clone(),
+            })
+            .await?;
         match receipt.outcome {
             crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
             other => Err(anyhow::anyhow!(
@@ -3819,13 +4216,17 @@ impl SessionManager {
         }
     }
 
-    pub fn spine_reminder_view(
+    pub async fn spine_reminder_view(
         &self,
         session_id: &str,
     ) -> crate::types::Result<crate::reminder::SpineReminderView> {
-        match self.data.read_blocking(SessionRead::SpineReminderView {
-            session_id: session_id.to_string(),
-        })? {
+        match self
+            .data
+            .read(SessionRead::SpineReminderView {
+                session_id: session_id.to_string(),
+            })
+            .await?
+        {
             crate::session::data::command::ReadValue::SpineReminders(view) => Ok(view),
             _ => Err(crate::types::LitecodeError::SessionStorage(
                 "unexpected spine reminder view".into(),
@@ -3841,23 +4242,25 @@ impl SessionManager {
     ///
     /// Returns the seq the record landed on, which is what later items of the same
     /// request are attributed to.
-    pub fn append_request_origin(
+    pub async fn append_request_origin(
         &self,
         session_id: &str,
         record: &serde_json::Value,
     ) -> crate::types::Result<crate::session::event::Seq> {
-        let receipt = self.apply(
-            session_id,
-            SessionApply::Append(EventDraft {
-                time: chrono::Utc::now().timestamp_millis(),
-                event_type: EventType::RequestHeader,
-                data: record.clone(),
-                surface_op: None,
-                source_seqs: None,
-                ignorable: false,
-                state: crate::session::model::LogState::Final,
-            }),
-        )?;
+        let receipt = self
+            .apply(
+                session_id,
+                SessionApply::Append(EventDraft {
+                    time: chrono::Utc::now().timestamp_millis(),
+                    event_type: EventType::RequestHeader,
+                    data: record.clone(),
+                    surface_op: None,
+                    source_seqs: None,
+                    ignorable: false,
+                    state: crate::session::model::LogState::Final,
+                }),
+            )
+            .await?;
         match receipt.outcome {
             crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
             other => Err(crate::types::LitecodeError::InvalidSessionEvent(format!(
@@ -3933,7 +4336,7 @@ impl SessionManager {
     /// The update names only `provider_usage`. A missing row, a non-header seq,
     /// or a column that already has a value changes nothing. The session
     /// revision is left alone.
-    pub fn record_provider_usage(
+    pub async fn record_provider_usage(
         &self,
         session_id: &str,
         seq: crate::session::event::Seq,
@@ -3942,12 +4345,13 @@ impl SessionManager {
         let usage_json = serde_json::to_string(usage).map_err(|err| {
             LitecodeError::SessionStorage(format!("provider usage encode: {err}"))
         })?;
-        self.mutate_blocking(SessionMutation::RecordProviderUsage {
+        self.mutate(SessionMutation::RecordProviderUsage {
             session_id: session_id.to_string(),
             operation_id: MutationId::new(),
             seq,
             usage_json,
-        })?;
+        })
+        .await?;
         Ok(())
     }
 
@@ -4004,7 +4408,7 @@ impl SessionManager {
     /// The only durable artifact of the memory-only pending queue: it must be
     /// indistinguishable from a message typed into the composer — same
     /// `item/user` kind, same revert-anchor status, same rendering.
-    pub fn append_user_message(
+    pub async fn append_user_message(
         &self,
         session_id: &str,
         input: impl Into<crate::types::UserInput>,
@@ -4023,7 +4427,7 @@ impl SessionManager {
             draft.data["sources"] = serde_json::to_value(sources)?;
         }
         draft.time = chrono::Utc::now().timestamp_millis();
-        let receipt = self.apply(session_id, SessionApply::Append(draft))?;
+        let receipt = self.apply(session_id, SessionApply::Append(draft)).await?;
         match receipt.outcome {
             crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
             other => Err(anyhow::anyhow!(
@@ -4037,14 +4441,14 @@ impl SessionManager {
     /// The user's own citation text is the pointer to what they referenced;
     /// mentions are not expanded into the transcript. A failed attachment is
     /// logged and does not undo the user row.
-    pub fn append_user_message_with_knowledge_status(
+    pub async fn append_user_message_with_knowledge_status(
         &self,
         session_id: &str,
         input: impl Into<crate::types::UserInput>,
         workspace: &std::path::Path,
     ) -> anyhow::Result<crate::session::event::Seq> {
-        let seq = self.append_user_message(session_id, input)?;
-        self.append_knowledge_status_for(session_id, workspace);
+        let seq = self.append_user_message(session_id, input).await?;
+        self.append_knowledge_status_for(session_id, workspace).await;
         Ok(seq)
     }
 
@@ -4052,7 +4456,7 @@ impl SessionManager {
     ///
     /// A library with no enabled node writes nothing. The same class still on
     /// the live surface is left as it is. A failed write does not undo the user row.
-    pub fn append_knowledge_status_for(&self, session_id: &str, workspace: &std::path::Path) {
+    pub async fn append_knowledge_status_for(&self, session_id: &str, workspace: &std::path::Path) {
         // `build` only reads the resident knowledge snapshot; its parts
         // (lookup / wait_fresh / snapshot_read) are on the
         // `knowledge_status.note` line.
@@ -4062,7 +4466,7 @@ impl SessionManager {
         let Some(reminder) = built else {
             return;
         };
-        let view = self.spine_reminder_view(session_id);
+        let view = self.spine_reminder_view(session_id).await;
         stages.mark("spine_view");
         if let Ok(view) = view
             && let Some(previous) = view.latest(crate::reminder::ReminderKind::KnowledgeStatus)
@@ -4070,7 +4474,7 @@ impl SessionManager {
         {
             return;
         }
-        if let Err(error) = self.append_reminder(session_id, &reminder) {
+        if let Err(error) = self.append_reminder(session_id, &reminder).await {
             tracing::warn!(%error, "knowledge status reminder was not saved");
         }
         stages.mark("append");
@@ -4079,31 +4483,35 @@ impl SessionManager {
     /// Persist the plan-execution trigger as a dedicated `plan/execute` spine Item.
     ///
     /// System-issued on the human's behalf; deliberately not a revert anchor.
-    pub fn append_plan_execute(
+    pub async fn append_plan_execute(
         &self,
         session_id: &str,
         item: &crate::types::Item,
     ) -> anyhow::Result<()> {
-        let expected = self.expected_revision(session_id);
-        self.mutate_blocking(SessionMutation::AppendPlanExecute {
+        let expected = self.expected_revision_async(session_id).await;
+        self.mutate(SessionMutation::AppendPlanExecute {
             session_id: session_id.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),
             item: item.clone(),
-        })?;
+        })
+        .await?;
         Ok(())
     }
 
-    pub fn seal_in_progress_items(
+    pub async fn seal_in_progress_items(
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<crate::session::event::Seq>> {
-        let expected = self.expected_revision(session_id);
-        match self.mutate_blocking(SessionMutation::SealInProgress {
-            session_id: session_id.to_string(),
-            expected_revision: expected,
-            operation_id: MutationId::new(),
-        }) {
+        let expected = self.expected_revision_async(session_id).await;
+        match self
+            .mutate(SessionMutation::SealInProgress {
+                session_id: session_id.to_string(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+            })
+            .await
+        {
             Ok(receipt) => match receipt.outcome {
                 crate::session::data::command::CommitKind::Sealed { seqs } => Ok(seqs),
                 crate::session::data::command::CommitKind::Idempotent => Ok(Vec::new()),
@@ -4113,38 +4521,41 @@ impl SessionManager {
         }
     }
 
-    pub fn save_context_meter(
+    pub async fn save_context_meter(
         &self,
         session_id: &str,
         meter: &SessionContextMeter,
     ) -> anyhow::Result<()> {
-        let expected = self.expected_revision(session_id);
-        self.mutate_blocking(SessionMutation::SaveContextMeter {
+        let expected = self.expected_revision_async(session_id).await;
+        self.mutate(SessionMutation::SaveContextMeter {
             session_id: session_id.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),
             meter: meter.clone(),
-        })?;
+        })
+        .await?;
         Ok(())
     }
 
-    pub fn insert_detail_rows(
+    pub async fn insert_detail_rows(
         &self,
         session_id: &str,
         items: &[crate::types::Item],
     ) -> anyhow::Result<()> {
-        let expected = self.expected_revision(session_id);
-        self.mutate_blocking(SessionMutation::InsertDetails {
+        let expected = self.expected_revision_async(session_id).await;
+        self.mutate(SessionMutation::InsertDetails {
             session_id: session_id.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),
             items: items.to_vec(),
             turn_id: String::new(),
-        })?;
+        })
+        .await?;
         Ok(())
     }
 
-    pub fn commit_turn_delta(
+    #[allow(clippy::type_complexity)]
+    pub async fn commit_turn_delta(
         &self,
         session_id: &str,
         rows: Vec<crate::session::working::WorkingRow>,
@@ -4156,16 +4567,18 @@ impl SessionManager {
         Vec<crate::session::working::WorkingRow>,
         Option<crate::session::data::command::SessionListPreview>,
     )> {
-        let expected = self.expected_revision(session_id);
-        let receipt = self.mutate_blocking(SessionMutation::CommitTurnDelta {
-            session_id: session_id.to_string(),
-            expected_revision: expected,
-            operation_id: MutationId::new(),
-            rows,
-            expected_max_seq,
-            turn_id: turn_id.to_string(),
-            result_data: result_data.to_vec(),
-        })?;
+        let expected = self.expected_revision_async(session_id).await;
+        let receipt = self
+            .mutate(SessionMutation::CommitTurnDelta {
+                session_id: session_id.to_string(),
+                expected_revision: expected,
+                operation_id: MutationId::new(),
+                rows,
+                expected_max_seq,
+                turn_id: turn_id.to_string(),
+                result_data: result_data.to_vec(),
+            })
+            .await?;
         let working = receipt
             .working_set
             .ok_or_else(|| anyhow::anyhow!("CommitTurnDelta receipt missing writer working set"))?;
@@ -4369,14 +4782,16 @@ mod request_origin_tests {
 
     /// A switch moves only the column: it advances the revision once, appends
     /// no log row, never becomes model input, and is not a request origin.
-    #[test]
-    fn model_change_moves_only_the_column() {
+    #[tokio::test]
+    async fn model_change_moves_only_the_column() {
         let manager = SessionManager::ephemeral_registry();
         let session_id = manager
-            .open_session_sync("", "default", None)
+            .open_session("", "default", None)
+            .await
             .expect("session opens");
         manager
             .set_session_model_id(&session_id, Some("p/a".into()))
+            .await
             .expect("initial model");
         let revision = manager
             .data()
@@ -4390,6 +4805,7 @@ mod request_origin_tests {
 
         manager
             .set_session_model_id(&session_id, Some("p/b".into()))
+            .await
             .expect("switch commits");
 
         assert_eq!(
@@ -4425,14 +4841,16 @@ mod request_origin_tests {
         );
     }
 
-    #[test]
-    fn failed_model_change_rolls_back_the_column() {
+    #[tokio::test]
+    async fn failed_model_change_rolls_back_the_column() {
         let manager = SessionManager::ephemeral_registry();
         let session_id = manager
-            .open_session_sync("", "default", None)
+            .open_session("", "default", None)
+            .await
             .expect("session opens");
         manager
             .set_session_model_id(&session_id, Some("p/a".into()))
+            .await
             .expect("initial model");
         let revision = manager
             .data()
@@ -4445,6 +4863,7 @@ mod request_origin_tests {
             .inject(crate::session::FaultKind::BeforeCommit);
         let error = manager
             .set_session_model_id(&session_id, Some("p/b".into()))
+            .await
             .expect_err("injected commit failure must fail the switch");
         assert!(error.to_string().contains("before commit"), "{error}");
 
@@ -4525,6 +4944,7 @@ mod child_session_tests {
                 "Sender",
             ),
         )
+        .await
         .unwrap();
         let events = mgr.entry_load_events_range(&sid, 0, 10).unwrap();
         let event = events
@@ -4692,7 +5112,7 @@ mod child_session_tests {
         assert!(matches!(err, LitecodeError::AgentAlreadyRunning));
     }
 
-    fn append_turn_end(mgr: &SessionManager, sid: &str, turn: &str, reason: &str) {
+    async fn append_turn_end(mgr: &SessionManager, sid: &str, turn: &str, reason: &str) {
         mgr.apply(
             sid,
             crate::session::store::SessionApply::Append(crate::session::EventDraft {
@@ -4705,6 +5125,7 @@ mod child_session_tests {
                 state: crate::session::LogState::Final,
             }),
         )
+        .await
         .unwrap();
     }
 
@@ -4729,7 +5150,7 @@ mod child_session_tests {
         )
         .unwrap();
         let mut rx = mgr.subscribe_lifecycle();
-        append_turn_end(&mgr, &sid, "t1", "error");
+        append_turn_end(&mgr, &sid, "t1", "error").await;
         assert!(mgr.finish_turn(&sid, "t1").is_some());
         let mut reason = None;
         while let Ok(ev) = rx.try_recv() {
@@ -4778,7 +5199,7 @@ mod child_session_tests {
             .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
             .expect("manual episode admitted during a turn");
         drop(compact);
-        append_turn_end(&mgr, &sid, "t1", "error");
+        append_turn_end(&mgr, &sid, "t1", "error").await;
         mgr.finish_turn(&sid, "t1").unwrap();
         assert!(!mgr.is_turn_running_blocking(&sid));
         assert!(!guard.is_turn_in_progress());
@@ -4816,7 +5237,7 @@ mod child_session_tests {
                 .unwrap()
                 .task_state
                 .active_plan = Some(crate::session::task_state::PlanRef::new("gone"));
-            mgr.save_task_state(&sid).unwrap();
+            mgr.save_task_state(&sid).await.unwrap();
             sid
         };
         let mgr = SessionManager::new_for_test(Arc::new(TurnGuard::new()), db_path);
@@ -4833,6 +5254,7 @@ mod child_session_tests {
             "in-memory revision must match DB after prune-on-open"
         );
         mgr.save_task_state(&sid)
+            .await
             .expect("next CAS write must not conflict");
     }
 
@@ -4913,7 +5335,10 @@ mod child_session_tests {
         )
         .unwrap();
 
-        assert!(mgr.upsert_pending_permission(pending_ask(&sid, "t-ask", "req-ask")));
+        assert!(
+            mgr.upsert_pending_permission(pending_ask(&sid, "t-ask", "req-ask"))
+                .await
+        );
         assert_eq!(mgr.pending_permissions_snapshot(&sid).len(), 1);
         assert_eq!(
             mgr.data().pending_permissions_blocking(&sid).unwrap().len(),
@@ -4922,13 +5347,21 @@ mod child_session_tests {
 
         assert!(mgr.finish_turn(&sid, "t-ask").is_some());
         assert!(mgr.pending_permissions_snapshot(&sid).is_empty());
-        assert!(
-            mgr.data()
-                .pending_permissions_blocking(&sid)
-                .unwrap()
-                .is_empty(),
-            "turn end must clear the sidecar row"
-        );
+        // `finish_turn` persists the cleared sidecar asynchronously on the
+        // runtime so it never blocks a Tokio worker; poll briefly until landed.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !mgr
+            .data()
+            .pending_permissions_blocking(&sid)
+            .unwrap()
+            .is_empty()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "turn end must clear the sidecar row"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
     }
 
     #[tokio::test]
@@ -4937,7 +5370,10 @@ mod child_session_tests {
         let (_guard, mgr) = wp090_mgr(&dir);
         let sid = mgr.open_session("/proj", "default", None).await.unwrap();
 
-        assert!(!mgr.upsert_pending_permission(pending_ask(&sid, "dead-turn", "req-dead")));
+        assert!(
+            !mgr.upsert_pending_permission(pending_ask(&sid, "dead-turn", "req-dead"))
+                .await
+        );
         assert!(mgr.pending_permissions_snapshot(&sid).is_empty());
         assert!(
             mgr.data()
@@ -4961,15 +5397,16 @@ mod child_session_tests {
             .pending_permissions
             .push(stale.clone());
         mgr.data()
-            .save_pending_permissions_blocking(
+            .save_pending_permissions(
                 &sid,
                 mgr.data().revision_blocking(&sid).unwrap(),
                 vec![stale],
             )
+            .await
             .unwrap();
 
         assert_eq!(
-            mgr.clear_pending_permission_if_turn_dead("req-dead"),
+            mgr.clear_pending_permission_if_turn_dead("req-dead").await,
             Some(sid.clone())
         );
         assert!(mgr.pending_permissions_snapshot(&sid).is_empty());
@@ -5025,6 +5462,7 @@ mod child_session_tests {
                 crate::types::user_text("u2"),
             ],
         )
+        .await
         .unwrap();
         let cancel = CancellationToken::new();
         mgr.begin_turn(
@@ -5043,13 +5481,24 @@ mod child_session_tests {
             let mgr = Arc::clone(&mgr);
             let sid = sid.clone();
             std::thread::spawn(move || {
-                let lease = mgr
-                    .try_begin_revert(&sid)
-                    .expect("revert during turn must proceed")
-                    .expect("revert must acquire a lease");
-                acquired_tx.send(()).unwrap();
-                release_rx.recv().unwrap();
-                drop(lease);
+                // `try_begin_revert` is async but waits on a real condition
+                // variable, so it needs a thread of its own rather than the
+                // test's runtime: parking here must not stop this task from
+                // calling `finish_turn`.
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("revert waiter runtime");
+                rt.block_on(async move {
+                    let lease = mgr
+                        .try_begin_revert(&sid)
+                        .await
+                        .expect("revert during turn must proceed")
+                        .expect("revert must acquire a lease");
+                    acquired_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    drop(lease);
+                });
             })
         };
 
@@ -5072,7 +5521,7 @@ mod child_session_tests {
             .unwrap_err();
         assert!(matches!(sneak, LitecodeError::AgentAlreadyRunning));
 
-        mgr.entry_revert_to_user_anchor(&sid, 1).unwrap();
+        mgr.entry_revert_to_user_anchor(&sid, 1).await.unwrap();
         assert_eq!(mgr.data().transcript_blocking(&sid).unwrap().len(), 1);
         release_tx.send(()).unwrap();
         waiter.join().unwrap();
@@ -5166,6 +5615,7 @@ mod child_session_tests {
         let parent = mgr.open_session("/proj", "default", None).await.unwrap();
         let child = mgr
             .open_child_session("/proj", "reviewer", None, &parent, "call_gate")
+            .await
             .unwrap();
 
         mgr.reserve_turn(&child, "t-child-start".into(), 5, "reviewer", "/proj")
@@ -5211,10 +5661,11 @@ mod usage_series_tests {
         }
     }
 
-    fn seeded() -> (SessionManager, String) {
+    async fn seeded() -> (SessionManager, String) {
         let manager = SessionManager::ephemeral_registry();
         let session_id = manager
-            .open_session_sync("", "default", None)
+            .open_session("", "default", None)
+            .await
             .expect("session opens");
         for step in 0..5u64 {
             let header = manager
@@ -5227,9 +5678,11 @@ mod usage_series_tests {
                         "model": "test/model",
                     }),
                 )
+                .await
                 .expect("header row");
             manager
                 .record_provider_usage(&session_id, header, &usage(1_000 + step, 900, 10))
+                .await
                 .expect("bill");
         }
         (manager, session_id)
@@ -5237,9 +5690,9 @@ mod usage_series_tests {
 
     /// The tail is a window; totals and the request count are not. Same rows
     /// feed both, so a truncated chart can never be read as the whole session.
-    #[test]
-    fn series_returns_tail_with_whole_session_totals() {
-        let (manager, session_id) = seeded();
+    #[tokio::test]
+    async fn series_returns_tail_with_whole_session_totals() {
+        let (manager, session_id) = seeded().await;
 
         let all = manager
             .provider_usage_series(&session_id, 10)
@@ -5270,11 +5723,11 @@ mod usage_series_tests {
 
     /// Workspace spend is the same rows without the session filter: two sessions,
     /// one day bucket, and totals that cover both.
-    #[test]
-    fn workspace_usage_sums_every_session() {
+    #[tokio::test]
+    async fn workspace_usage_sums_every_session() {
         let manager = SessionManager::ephemeral_registry();
-        let small = manager.open_session_sync("", "default", None).unwrap();
-        let large = manager.open_session_sync("", "default", None).unwrap();
+        let small = manager.open_session("", "default", None).await.unwrap();
+        let large = manager.open_session("", "default", None).await.unwrap();
         assert_ne!(small, large);
         for (session_id, prompt, provider_id) in
             [(&small, 1_000u64, "alpha"), (&large, 3_000, "beta")]
@@ -5288,19 +5741,21 @@ mod usage_series_tests {
                         "model": "test/model",
                     }),
                 )
+                .await
                 .expect("header row");
             manager
                 .record_provider_usage(session_id, header, &usage(prompt, 900, 10))
+                .await
                 .expect("bill");
         }
         manager
-            .data()
-            .insert_items(&small, &[crate::types::user_text("seed")])
+            .insert_detail_rows(&small, &[crate::types::user_text("seed")])
+            .await
             .unwrap();
         let rows = manager.data().working_set_blocking(&small).unwrap();
         let expected_from = rows.first().and_then(|row| row.log_seq).expect("seed row");
         manager
-            .mutate_blocking(SessionMutation::Compact {
+            .mutate(SessionMutation::Compact {
                 session_id: small.clone(),
                 operation_id: MutationId::new(),
                 summary: "legacy summary".into(),
@@ -5312,6 +5767,7 @@ mod usage_series_tests {
                 usage: Some(usage(500, 400, 20)),
                 provider_id: None,
             })
+            .await
             .expect("unknown compact bill");
 
         let workspace = manager.workspace_usage().expect("workspace usage");
@@ -5367,9 +5823,9 @@ mod usage_series_tests {
     }
 
     /// The header body carries the model; a missing model must not fail the row.
-    #[test]
-    fn series_labels_the_request_model_from_the_header_body() {
-        let (manager, session_id) = seeded();
+    #[tokio::test]
+    async fn series_labels_the_request_model_from_the_header_body() {
+        let (manager, session_id) = seeded().await;
         let series = manager
             .provider_usage_series(&session_id, 10)
             .expect("series");
@@ -5496,6 +5952,7 @@ mod pending_message_tests {
             &sid,
             &[crate::types::user_text("u0"), crate::types::user_text("u1")],
         )
+        .await
         .unwrap();
         mgr.enqueue_pending_message(&sid, "discarded").unwrap();
 
@@ -5504,7 +5961,7 @@ mod pending_message_tests {
         let compact = mgr
             .try_begin_operation(&sid, SessionOperationKind::Revert)
             .expect("exclusive revert lease");
-        let busy = match mgr.try_begin_revert(&sid) {
+        let busy = match mgr.try_begin_revert(&sid).await {
             Ok(_) => panic!("compact must block the revert"),
             Err(error) => error,
         };
@@ -5517,6 +5974,7 @@ mod pending_message_tests {
         // flush then has nothing left to deliver.
         let lease = mgr
             .try_begin_revert(&sid)
+            .await
             .expect("revert after compact releases the lease")
             .expect("revert acquires a lease");
         assert!(mgr.discard_pending_messages_for_revert(&sid, lease.operation_id()));
@@ -5540,16 +5998,18 @@ mod pending_message_tests {
         let mgr = mgr();
         let sid = mgr.open_session("/proj", "default", None).await.unwrap();
         mgr.insert_detail_rows(&sid, &[crate::types::user_text("u0")])
+            .await
             .unwrap();
         mgr.enqueue_pending_message(&sid, "still mine").unwrap();
 
         let lease = mgr
             .try_begin_revert(&sid)
+            .await
             .expect("revert acquires a lease")
             .expect("lease");
         // A bad anchor truncates nothing, and the controller only clears on the
         // success branch — so the queue must survive the attempt.
-        assert!(mgr.entry_revert_to_user_anchor(&sid, 99).is_err());
+        assert!(mgr.entry_revert_to_user_anchor(&sid, 99).await.is_err());
         assert!(mgr.has_pending_messages(&sid));
         drop(lease);
         assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 1);
@@ -5611,10 +6071,10 @@ mod memory_tests {
     use super::*;
     use crate::session::memory::MemoryUpsertRequest;
 
-    #[test]
-    fn update_memory_does_not_overwrite_a_concurrent_write() {
+    #[tokio::test]
+    async fn update_memory_does_not_overwrite_a_concurrent_write() {
         let manager = SessionManager::ephemeral_registry();
-        let sid = manager.open_session_sync("", "default", None).unwrap();
+        let sid = manager.open_session("", "default", None).await.unwrap();
         let injected = std::cell::Cell::new(false);
         let request = |text: &str| MemoryUpsertRequest {
             id: None,
@@ -5626,12 +6086,42 @@ mod memory_tests {
                 if !injected.replace(true) {
                     // Commit a different writer's snapshot after the outer
                     // read. The outer save must conflict, not overwrite it.
-                    manager.update_memory(&sid, |other| {
-                        Ok(other.apply_upsert(&[request("other")], 2))
-                    })?;
+                    // The visitor is a sync `FnMut`, so the competing commit
+                    // cannot be awaited here: it runs on its own thread with its
+                    // own runtime, which keeps the writer's blocking send off the
+                    // Tokio worker this test is running on.
+                    std::thread::scope(|scope| {
+                        scope
+                            .spawn(|| {
+                                let rt = tokio::runtime::Builder::new_current_thread()
+                                    .enable_all()
+                                    .build()
+                                    .expect("competing writer runtime");
+                                rt.block_on(async {
+                                    let other_revision =
+                                        manager.data().revision(&sid).await.unwrap();
+                                    let mut other_memory =
+                                        manager.data().memory(&sid).await.unwrap();
+                                    let _ = other_memory.apply_upsert(&[request("other")], 2);
+                                    manager
+                                        .data()
+                                        .mutate(SessionMutation::SaveMemory {
+                                            session_id: sid.clone(),
+                                            expected_revision: other_revision,
+                                            operation_id: MutationId::new(),
+                                            memory: other_memory,
+                                        })
+                                        .await
+                                        .expect("concurrent writer commits");
+                                });
+                            })
+                            .join()
+                            .expect("competing writer thread");
+                    });
                 }
                 Ok(memory.apply_upsert(&[request("outer")], 1))
             })
+            .await
             .unwrap();
 
         assert!(memory.entry("m1").is_some());
@@ -5641,10 +6131,10 @@ mod memory_tests {
         assert!(loaded.entries.iter().any(|entry| entry.text == "outer"));
     }
 
-    #[test]
-    fn update_memory_publishes_the_full_list_on_the_session_bus() {
+    #[tokio::test]
+    async fn update_memory_publishes_the_full_list_on_the_session_bus() {
         let manager = SessionManager::ephemeral_registry();
-        let sid = manager.open_session_sync("", "default", None).unwrap();
+        let sid = manager.open_session("", "default", None).await.unwrap();
         let mut events = manager.subscribe(&sid).unwrap();
 
         manager
@@ -5657,6 +6147,7 @@ mod memory_tests {
                     1,
                 ))
             })
+            .await
             .unwrap();
 
         let envelope = events.try_recv().expect("memory event");
@@ -5670,10 +6161,10 @@ mod memory_tests {
         }
     }
 
-    #[test]
-    fn memory_round_trips_and_updates() {
+    #[tokio::test]
+    async fn memory_round_trips_and_updates() {
         let manager = SessionManager::ephemeral_registry();
-        let sid = manager.open_session_sync("", "default", None).unwrap();
+        let sid = manager.open_session("", "default", None).await.unwrap();
         assert!(manager.load_memory(&sid).unwrap().entries.is_empty());
 
         let (_, result) = manager
@@ -5686,6 +6177,7 @@ mod memory_tests {
                     1,
                 ))
             })
+            .await
             .unwrap();
         assert_eq!(result.added, ["m1"]);
 
@@ -5695,6 +6187,7 @@ mod memory_tests {
 
         let (_, result) = manager
             .update_memory(&sid, |memory| Ok(memory.apply_delete(&["m1".into()])))
+            .await
             .unwrap();
         assert_eq!(result.deleted, ["m1"]);
         assert!(manager.load_memory(&sid).unwrap().entries.is_empty());
@@ -5911,8 +6404,8 @@ mod stream_checkpoint_retry_tests {
     /// physical-write race, not a reason to fail the turn: the batch must
     /// re-read the revision and retry, while the writer still rejects rows that
     /// have actually settled.
-    #[test]
-    fn stream_batch_retries_a_concurrent_revision_commit() {
+    #[tokio::test]
+    async fn stream_batch_retries_a_concurrent_revision_commit() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("sessions.db");
         let db_path = db_path.to_string_lossy().into_owned();
@@ -5921,10 +6414,12 @@ mod stream_checkpoint_retry_tests {
             db_path.clone(),
         ));
         let session_id = manager
-            .open_session_sync("/p", "default", None)
+            .open_session("/p", "default", None)
+            .await
             .expect("open session");
         let seq = manager
             .begin_stream_item(&session_id, &streaming_item("start"), "turn-retry")
+            .await
             .expect("begin stream row");
         let revision_before = manager
             .data()
@@ -5936,13 +6431,19 @@ mod stream_checkpoint_retry_tests {
         let worker_manager = Arc::clone(&manager);
         let worker_session_id = session_id.clone();
         let update = std::thread::spawn(move || {
-            worker_manager.update_stream_items(
+            // The write is async but the test needs it on its own thread so the
+            // pause/park hooks below can be observed from this one.
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("stream update runtime");
+            rt.block_on(worker_manager.update_stream_items(
                 &worker_session_id,
                 vec![StreamItemUpdate {
                     seq,
                     item: streaming_item("after"),
                 }],
-            )
+            ))
         });
 
         // The writer has dequeued the request, so the manager has already read
@@ -6013,24 +6514,28 @@ mod cum_usage_tests {
 
     /// A bill advances the session totals exactly once, and a bill whose turn
     /// never finished (the old under-count) still counts.
-    #[test]
-    fn a_bill_advances_the_totals_once_and_survives_an_unfinished_turn() {
+    #[tokio::test]
+    async fn a_bill_advances_the_totals_once_and_survives_an_unfinished_turn() {
         let manager = SessionManager::ephemeral_registry();
         let session_id = manager
-            .open_session_sync("", "default", None)
+            .open_session("", "default", None)
+            .await
             .expect("session opens");
         let header = manager
             .append_request_origin(&session_id, &serde_json::json!({ "schema": 1 }))
+            .await
             .expect("header");
 
         manager
             .record_provider_usage(&session_id, header, &usage(100))
+            .await
             .expect("bill");
         assert_eq!(meter(&manager, &session_id).cum_prompt_tokens, 100);
 
         // A retry of the same write must not count the bill twice.
         manager
             .record_provider_usage(&session_id, header, &usage(100))
+            .await
             .expect("retry is a no-op");
         assert_eq!(
             meter(&manager, &session_id).cum_prompt_tokens,
@@ -6041,9 +6546,11 @@ mod cum_usage_tests {
         // Interruption: a second bill lands and the turn never writes turn/end.
         let header = manager
             .append_request_origin(&session_id, &serde_json::json!({ "schema": 1 }))
+            .await
             .expect("header");
         manager
             .record_provider_usage(&session_id, header, &usage(50))
+            .await
             .expect("bill");
         assert_eq!(
             meter(&manager, &session_id).cum_prompt_tokens,
@@ -6055,18 +6562,21 @@ mod cum_usage_tests {
     /// Turn end writes the last request's figures and nothing else: the totals
     /// already include every bill of the turn, so adding the turn's sum here
     /// would count a multi-step turn twice.
-    #[test]
-    fn turn_end_does_not_touch_the_totals() {
+    #[tokio::test]
+    async fn turn_end_does_not_touch_the_totals() {
         let manager = SessionManager::ephemeral_registry();
         let session_id = manager
-            .open_session_sync("", "default", None)
+            .open_session("", "default", None)
+            .await
             .expect("session opens");
         for prompt in [100u64, 200] {
             let header = manager
                 .append_request_origin(&session_id, &serde_json::json!({ "schema": 1 }))
+                .await
                 .expect("header");
             manager
                 .record_provider_usage(&session_id, header, &usage(prompt))
+                .await
                 .expect("bill");
         }
         assert_eq!(meter(&manager, &session_id).cum_prompt_tokens, 300);
@@ -6080,6 +6590,7 @@ mod cum_usage_tests {
                     ..SessionContextMeter::default()
                 },
             )
+            .await
             .expect("turn end meter");
         let m = meter(&manager, &session_id);
         assert_eq!(

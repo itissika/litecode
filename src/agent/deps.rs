@@ -25,7 +25,7 @@ pub trait AgentDeps {
     async fn compact_if_needed(&self, step: u64) -> Result<bool>;
 
     /// Append harness reminders and queued user messages before the view is built.
-    fn sync_request_seam(&mut self, _step: u64) -> Result<()> {
+    async fn sync_request_seam(&mut self, _step: u64) -> Result<()> {
         Ok(())
     }
 
@@ -52,7 +52,7 @@ pub trait AgentDeps {
 
     /// Persist this step's new items. `Ok(true)` means the log was truncated
     /// under this turn and the delta was not written.
-    fn persist_new(&self, items: &[Item], result_data: &[ToolResultData]) -> Result<bool>;
+    async fn persist_new(&self, items: &[Item], result_data: &[ToolResultData]) -> Result<bool>;
 
     /// Called at the start of each agent-loop step; drives step/phase telemetry.
     fn begin_step(&mut self, step: u64);

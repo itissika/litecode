@@ -22,11 +22,11 @@ pub use blob::{
 pub use command::{
     CommitKind, CommitReceipt, DirtySession, MAX_STREAM_BATCH_ROWS, MutationId, ReadValue,
     SessionFolderRow, SessionListPreview, SessionListRow, SessionMutation, SessionRead,
-    SessionRevision, StreamItemUpdate, SurfaceReplacement,
+    SessionRevision, StreamItemUpdate,
 };
 pub use metrics::{WriterMetricsSnapshot, WriterState};
 pub use reader::SessionReadPool;
-pub use writer::{FaultKind, WRITER_QUEUE_CAPACITY, WriteOptions};
+pub use writer::{FaultKind, MAX_GROUP_COMMIT, WRITER_QUEUE_CAPACITY, WriteOptions};
 use writer::{WriterHandle, WriterHooks};
 
 /// Read/write owner of `sessions.db` for one workspace.
@@ -48,6 +48,33 @@ pub struct SessionDataReader {
 #[derive(Clone)]
 pub struct SessionDataReaderConfig {
     path: PathBuf,
+}
+
+/// `(turn_id, reason, cancelled_by)` from one durable `turn/end` row.
+///
+/// One projection so a blocking and an async caller can never disagree about
+/// how a turn/end row decodes. `cancelled_by` is absent on logs written before
+/// WP-098, which reads as `None`.
+#[allow(clippy::type_complexity)]
+fn latest_turn_end_fields(
+    event: Option<crate::session::event::SessionEvent>,
+) -> Option<(String, String, Option<crate::types::StopOrigin>)> {
+    let event = event?;
+    if event.event_type != crate::session::event::EventType::TurnEnd {
+        return None;
+    }
+    let turn_id = event.data.get("turn").and_then(|value| value.as_str())?;
+    let reason = event
+        .data
+        .get("reason")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let cancelled_by = event
+        .data
+        .get("cancelled_by")
+        .and_then(|value| value.as_str())
+        .and_then(crate::types::StopOrigin::parse);
+    Some((turn_id.to_string(), reason.to_string(), cancelled_by))
 }
 
 impl SessionData {
@@ -166,6 +193,62 @@ impl SessionData {
         self.reader.execute_blocking(query)
     }
 
+    /// Async typed reads. These run on the blocking pool, so an async caller
+    /// (`resume_session`, `session/list`) never parks a Tokio worker on SQLite.
+    pub async fn meta(&self, session_id: &str) -> Result<crate::session::model::SessionMeta> {
+        match self
+            .read(SessionRead::Meta {
+                session_id: session_id.to_string(),
+            })
+            .await?
+        {
+            ReadValue::Meta(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage("unexpected meta".into())),
+        }
+    }
+
+    pub async fn revision(&self, session_id: &str) -> Result<u64> {
+        match self
+            .read(SessionRead::Revision {
+                session_id: session_id.to_string(),
+            })
+            .await?
+        {
+            ReadValue::Revision(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected revision read".into(),
+            )),
+        }
+    }
+
+    pub async fn list_sessions(&self) -> Result<Vec<crate::session::data::command::SessionListRow>> {
+        match self.read(SessionRead::ListSessions).await? {
+            ReadValue::List(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage("unexpected list".into())),
+        }
+    }
+
+    pub async fn list_folders(&self) -> Result<Vec<SessionFolderRow>> {
+        match self.read(SessionRead::ListFolders).await? {
+            ReadValue::Folders(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage("unexpected folders".into())),
+        }
+    }
+
+    pub async fn has_conversation_rows(&self, session_id: &str) -> Result<bool> {
+        match self
+            .read(SessionRead::HasConversationRows {
+                session_id: session_id.to_string(),
+            })
+            .await?
+        {
+            ReadValue::Count(count) => Ok(count > 0),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected conversation-row count".into(),
+            )),
+        }
+    }
+
     pub fn revision_blocking(&self, session_id: &str) -> Result<u64> {
         match self.read_blocking(SessionRead::Revision {
             session_id: session_id.to_string(),
@@ -272,6 +355,22 @@ impl SessionData {
         }
     }
 
+    /// Async twin of [`Self::save_pending_permissions_blocking`].
+    pub async fn save_pending_permissions(
+        &self,
+        session_id: &str,
+        expected_revision: u64,
+        pending: Vec<crate::session::pending::PendingPermissionRecord>,
+    ) -> Result<CommitReceipt> {
+        self.mutate(SessionMutation::SavePendingPermissions {
+            session_id: session_id.to_string(),
+            expected_revision,
+            operation_id: MutationId::new(),
+            pending,
+        })
+        .await
+    }
+
     /// WP-186: replace durable pending permissions (full list write).
     pub fn save_pending_permissions_blocking(
         &self,
@@ -285,6 +384,19 @@ impl SessionData {
             operation_id: MutationId::new(),
             pending,
         })
+    }
+
+    /// Async twin of [`Self::memory_blocking`].
+    pub async fn memory(&self, session_id: &str) -> Result<crate::session::memory::SessionMemory> {
+        match self
+            .read(SessionRead::Memory {
+                session_id: session_id.to_string(),
+            })
+            .await?
+        {
+            ReadValue::Memory(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage("unexpected memory".into())),
+        }
     }
 
     pub fn meta_blocking(&self, session_id: &str) -> Result<crate::session::model::SessionMeta> {
@@ -448,24 +560,54 @@ impl SessionData {
         &self,
         session_id: &str,
     ) -> Result<Option<(String, String, Option<crate::types::StopOrigin>)>> {
-        let events = self.events_blocking(session_id)?;
-        Ok(events.iter().rev().find_map(|event| {
-            if event.event_type != crate::session::event::EventType::TurnEnd {
-                return None;
-            }
-            let turn_id = event.data.get("turn").and_then(|value| value.as_str())?;
-            let reason = event
-                .data
-                .get("reason")
-                .and_then(|value| value.as_str())
-                .unwrap_or("unknown");
-            let cancelled_by = event
-                .data
-                .get("cancelled_by")
-                .and_then(|value| value.as_str())
-                .and_then(crate::types::StopOrigin::parse);
-            Some((turn_id.to_string(), reason.to_string(), cancelled_by))
-        }))
+        Ok(latest_turn_end_fields(
+            self.latest_turn_end_event_blocking(session_id)?,
+        ))
+    }
+
+    /// The newest durable `turn/end` event itself. One indexed backwards scan,
+    /// no whole-log fold: `session/list` needs only this row per session.
+    pub fn latest_turn_end_event_blocking(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::session::event::SessionEvent>> {
+        match self.read_blocking(SessionRead::LatestTurnEnd {
+            session_id: session_id.to_string(),
+        })? {
+            ReadValue::LatestTurnEnd(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected latest turn end".into(),
+            )),
+        }
+    }
+
+    /// Async twin of [`Self::latest_turn_end_blocking`].
+    #[allow(clippy::type_complexity)]
+    pub async fn latest_turn_end(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(String, String, Option<crate::types::StopOrigin>)>> {
+        Ok(latest_turn_end_fields(
+            self.latest_turn_end_event(session_id).await?,
+        ))
+    }
+
+    /// Async twin of [`Self::latest_turn_end_event_blocking`].
+    pub async fn latest_turn_end_event(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::session::event::SessionEvent>> {
+        match self
+            .read(SessionRead::LatestTurnEnd {
+                session_id: session_id.to_string(),
+            })
+            .await?
+        {
+            ReadValue::LatestTurnEnd(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected latest turn end".into(),
+            )),
+        }
     }
 
     pub fn list_sessions_blocking(
@@ -545,12 +687,43 @@ impl SessionData {
 
     /// Display-only title override. Revision-neutral: a rename never invalidates
     /// a running turn's transcript CAS.
+    pub async fn set_session_title(
+        &self,
+        session_id: &str,
+        title: Option<&str>,
+    ) -> Result<()> {
+        self.mutate(SessionMutation::SetTitle {
+            session_id: session_id.to_string(),
+            operation_id: MutationId::new(),
+            title: title.map(str::to_string),
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Display-only title override. Revision-neutral: a rename never invalidates
+    /// a running turn's transcript CAS.
     pub fn set_session_title_blocking(&self, session_id: &str, title: Option<&str>) -> Result<()> {
         self.mutate_blocking(SessionMutation::SetTitle {
             session_id: session_id.to_string(),
             operation_id: MutationId::new(),
             title: title.map(str::to_string),
         })?;
+        Ok(())
+    }
+
+    /// Move a session into a folder, or to the ungrouped bucket when NULL.
+    pub async fn set_session_folder(
+        &self,
+        session_id: &str,
+        folder_id: Option<&str>,
+    ) -> Result<()> {
+        self.mutate(SessionMutation::SetFolder {
+            session_id: session_id.to_string(),
+            operation_id: MutationId::new(),
+            folder_id: folder_id.map(str::to_string),
+        })
+        .await?;
         Ok(())
     }
 
@@ -568,6 +741,17 @@ impl SessionData {
         Ok(())
     }
 
+    pub async fn create_session_folder(&self, name: &str, id_prefix: &str) -> Result<String> {
+        let id = format!("{id_prefix}{}", ulid::Ulid::new());
+        self.mutate(SessionMutation::CreateFolder {
+            id: id.clone(),
+            name: name.to_string(),
+            operation_id: MutationId::new(),
+        })
+        .await?;
+        Ok(id)
+    }
+
     pub fn create_session_folder_blocking(&self, name: &str, id_prefix: &str) -> Result<String> {
         let id = format!("{id_prefix}{}", ulid::Ulid::new());
         self.mutate_blocking(SessionMutation::CreateFolder {
@@ -576,6 +760,16 @@ impl SessionData {
             operation_id: MutationId::new(),
         })?;
         Ok(id)
+    }
+
+    pub async fn rename_session_folder(&self, id: &str, name: &str) -> Result<()> {
+        self.mutate(SessionMutation::RenameFolder {
+            id: id.to_string(),
+            name: name.to_string(),
+            operation_id: MutationId::new(),
+        })
+        .await?;
+        Ok(())
     }
 
     pub fn rename_session_folder_blocking(&self, id: &str, name: &str) -> Result<()> {
@@ -587,11 +781,31 @@ impl SessionData {
         Ok(())
     }
 
+    pub async fn delete_session_folder(&self, id: &str) -> Result<()> {
+        self.mutate(SessionMutation::DeleteFolder {
+            id: id.to_string(),
+            operation_id: MutationId::new(),
+        })
+        .await?;
+        Ok(())
+    }
+
     pub fn delete_session_folder_blocking(&self, id: &str) -> Result<()> {
         self.mutate_blocking(SessionMutation::DeleteFolder {
             id: id.to_string(),
             operation_id: MutationId::new(),
         })?;
+        Ok(())
+    }
+
+    /// Rewrite folder order. Unknown ids are ignored; unlisted folders keep
+    /// their relative order at the end.
+    pub async fn reorder_session_folders(&self, ids: &[String]) -> Result<()> {
+        self.mutate(SessionMutation::ReorderFolders {
+            ids: ids.to_vec(),
+            operation_id: MutationId::new(),
+        })
+        .await?;
         Ok(())
     }
 
@@ -656,6 +870,19 @@ impl SessionData {
         }
     }
 
+    /// Every durable descendant in one recursive query. Callers still merge
+    /// in-memory children: a child that has not committed yet is invisible here.
+    pub fn descendant_ids_blocking(&self, session_id: &str) -> Result<Vec<String>> {
+        match self.read_blocking(SessionRead::DescendantIds {
+            session_id: session_id.to_string(),
+        })? {
+            ReadValue::Ids(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected descendant ids".into(),
+            )),
+        }
+    }
+
     pub fn list_session_activity_blocking(
         &self,
         since_ms: i64,
@@ -670,6 +897,7 @@ impl SessionData {
 
     pub fn shutdown(&self) {
         self.writer.shutdown();
+        self.reader.clear_idle();
     }
 }
 

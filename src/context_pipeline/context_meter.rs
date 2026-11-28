@@ -338,7 +338,6 @@ pub fn persisted_occupancy_bill(
 ) -> Result<Option<OccupancyBill>> {
     let meta = sessions.data().meta_blocking(session_id).ok();
     let compacted_seq = meta.as_ref().and_then(|meta| meta.compacted_seq);
-    let surface_rewrite_seq = meta.as_ref().map_or(0, |meta| meta.surface_rewrite_seq);
     // Latest bill only: occupancy is a point measurement of the prompt, so the
     // newest bill is the whole answer and no history scan is needed.
     let latest = sessions.latest_provider_bill(session_id)?;
@@ -349,7 +348,6 @@ pub fn persisted_occupancy_bill(
     Ok(occupancy_bill_from(
         &ProviderPromptBaseline::default(),
         compacted_seq,
-        surface_rewrite_seq,
         latest,
         &meter,
     ))

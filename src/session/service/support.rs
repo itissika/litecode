@@ -198,13 +198,13 @@ impl SessionService {
         )
     }
 
-    pub(crate) fn ensure_session_model(
+    pub(crate) async fn ensure_session_model(
         &self,
         resolved: &ResolvedConfig,
         session_id: &str,
         agent_id: &str,
     ) -> Option<String> {
-        crate::runtime::ensure_session_model(resolved, &self.sessions, session_id, agent_id)
+        crate::runtime::ensure_session_model(resolved, &self.sessions, session_id, agent_id).await
     }
 
     pub(crate) fn preview_session_model(
@@ -322,14 +322,36 @@ impl SessionService {
         )
     }
 
+    /// Persist the user row plus its knowledge-status reminder.
+    ///
+    /// The underlying manager call is async, but every caller of this adapter
+    /// is a synchronous auto-turn helper (they already own a dedicated thread
+    /// and runtime). Bridging here keeps that signature without parking a Tokio
+    /// worker on the shared serve runtime — the same shape as
+    /// `WriterHandle::submit_blocking`.
     pub(crate) fn append_user_message_with_knowledge_status(
         &self,
         session_id: &str,
         input: impl Into<UserInput>,
         workspace: &Path,
     ) -> anyhow::Result<Seq> {
-        self.sessions
-            .append_user_message_with_knowledge_status(session_id, input, workspace)
+        let input = input.into();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|error| anyhow::anyhow!("user row runtime: {error}"))?;
+                    rt.block_on(self.sessions.append_user_message_with_knowledge_status(
+                        session_id,
+                        input,
+                        workspace,
+                    ))
+                })
+                .join()
+                .map_err(|_| anyhow::anyhow!("user row append thread panicked"))?
+        })
     }
 
     pub(crate) fn reserve_auto_turn(

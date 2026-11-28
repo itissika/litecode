@@ -57,6 +57,16 @@ impl SessionService {
         self.sessions.data().latest_turn_end_blocking(session_id)
     }
 
+    /// Async twin of [`Self::latest_turn_end`], for callers already on a Tokio
+    /// worker (`session/list`) that must not park there on SQLite.
+    #[allow(clippy::type_complexity)]
+    pub(crate) async fn latest_turn_end_async(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(String, String, Option<StopOrigin>)>> {
+        self.sessions.data().latest_turn_end(session_id).await
+    }
+
     pub(crate) fn is_turn_running_blocking(&self, session_id: &str) -> bool {
         self.sessions.is_turn_running_blocking(session_id)
     }

@@ -87,7 +87,7 @@ pub fn seed_model_ref(resolved: &ResolvedConfig, agent_id: &str) -> Option<Strin
 /// This writes `sessions.db`, which is not turn-guarded: unlike settings writes
 /// (global DB), it succeeds while another session is running. Returns the model
 /// the session should run with, or `None` when nothing is selectable.
-pub fn ensure_session_model(
+pub async fn ensure_session_model(
     resolved: &ResolvedConfig,
     sessions: &SessionManager,
     session_id: &str,
@@ -102,7 +102,10 @@ pub fn ensure_session_model(
     }
     let model_ref = seed_model_ref(resolved, agent_id)?;
     if current.as_deref() != Some(model_ref.as_str()) {
-        match sessions.set_session_model_id(session_id, Some(model_ref.clone())) {
+        match sessions
+            .set_session_model_id(session_id, Some(model_ref.clone()))
+            .await
+        {
             Ok(_) => tracing::info!(
                 session_id,
                 model_ref = %model_ref,

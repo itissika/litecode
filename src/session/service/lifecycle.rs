@@ -26,7 +26,7 @@ impl SessionService {
 
     /// Ordinary session identity switch. Rejects bot-owned sessions; only the
     /// bot lifecycle / startup reconciliation may write its one mirror.
-    pub(crate) fn set_agent_id(&self, session_id: &str, agent_id: String) -> Result<()> {
+    pub(crate) async fn set_agent_id(&self, session_id: &str, agent_id: String) -> Result<()> {
         if let Some(owner) = self.bot_owner_for_session(session_id) {
             return Err(crate::types::LitecodeError::BotOwnedSession(owner.bot_id));
         }
@@ -34,40 +34,53 @@ impl SessionService {
         if target_is_bot {
             return Err(crate::types::LitecodeError::BotOwnedSession(agent_id));
         }
-        self.sessions.set_agent_id(session_id, agent_id)
+        self.sessions.set_agent_id(session_id, agent_id).await
     }
 
     /// Bot lifecycle write: bind the session's agent_id mirror to its bot id.
+    ///
+    /// Sync: only `BotService::new` startup reconciliation calls it, and that
+    /// constructor runs outside any Tokio runtime.
     pub(crate) fn bind_bot_agent_id(&self, session_id: &str, bot_id: String) -> Result<()> {
-        self.sessions.set_agent_id(session_id, bot_id)
+        self.sessions.set_agent_id_sync(session_id, bot_id)
     }
 
     pub(crate) fn session_model_id(&self, session_id: &str) -> Option<String> {
         self.sessions.session_model_id(session_id)
     }
 
-    pub(crate) fn set_session_model_id(
+    pub(crate) async fn set_session_model_id(
         &self,
         session_id: &str,
         model_id: Option<String>,
     ) -> Result<()> {
-        self.sessions.set_session_model_id(session_id, model_id)
+        self.sessions.set_session_model_id(session_id, model_id).await
     }
 
-    pub(crate) fn set_thinking_tier(
+    pub(crate) async fn set_thinking_tier(
         &self,
         session_id: &str,
         tier: crate::platform_knobs::ThinkingTier,
     ) -> Result<()> {
-        self.sessions.set_thinking_tier(session_id, tier)
+        self.sessions.set_thinking_tier(session_id, tier).await
     }
 
-    pub(crate) fn set_context_mode(
+    pub(crate) async fn set_context_mode(
         &self,
         session_id: &str,
         mode: crate::platform_knobs::ContextMode,
     ) -> Result<()> {
-        self.sessions.set_context_mode(session_id, mode)
+        self.sessions.set_context_mode(session_id, mode).await
+    }
+
+    /// Blocking twin of [`Self::set_context_mode`]. Only for callers that
+    /// provably run outside Tokio (`CliConversation::open` before `block_on`).
+    pub(crate) fn set_context_mode_sync(
+        &self,
+        session_id: &str,
+        mode: crate::platform_knobs::ContextMode,
+    ) -> Result<()> {
+        self.sessions.set_context_mode_sync(session_id, mode)
     }
 
     pub(crate) fn resolve_primary_agent(
@@ -109,45 +122,58 @@ impl SessionService {
             .has_conversation_rows_blocking(session_id)
     }
 
-    pub(crate) fn set_session_title(&self, session_id: &str, title: Option<&str>) -> Result<()> {
-        self.sessions
-            .data()
-            .set_session_title_blocking(session_id, title)
+    // Async twins: `session/list` runs on a Tokio worker and must not park it on
+    // SQLite, so it takes these instead of the `_blocking` forms above.
+    pub(crate) async fn list_folders_async(&self) -> Result<Vec<SessionFolderRow>> {
+        self.sessions.data().list_folders().await
     }
 
-    pub(crate) fn set_session_folder(
+    pub(crate) async fn list_sessions_async(&self) -> Result<Vec<SessionListRow>> {
+        self.sessions.data().list_sessions().await
+    }
+
+    pub(crate) async fn has_conversation_rows_async(&self, session_id: &str) -> Result<bool> {
+        self.sessions.data().has_conversation_rows(session_id).await
+    }
+
+    pub(crate) async fn set_session_title(
+        &self,
+        session_id: &str,
+        title: Option<&str>,
+    ) -> Result<()> {
+        self.sessions.data().set_session_title(session_id, title).await
+    }
+
+    pub(crate) async fn set_session_folder(
         &self,
         session_id: &str,
         folder_id: Option<&str>,
     ) -> Result<()> {
         self.sessions
             .data()
-            .set_session_folder_blocking(session_id, folder_id)
+            .set_session_folder(session_id, folder_id)
+            .await
     }
 
-    pub(crate) fn create_session_folder(&self, name: &str, bot: bool) -> Result<String> {
+    pub(crate) async fn create_session_folder(&self, name: &str, bot: bool) -> Result<String> {
         let prefix = if bot {
             crate::bot::BOT_FOLDER_PREFIX
         } else {
             ""
         };
-        self.sessions
-            .data()
-            .create_session_folder_blocking(name, prefix)
+        self.sessions.data().create_session_folder(name, prefix).await
     }
 
-    pub(crate) fn rename_session_folder(&self, id: &str, name: &str) -> Result<()> {
-        self.sessions
-            .data()
-            .rename_session_folder_blocking(id, name)
+    pub(crate) async fn rename_session_folder(&self, id: &str, name: &str) -> Result<()> {
+        self.sessions.data().rename_session_folder(id, name).await
     }
 
-    pub(crate) fn delete_session_folder(&self, id: &str) -> Result<()> {
-        self.sessions.data().delete_session_folder_blocking(id)
+    pub(crate) async fn delete_session_folder(&self, id: &str) -> Result<()> {
+        self.sessions.data().delete_session_folder(id).await
     }
 
-    pub(crate) fn reorder_session_folders(&self, ids: &[String]) -> Result<()> {
-        self.sessions.data().reorder_session_folders_blocking(ids)
+    pub(crate) async fn reorder_session_folders(&self, ids: &[String]) -> Result<()> {
+        self.sessions.data().reorder_session_folders(ids).await
     }
 
     // ── Session actions ───────────────────────────────────────────────────
@@ -156,7 +182,7 @@ impl SessionService {
         self.sessions.ensure_entry(session_id).await
     }
 
-    pub(crate) fn open_child_session_with_responsibility(
+    pub(crate) async fn open_child_session_with_responsibility(
         &self,
         project: &str,
         agent_id: &str,
@@ -165,21 +191,23 @@ impl SessionService {
         parent_call_id: &str,
         responsibility: &str,
     ) -> Result<String> {
-        self.sessions.open_child_session_with_responsibility(
-            project,
-            agent_id,
-            model_id,
-            parent_session_id,
-            parent_call_id,
-            responsibility,
-        )
+        self.sessions
+            .open_child_session_with_responsibility(
+                project,
+                agent_id,
+                model_id,
+                parent_session_id,
+                parent_call_id,
+                responsibility,
+            )
+            .await
     }
 
-    pub(crate) fn remove_session(&self, session_id: &str) -> Result<Vec<String>> {
+    pub(crate) async fn remove_session(&self, session_id: &str) -> Result<Vec<String>> {
         if let Some(owner) = self.bot_owner_for_session(session_id) {
             return Err(crate::types::LitecodeError::BotOwnedSession(owner.bot_id));
         }
-        self.sessions.remove_session(session_id)
+        self.sessions.remove_session(session_id).await
     }
 
     /// Public session delete: bot-owned sessions are refused here, not only in

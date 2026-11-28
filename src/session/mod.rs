@@ -32,7 +32,7 @@ pub mod workspace_lock;
 pub use crate::types::StopOrigin;
 pub use data::{
     CommitReceipt, FaultKind, MutationId, ReadValue, SessionData, SessionDataReader,
-    SessionMutation, SessionRead, SessionRevision, SurfaceReplacement, WRITER_QUEUE_CAPACITY,
+    SessionMutation, SessionRead, SessionRevision, WRITER_QUEUE_CAPACITY,
     WriteOptions, WriterMetricsSnapshot, WriterState,
 };
 pub use estimate::{

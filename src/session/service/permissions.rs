@@ -36,22 +36,27 @@ impl SessionService {
         self.sessions.remove_pending_message(session_id, id)
     }
 
-    pub(crate) fn upsert_pending_permission(&self, rec: PendingPermissionRecord) -> bool {
-        self.sessions.upsert_pending_permission(rec)
+    pub(crate) async fn upsert_pending_permission(&self, rec: PendingPermissionRecord) -> bool {
+        self.sessions.upsert_pending_permission(rec).await
     }
 
-    pub(crate) fn remove_pending_permission(&self, session_id: &str, request_id: &str) {
+    pub(crate) async fn remove_pending_permission(&self, session_id: &str, request_id: &str) {
         self.sessions
-            .remove_pending_permission(session_id, request_id);
+            .remove_pending_permission(session_id, request_id)
+            .await;
     }
 
-    pub(crate) fn clear_pending_permissions(&self, session_id: &str) {
-        self.sessions.clear_pending_permissions(session_id);
+    pub(crate) async fn clear_pending_permissions(&self, session_id: &str) {
+        self.sessions.clear_pending_permissions(session_id).await;
     }
 
-    pub(crate) fn clear_pending_permission_if_turn_dead(&self, request_id: &str) -> Option<String> {
+    pub(crate) async fn clear_pending_permission_if_turn_dead(
+        &self,
+        request_id: &str,
+    ) -> Option<String> {
         self.sessions
             .clear_pending_permission_if_turn_dead(request_id)
+            .await
     }
 
     pub(crate) fn latest_unanswered_call_id_for_tool(

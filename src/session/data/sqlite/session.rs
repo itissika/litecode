@@ -213,21 +213,16 @@ pub struct WorkspaceUsage {
 pub fn occupancy_usage(
     latest: Option<(u64, ProviderUsage)>,
     compacted_seq: Option<u64>,
-    surface_rewrite_seq: u64,
     meter: &SessionContextMeter,
 ) -> Option<ProviderUsage> {
     if let Some((seq, usage)) = latest {
-        let compacted_retired = compacted_seq.is_some_and(|compacted| compacted > seq);
-        let rewritten_retired = surface_rewrite_seq > 0 && seq <= surface_rewrite_seq;
-        if compacted_retired || rewritten_retired {
+        if compacted_seq.is_some_and(|compacted| compacted > seq) {
             return None;
         }
         return Some(usage);
     }
-    // No seq-bearing bill exists, so a stored meter row cannot prove it is
-    // newer than the last surface rewrite. Be conservative and let the caller
-    // measure the rewritten request locally instead of resurrecting old counts.
-    if surface_rewrite_seq > 0 || meter.is_empty() {
+    // No seq-bearing bill exists, so a stored meter row is all there is.
+    if meter.is_empty() {
         None
     } else {
         Some(ProviderUsage::from_meter_last(meter))
@@ -1361,7 +1356,6 @@ pub(crate) fn load_meta_on(
         context_mode,
         updated_at,
         compacted_seq,
-        surface_rewrite_seq,
         spine_from,
         todos_json,
         plan_slug,
@@ -1383,7 +1377,6 @@ pub(crate) fn load_meta_on(
         i64,
         Option<i64>,
         i64,
-        i64,
         String,
         Option<String>,
         Option<String>,
@@ -1394,7 +1387,7 @@ pub(crate) fn load_meta_on(
         .query_row(
             "SELECT project, created_at, parent_session_id, parent_call_id, responsibility, subagent_depth,
                     agent_id, model_id, thinking_tier, context_mode, updated_at,
-                    compacted_seq, surface_rewrite_seq, spine_from, todos_json, active_plan_slug,
+                    compacted_seq, spine_from, todos_json, active_plan_slug,
                     plan_revision, last_message, title, folder_id
              FROM sessions WHERE id = ?1",
             rusqlite::params![session_id],
@@ -1419,7 +1412,6 @@ pub(crate) fn load_meta_on(
                     row.get(16)?,
                     row.get(17)?,
                     row.get(18)?,
-                    row.get(19)?,
                 ))
             },
         )
@@ -1431,11 +1423,6 @@ pub(crate) fn load_meta_on(
             })
         })
         .transpose()?;
-    let surface_rewrite_seq = Seq::try_from(surface_rewrite_seq).map_err(|_| {
-        LitecodeError::InvalidSessionEvent(format!(
-            "negative surface_rewrite_seq {surface_rewrite_seq}"
-        ))
-    })?;
     let spine_from = Seq::try_from(spine_from).map_err(|_| {
         LitecodeError::InvalidSessionEvent(format!("negative spine_from {spine_from}"))
     })?;
@@ -1453,7 +1440,6 @@ pub(crate) fn load_meta_on(
         context_mode,
         updated_at,
         compacted_seq,
-        surface_rewrite_seq,
         spine_from,
         todos: serde_json::from_str(&todos_json).unwrap_or_default(),
         plan_slug,
@@ -1770,6 +1756,92 @@ pub(crate) fn load_events_range_on(
     // the persisted high-water, leaving a hole where the deleted rows were. A
     // stable identity does not need to be a dense one, so no hole is an error.
     Ok(events)
+}
+
+/// The newest durable `turn/end` row of one session, and nothing else.
+///
+/// `session/list` needs the last turn's reason for every listed child. Folding
+/// the whole log to find it made one list call cost one full transcript read per
+/// row; this is a single backwards index scan that stops at the first hit. The
+/// row is decoded by the same function the log reader uses, so the event a
+/// caller sees here is identical to the one it would find by scanning.
+pub(crate) fn load_latest_turn_end_on(
+    conn: &Connection,
+    session_id: &str,
+    data_root: &Path,
+) -> Result<Option<SessionEvent>> {
+    let row = match conn.query_row(
+        "SELECT seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref, state, result_data
+         FROM transcript_items
+         WHERE session_id = ?1 AND event_type = 'turn/end'
+         ORDER BY seq DESC LIMIT 1",
+        rusqlite::params![session_id],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+            ))
+        },
+    ) {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let (
+        seq,
+        created_at,
+        event_type,
+        surface_op,
+        source_seqs,
+        kind,
+        body,
+        body_ref,
+        state,
+        result_data,
+    ) = row;
+    event_from_disk_row(
+        session_id,
+        seq,
+        created_at,
+        event_type,
+        surface_op,
+        source_seqs,
+        kind,
+        body,
+        body_ref,
+        state,
+        result_data,
+        data_root,
+    )
+    .map(Some)
+}
+
+/// Every durable descendant of `session_id`, resolved in one recursive query.
+///
+/// The old path opened one connection per subtree node, so a parent with twenty
+/// children paid twenty SQLite opens to answer one question. One `WITH
+/// RECURSIVE` walk replaces that; the caller still merges in-memory children
+/// that have not been committed yet.
+pub(crate) fn load_descendant_ids_on(conn: &Connection, session_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE subtree(id) AS (
+             SELECT id FROM sessions WHERE parent_session_id = ?1
+             UNION
+             SELECT s.id FROM sessions s JOIN subtree ON s.parent_session_id = subtree.id
+         )
+         SELECT id FROM subtree",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![session_id], |row| row.get(0))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
 }
 
 impl Session {
@@ -3506,102 +3578,6 @@ impl Session {
     /// older holes stay closed. See [`load_wire_seq_cursor_on`].
     pub fn wire_seq_cursor(&self) -> Result<(i64, u64)> {
         load_wire_seq_cursor_on(self.conn(), &self.id)
-    }
-
-    /// Append one replay-safe replacement event per mechanical-prune item.
-    ///
-    /// This is a single writer transaction: either the whole prune batch lands,
-    /// or none of it does. Shadowed rows stay in the append-only log; the new
-    /// event cites their seqs through `source_seqs` and the surface fold swaps
-    /// exactly that node. The replacement event keeps the original item shape
-    /// except for the pruned text/media payload.
-    pub fn replace_surface_items(
-        &self,
-        replacements: &[crate::session::data::command::SurfaceReplacement],
-    ) -> Result<Vec<Seq>> {
-        if replacements.is_empty() {
-            return Ok(Vec::new());
-        }
-        let _gate = self.lock_write();
-        let mut projection = self.projection.borrow().clone();
-        let tx = self.conn();
-        let now = chrono::Utc::now().timestamp_millis();
-        let mut seqs = Vec::with_capacity(replacements.len());
-        for replacement in replacements {
-            if replacement.start != replacement.end {
-                return Err(LitecodeError::InvalidSessionEvent(
-                    "mechanical prune replacement must shadow one surface node".into(),
-                ));
-            }
-            if replacement.source_seqs.is_empty() {
-                return Err(LitecodeError::InvalidSessionEvent(
-                    "mechanical prune replacement requires source seqs".into(),
-                ));
-            }
-            let event_type = surface_event_type_of(&replacement.item);
-            if !event_type.is_surface_eligible() {
-                return Err(LitecodeError::InvalidSessionEvent(
-                    "mechanical prune replacement is not a surface item".into(),
-                ));
-            }
-            // Keep the replacement in its original step/turn grouping and carry
-            // the UI-only result data forward. The model does not read
-            // `result_data`, but history/search consumers must not lose the
-            // error/tool metadata because the text shrank.
-            let (turn_id, turn_seq, result_data): (String, i64, Option<String>) = tx
-                .query_row(
-                    "SELECT turn_id, turn_seq, result_data FROM transcript_items
-                     WHERE session_id = ?1 AND seq = ?2",
-                    rusqlite::params![self.id, replacement.start as i64],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .optional()?
-                .ok_or_else(|| {
-                    LitecodeError::InvalidSessionEvent(format!(
-                        "mechanical prune source seq {} is not in the log",
-                        replacement.start
-                    ))
-                })?;
-            let draft = EventDraft {
-                time: now,
-                event_type: event_type.clone(),
-                data: serde_json::to_value(&replacement.item)?,
-                surface_op: Some(SurfaceOp::Replace {
-                    start: replacement.start,
-                    end: replacement.end,
-                }),
-                source_seqs: Some(replacement.source_seqs.clone()),
-                ignorable: false,
-                state: LogState::Final,
-            };
-            let (seq, _) = self.admit_draft_in_tx(
-                &tx,
-                draft,
-                &turn_id,
-                turn_seq,
-                event_type.as_str(),
-                0,
-                &mut projection,
-            )?;
-            if let Some(result_data) = result_data {
-                tx.execute(
-                    "UPDATE transcript_items SET result_data = ?1
-                     WHERE session_id = ?2 AND seq = ?3",
-                    rusqlite::params![result_data, self.id, seq as i64],
-                )?;
-            }
-            seqs.push(seq);
-        }
-        let latest_rewrite_seq = seqs.last().copied().unwrap_or(0);
-        tx.execute(
-            "UPDATE sessions
-             SET updated_at = ?1,
-                 surface_rewrite_seq = max(surface_rewrite_seq, ?2)
-             WHERE id = ?3",
-            rusqlite::params![now, latest_rewrite_seq as i64, self.id],
-        )?;
-        self.commit_projection(projection);
-        Ok(seqs)
     }
 
     /// The structural prefix identity a commit must see: the leading

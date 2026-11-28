@@ -625,13 +625,14 @@ impl ContextPipeline {
     /// On success, orphan `FunctionCallOutput`s are removed from `rows` (same
     /// set the store dropped from the in-memory working set). On commit failure,
     /// `rows` is unchanged.
-    pub fn commit_step(
+    pub async fn commit_step(
         &self,
         sessions: &SessionManager,
         session_id: &str,
         rows: &mut Vec<WorkingRow>,
     ) -> Result<CommitStepOutcome> {
         self.commit_step_with_turn(sessions, session_id, rows, "", &[])
+            .await
     }
 
     /// Commit `items` produced by this step.
@@ -639,7 +640,7 @@ impl ContextPipeline {
     /// Rows the stream already opened (`seq` above the cursor at view-build
     /// time) are claimed by provider item id. Everything else is a pending
     /// tail. A failed commit leaves those new rows out of `state.working`.
-    pub fn persist_new(
+    pub async fn persist_new(
         &self,
         sessions: &SessionManager,
         session_id: &str,
@@ -655,9 +656,10 @@ impl ContextPipeline {
         let mut rows = self.working_set();
         attach_step_items(&mut rows, items, cursor);
         self.commit_step_with_turn(sessions, session_id, &mut rows, "", result_data)
+            .await
     }
 
-    pub fn commit_step_with_turn(
+    pub async fn commit_step_with_turn(
         &self,
         sessions: &SessionManager,
         session_id: &str,
@@ -686,6 +688,7 @@ impl ContextPipeline {
                 &tid,
                 result_data,
             )
+            .await
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
         *rows = working;
         let (committed, discarded, sealed_seqs, clear_prepared) = match kind {
@@ -895,14 +898,13 @@ pub(crate) fn resolve_occupancy_bill(
 ) -> Option<OccupancyBill> {
     let meta = sessions.data().meta_blocking(session_id).ok();
     let compacted_seq = meta.as_ref().and_then(|meta| meta.compacted_seq);
-    let surface_rewrite_seq = meta.as_ref().map_or(0, |meta| meta.surface_rewrite_seq);
     // Latest bill only: occupancy is one request's prompt.
     let latest = sessions.latest_provider_bill(session_id).ok().flatten();
     let meter = sessions
         .data()
         .meter_blocking(session_id)
         .unwrap_or_default();
-    occupancy_bill_from(baseline, compacted_seq, surface_rewrite_seq, latest, &meter)
+    occupancy_bill_from(baseline, compacted_seq, latest, &meter)
 }
 
 /// A streamed item already owns a row; the commit that follows must find it.

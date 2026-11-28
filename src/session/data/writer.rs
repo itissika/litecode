@@ -17,13 +17,24 @@ use super::command::{
     CommitKind, CommitReceipt, MAX_STREAM_BATCH_ROWS, SessionMutation, StreamItemUpdate,
 };
 use super::metrics::{WriterAliveGuard, WriterMetrics, WriterState};
-use super::sqlite::conn::SharedDb;
+use super::sqlite::conn::{
+    SharedDb, release_savepoint, rollback_to_savepoint, savepoint,
+};
 use super::sqlite::folders;
 use super::sqlite::ops;
 use super::sqlite::read;
-use super::sqlite::session::{ApplyOutcome, CommitDeltaOutcome, Session};
+use super::sqlite::session::{ApplyOutcome, CommitDeltaOutcome, Session, SessionApply};
 
 pub const WRITER_QUEUE_CAPACITY: usize = 256;
+
+/// How many queued commands one writer transaction may absorb.
+///
+/// Every command used to pay its own `BEGIN IMMEDIATE` + `COMMIT`, and under
+/// `synchronous=FULL` the commit is an fsync. Coalescing a burst turns N fsyncs
+/// into one; 16 is big enough to cover a 20-session write burst in two rounds
+/// while keeping a single transaction short enough that one failing command
+/// only delays its 15 neighbours.
+pub const MAX_GROUP_COMMIT: usize = 16;
 
 pub struct WriteRequest {
     pub mutation: SessionMutation,
@@ -138,6 +149,21 @@ impl WriterHooks {
 
     pub fn inject(&self, kind: FaultKind) {
         *self.fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(kind);
+    }
+
+    /// Whether a hook can currently change a command's outcome.
+    ///
+    /// Group commit only runs when this is false: a paused writer must park on
+    /// the first command (so queue-capacity tests observe the same shape), and
+    /// an injected fault must fire for exactly one command instead of being
+    /// absorbed by a batch.
+    pub fn has_active_hooks(&self) -> bool {
+        *self.paused.lock().unwrap_or_else(|e| e.into_inner())
+            || self
+                .fault
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some()
     }
 }
 
@@ -339,20 +365,10 @@ impl WriterHandle {
     ) -> Result<CommitReceipt> {
         self.ensure_ready()?;
         let request = new_write_request(mutation, options);
-        // Legacy synchronous manager adapters are still invoked from async
-        // controller paths. Tokio forbids blocking on a runtime worker; bridge
-        // that compatibility path through a short helper thread until those
-        // callers use the async typed SessionData interface directly.
-        if tokio::runtime::Handle::try_current().is_ok() {
-            return std::thread::scope(|scope| {
-                scope
-                    .spawn(move || self.submit_blocking_request(request))
-                    .join()
-                    .map_err(|_| {
-                        LitecodeError::SessionStorage("writer submit thread panicked".into())
-                    })?
-            });
-        }
+        // No runtime bridge: a blocking submit parks the caller's own thread.
+        // Async callers must use `submit`/`submit_with` (or run inside
+        // `spawn_blocking`). Spawning a helper OS thread here would hide a
+        // blocking write on a Tokio worker instead of surfacing it.
         self.submit_blocking_request(request)
     }
 
@@ -569,6 +585,264 @@ fn process_request(state: &mut WriterRuntime, request: WriteRequest, metrics: &W
     let _ = reply.send(result);
 }
 
+/// Whether this mutation can leave a `session_blobs` row unreferenced.
+///
+/// Only a delete, a compaction checkpoint rewrite, or a revert truncation removes
+/// the `session_blob_refs` rows that keep a spilled body alive. Everything else
+/// is an append or an in-place update, so the O(blobs) `LEFT JOIN` scan below
+/// could never find anything — and it ran on every single write.
+fn mutation_can_orphan_blobs(mutation: &SessionMutation) -> bool {
+    match mutation {
+        SessionMutation::Delete { .. } | SessionMutation::Compact { .. } => true,
+        SessionMutation::Apply {
+            op: SessionApply::Truncate { .. },
+            ..
+        } => true,
+        _ => false,
+    }
+}
+
+/// Drain everything already queued behind `first`, up to one batch.
+///
+/// Called only when no hook is active, so a drained command never skips its
+/// `wait_if_paused` park. Dequeue and queue-wait metrics are recorded here for
+/// exactly the same reason the loop records them for the first command.
+fn collect_batch(
+    rx: &mut mpsc::Receiver<WriteRequest>,
+    first: WriteRequest,
+    metrics: &WriterMetrics,
+) -> Vec<WriteRequest> {
+    let mut batch = Vec::with_capacity(MAX_GROUP_COMMIT);
+    batch.push(first);
+    while batch.len() < MAX_GROUP_COMMIT {
+        match rx.try_recv() {
+            Ok(request) => {
+                metrics.record_dequeue();
+                metrics.record_queue_wait(request.enqueued_at.elapsed());
+                batch.push(request);
+            }
+            // Empty means the burst is over. Disconnected means shutdown: the
+            // commands already in hand still deserve to run.
+            Err(_) => break,
+        }
+    }
+    batch
+}
+
+/// Execute up to [`MAX_GROUP_COMMIT`] commands inside one transaction.
+///
+/// Each command runs under its own savepoint, so one rejection (a stale CAS
+/// revision, a validation failure) rolls back only itself. The batch pays one
+/// `BEGIN IMMEDIATE`, one orphan-blob scan, and one `synchronous=FULL` commit —
+/// the fsync that used to be the per-write bottleneck.
+fn process_batch(state: &mut WriterRuntime, batch: Vec<WriteRequest>, metrics: &WriterMetrics) {
+    let mut queue: std::collections::VecDeque<WriteRequest> = std::collections::VecDeque::new();
+    for request in batch {
+        // Same two pre-transaction refusals `process_request` makes. Dropping
+        // them here would let a cancelled or expired command into the batch.
+        if request.reply.is_closed() {
+            metrics.record_canceled();
+            continue;
+        }
+        if request
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            metrics.record_timeout();
+            let _ = request.reply.send(Err(LitecodeError::SessionDataTimeout));
+            continue;
+        }
+        queue.push_back(request);
+    }
+    // One command is not a batch. Taking the ordinary path keeps the single-write
+    // behavior byte-for-byte identical: one transaction, one commit, one reply,
+    // and every injected fault firing in the same order as before.
+    if queue.len() <= 1 {
+        if let Some(request) = queue.pop_front() {
+            process_request(state, request, metrics);
+        }
+        return;
+    }
+    // A hook that became active after the loop's check must still see the
+    // single-command shape.
+    if state.hooks.has_active_hooks() {
+        while let Some(request) = queue.pop_front() {
+            state.hooks.wait_if_paused();
+            process_request(state, request, metrics);
+        }
+        return;
+    }
+
+    let (mut settled, mut affected, mut needs_blob_gc, mut real_commits) = (
+        Vec::with_capacity(queue.len()),
+        Vec::new(),
+        false,
+        0usize,
+    );
+    let transaction_started = Instant::now();
+    if let Err(error) = ops::begin_immediate(state.db.conn()) {
+        let message = error.to_string();
+        for request in queue {
+            let _ = request
+                .reply
+                .send(Err(LitecodeError::SessionStorage(message.clone())));
+        }
+        return;
+    }
+
+    // Set when the outer transaction itself must be abandoned. A per-command
+    // rejection is not fatal: it rolls back to its own savepoint and the batch
+    // continues.
+    let mut fatal: Option<String> = None;
+    while let Some(request) = queue.pop_front() {
+        let WriteRequest {
+            mutation,
+            reply,
+            deadline,
+            ..
+        } = request;
+        // An earlier command in this batch may have consumed the budget.
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            metrics.record_timeout();
+            settled.push((reply, Err(LitecodeError::SessionDataTimeout)));
+            continue;
+        }
+        let can_orphan = mutation_can_orphan_blobs(&mutation);
+        let session_id = mutation.session_id().map(str::to_owned);
+        // Idempotency and the CAS revision are checked inside the open
+        // transaction: a command earlier in this batch already bumped its
+        // session's revision, and a later command for the same session must see
+        // that bump instead of a stale pre-batch value.
+        match preflight(state, &mutation, metrics) {
+            Ok(Some(receipt)) => {
+                settled.push((reply, Ok(receipt)));
+                continue;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                metrics.record_failed();
+                if let Some(session_id) = &session_id {
+                    state.live.remove(session_id);
+                }
+                settled.push((reply, Err(error)));
+                continue;
+            }
+        }
+        let name = format!("sp_{}", settled.len());
+        if let Err(error) = savepoint(state.db.conn(), &name) {
+            fatal = Some(error.to_string());
+            settled.push((reply, Err(error)));
+            break;
+        }
+        // A delete appends to `deleted_files` before it can still fail. Remember
+        // where that list stood so a rejected command cannot schedule a file
+        // removal for a session whose rows were just rolled back.
+        let deleted_mark = state.deleted_files.len();
+        match dispatch(state, mutation) {
+            Ok(receipt) => {
+                if let Err(error) = release_savepoint(state.db.conn(), &name) {
+                    fatal = Some(error.to_string());
+                    settled.push((reply, Err(error)));
+                    break;
+                }
+                needs_blob_gc |= can_orphan;
+                real_commits += 1;
+                if !receipt.session_id.is_empty()
+                    && !affected.iter().any(|id| id == &receipt.session_id)
+                {
+                    affected.push(receipt.session_id.clone());
+                }
+                settled.push((reply, Ok(receipt)));
+            }
+            Err(error) => {
+                // Undo just this command. `RELEASE` still runs: SQLite keeps the
+                // savepoint on the stack after `ROLLBACK TO`.
+                let _ = rollback_to_savepoint(state.db.conn(), &name);
+                let _ = release_savepoint(state.db.conn(), &name);
+                state.deleted_files.truncate(deleted_mark);
+                // The cached live handle may hold the rejected command's
+                // projection. Drop it so the next command re-hydrates from disk
+                // instead of writing on top of a rolled-back surface.
+                if let Some(session_id) = &session_id {
+                    state.live.remove(session_id);
+                }
+                metrics.record_failed();
+                settled.push((reply, Err(error)));
+            }
+        }
+    }
+
+    if let Some(message) = fatal {
+        // Nothing in the batch can survive an abandoned transaction: the
+        // commands that had not run yet, and the ones that did, all lose their
+        // rows. Every caller is told so rather than left holding a receipt for
+        // a write that was rolled back.
+        for request in queue {
+            let _ = request
+                .reply
+                .send(Err(LitecodeError::SessionStorage(message.clone())));
+        }
+        let _ = ops::rollback(state.db.conn());
+        state.deleted_files.clear();
+        for session_id in &affected {
+            state.live.remove(session_id);
+        }
+        cleanup_orphan_blob_files(state);
+        for (reply, _) in settled {
+            let _ = reply.send(Err(LitecodeError::SessionStorage(message.clone())));
+        }
+        return;
+    }
+
+    // One orphan scan for the whole batch, and only when a command in it could
+    // actually have orphaned a blob.
+    let orphan_ids = if needs_blob_gc {
+        let ids = ops::unreferenced_blob_ids(state.db.conn()).unwrap_or_default();
+        let _ = ops::delete_blob_rows(state.db.conn(), &ids);
+        ids
+    } else {
+        Vec::new()
+    };
+
+    match ops::commit(state.db.conn()) {
+        Ok(()) => {
+            let elapsed = transaction_started.elapsed();
+            // One commit, one fsync: every command that really wrote shares the
+            // same commit latency. An idempotent replay wrote nothing, so it is
+            // not counted.
+            for _ in 0..real_commits {
+                metrics.record_commit(elapsed);
+            }
+            for (reply, result) in settled {
+                let _ = reply.send(result);
+            }
+            for id in orphan_ids {
+                let path = state.data_root.join(super::blob::rel_path_for(&id));
+                if let Err(error) = std::fs::remove_file(&path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(path = %path.display(), %error, "orphan blob cleanup failed");
+                }
+            }
+            for (session_id, project) in std::mem::take(&mut state.deleted_files) {
+                Session::cleanup_deleted_files(&state.data_root, &session_id, project.as_deref());
+            }
+        }
+        Err(error) => {
+            let message = error.to_string();
+            let _ = ops::rollback(state.db.conn());
+            state.deleted_files.clear();
+            for session_id in &affected {
+                state.live.remove(session_id);
+            }
+            cleanup_orphan_blob_files(state);
+            for (reply, _) in settled {
+                let _ = reply.send(Err(LitecodeError::SessionStorage(message.clone())));
+            }
+        }
+    }
+}
+
 fn writer_loop(
     path: PathBuf,
     data_root: PathBuf,
@@ -645,8 +919,16 @@ fn writer_loop(
     while let Some(req) = rx.blocking_recv() {
         metrics.record_dequeue();
         metrics.record_queue_wait(req.enqueued_at.elapsed());
-        state.hooks.wait_if_paused();
-        process_request(&mut state, req, &metrics);
+        if state.hooks.has_active_hooks() {
+            // A paused writer parks on this exact command, and an injected fault
+            // fires for exactly one command. Batching either would change what
+            // the queue-capacity and fault tests observe, so take the plain path.
+            state.hooks.wait_if_paused();
+            process_request(&mut state, req, &metrics);
+            continue;
+        }
+        let batch = collect_batch(&mut rx, req, &metrics);
+        process_batch(&mut state, batch, &metrics);
     }
     let _ = state.db.checkpoint();
 }
@@ -791,8 +1073,13 @@ fn writer_loop_ephemeral(
     while let Some(req) = rx.blocking_recv() {
         metrics.record_dequeue();
         metrics.record_queue_wait(req.enqueued_at.elapsed());
-        state.hooks.wait_if_paused();
-        process_request(&mut state, req, &metrics);
+        if state.hooks.has_active_hooks() {
+            state.hooks.wait_if_paused();
+            process_request(&mut state, req, &metrics);
+            continue;
+        }
+        let batch = collect_batch(&mut rx, req, &metrics);
+        process_batch(&mut state, batch, &metrics);
     }
 }
 
@@ -808,40 +1095,49 @@ fn execute(
     result
 }
 
-fn execute_inner(
-    state: &mut WriterRuntime,
-    mutation: SessionMutation,
+/// Guards that must pass before a mutation may enter its transaction.
+///
+/// `Ok(Some(receipt))` = an idempotent replay that already committed; answer with
+/// that receipt and start nothing. `Ok(None)` = the mutation may run. `Err` = it
+/// is refused (bad batch shape, or a stale CAS revision).
+///
+/// Shared by the single-command path and by group commit, which calls it inside
+/// the batch's open transaction — so a command sees the revision an earlier
+/// command in the same batch just wrote.
+fn preflight(
+    state: &WriterRuntime,
+    mutation: &SessionMutation,
     metrics: &WriterMetrics,
-) -> Result<CommitReceipt> {
+) -> Result<Option<CommitReceipt>> {
     if state.hooks.take_fault_if(FaultKind::BeforeBegin) {
         return Err(LitecodeError::SessionStorage(
             "injected fault before begin".into(),
         ));
     }
-    if let SessionMutation::UpdateStreamItems { rows, .. } = &mutation {
+    if let SessionMutation::UpdateStreamItems { rows, .. } = mutation {
         validate_stream_updates(rows)?;
     }
     if mutation.session_id().is_none()
         && let Some(receipt) = ops::load_operation_by_id(state.db.conn(), mutation.operation_id())?
     {
-        return Ok(receipt);
+        return Ok(Some(receipt));
     }
     if let Some(sid) = mutation.session_id() {
         // Structural mutations carry no global revision, so their operation
         // journal is the only replay check. Keep it ahead of the CAS block.
         if matches!(
-            &mutation,
-            SessionMutation::Compact { .. } | SessionMutation::ReplaceSurface { .. }
+            mutation,
+            SessionMutation::Compact { .. }
         ) && let Some(receipt) =
             ops::load_operation(state.db.conn(), sid, mutation.operation_id())?
         {
-            return Ok(receipt);
+            return Ok(Some(receipt));
         }
         if let Some(expected) = mutation.expected_revision() {
             if let Some(receipt) =
                 ops::load_operation(state.db.conn(), sid, mutation.operation_id())?
             {
-                return Ok(receipt);
+                return Ok(Some(receipt));
             }
             let actual = read::load_revision(state.db.conn(), sid).unwrap_or(0);
             if actual != expected {
@@ -850,6 +1146,20 @@ fn execute_inner(
             }
         }
     }
+    Ok(None)
+}
+
+fn execute_inner(
+    state: &mut WriterRuntime,
+    mutation: SessionMutation,
+    metrics: &WriterMetrics,
+) -> Result<CommitReceipt> {
+    // An idempotent replay finished before this call: answer with the receipt
+    // that already committed and start no transaction.
+    if let Some(receipt) = preflight(state, &mutation, metrics)? {
+        return Ok(receipt);
+    }
+    let can_orphan_blobs = mutation_can_orphan_blobs(&mutation);
     let affected_session = mutation.session_id().map(str::to_owned);
     let transaction_started = Instant::now();
     ops::begin_immediate(state.db.conn())?;
@@ -867,8 +1177,16 @@ fn execute_inner(
                     "injected fault before commit".into(),
                 ));
             }
-            let orphan_ids = ops::unreferenced_blob_ids(state.db.conn()).unwrap_or_default();
-            let _ = ops::delete_blob_rows(state.db.conn(), &orphan_ids);
+            // Only a delete, a compaction rewrite, or a revert can drop the
+            // `session_blob_refs` rows that keep a spilled body alive. Running
+            // the O(blobs) `LEFT JOIN` scan on every append was pure overhead.
+            let orphan_ids = if can_orphan_blobs {
+                let ids = ops::unreferenced_blob_ids(state.db.conn()).unwrap_or_default();
+                let _ = ops::delete_blob_rows(state.db.conn(), &ids);
+                ids
+            } else {
+                Vec::new()
+            };
             ops::commit(state.db.conn())?;
             metrics.record_commit(transaction_started.elapsed());
             for id in orphan_ids {
@@ -1376,22 +1694,6 @@ fn dispatch(state: &mut WriterRuntime, mutation: SessionMutation) -> Result<Comm
                 &session_id,
                 &operation_id.0,
                 CommitKind::Compacted { seq: seq as u64 },
-            )
-        }
-        SessionMutation::ReplaceSurface {
-            session_id,
-            operation_id,
-            replacements,
-        } => {
-            let seqs = {
-                let session = ensure_live(state, &session_id)?;
-                session.replace_surface_items(&replacements)?
-            };
-            bump_receipt_current(
-                state,
-                &session_id,
-                &operation_id.0,
-                CommitKind::Replaced { seqs },
             )
         }
         SessionMutation::SaveTaskState {

@@ -1,4 +1,4 @@
-﻿use std::collections::HashSet;
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
@@ -362,7 +362,7 @@ struct SummaryCommitPlan {
     telemetry: CompactionTelemetry,
 }
 
-fn commit_summary_plan(
+async fn commit_summary_plan(
     sessions: &SessionManager,
     session_id: &str,
     operation_id: &str,
@@ -382,7 +382,7 @@ fn commit_summary_plan(
             usage: commit.summary.usage.clone(),
             provider_id: Some(request.target.provider_id.clone()),
         };
-        match sessions.mutate_blocking(mutation) {
+        match sessions.mutate(mutation).await {
             Ok(receipt) => match receipt.outcome {
                 crate::session::data::command::CommitKind::Compacted { seq } => {
                     return Ok(seq);
@@ -404,7 +404,7 @@ fn commit_summary_plan(
                     error = %error,
                     "summary commit blocked; retrying"
                 );
-                std::thread::sleep(Duration::from_millis(5));
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
             Err(error) => return Err(error),
         }
@@ -628,7 +628,7 @@ async fn prepare_summary_commit(
     })
 }
 
-fn commit_plan(
+async fn commit_plan(
     sessions: &SessionManager,
     session_id: &str,
     request: &CompactionRequestContext,
@@ -650,7 +650,7 @@ fn commit_plan(
         return Err(error);
     }
     let checkpoint_seq =
-        match commit_summary_plan(sessions, session_id, operation_id, request, &commit) {
+        match commit_summary_plan(sessions, session_id, operation_id, request, &commit).await {
             Ok(seq) => seq,
             Err(error) => {
                 record_compact_failure(
@@ -792,7 +792,8 @@ async fn compact_input(
         trigger,
         cancel,
         commit,
-    )?;
+    )
+    .await?;
     Ok(Some(run))
 }
 
@@ -1113,8 +1114,8 @@ impl CompactPolicy {
     }
 
     /// Run the one session-owned episode. Ordinary/manual snapshots the sealed
-    /// prefix; overflow snapshots the full surface + live tail. Exactly one of
-    /// `ReplaceSurface` / `Compact` may land. The commit is the fact; read-back
+    /// prefix; overflow snapshots the full surface + live tail. Exactly one
+    /// `Compacted` checkpoint may land. The commit is the fact; read-back
     /// is a separate delivery stage. A committed but unverified surface is not
     /// Succeeded; it is reported so the session can try the read. The terminal is
     /// published by `CompactionEpisodeLease::finish` (manager).
@@ -1854,7 +1855,7 @@ mod tests {
         }
     }
 
-    /// Silent provider whose stream call never resolves 鈥?the failure mode that
+    /// Silent provider whose stream call never resolves — the failure mode that
     /// used to pend the turn forever.
     struct PendingProvider;
 
@@ -1902,7 +1903,7 @@ mod tests {
         }
     }
 
-    /// Counts unified-stream entry calls 鈥?proves compact LLM uses
+    /// Counts unified-stream entry calls — proves compact LLM uses
     /// `complete_with_stream_events` (ISSUE-013), not a bypass path.
     struct CountingProvider {
         calls: std::sync::atomic::AtomicUsize,
@@ -2377,7 +2378,7 @@ max_output = 8192
     /// of dispatching a second checkpoint.
     #[tokio::test]
     async fn commit_retry_reuses_operation_id_after_after_commit_fault() {
-        let (sessions, sid, _header) = open_seeded();
+        let (sessions, sid, _header) = open_seeded().await;
         let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
         let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
         let request = compact_context(Arc::new(TextProvider));
@@ -2426,10 +2427,14 @@ max_output = 8192
             String::new(),
         ));
         let sid = sessions
-            .open_session_sync("/p", "default", Some("test/test-primary-model"))
+            .open_session("/p", "default", Some("test/test-primary-model"))
+            .await
             .expect("open session");
         let seed = long_seed();
-        sessions.insert_detail_rows(&sid, &seed).expect("seed");
+        sessions
+            .insert_detail_rows(&sid, &seed)
+            .await
+            .expect("seed");
 
         let lease = sessions
             .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
@@ -2544,29 +2549,32 @@ max_output = 8192
         seed
     }
 
-    fn open_seeded() -> (Arc<SessionManager>, String, u64) {
+    async fn open_seeded() -> (Arc<SessionManager>, String, u64) {
         let sessions = Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             String::new(),
         ));
         let sid = sessions
-            .open_session_sync("/p", "default", Some("test/test-primary-model"))
+            .open_session("/p", "default", Some("test/test-primary-model"))
+            .await
             .expect("open session");
         sessions
             .insert_detail_rows(&sid, &long_seed())
+            .await
             .expect("seed");
         let header = sessions
             .append_request_origin(
                 &sid,
                 &serde_json::json!({"schema": 1, "turn": "t", "step": 1}),
             )
+            .await
             .expect("header");
         (sessions, sid, header)
     }
 
     #[tokio::test]
     async fn precommit_summary_failure_keeps_the_old_surface() {
-        let (sessions, sid, _) = open_seeded();
+        let (sessions, sid, _) = open_seeded().await;
         let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
         let request = compact_context(Arc::new(InvalidSummaryProvider::new()));
         let mut lease = sessions
@@ -2601,7 +2609,7 @@ max_output = 8192
 
     #[tokio::test]
     async fn committed_surface_readback_retries_a_transient_failure() {
-        let (sessions, sid, _) = open_seeded();
+        let (sessions, sid, _) = open_seeded().await;
         let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
         let request = compact_context(Arc::new(TextProvider));
         let mut lease = sessions
@@ -2655,7 +2663,7 @@ max_output = 8192
 
     #[tokio::test]
     async fn committed_surface_readback_failure_is_unverified() {
-        let (sessions, sid, _) = open_seeded();
+        let (sessions, sid, _) = open_seeded().await;
         let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
         let request = compact_context(Arc::new(TextProvider));
         let mut lease = sessions
@@ -2730,9 +2738,10 @@ max_output = 8192
 
     #[tokio::test]
     async fn low_provider_bill_does_not_compact_a_hot_local_estimate() {
-        let (sessions, sid, header) = open_seeded();
+        let (sessions, sid, header) = open_seeded().await;
         sessions
             .record_provider_usage(&sid, header, &bill(1_000))
+            .await
             .unwrap();
         let rows = sessions.data().working_set_blocking(&sid).unwrap();
         let budget = BudgetPolicy::new(10_000);
@@ -2769,7 +2778,7 @@ max_output = 8192
 
     #[tokio::test]
     async fn summary_retry_reuses_the_identical_request() {
-        let (sessions, sid, _header) = open_seeded();
+        let (sessions, sid, _header) = open_seeded().await;
         let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
         let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
         let provider = Arc::new(RetrySummaryProvider::new());
@@ -2825,12 +2834,13 @@ max_output = 8192
 
     #[tokio::test]
     async fn compact_request_uses_main_binding_max_output_and_reserves_it() {
-        let (sessions, sid, _) = open_seeded();
+        let (sessions, sid, _) = open_seeded().await;
         let huge: Vec<Item> = (0..3)
             .map(|i| user_text(format!("huge-{i}-{}", "x".repeat(40_000))))
             .collect();
         sessions
             .insert_detail_rows(&sid, &huge)
+            .await
             .expect("append huge history");
         let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
 
@@ -2875,7 +2885,7 @@ max_output = 8192
     async fn run_rejecting_summary(
         provider: Arc<dyn LlmProvider>,
     ) -> (LitecodeError, Vec<crate::session::event::SessionEvent>) {
-        let (sessions, sid, _header) = open_seeded();
+        let (sessions, sid, _header) = open_seeded().await;
         let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
         let request = compact_context(provider);
         let error = CompactPolicy::compact_transcript(
@@ -2993,7 +3003,7 @@ max_output = 8192
 
     #[tokio::test]
     async fn overflow_final_meter_includes_the_live_tail() {
-        let (sessions, sid, _) = open_seeded();
+        let (sessions, sid, _) = open_seeded().await;
         let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
         rows.push(WorkingRow::pending(user_text(format!(
             "overflow-tail {}",
@@ -3133,9 +3143,10 @@ max_output = 8192
 
     #[tokio::test]
     async fn provider_bill_over_threshold_compacts_then_the_bill_stays_retired() {
-        let (sessions, sid, header) = open_seeded();
+        let (sessions, sid, header) = open_seeded().await;
         sessions
             .record_provider_usage(&sid, header, &bill(9_000))
+            .await
             .unwrap();
         let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
         let budget = BudgetPolicy::new(10_000);
@@ -3218,7 +3229,8 @@ max_output = 8192
             String::new(),
         ));
         let sid = sessions
-            .open_session_sync("/p", "default", Some("test/test-primary-model"))
+            .open_session("/p", "default", Some("test/test-primary-model"))
+            .await
             .expect("open session");
 
         let mut seed = Vec::with_capacity(17);
@@ -3228,7 +3240,10 @@ max_output = 8192
         for j in 0..2 {
             seed.push(user_text(format!("keep-{j} {}", "word ".repeat(20_000))));
         }
-        sessions.insert_detail_rows(&sid, &seed).expect("seed");
+        sessions
+            .insert_detail_rows(&sid, &seed)
+            .await
+            .expect("seed");
         let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
 
         let provider = Arc::new(RetrySummaryProvider::new());

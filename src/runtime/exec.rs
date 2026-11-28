@@ -559,7 +559,7 @@ impl AgentDeps for AgentRuntime {
         let compaction_request = self.compaction_request_context()?;
 
         // Fail-open: a stale-plan settlement error must not abort the turn.
-        if let Err(error) = self.sessions.settle_stale_plan(&self.session_id) {
+        if let Err(error) = self.sessions.settle_stale_plan(&self.session_id).await {
             tracing::warn!(
                 session_id = %self.session_id,
                 error = %error,
@@ -765,9 +765,9 @@ impl AgentDeps for AgentRuntime {
         )
     }
 
-    fn sync_request_seam(&mut self, step: u64) -> Result<()> {
+    async fn sync_request_seam(&mut self, step: u64) -> Result<()> {
         let _lap = latency::lap_step("seam", step);
-        let mut appended = self.append_seam_reminders(step)?;
+        let mut appended = self.append_seam_reminders(step).await?;
 
         // Queued user messages are drained last: they are the freshest input
         // and must sit closest to the next request. The claim is atomic with
@@ -780,11 +780,15 @@ impl AgentDeps for AgentRuntime {
             && !claimed.is_empty()
         {
             let merged = crate::session::manager::merge_pending(&claimed);
-            if let Err(error) = self.sessions.append_user_message_with_knowledge_status(
-                &self.session_id,
-                merged,
-                self.runtime_handle.workspace_root(),
-            ) {
+            if let Err(error) = self
+                .sessions
+                .append_user_message_with_knowledge_status(
+                    &self.session_id,
+                    merged,
+                    self.runtime_handle.workspace_root(),
+                )
+                .await
+            {
                 self.sessions
                     .restore_pending_messages(&self.session_id, claimed);
                 return Err(crate::types::LitecodeError::Anyhow(error));
@@ -810,14 +814,16 @@ impl AgentDeps for AgentRuntime {
         self.step_max
     }
 
-    fn persist_new(&self, items: &[Item], result_data: &[ToolResultData]) -> Result<bool> {
+    async fn persist_new(
+        &self,
+        items: &[Item],
+        result_data: &[ToolResultData],
+    ) -> Result<bool> {
         let _lap = latency::lap_step("commit_step.persist_new", self.current_step_value());
-        let outcome = self.context_pipeline.persist_new(
-            &self.sessions,
-            &self.session_id,
-            items,
-            result_data,
-        )?;
+        let outcome = self
+            .context_pipeline
+            .persist_new(&self.sessions, &self.session_id, items, result_data)
+            .await?;
         if outcome.discarded {
             // 回退 shortened the log; do not append this turn's tail.
             return Ok(true);
@@ -926,15 +932,17 @@ impl AgentRuntime {
         crate::runtime::validate_llm_input_capabilities(&view.items, &self.turn_llm.model)?;
         let token_count = view.token_count;
         let context_meter = view.context_meter;
-        let (request, origin_seq) = self.build_model_request(
-            &instructions,
-            view.items,
-            view.item_seqs,
-            &view.rebased,
-            token_count,
-            view.projected_parts,
-            context_meter,
-        )?;
+        let (request, origin_seq) = self
+            .build_model_request(
+                &instructions,
+                view.items,
+                view.item_seqs,
+                &view.rebased,
+                token_count,
+                view.projected_parts,
+                context_meter,
+            )
+            .await?;
         build_lap.done();
         // Turn entry -> first request leaves this process (once per turn).
         latency::report_since(
@@ -956,7 +964,7 @@ impl AgentRuntime {
     /// Sense the seam and append one row per reminder. Subagent delivery is
     /// fail-closed: a write error puts the completions back and stops the turn.
     /// Other reminder writes are fail-open so a decoration cannot abort the turn.
-    fn append_seam_reminders(&mut self, step: u64) -> Result<bool> {
+    async fn append_seam_reminders(&mut self, step: u64) -> Result<bool> {
         use crate::reminder::{BashExitEntry, PlanPointer, RunningBash, SettledChild, TodoSnap};
         use crate::reminder::{
             Facts, MemoryFacts, MemorySnap, ReminderKind, SeamCtx, TaskFacts, sync,
@@ -1077,7 +1085,7 @@ impl AgentRuntime {
         };
         stages.mark("session_memory");
 
-        let view = match self.sessions.spine_reminder_view(&self.session_id) {
+        let view = match self.sessions.spine_reminder_view(&self.session_id).await {
             Ok(view) => view,
             Err(error) => {
                 self.restore_seam_sources(&bash_notices, completions);
@@ -1143,7 +1151,7 @@ impl AgentRuntime {
         let mut files_changed_written = false;
         let mut appended = false;
         for reminder in &reminders {
-            match self.sessions.append_reminder(&self.session_id, reminder) {
+            match self.sessions.append_reminder(&self.session_id, reminder).await {
                 Ok(_) => {
                     appended = true;
                     match reminder.kind() {
@@ -1272,7 +1280,7 @@ impl AgentRuntime {
         // of reviving a toast here.
     }
 
-    pub(crate) fn build_model_request(
+    pub(crate) async fn build_model_request(
         &self,
         instructions: &str,
         input: Vec<Item>,
@@ -1333,8 +1341,9 @@ impl AgentRuntime {
         let reasoning_dropped = report.reasoning_dropped;
         // Origin is an append-only control-plane row written before the request:
         // items this request produces inherit its provider.
-        let origin_seq =
-            self.record_request_origin(&context_envelope, &instructions_digest, &tools_digest)?;
+        let origin_seq = self
+            .record_request_origin(&context_envelope, &instructions_digest, &tools_digest)
+            .await?;
         tracing::info!(
             target: "litecode.debug.llm_request",
             session_id = %self.session_id,
@@ -1425,7 +1434,7 @@ impl AgentRuntime {
 
     /// Append the request boundary before sending, so the next durable Item row
     /// inherits exactly this turn/step's provider.
-    fn record_request_origin(
+    async fn record_request_origin(
         &self,
         context_envelope: &ContextEnvelope,
         instructions_digest: &str,
@@ -1452,6 +1461,7 @@ impl AgentRuntime {
         });
         self.sessions
             .append_request_origin(&self.session_id, &record)
+            .await
     }
 
     /// Items in/out via `complete_with_stream_events` (Responses SSE by default).
@@ -1575,7 +1585,7 @@ impl AgentRuntime {
         // is the call's failure: the log and the model's output would otherwise
         // disagree about what this call produced.
         match &outcome {
-            Ok(items) => projection.settle(Some(items))?,
+            Ok(items) => projection.settle(Some(items)).await?,
             Err(error) => {
                 // Its partial items are still what the agent will persist, so they
                 // are what the rows settle with. A lifecycle failure is combined
@@ -1587,7 +1597,7 @@ impl AgentRuntime {
                     }
                     _ => None,
                 };
-                if let Err(settle_error) = projection.settle(fallback) {
+                if let Err(settle_error) = projection.settle(fallback).await {
                     return Err(crate::types::LitecodeError::Llm(format!(
                         "{error}; streamed rows could not be settled: {settle_error}"
                     )));
@@ -1603,9 +1613,10 @@ impl AgentRuntime {
                         cache_hit_tokens: usage.cache_hit_tokens,
                         cache_miss_tokens: usage.cache_miss_tokens,
                     };
-                    if let Err(error) =
-                        self.sessions
-                            .record_provider_usage(&self.session_id, origin_seq, &bill)
+                    if let Err(error) = self
+                        .sessions
+                        .record_provider_usage(&self.session_id, origin_seq, &bill)
+                        .await
                     {
                         tracing::warn!(
                             session_id = %self.session_id,

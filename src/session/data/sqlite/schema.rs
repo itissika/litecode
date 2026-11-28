@@ -81,7 +81,6 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             checkpoint_seq    INTEGER NOT NULL DEFAULT 0,
             kept_from_seq     INTEGER NOT NULL DEFAULT 0,
             compacted_seq     INTEGER,
-            surface_rewrite_seq INTEGER NOT NULL DEFAULT 0,
             truncate_epoch    INTEGER NOT NULL DEFAULT 0,
             spine_from        INTEGER NOT NULL DEFAULT 0,
             subagent_depth    INTEGER NOT NULL DEFAULT 0,
