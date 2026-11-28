@@ -57,8 +57,8 @@ fn concurrent_commit_partial_does_not_lose_updates() {
     }
 }
 
-#[test]
-fn session_mutation_does_not_hold_records_lock() {
+#[tokio::test]
+async fn session_mutation_does_not_hold_records_lock() {
     let dir = TempDir::new().expect("dir");
     let db_path = dir.path().join("sessions.db");
     let db_str = db_path.to_str().expect("db path str").to_string();
@@ -67,11 +67,13 @@ fn session_mutation_does_not_hold_records_lock() {
         db_str,
     ));
     let sid = manager
-        .open_session_sync("/proj", "default", Some("test/test-primary-model"))
+        .open_session("/proj", "default", Some("test/test-primary-model"))
+        .await
         .expect("open session");
 
     manager
         .insert_detail_rows(&sid, &[litecode::types::user_text("x")])
+        .await
         .expect("insert");
     assert!(
         manager.records_lock_free(),

@@ -249,13 +249,43 @@ fn build_runtime_inner(
         Arc::new(TurnGuard::new()),
         db_path.to_string_lossy().to_string(),
     ));
-    let mut session_id = sessions
-        .open_session_sync(&project, "default", model_ref)
-        .unwrap();
+    let mut session_id = if tokio::runtime::Handle::try_current().is_ok() {
+        let sessions_bg = Arc::clone(&sessions);
+        let project_bg = project.clone();
+        let model_bg = model_ref.map(str::to_string);
+        std::thread::spawn(move || {
+            sessions_bg
+                .open_session_sync(&project_bg, "default", model_bg.as_deref())
+                .unwrap()
+        })
+        .join()
+        .expect("root fixture thread")
+    } else {
+        sessions
+            .open_session_sync(&project, "default", model_ref)
+            .unwrap()
+    };
     if child {
-        session_id = sessions
-            .open_child_session(&project, "default", model_ref, &session_id, "call-wp098")
-            .unwrap();
+        let sessions_bg = Arc::clone(&sessions);
+        let project_bg = project.clone();
+        let model_bg = model_ref.map(str::to_string);
+        let parent_bg = session_id.clone();
+        session_id = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("child fixture rt");
+            rt.block_on(sessions_bg.open_child_session(
+                &project_bg,
+                "default",
+                model_bg.as_deref(),
+                &parent_bg,
+                "call-wp098",
+            ))
+            .unwrap()
+        })
+        .join()
+        .expect("child fixture thread");
     }
 
     let model_ref = resolved

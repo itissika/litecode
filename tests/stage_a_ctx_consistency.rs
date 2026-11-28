@@ -153,7 +153,7 @@ fn test_model() -> Arc<litecode::provider_catalog::ResolvedModel> {
         .clone()
 }
 
-fn commit_via_gate(
+async fn commit_via_gate(
     pipeline: &ContextPipeline,
     sessions: &Arc<SessionManager>,
     sid: &str,
@@ -161,6 +161,7 @@ fn commit_via_gate(
 ) -> litecode::context_pipeline::CommitStepOutcome {
     pipeline
         .commit_step(sessions, sid, turn)
+        .await
         .expect("commit via session")
 }
 
@@ -170,7 +171,7 @@ fn row_previews(rows: &[WorkingRow]) -> Vec<String> {
         .collect()
 }
 
-fn setup_workspace_and_session(
+async fn setup_workspace_and_session(
     dir: &std::path::Path,
     agent: &str,
 ) -> (String, String, Arc<SessionManager>) {
@@ -179,7 +180,8 @@ fn setup_workspace_and_session(
     let db_path = ws.paths.sessions_db.to_string_lossy().to_string();
     let sessions = test_sessions(&db_path);
     let sid = sessions
-        .open_session_sync("/proj", agent, Some(common::TEST_PRIMARY_MODEL_REF))
+        .open_session("/proj", agent, Some(common::TEST_PRIMARY_MODEL_REF))
+        .await
         .expect("open");
     (db_path, sid, sessions)
 }
@@ -196,11 +198,11 @@ fn long_stage_seed() -> Vec<Item> {
 #[tokio::test(flavor = "current_thread")]
 async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
     let seed: Vec<Item> = (0..11)
         .map(|i| user_text(format!("manual-seed-{i}-{}", "word ".repeat(120))))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let transcript = sessions.data().transcript_blocking(&sid).unwrap();
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
@@ -258,11 +260,11 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
 #[tokio::test(flavor = "current_thread")]
 async fn pipeline_compact_reloads_working_set_from_fold() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
     let seed: Vec<Item> = (0..11)
         .map(|i| user_text(format!("fold-seed-{i}-{}", "word ".repeat(120))))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
     let provider = common::DshSummaryProvider::new();
@@ -332,12 +334,12 @@ async fn pipeline_compact_reloads_working_set_from_fold() {
 #[tokio::test(flavor = "current_thread")]
 async fn compact_then_new_step_persists_and_resumes_full_content() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
 
     // Seed enough history to push over the compact threshold when the cursor sees
     // a large provider token count.
     let seed = long_stage_seed();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
     let ctx = test_context(dir.path());
     let data_root = dir.path().to_path_buf();
     // Tiny keep window so short seeds still produce a discarded prefix (otherwise
@@ -373,7 +375,7 @@ async fn compact_then_new_step_persists_and_resumes_full_content() {
         "post-compact reply",
         "msg_post",
     )));
-    commit_via_gate(&pipeline, &sessions, &sid, &mut turn);
+    commit_via_gate(&pipeline, &sessions, &sid, &mut turn).await;
 
     // Historical pre-replace detail must remain in DB (compact must not DELETE it).
     drop(pipeline);
@@ -430,10 +432,10 @@ async fn compact_then_new_step_persists_and_resumes_full_content() {
 #[tokio::test(flavor = "current_thread")]
 async fn keep_recent_skip_still_enforces_hard_limit_when_over_budget() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
 
     let seed = vec![user_text("short-a"), user_text("short-b")];
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
     let ctx = test_context(dir.path());
     // Default keep window for 10_000 is 2500 —short seed fits entirely (cut=None).
     let pipeline = ContextPipeline::new(10_000, ctx.clone(), dir.path().to_path_buf());
@@ -479,9 +481,9 @@ async fn keep_recent_skip_still_enforces_hard_limit_when_over_budget() {
 #[tokio::test(flavor = "current_thread")]
 async fn compact_eats_only_persisted_prefix_and_keeps_uncommitted_tail() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
     let seed = long_stage_seed();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
     let ctx = test_context(dir.path());
     let pipeline = ContextPipeline::new(10_000, ctx.clone(), dir.path().to_path_buf())
         .with_keep_recent_tokens(1);
@@ -525,7 +527,7 @@ async fn compact_eats_only_persisted_prefix_and_keeps_uncommitted_tail() {
 #[tokio::test(flavor = "current_thread")]
 async fn compact_rebuild_does_not_repeat_kept_call_ids() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
     let mut seed: Vec<Item> = (0..40)
         .map(|i| user_text(format!("seed-{i}-{}", "word ".repeat(120))))
         .collect();
@@ -542,7 +544,7 @@ async fn compact_rebuild_does_not_repeat_kept_call_ids() {
         status: None,
     }));
     seed.push(user_text("after-tools"));
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let ctx = test_context(dir.path());
     let pipeline =
@@ -594,6 +596,7 @@ async fn compact_rebuild_does_not_repeat_kept_call_ids() {
                 text: "Environment: cwd /proj; os test; date 2026-09-27.".into(),
             }),
         )
+        .await
         .unwrap();
 
     pipeline
@@ -640,9 +643,9 @@ async fn compact_rebuild_does_not_repeat_kept_call_ids() {
 #[tokio::test(flavor = "current_thread")]
 async fn compact_keeps_pending_tail_after_post_compact_reminder() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
     let seed = long_stage_seed();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let ctx = test_context(dir.path());
     let pipeline =
@@ -696,6 +699,7 @@ async fn compact_keeps_pending_tail_after_post_compact_reminder() {
                 text: "Environment: cwd /proj; os test; date 2026-09-27.".into(),
             }),
         )
+        .await
         .unwrap();
     pipeline
         .build_view(&sessions, &sid, &prompt_baseline, &model)
@@ -735,9 +739,9 @@ async fn compact_keeps_pending_tail_after_post_compact_reminder() {
 #[tokio::test(flavor = "current_thread")]
 async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
     let seed = long_stage_seed();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
     sessions
         .with_entry_task_state_mut(&sid, |state| {
             state.todos.push(litecode::session::task_state::TodoItem {
@@ -808,7 +812,7 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         "restored tasks must not be embedded in the checkpoint, got {summary:?}"
     );
 
-    let view = sessions.spine_reminder_view(&sid).unwrap();
+    let view = sessions.spine_reminder_view(&sid).await.unwrap();
     assert!(view.compacted_head.is_some());
     let facts = litecode::reminder::Facts {
         tasks: litecode::reminder::TaskFacts {
@@ -830,7 +834,7 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         .iter()
         .find(|reminder| reminder.kind() == litecode::reminder::ReminderKind::Tasks)
         .expect("restore tasks after compaction");
-    let restored = sessions.append_reminder(&sid, tasks).unwrap();
+    let restored = sessions.append_reminder(&sid, tasks).await.unwrap();
     assert!(restored > view.compacted_head.unwrap());
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -857,10 +861,11 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
 #[tokio::test(flavor = "current_thread")]
 async fn unanswered_calls_pad_llm_view_only_not_disk() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
     let fc = function_call_item("hanging", "read", "{}", "fc_hang");
     sessions
         .insert_detail_rows(&sid, &[user_text("ask"), fc])
+        .await
         .unwrap();
     let ctx = test_context(dir.path());
     let pipeline = ContextPipeline::new(10_000, ctx.clone(), dir.path().to_path_buf());
@@ -900,28 +905,41 @@ async fn unanswered_calls_pad_llm_view_only_not_disk() {
 
 // ── 2.2 ──────────────────────────────────────────────────────────────────────
 
-#[test]
-fn revert_contract_three_states() {
+#[tokio::test(flavor = "current_thread")]
+async fn revert_contract_three_states() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
 
     // Pre-compact users leave the model working set but remain visible UI anchors.
     sessions
         .insert_detail_rows(&sid, &[user_text("u0"), user_text("u1")])
+        .await
         .unwrap();
     sessions
-        .data()
-        .compact_from(&sid, "summary", None, 10)
+        .mutate(litecode::session::data::command::SessionMutation::Compact {
+            session_id: sid.clone(),
+            operation_id: litecode::session::data::command::MutationId::new(),
+            summary: "summary".to_string(),
+            token_estimate: 10,
+            kept_from: None,
+            at: None,
+            expected_prior_checkpoint: None,
+            expected_from: 0,
+            usage: None,
+            provider_id: None,
+        })
+        .await
         .unwrap();
     // Post-compact users.
     sessions
         .insert_detail_rows(&sid, &[user_text("u2"), user_text("u3")])
+        .await
         .unwrap();
 
     assert_eq!(sessions.entry_user_detail_count(&sid).unwrap(), 4);
 
     // 1) u0, u1, compact, u2, u3 → u3 is seq 4. Keeps u2 + summary, drops u3.
-    sessions.entry_revert_to_user_anchor(&sid, 4).unwrap();
+    sessions.entry_revert_to_user_anchor(&sid, 4).await.unwrap();
     let loaded = sessions.data().transcript_blocking(&sid).unwrap();
     let previews: Vec<String> = loaded
         .iter()
@@ -935,7 +953,7 @@ fn revert_contract_three_states() {
     assert_eq!(sessions.entry_user_detail_count(&sid).unwrap(), 3);
 
     // 2) Swallowed: anchor beyond current visible count →InvalidRevertAnchor.
-    let err = sessions.entry_revert_to_user_anchor(&sid, 5).unwrap_err();
+    let err = sessions.entry_revert_to_user_anchor(&sid, 5).await.unwrap_err();
     assert!(
         matches!(err, LitecodeError::InvalidRevertAnchor(_)),
         "swallowed anchor must yield InvalidRevertAnchor, got {err:?}"
@@ -948,7 +966,7 @@ fn revert_contract_three_states() {
 
     // 3) Cross-checkpoint: reverting to archived u1 (seq 1)
     // physically removes that detail and the later checkpoint.
-    sessions.entry_revert_to_user_anchor(&sid, 1).unwrap();
+    sessions.entry_revert_to_user_anchor(&sid, 1).await.unwrap();
     let after_cross = sessions.data().transcript_blocking(&sid).unwrap();
     let after_previews: Vec<String> = after_cross
         .iter()
@@ -1037,7 +1055,7 @@ fn responses_provider(endpoint: &str) -> Arc<dyn litecode::llm::LlmProvider> {
 
 /// Build an `AgentRuntime` with a recording observer (like `build_runtime_with_provider`).
 #[allow(clippy::type_complexity)]
-fn build_runtime_with_observer(
+async fn build_runtime_with_observer(
     cwd: &std::path::Path,
     provider: Arc<dyn litecode::llm::LlmProvider>,
     observer: Arc<dyn RuntimeObserver>,
@@ -1068,7 +1086,8 @@ fn build_runtime_with_observer(
         db_path.to_string_lossy().to_string(),
     ));
     let session_id = sessions
-        .open_session_sync(&project, "default", model_ref)
+        .open_session(&project, "default", model_ref)
+        .await
         .unwrap();
 
     let model_id = resolved
@@ -1174,7 +1193,7 @@ async fn real_usage_feeds_compaction_decision_input() {
         serve_responses_queue(vec![usage_tool_sse_with(900), usage_text_sse_with(900)]).await;
     let provider = responses_provider(&endpoint);
     let observer: Arc<dyn RuntimeObserver> = rec.clone();
-    let mut rt = build_runtime_with_observer(dir.path(), provider, observer);
+    let mut rt = build_runtime_with_observer(dir.path(), provider, observer).await;
     rt.run("read then say hello").await.expect("turn completes");
 
     // `last_prompt_tokens` now holds the real usage from the last response.completed.
@@ -1246,14 +1265,15 @@ fn usage_text_sse_with(input_tokens: u64) -> String {
 
 // ── PROBE A: revert-then-commit must not replay reverted content ─────────────
 
-#[test]
-fn commit_after_revert_discards_uncommitted_delta() {
+#[tokio::test(flavor = "current_thread")]
+async fn commit_after_revert_discards_uncommitted_delta() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
 
     {
         sessions
             .insert_detail_rows(&sid, &[user_text("u0"), user_text("u1"), user_text("u2")])
+            .await
             .unwrap();
     }
     let ctx = test_context(dir.path());
@@ -1262,14 +1282,17 @@ fn commit_after_revert_discards_uncommitted_delta() {
     let mut turn = pipeline.begin_turn(&sessions, &sid).unwrap();
     assert_eq!(turn.len(), 3);
 
-    sessions.entry_revert_to_user_anchor(&sid, 1).unwrap();
+    sessions.entry_revert_to_user_anchor(&sid, 1).await.unwrap();
     assert_eq!(sessions.data().transcript_blocking(&sid).unwrap().len(), 1);
 
     turn.push(WorkingRow::pending(assistant_text_item(
         "uncommitted tail",
         "msg_stale",
     )));
-    let outcome = pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    let outcome = pipeline
+        .commit_step(&sessions, &sid, &mut turn)
+        .await
+        .unwrap();
     assert!(
         outcome.discarded,
         "stale delta after truncate must not insert"

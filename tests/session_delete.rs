@@ -102,6 +102,7 @@ async fn ui_revert_goes_through_controller_and_service() {
         .enqueue_user_input(&sid, UserInput::text("queued"))
         .expect("pending message");
     ctrl.revert_to_user_anchor(&sid, anchor)
+        .await
         .expect("controller revert");
 
     assert!(sessions.pending_messages_snapshot(&sid).is_empty());

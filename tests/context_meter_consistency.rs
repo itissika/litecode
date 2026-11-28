@@ -83,12 +83,13 @@ async fn auto_manual_and_ui_share_provider_plus_suffix_meter() {
     let seed: Vec<_> = (0..30)
         .map(|i| user_text(format!("covered-{i} {}", "word ".repeat(240))))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
     let header = sessions
         .append_request_origin(
             &sid,
             &serde_json::json!({"schema": 1, "turn": "t", "step": 1}),
         )
+        .await
         .unwrap();
     let usage = litecode::session::store::ProviderUsage {
         prompt_tokens: 8_000,
@@ -98,10 +99,14 @@ async fn auto_manual_and_ui_share_provider_plus_suffix_meter() {
     };
     sessions
         .record_provider_usage(&sid, header, &usage)
+        .await
         .unwrap();
     let suffix_item = user_text("uncovered suffix after the provider bill");
     let suffix_tokens = litecode::session::estimate::compute_token_estimate(&[suffix_item.clone()]);
-    sessions.insert_detail_rows(&sid, &[suffix_item]).unwrap();
+    sessions
+        .insert_detail_rows(&sid, &[suffix_item])
+        .await
+        .unwrap();
 
     let request = provider_request(&sid, 10_000, 1_024);
     let envelope = ContextEnvelope::from_compaction_request(&request);
@@ -209,12 +214,13 @@ async fn covered_pad_is_not_charged_again_as_provider_suffix() {
         r#"{"path":"x"}"#,
         "fc-pad",
     ));
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
     let header = sessions
         .append_request_origin(
             &sid,
             &serde_json::json!({"schema": 1, "turn": "t", "step": 1}),
         )
+        .await
         .unwrap();
     let usage = litecode::session::store::ProviderUsage {
         prompt_tokens: 7_000,
@@ -224,10 +230,14 @@ async fn covered_pad_is_not_charged_again_as_provider_suffix() {
     };
     sessions
         .record_provider_usage(&sid, header, &usage)
+        .await
         .unwrap();
     let suffix_item = user_text("uncovered suffix after the covered unanswered call");
     let suffix_tokens = litecode::session::estimate::compute_token_estimate(&[suffix_item.clone()]);
-    sessions.insert_detail_rows(&sid, &[suffix_item]).unwrap();
+    sessions
+        .insert_detail_rows(&sid, &[suffix_item])
+        .await
+        .unwrap();
 
     let request = provider_request(&sid, 8_000, 1_024);
     let envelope = ContextEnvelope::from_compaction_request(&request);
@@ -343,7 +353,7 @@ async fn local_meter_uses_the_padded_and_capability_projected_request() {
         user_message("look", &["https://example.test/a.png".to_string()]),
         common::function_call_item("call-pad", "read", r#"{"path":"x"}"#, "fc-pad"),
     ];
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let request = provider_request(&sid, 10_000, 1_024);
     let envelope = ContextEnvelope::from_compaction_request(&request);
@@ -409,6 +419,7 @@ async fn degenerate_windows_share_one_meter_across_pipeline_auto_manual_and_ui()
         let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
         sessions
             .insert_detail_rows(&sid, &[user_text("window fixture")])
+            .await
             .unwrap();
         let request = provider_request(&sid, window, 8);
         let envelope = ContextEnvelope::from_compaction_request(&request);
@@ -509,12 +520,14 @@ async fn step_and_turn_completion_snapshots_keep_breakdown_aligned_with_meter() 
 
     sessions
         .insert_detail_rows(&sid, &[user_text("covered prefix")])
+        .await
         .unwrap();
     let header = sessions
         .append_request_origin(
             &sid,
             &serde_json::json!({"schema": 1, "turn": "t", "step": 1}),
         )
+        .await
         .unwrap();
     sessions
         .record_provider_usage(
@@ -527,6 +540,7 @@ async fn step_and_turn_completion_snapshots_keep_breakdown_aligned_with_meter() 
                 cache_miss_tokens: 7_000,
             },
         )
+        .await
         .unwrap();
 
     let request = provider_request(&sid, 10_000, 1_024);
@@ -545,7 +559,7 @@ async fn step_and_turn_completion_snapshots_keep_breakdown_aligned_with_meter() 
     let first_suffix = user_text("suffix after the completed provider request");
     let first_suffix_tokens =
         litecode::session::estimate::compute_token_estimate(&[first_suffix.clone()]);
-    sessions.insert_detail_rows(&sid, &[first_suffix]).unwrap();
+    sessions.insert_detail_rows(&sid, &[first_suffix]).await.unwrap();
     proj.on_event(
         InternalEvent::StepCommitted,
         "/proj",
@@ -574,7 +588,10 @@ async fn step_and_turn_completion_snapshots_keep_breakdown_aligned_with_meter() 
     let second_suffix = user_text("final assistant turn suffix");
     let second_suffix_tokens =
         litecode::session::estimate::compute_token_estimate(&[second_suffix.clone()]);
-    sessions.insert_detail_rows(&sid, &[second_suffix]).unwrap();
+    sessions
+        .insert_detail_rows(&sid, &[second_suffix])
+        .await
+        .unwrap();
     proj.on_event(
         InternalEvent::TurnCompleted {
             turn_id: "t".into(),
@@ -612,8 +629,8 @@ async fn step_and_turn_completion_snapshots_keep_breakdown_aligned_with_meter() 
     );
 }
 
-#[test]
-fn latest_persisted_envelope_round_trips_for_cold_snapshot() {
+#[tokio::test]
+async fn latest_persisted_envelope_round_trips_for_cold_snapshot() {
     let fixture = SessionDataFixture::new();
     let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
     let sessions = Arc::new(fixture.manager());
@@ -634,9 +651,11 @@ fn latest_persisted_envelope_round_trips_for_cold_snapshot() {
                 "context_envelope": envelope.clone(),
             }),
         )
+        .await
         .unwrap();
     sessions
         .insert_detail_rows(&sid, &[user_text("cold history")])
+        .await
         .unwrap();
 
     assert_eq!(
@@ -689,7 +708,7 @@ async fn standard_and_max_modes_select_product_window_but_share_model_prompt_lim
     assert_eq!(standard_ui.context_window, 256_000);
     assert_eq!(standard_ui.compact_at, 204_800);
 
-    sessions.set_context_mode(&sid, ContextMode::Max).unwrap();
+    sessions.set_context_mode(&sid, ContextMode::Max).await.unwrap();
     let max = measure_request_context(
         &sessions,
         &sid,

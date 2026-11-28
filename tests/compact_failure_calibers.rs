@@ -1,6 +1,6 @@
 //! WP-014 / ISSUE-027: Andy's three compact-failure calibers.
 //!
-//! 1. auto compact Err → turn stops (see also `agent_loop::auto_compact_fail_stops_turn_without_model_call`)
+//! 1. auto compact Err →turn stops (see also `agent_loop::auto_compact_fail_stops_turn_without_model_call`)
 //! 2. compact failure restores transcript snapshot
 //! 3. manual compact failure releases Compact lease so the user can retry
 
@@ -45,7 +45,7 @@ fn light_workspace(dir: &std::path::Path) -> WorkspaceState {
     }
 }
 
-fn setup_workspace_and_session(
+async fn setup_workspace_and_session(
     dir: &std::path::Path,
     agent: &str,
 ) -> (String, Arc<SessionManager>) {
@@ -57,7 +57,8 @@ fn setup_workspace_and_session(
         db_path,
     ));
     let sid = sessions
-        .open_session_sync("/proj", agent, Some(common::TEST_PRIMARY_MODEL_REF))
+        .open_session("/proj", agent, Some(common::TEST_PRIMARY_MODEL_REF))
+        .await
         .expect("open");
     (sid, sessions)
 }
@@ -73,19 +74,19 @@ fn row_previews(rows: &[WorkingRow]) -> Vec<String> {
 #[tokio::test(flavor = "current_thread")]
 async fn compact_failure_restores_transcript_snapshot() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
 
     let seed: Vec<_> = (0..12)
         .map(|i| user_text(format!("restore-seed-{i}")))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let before = sessions.data().working_set_blocking(&sid).unwrap();
     let before_previews = row_previews(&before);
     let before_len = before.len();
     assert!(before_len >= 12, "fixture must seed a real prefix");
 
-    // Tiny keep window so keep-recent finds a cut; empty summary → CompactionFailed.
+    // Tiny keep window so keep-recent finds a cut; empty summary →CompactionFailed.
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
     assert!(
         CompactPolicy::can_compact(&budget, &project_items(&before)),
@@ -137,12 +138,12 @@ async fn compact_failure_restores_transcript_snapshot() {
 #[tokio::test(flavor = "current_thread")]
 async fn auto_compact_failure_restores_pipeline_working_set() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
 
     let seed: Vec<_> = (0..30)
         .map(|i| user_text(format!("auto-restore-{i}")))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let workspace_id = litecode::config::peek_workspace_id(dir.path())
         .unwrap_or_else(|| "test-workspace-id".into());
@@ -194,7 +195,7 @@ async fn auto_compact_failure_restores_pipeline_working_set() {
         "expected CompactionFailure, got {err:?}"
     );
 
-    // compact_transcript returns Err before restaging — staged set must still be the snapshot.
+    // compact_transcript returns Err before restaging ‘staged set must still be the snapshot.
     let staged = pipeline.working_set();
     assert_eq!(
         row_previews(&staged),
@@ -210,26 +211,26 @@ async fn auto_compact_failure_restores_pipeline_working_set() {
     );
 }
 
-/// Caliber 3: mirrors `start_manual_compact` — episode → run_episode → finish.
+/// Caliber 3: mirrors `start_manual_compact` ‘episode →run_episode →finish.
 /// After Failed, a new Compact lease must be acquirable (user retry, not agent/retry).
 /// Cancellation must surface as exactly one Cancelled terminal, never a
 /// pre-finish Failed followed by Cancelled.
 #[tokio::test(flavor = "current_thread")]
 async fn cancelled_episode_emits_only_cancelled_terminal() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
 
     let seed: Vec<_> = (0..12)
         .map(|i| user_text(format!("cancel-seed-{i}")))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let mut rx = sessions.subscribe(&sid).expect("subscribe lifecycle");
     let mut lease = sessions
         .try_begin_compaction_episode(&sid, CompactionTrigger::Manual)
         .expect("manual episode");
     let op_id = lease.id().to_string();
-    sessions.cancel_compaction(&sid);
+    lease.cancel_token().cancel();
 
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
     let provider = ScriptedProvider::with_texts(&[""]);
@@ -270,12 +271,12 @@ async fn cancelled_episode_emits_only_cancelled_terminal() {
 #[tokio::test(flavor = "current_thread")]
 async fn manual_compact_failure_releases_lease_for_retry() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let (sid, sessions) = setup_workspace_and_session(dir.path(), "default").await;
 
     let seed: Vec<_> = (0..12)
         .map(|i| user_text(format!("manual-retry-{i}")))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let mut rx = sessions
         .subscribe(&sid)
@@ -363,7 +364,7 @@ async fn manual_compact_failure_releases_lease_for_retry() {
 use common::fake_deps::{FakeAgentDeps, function_call_item};
 
 /// After a reconnected step 1 (tool call executed), step 2's auto compact
-/// fails → TurnOutcome::Error(CompactionFailed) and no further `call_model`.
+/// fails →TurnOutcome::Error(CompactionFailed) and no further `call_model`.
 #[tokio::test(flavor = "current_thread")]
 async fn reconnect_then_auto_compact_failure_stops_turn() {
     let mut deps = FakeAgentDeps::with_responses(vec![

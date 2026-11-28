@@ -198,8 +198,8 @@ fn the_projection_refreshes_its_meter_from_the_extended_view() {
         "the new row has to land in the meter"
     );
 }
-#[test]
-fn a_revert_under_the_fold_forces_a_rebuild() {
+#[tokio::test]
+async fn a_revert_under_the_fold_forces_a_rebuild() {
     let fx = SessionDataFixture::new();
     let sessions = fx.manager();
     let sid = fx.create("/p", "agent", None);
@@ -220,6 +220,7 @@ fn a_revert_under_the_fold_forces_a_rebuild() {
     // range alone looks like a plain append.
     sessions
         .entry_revert_to_user_anchor(&sid, 2)
+        .await
         .expect("revert");
     fx.insert_items(&sid, &[user_text("after revert")]);
 
@@ -241,8 +242,8 @@ fn a_revert_under_the_fold_forces_a_rebuild() {
     assert_eq!(synced.len(), 3);
 }
 
-#[test]
-fn a_revert_drops_the_projection_fold() {
+#[tokio::test]
+async fn a_revert_drops_the_projection_fold() {
     use std::sync::Arc;
 
     use litecode::client_protocol::controller::Projection;
@@ -274,6 +275,7 @@ fn a_revert_drops_the_projection_fold() {
 
     sessions
         .entry_revert_to_user_anchor(&sid, 2)
+        .await
         .expect("revert");
     fx.insert_items(&sid, &[user_text("after revert")]);
 

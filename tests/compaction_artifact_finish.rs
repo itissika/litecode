@@ -49,7 +49,7 @@ async fn failed_summary_finish_never_writes_a_compacted_checkpoint() {
     let seed: Vec<_> = (0..12)
         .map(|i| litecode::types::user_text(format!("summary-gate-seed-{i}")))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let truncated =
         assistant_with_status("partial summary", "msg_truncated", OutputStatus::Incomplete);
@@ -163,14 +163,15 @@ async fn assert_legacy_heuristic_summary_is_accepted(anchor: &str, summary: Stri
         String::new(),
     ));
     let sid = sessions
-        .open_session_sync("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF))
+        .open_session("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF))
+        .await
         .expect("open session");
     let mut seed: Vec<_> = (0..11)
         .map(|i| user_text(format!("{label}-seed-{i}-{}", "word ".repeat(200))))
         .collect();
     seed.push(user_text(anchor));
     seed.push(user_text(format!("{label}-kept-tail")));
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
     let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
 
     let response = vec![common::assistant_text_item(
@@ -624,7 +625,7 @@ async fn assert_real_codec_case_rejected(case: CodecCase) {
     let seed: Vec<_> = (0..12)
         .map(|i| user_text(format!("codec-gate-seed-{i}")))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
     let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
     let before = row_snapshot(&rows);
 
@@ -701,7 +702,7 @@ async fn successful_real_codec_preserves_artifact_finish_usage_and_model() {
     let anchor = "codec-success-anchor";
     seed.push(user_text(anchor));
     seed.push(user_text("codec-kept-tail"));
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
     let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
     let before = row_snapshot(&rows);
 

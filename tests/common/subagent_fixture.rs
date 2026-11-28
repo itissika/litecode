@@ -81,9 +81,21 @@ impl SubagentHarness {
             Arc::new(TurnGuard::new()),
             workspace.paths.sessions_db.to_string_lossy().to_string(),
         ));
-        let parent_id = sessions
-            .open_session_sync(&project, PARENT_AGENT, Some(TEST_PRIMARY_MODEL_REF))
-            .expect("parent session");
+        let parent_id = if tokio::runtime::Handle::try_current().is_ok() {
+            let sessions_bg = Arc::clone(&sessions);
+            let project_bg = project.clone();
+            std::thread::spawn(move || {
+                sessions_bg
+                    .open_session_sync(&project_bg, PARENT_AGENT, Some(TEST_PRIMARY_MODEL_REF))
+                    .expect("parent session")
+            })
+            .join()
+            .expect("subagent fixture thread")
+        } else {
+            sessions
+                .open_session_sync(&project, PARENT_AGENT, Some(TEST_PRIMARY_MODEL_REF))
+                .expect("parent session")
+        };
         let service = Arc::new(SessionService::new(Arc::clone(&sessions)));
 
         let workspace_service =

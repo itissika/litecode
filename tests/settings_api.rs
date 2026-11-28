@@ -314,7 +314,8 @@ async fn set_session_model_persists_selectable_catalog_ref() {
 
     let sessions = common::test_sessions_manager(&session_db);
     let sid = sessions
-        .open_session_sync(&project, "default", Some(common::TEST_PRIMARY_MODEL_REF))
+        .open_session(&project, "default", Some(common::TEST_PRIMARY_MODEL_REF))
+        .await
         .expect("open");
 
     let mut ctrl =
@@ -325,6 +326,7 @@ async fn set_session_model_persists_selectable_catalog_ref() {
     let revision_before_switch = sessions.data().revision_blocking(&sid).expect("revision");
     let rows_before_switch = sessions.data().events_blocking(&sid).expect("events").len();
     ctrl.set_session_model(&sid, common::TEST_ALT_MODEL_REF)
+        .await
         .expect("set model");
     assert_eq!(
         sessions.session_model_id(&sid).as_deref(),
@@ -348,6 +350,7 @@ async fn set_session_model_persists_selectable_catalog_ref() {
     // Re-selecting the current model is a no-op: no duplicate control-plane
     // row and no revision bump.
     ctrl.set_session_model(&sid, common::TEST_ALT_MODEL_REF)
+        .await
         .expect("same-model selection is accepted");
     let _ = ctrl.take_outgoing_for(&sid);
     assert_eq!(
@@ -364,6 +367,7 @@ async fn set_session_model_persists_selectable_catalog_ref() {
     // A reference the catalog does not declare is refused on the wire and never
     // overwrites the persisted session row.
     ctrl.set_session_model(&sid, "test/ghost-model")
+        .await
         .expect("a refusal is reported on the wire, not as a hard error");
     let frames = ctrl.take_outgoing_for(&sid);
     let refusal = frames

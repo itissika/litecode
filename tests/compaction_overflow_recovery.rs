@@ -96,12 +96,16 @@ impl LlmProvider for OverflowProvider {
     }
 }
 
-fn seed_large_transcript(sessions: &litecode::session::manager::SessionManager, sid: &str) {
+async fn seed_large_transcript(
+    sessions: &litecode::session::manager::SessionManager,
+    sid: &str,
+) {
     let seed: Vec<_> = (0..30)
         .map(|i| user_text(format!("overflow-seed-{i} {}", "word ".repeat(800))))
         .collect();
     sessions
         .insert_detail_rows(sid, &seed)
+        .await
         .expect("seed transcript");
 }
 
@@ -116,7 +120,7 @@ async fn provider_overflow_compacts_and_retries_the_main_request_once() {
     );
     let sessions = Arc::clone(runtime.sessions());
     let sid = runtime.session_id.clone();
-    seed_large_transcript(&sessions, &sid);
+    seed_large_transcript(&sessions, &sid).await;
     let mut events = sessions.subscribe(&sid).expect("subscribe");
     let before = sessions.data().revision_blocking(&sid).unwrap();
 
@@ -229,6 +233,7 @@ async fn an_unverified_overflow_terminal_reads_the_new_surface_and_retries_once(
         // The unverified commit's durable surface is what the retry must read.
         finisher_sessions
             .insert_detail_rows(&finisher_sid, &[user_text("new unverified surface")])
+            .await
             .expect("append the post-commit row");
         lease.finish(EpisodeOutcome::Failed {
             kind: CompactionFailKind::Failed,
@@ -310,6 +315,7 @@ async fn overflow_without_a_compactable_cut_returns_the_original_error_without_r
     let sid = runtime.session_id.clone();
     sessions
         .insert_detail_rows(&sid, &[user_text("one indivisible request")])
+        .await
         .expect("seed transcript");
 
     let error = runtime
@@ -338,7 +344,7 @@ async fn max_tokens_parameter_error_does_not_force_compaction_or_retry() {
     );
     let sessions = Arc::clone(runtime.sessions());
     let sid = runtime.session_id.clone();
-    seed_large_transcript(&sessions, &sid);
+    seed_large_transcript(&sessions, &sid).await;
     let mut events = sessions.subscribe(&sid).expect("subscribe");
 
     let error = runtime
@@ -394,7 +400,7 @@ async fn a_second_overflow_is_returned_without_a_third_main_attempt() {
     );
     let sessions = Arc::clone(runtime.sessions());
     let sid = runtime.session_id.clone();
-    seed_large_transcript(&sessions, &sid);
+    seed_large_transcript(&sessions, &sid).await;
 
     let error = runtime
         .run("overflow again after recovery")

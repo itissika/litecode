@@ -407,6 +407,7 @@ async fn remove_parent_cascades_child() {
         .unwrap();
     let child_id = sessions
         .open_child_session(&project, "reviewer", None, &parent_id, "call_del")
+        .await
         .unwrap();
 
     SessionService::new(Arc::clone(&sessions))

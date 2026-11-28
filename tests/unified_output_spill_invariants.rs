@@ -49,7 +49,10 @@ fn walk_ext(dir: &Path, exts: &[&str], out: &mut Vec<PathBuf>) {
 }
 
 fn non_test_prefix(src: &str) -> &str {
-    src.split("#[cfg(test)]").next().unwrap_or(src)
+    // Cut at the test module, not at the first `#[cfg(test)]` attribute: a file
+    // may gate helpers before its production functions (render.rs does), and
+    // stopping there would leave most of the file unscanned.
+    src.split("mod tests {").next().unwrap_or(src)
 }
 
 fn make_ctx(root: &Path) -> Context {
@@ -182,6 +185,46 @@ fn death_list_no_bespoke_spill_or_bypass_in_src() {
         }
     }
     assert!(hits.is_empty(), "production spill/bypass hits:\n{}", hits.join("\n"));
+}
+
+/// The model view is the only writer of clipped tool output. A second call site
+/// would give one run two clipping policies.
+#[test]
+fn only_the_model_view_spills_tool_output() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut rs_files = Vec::new();
+    walk_ext(&manifest.join("src"), &["rs"], &mut rs_files);
+
+    let mut hits = Vec::new();
+    for path in rs_files {
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let prod = non_test_prefix(&raw);
+        let rel = path
+            .strip_prefix(manifest)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let allowed = rel == "src/tool/output.rs" || rel == "src/tools/code/render.rs";
+        for needle in ["spill_full_text(", "cut_and_spill_lines("] {
+            if prod.contains(needle) && !allowed {
+                hits.push(format!("{rel}: {needle}"));
+            }
+        }
+        if rel == "src/tools/code/render.rs"
+            && prod.matches("cut_and_spill_lines(").count() != 1
+        {
+            hits.push(format!(
+                "{rel}: expected exactly one cut_and_spill_lines call site"
+            ));
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "spill call sites outside the model view:\n{}",
+        hits.join("\n")
+    );
 }
 
 #[test]

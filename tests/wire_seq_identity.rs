@@ -27,29 +27,31 @@ fn sessions() -> Arc<SessionManager> {
     ))
 }
 
-fn setup_with_details(texts: &[&str]) -> (Projection, String, Arc<SessionManager>) {
+async fn setup_with_details(texts: &[&str]) -> (Projection, String, Arc<SessionManager>) {
     let sessions = sessions();
     let sid = sessions
-        .open_session_sync("/p", "default", Some("test/test-primary-model"))
+        .open_session("/p", "default", Some("test/test-primary-model"))
+        .await
         .unwrap();
     sessions
         .insert_detail_rows(
             &sid,
             &texts.iter().map(|t| user_text(*t)).collect::<Vec<_>>(),
         )
+        .await
         .unwrap();
     let proj = Projection::new(sid.clone(), sessions.clone(), 0);
     (proj, sid, sessions)
 }
 
-fn apply_compact(sessions: &SessionManager, sid: &str, summary: &str) {
+async fn apply_compact(sessions: &SessionManager, sid: &str, summary: &str) {
     let rows = sessions.data().working_set_blocking(sid).unwrap();
     let prior = rows
         .first()
         .and_then(|row| row.checkpoint().and(row.log_seq));
     let from = rows.first().and_then(|row| row.log_seq).unwrap_or(0);
     sessions
-        .mutate_blocking(SessionMutation::Compact {
+        .mutate(SessionMutation::Compact {
             session_id: sid.to_string(),
             operation_id: MutationId::new(),
             summary: summary.to_string(),
@@ -61,12 +63,14 @@ fn apply_compact(sessions: &SessionManager, sid: &str, summary: &str) {
             usage: None,
             provider_id: None,
         })
+        .await
         .unwrap();
 }
 
-fn insert_detail(sessions: &SessionManager, sid: &str, text: &str) {
+async fn insert_detail(sessions: &SessionManager, sid: &str, text: &str) {
     sessions
         .insert_detail_rows(sid, &[user_text(text)])
+        .await
         .unwrap();
 }
 
@@ -139,29 +143,30 @@ fn succeeded(trigger: CompactionTrigger) -> InternalEvent {
     }
 }
 
-#[test]
-fn empty_session_cursor_is_minus_one_zero() {
+#[tokio::test]
+async fn empty_session_cursor_is_minus_one_zero() {
     let sessions = sessions();
     let sid = sessions
-        .open_session_sync("/p", "default", Some("test/test-primary-model"))
+        .open_session("/p", "default", Some("test/test-primary-model"))
+        .await
         .unwrap();
     let proj = Projection::new(sid.clone(), sessions.clone(), 0);
     assert_eq!(sessions.entry_wire_seq_cursor(&sid), (-1, 0));
     assert_cursors_agree(&proj, &sessions, &sid);
 }
 
-#[test]
-fn second_compact_appends_new_seq_and_keeps_both_checkpoints() {
-    let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
-    apply_compact(&sessions, &sid, "first-cut");
+#[tokio::test]
+async fn second_compact_appends_new_seq_and_keeps_both_checkpoints() {
+    let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]).await;
+    apply_compact(&sessions, &sid, "first-cut").await;
     proj.on_event(succeeded(CompactionTrigger::Auto), "/p", &binding());
     let _ = proj.take_outgoing();
 
-    insert_detail(&sessions, &sid, "d");
+    insert_detail(&sessions, &sid, "d").await;
     proj.bump_buffer_revision("/p", &binding());
     let _ = proj.take_outgoing();
 
-    apply_compact(&sessions, &sid, "second-cut");
+    apply_compact(&sessions, &sid, "second-cut").await;
     proj.on_event(succeeded(CompactionTrigger::Auto), "/p", &binding());
     let out = proj.take_outgoing();
 
@@ -180,16 +185,17 @@ fn second_compact_appends_new_seq_and_keeps_both_checkpoints() {
     assert_cursors_agree(&proj, &sessions, &sid);
 }
 
-#[test]
-fn compact_then_revert_before_checkpoint_drops_compact_and_resets_pointers() {
-    let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
-    apply_compact(&sessions, &sid, "first-cut");
+#[tokio::test]
+async fn compact_then_revert_before_checkpoint_drops_compact_and_resets_pointers() {
+    let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]).await;
+    apply_compact(&sessions, &sid, "first-cut").await;
     proj.on_event(succeeded(CompactionTrigger::Auto), "/p", &binding());
     let _ = proj.take_outgoing();
     assert_cursors_agree(&proj, &sessions, &sid);
 
     sessions
         .entry_revert_to_user_anchor(&sid, 1)
+        .await
         .expect("revert");
     proj.apply_reverted("/p", &binding());
     let out = proj.take_outgoing();
@@ -212,11 +218,12 @@ fn compact_then_revert_before_checkpoint_drops_compact_and_resets_pointers() {
     assert_cursors_agree(&proj, &sessions, &sid);
 }
 
-#[test]
-fn revert_then_append_does_not_reuse_deleted_seq() {
-    let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
+#[tokio::test]
+async fn revert_then_append_does_not_reuse_deleted_seq() {
+    let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]).await;
     sessions
         .entry_revert_to_user_anchor(&sid, 1)
+        .await
         .expect("revert");
     proj.apply_reverted("/p", &binding());
     let _ = proj.take_outgoing();
@@ -224,7 +231,7 @@ fn revert_then_append_does_not_reuse_deleted_seq() {
     // never handed out again.
     assert_eq!(sessions.entry_wire_seq_cursor(&sid), (0, 3));
 
-    insert_detail(&sessions, &sid, "after-revert");
+    insert_detail(&sessions, &sid, "after-revert").await;
     proj.bump_buffer_revision("/p", &binding());
     let out = proj.take_outgoing();
     let items = buffer_item_frames(&out);
@@ -243,9 +250,9 @@ fn revert_then_append_does_not_reuse_deleted_seq() {
     assert_buffer_items_below_next(&out, 4);
 }
 
-#[test]
-fn runtime_only_stream_events_do_not_emit_snapshot_or_grow_seq() {
-    let (mut proj, sid, sessions) = setup_with_details(&["a"]);
+#[tokio::test]
+async fn runtime_only_stream_events_do_not_emit_snapshot_or_grow_seq() {
+    let (mut proj, sid, sessions) = setup_with_details(&["a"]).await;
     let before = sessions.entry_wire_seq_cursor(&sid);
     proj.on_event(
         InternalEvent::TurnStarted {
@@ -282,12 +289,12 @@ fn runtime_only_stream_events_do_not_emit_snapshot_or_grow_seq() {
     assert_cursors_agree(&proj, &sessions, &sid);
 }
 
-#[test]
-fn step_committed_emits_new_seq_and_authoritative_snapshot() {
-    let (mut proj, sid, sessions) = setup_with_details(&["a", "b"]);
+#[tokio::test]
+async fn step_committed_emits_new_seq_and_authoritative_snapshot() {
+    let (mut proj, sid, sessions) = setup_with_details(&["a", "b"]).await;
     assert_eq!(sessions.entry_wire_seq_cursor(&sid), (1, 2));
 
-    insert_detail(&sessions, &sid, "c");
+    insert_detail(&sessions, &sid, "c").await;
     proj.on_event(InternalEvent::StepCommitted, "/p", &binding());
     let out = proj.take_outgoing();
     let items = buffer_item_frames(&out);
@@ -311,9 +318,9 @@ fn step_committed_emits_new_seq_and_authoritative_snapshot() {
     assert_buffer_items_below_next(&out, 3);
 }
 
-#[test]
-fn turn_finished_snapshot_next_seq_matches_db_max_plus_one() {
-    let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
+#[tokio::test]
+async fn turn_finished_snapshot_next_seq_matches_db_max_plus_one() {
+    let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]).await;
     proj.on_event(
         InternalEvent::TurnStarted {
             turn_id: "t1".into(),

@@ -71,7 +71,7 @@ async fn second_compaction_reuses_one_checkpoint_prefix() {
     let seed: Vec<Item> = (0..16)
         .map(|i| user_text(format!("checkpoint-seed-{i}-{}", "word ".repeat(200))))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let first_anchor_text = item_text_preview(&seed[14]);
     let first_anchor: String = first_anchor_text.trim().chars().take(240).collect();
@@ -159,7 +159,7 @@ async fn second_compaction_reuses_one_checkpoint_prefix() {
         date: "2026-01-01".into(),
         text: "Environment: cwd /proj; os test; date 2026-01-01.".into(),
     });
-    let reminder_seq = sessions.append_reminder(&sid, &reminder).unwrap();
+    let reminder_seq = sessions.append_reminder(&sid, &reminder).await.unwrap();
     assert!(reminder_seq > first_checkpoint_seq);
     let second_anchor = "second-source-anchor";
     let mut appended_seed: Vec<Item> = (0..8)
@@ -167,7 +167,10 @@ async fn second_compaction_reuses_one_checkpoint_prefix() {
         .collect();
     appended_seed.push(user_text(second_anchor));
     appended_seed.push(user_text("second-kept-tail"));
-    sessions.insert_detail_rows(&sid, &appended_seed).unwrap();
+    sessions
+        .insert_detail_rows(&sid, &appended_seed)
+        .await
+        .unwrap();
     let appended_rows = sessions.data().working_set_blocking(&sid).unwrap();
     let appended = project_items(&appended_rows);
     assert!(
@@ -281,13 +284,14 @@ fn dsh_instruction_has_eight_sections_in_order_and_no_anchor_contract() {
     assert!(!COMPACTION_INSTRUCTION.contains("<previous-summary>"));
 }
 
-#[test]
-fn legacy_labeled_checkpoint_body_loads_and_projects_without_the_label() {
+#[tokio::test]
+async fn legacy_labeled_checkpoint_body_loads_and_projects_without_the_label() {
     let fixture = SessionDataFixture::new();
     let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
     let sessions = Arc::new(fixture.manager());
     sessions
         .insert_detail_rows(&sid, &[user_text("archive"), user_text("keep")])
+        .await
         .unwrap();
     let rows = sessions.data().working_set_blocking(&sid).unwrap();
     let prior = rows
@@ -295,7 +299,7 @@ fn legacy_labeled_checkpoint_body_loads_and_projects_without_the_label() {
         .and_then(|row| row.checkpoint().and(row.log_seq));
     let from = rows.first().and_then(|row| row.log_seq).unwrap_or(0);
     sessions
-        .mutate_blocking(litecode::session::SessionMutation::Compact {
+        .mutate(litecode::session::SessionMutation::Compact {
             session_id: sid.clone(),
             operation_id: litecode::session::MutationId::new(),
             summary: "[Conversation summary]\nprior facts".into(),
@@ -307,6 +311,7 @@ fn legacy_labeled_checkpoint_body_loads_and_projects_without_the_label() {
             usage: None,
             provider_id: None,
         })
+        .await
         .unwrap();
     let rows = sessions.data().working_set_blocking(&sid).unwrap();
     let WorkingPayload::Checkpoint(checkpoint) = &rows[0].payload else {
@@ -320,8 +325,8 @@ fn legacy_labeled_checkpoint_body_loads_and_projects_without_the_label() {
     assert!(!text.contains("[Conversation summary]"));
 }
 
-#[test]
-fn ordinary_assistant_legacy_prefix_cannot_spoof_a_checkpoint() {
+#[tokio::test]
+async fn ordinary_assistant_legacy_prefix_cannot_spoof_a_checkpoint() {
     let fixture = SessionDataFixture::new();
     let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
     let sessions = Arc::new(fixture.manager());
@@ -333,6 +338,7 @@ fn ordinary_assistant_legacy_prefix_cannot_spoof_a_checkpoint() {
                 "msg_ordinary",
             )],
         )
+        .await
         .unwrap();
     let rows = sessions.data().working_set_blocking(&sid).unwrap();
     assert!(matches!(rows[0].payload, WorkingPayload::Item { .. }));

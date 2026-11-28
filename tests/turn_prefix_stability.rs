@@ -6,8 +6,7 @@
 //! reports a cache miss. These tests try to turn that red.
 //!
 //! Unique provider ids (`fc_1` then `fc_2`) are the green path. Reused ids
-//! (`msg_1` / `fc_1` every round, Ark-style) must not rewrite a Final row —
-//! id is only a hint for an open InProgress shell; collisions append a new seq.
+//! (`msg_1` / `fc_1` every round, Ark-style) must not rewrite a Final row —//! id is only a hint for an open InProgress shell; collisions append a new seq.
 
 mod common;
 
@@ -49,14 +48,14 @@ fn fco(call_id: &str, text: &str) -> Item {
 fn assert_json_prefix(prev: &[serde_json::Value], next: &[serde_json::Value], label: &str) {
     assert!(
         next.len() >= prev.len(),
-        "{label}: next input shrank ({} → {})",
+        "{label}: next input shrank ({} →{})",
         prev.len(),
         next.len()
     );
     for (i, (a, b)) in prev.iter().zip(next.iter()).enumerate() {
         assert_eq!(
             a, b,
-            "{label}: input[{i}] JSON changed — this busts prompt-cache prefix\nprev={a}\nnext={b}"
+            "{label}: input[{i}] JSON changed —this busts prompt-cache prefix\nprev={a}\nnext={b}"
         );
     }
 }
@@ -243,13 +242,14 @@ fn test_sessions(db_path: &str) -> Arc<SessionManager> {
     ))
 }
 
-fn setup_session(dir: &std::path::Path) -> (String, Arc<SessionManager>) {
+async fn setup_session(dir: &std::path::Path) -> (String, Arc<SessionManager>) {
     let ws = light_workspace(dir);
     set_runtime_paths(ws.paths.clone());
     let db_path = ws.paths.sessions_db.to_string_lossy().to_string();
     let sessions = test_sessions(&db_path);
     let sid = sessions
-        .open_session_sync("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF))
+        .open_session("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF))
+        .await
         .expect("open");
     (sid, sessions)
 }
@@ -344,9 +344,10 @@ fn loaded_items(sessions: &SessionManager, sid: &str) -> Vec<Item> {
 #[tokio::test(flavor = "current_thread")]
 async fn prepare_after_stream_persist_seal_keeps_prior_prefix() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_session(dir.path());
+    let (sid, sessions) = setup_session(dir.path()).await;
     sessions
         .insert_detail_rows(&sid, &[user_text("hist-a"), user_text("hist-b")])
+        .await
         .unwrap();
 
     let ctx = test_context(dir.path());
@@ -355,7 +356,7 @@ async fn prepare_after_stream_persist_seal_keeps_prior_prefix() {
         .begin_turn_with_id(&sessions, &sid, Some("t1".into()))
         .unwrap();
     turn.push(WorkingRow::pending(user_text("go")));
-    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    pipeline.commit_step(&sessions, &sid, &mut turn).await.unwrap();
 
     let first = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 1).await;
 
@@ -363,13 +364,15 @@ async fn prepare_after_stream_persist_seal_keeps_prior_prefix() {
     // as the runtime projection does; the turn then commits the same item.
     let streamed = sessions
         .begin_stream_item(&sid, &in_progress_fc("c1", "read", "fc_1"), "t1")
+        .await
         .expect("stream open");
     let completed_fc = function_call_item("c1", "read", r#"{"path":"a.rs"}"#, "fc_1");
     sessions
         .seal_stream_item(&sid, streamed, &completed_fc)
+        .await
         .expect("stream seal");
     turn.push(WorkingRow::persisted(streamed, completed_fc));
-    let commit = pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    let commit = pipeline.commit_step(&sessions, &sid, &mut turn).await.unwrap();
     assert!(
         commit.sealed_seqs.is_empty(),
         "a row the stream already settled is not sealed again, got {commit:?}"
@@ -386,22 +389,24 @@ async fn prepare_after_stream_persist_seal_keeps_prior_prefix() {
         "one provider item keeps one row"
     );
     turn.push(WorkingRow::pending(fco("c1", "ok")));
-    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    pipeline.commit_step(&sessions, &sid, &mut turn).await.unwrap();
 
     let second = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 2).await;
     assert_json_prefix(&first, &second, "after first tool round");
 
     let streamed2 = sessions
         .begin_stream_item(&sid, &in_progress_fc("c2", "read", "fc_2"), "t1")
+        .await
         .expect("stream open 2");
     let completed_fc2 = function_call_item("c2", "read", r#"{"path":"b.rs"}"#, "fc_2");
     sessions
         .seal_stream_item(&sid, streamed2, &completed_fc2)
+        .await
         .expect("stream seal 2");
     turn.push(WorkingRow::persisted(streamed2, completed_fc2));
-    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    pipeline.commit_step(&sessions, &sid, &mut turn).await.unwrap();
     turn.push(WorkingRow::pending(fco("c2", "ok2")));
-    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    pipeline.commit_step(&sessions, &sid, &mut turn).await.unwrap();
 
     let third = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 3).await;
     assert_json_prefix(&second, &third, "after second tool round");
@@ -410,9 +415,10 @@ async fn prepare_after_stream_persist_seal_keeps_prior_prefix() {
 #[tokio::test(flavor = "current_thread")]
 async fn job_exit_mid_turn_does_not_rewrite_already_sent_prefix() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_session(dir.path());
+    let (sid, sessions) = setup_session(dir.path()).await;
     sessions
         .insert_detail_rows(&sid, &[user_text("hist")])
+        .await
         .unwrap();
 
     let ctx = test_context(dir.path());
@@ -421,14 +427,14 @@ async fn job_exit_mid_turn_does_not_rewrite_already_sent_prefix() {
         .begin_turn_with_id(&sessions, &sid, Some("t1".into()))
         .unwrap();
     turn.push(WorkingRow::pending(user_text("go")));
-    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    pipeline.commit_step(&sessions, &sid, &mut turn).await.unwrap();
 
     let _ = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 1).await;
     turn.push(WorkingRow::pending(function_call_item(
         "c1", "read", "{}", "fc_1",
     )));
     turn.push(WorkingRow::pending(fco("c1", "ok")));
-    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    pipeline.commit_step(&sessions, &sid, &mut turn).await.unwrap();
 
     let after_tools = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 2).await;
 
@@ -445,6 +451,7 @@ async fn job_exit_mid_turn_does_not_rewrite_already_sent_prefix() {
     });
     let seq = sessions
         .append_reminder(&sid, &reminder)
+        .await
         .expect("append bash exit while turn pipeline is live");
     assert!(seq > 0, "a reminder allocates its own seq");
 
@@ -456,7 +463,7 @@ async fn job_exit_mid_turn_does_not_rewrite_already_sent_prefix() {
     );
     assert!(
         after_exit.len() > after_tools.len(),
-        "job_exit should append a new item (len {} → {}), not rewrite in place",
+        "job_exit should append a new item (len {} →{}), not rewrite in place",
         after_tools.len(),
         after_exit.len()
     );
@@ -471,19 +478,22 @@ async fn job_exit_mid_turn_does_not_rewrite_already_sent_prefix() {
 
 // ── provider id reuse (Ark-style). Unique-id tests above must stay green. ──
 
-#[test]
-fn persist_item_reused_message_id_must_not_rewrite_final_row() {
+#[tokio::test]
+async fn persist_item_reused_message_id_must_not_rewrite_final_row() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_session(dir.path());
+    let (sid, sessions) = setup_session(dir.path()).await;
     sessions
         .insert_detail_rows(&sid, &[user_text("hi")])
+        .await
         .unwrap();
     sessions
         .persist_item(&sid, &assistant_text_item("first reply", "msg_1"))
+        .await
         .unwrap();
 
     sessions
         .persist_item(&sid, &in_progress_assistant("second reply", "msg_1"))
+        .await
         .expect("next-round stream persist");
 
     let items = loaded_items(&sessions, &sid);
@@ -497,23 +507,29 @@ fn persist_item_reused_message_id_must_not_rewrite_final_row() {
     assert_eq!(item_text_preview(&items[2]), "second reply");
 }
 
-#[test]
-fn persist_item_reused_function_call_id_must_not_rewrite_final_row() {
+#[tokio::test]
+async fn persist_item_reused_function_call_id_must_not_rewrite_final_row() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_session(dir.path());
+    let (sid, sessions) = setup_session(dir.path()).await;
     sessions
         .insert_detail_rows(&sid, &[user_text("hi")])
+        .await
         .unwrap();
     sessions
         .persist_item(
             &sid,
             &function_call_item("call_1", "read", r#"{"path":"a.rs"}"#, "fc_1"),
         )
+        .await
         .unwrap();
-    sessions.persist_item(&sid, &fco("call_1", "ok-a")).unwrap();
+    sessions
+        .persist_item(&sid, &fco("call_1", "ok-a"))
+        .await
+        .unwrap();
 
     sessions
         .persist_item(&sid, &in_progress_fc("call_1", "read", "fc_1"))
+        .await
         .expect("next-round stream persist");
 
     let items = loaded_items(&sessions, &sid);
@@ -538,9 +554,10 @@ fn persist_item_reused_function_call_id_must_not_rewrite_final_row() {
 #[tokio::test(flavor = "current_thread")]
 async fn next_turn_reload_must_keep_sent_row_when_provider_reuses_id() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_session(dir.path());
+    let (sid, sessions) = setup_session(dir.path()).await;
     sessions
         .insert_detail_rows(&sid, &[user_text("hist")])
+        .await
         .unwrap();
 
     let ctx = test_context(dir.path());
@@ -549,10 +566,11 @@ async fn next_turn_reload_must_keep_sent_row_when_provider_reuses_id() {
         .begin_turn_with_id(&sessions, &sid, Some("t1".into()))
         .unwrap();
     turn.push(WorkingRow::pending(user_text("go")));
-    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    pipeline.commit_step(&sessions, &sid, &mut turn).await.unwrap();
 
     sessions
         .persist_item(&sid, &in_progress_fc("call_1", "read", "fc_1"))
+        .await
         .expect("stream persist_item");
     turn.push(WorkingRow::pending(function_call_item(
         "call_1",
@@ -560,22 +578,22 @@ async fn next_turn_reload_must_keep_sent_row_when_provider_reuses_id() {
         r#"{"path":"a.rs"}"#,
         "fc_1",
     )));
-    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    pipeline.commit_step(&sessions, &sid, &mut turn).await.unwrap();
     turn.push(WorkingRow::pending(fco("call_1", "ok-a")));
-    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    pipeline.commit_step(&sessions, &sid, &mut turn).await.unwrap();
 
     let sent = items_json(&project_items(&turn));
 
     // Reuse fc_1 on a pending FunctionCall (commit id lookup). A second
     // FunctionCallOutput with call_1 would hit result:call_1 and try to seal
-    // item/tool_result, which is not sealable — a sibling collision.
+    // item/tool_result, which is not sealable —a sibling collision.
     turn.push(WorkingRow::pending(function_call_item(
         "call_1",
         "read",
         r#"{"path":"b.rs"}"#,
         "fc_1",
     )));
-    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
+    pipeline.commit_step(&sessions, &sid, &mut turn).await.unwrap();
 
     pipeline.end_turn();
     let reloaded = pipeline
@@ -610,9 +628,10 @@ fn assert_seqs_strict_and_unsealed(sessions: &SessionManager, sid: &str) {
 #[tokio::test(flavor = "current_thread")]
 async fn state_reminders_only_append_across_steps() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_session(dir.path());
+    let (sid, sessions) = setup_session(dir.path()).await;
     sessions
         .insert_detail_rows(&sid, &[user_text("hist")])
+        .await
         .unwrap();
     let ctx = test_context(dir.path());
     let pipeline = ContextPipeline::new(10_000, ctx, dir.path().to_path_buf());
@@ -624,18 +643,18 @@ async fn state_reminders_only_append_across_steps() {
     let seam = litecode::reminder::SeamCtx {
         cwd: dir.path().to_path_buf(),
     };
-    let view = sessions.spine_reminder_view(&sid).unwrap();
+    let view = sessions.spine_reminder_view(&sid).await.unwrap();
     let written: Vec<_> =
         litecode::reminder::sync(&seam, &view, &litecode::reminder::Facts::default());
     assert!(written.len() >= 1, "first seam writes env");
     for reminder in &written {
-        sessions.append_reminder(&sid, reminder).unwrap();
+        sessions.append_reminder(&sid, reminder).await.unwrap();
     }
     let second = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 2).await;
     assert_json_prefix(&first, &second, "state reminders append");
     assert!(second.len() > first.len());
 
-    let view = sessions.spine_reminder_view(&sid).unwrap();
+    let view = sessions.spine_reminder_view(&sid).await.unwrap();
     let again = litecode::reminder::sync(&seam, &view, &litecode::reminder::Facts::default());
     assert!(
         again
@@ -654,7 +673,7 @@ async fn state_reminders_only_append_across_steps() {
 #[tokio::test(flavor = "current_thread")]
 async fn restore_row_lands_after_compacted_and_prefix_stays() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_session(dir.path());
+    let (sid, sessions) = setup_session(dir.path()).await;
     sessions
         .insert_detail_rows(
             &sid,
@@ -663,6 +682,7 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
                 user_text("more"),
             ],
         )
+        .await
         .unwrap();
     let ctx = test_context(dir.path());
     let pipeline =
@@ -713,7 +733,7 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
     turn = pipeline.working_set();
     let after_compact = items_json(&pipeline.prepared_view().expect("view").items);
 
-    let view = sessions.spine_reminder_view(&sid).unwrap();
+    let view = sessions.spine_reminder_view(&sid).await.unwrap();
     let head = view.compacted_head.expect("compacted head");
     let facts = litecode::reminder::Facts {
         tasks: litecode::reminder::TaskFacts {
@@ -734,7 +754,7 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
         .into_iter()
         .find(|reminder| reminder.kind() == litecode::reminder::ReminderKind::Tasks)
         .expect("restore tasks");
-    let seq = sessions.append_reminder(&sid, &restored).unwrap();
+    let seq = sessions.append_reminder(&sid, &restored).await.unwrap();
     assert!(seq > head, "restore row follows the compacted head");
 
     let after_restore = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 2).await;

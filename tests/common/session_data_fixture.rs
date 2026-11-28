@@ -50,16 +50,31 @@ impl SessionDataFixture {
         self.data.reader()
     }
 
+    /// Test-only helper: runs a synchronous `SessionData` fixture write on an
+    /// off-runtime thread when invoked from a `#[tokio::test]` so production
+    /// `writer.rs` never needs a Tokio thread bridge.
+    fn run_fixture_sync<T: Send>(&self, f: impl FnOnce() -> T + Send) -> T {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            std::thread::scope(|s| s.spawn(f).join().expect("fixture write thread"))
+        } else {
+            f()
+        }
+    }
+
     pub fn create(&self, project: &str, agent_id: &str, model_id: Option<&str>) -> String {
-        self.data
-            .create_session(project, agent_id, model_id)
-            .expect("create session")
+        self.run_fixture_sync(|| {
+            self.data
+                .create_session(project, agent_id, model_id)
+                .expect("create session")
+        })
     }
 
     pub fn insert_items(&self, session_id: &str, items: &[Item]) {
-        self.data
-            .insert_items(session_id, items)
-            .expect("insert items");
+        self.run_fixture_sync(|| {
+            self.data
+                .insert_items(session_id, items)
+                .expect("insert items")
+        })
     }
 
     pub fn operation_id(label: &str) -> MutationId {
@@ -67,7 +82,7 @@ impl SessionDataFixture {
     }
 
     pub fn mutate(&self, mutation: SessionMutation) -> litecode::session::CommitReceipt {
-        self.data.mutate_blocking(mutation).expect("mutate")
+        self.run_fixture_sync(|| self.data.mutate_blocking(mutation).expect("mutate"))
     }
 }
 

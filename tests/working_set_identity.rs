@@ -19,16 +19,18 @@ fn sessions() -> Arc<SessionManager> {
     ))
 }
 
-fn open_with_users(texts: &[&str]) -> (Arc<SessionManager>, String) {
+async fn open_with_users(texts: &[&str]) -> (Arc<SessionManager>, String) {
     let sessions = sessions();
     let sid = sessions
-        .open_session_sync("/p", "default", Some("test/test-primary-model"))
+        .open_session("/p", "default", Some("test/test-primary-model"))
+        .await
         .unwrap();
     sessions
         .insert_detail_rows(
             &sid,
             &texts.iter().map(|t| user_text(*t)).collect::<Vec<_>>(),
         )
+        .await
         .unwrap();
     (sessions, sid)
 }
@@ -77,9 +79,9 @@ fn assert_reader_matches_fold(sessions: &SessionManager, sid: &str) {
     );
 }
 
-#[test]
-fn append_rows_reader_working_set_matches_full_fold() {
-    let (sessions, sid) = open_with_users(&["a", "b", "c"]);
+#[tokio::test]
+async fn append_rows_reader_working_set_matches_full_fold() {
+    let (sessions, sid) = open_with_users(&["a", "b", "c"]).await;
     let visible = fold_visible(&sessions, &sid);
     assert_eq!(
         visible
@@ -91,16 +93,16 @@ fn append_rows_reader_working_set_matches_full_fold() {
     assert_reader_matches_fold(&sessions, &sid);
 }
 
-#[test]
-fn keep_recent_compact_reader_matches_fold_checkpoint_then_kept() {
-    let (sessions, sid) = open_with_users(&["a", "b", "c"]);
+#[tokio::test]
+async fn keep_recent_compact_reader_matches_fold_checkpoint_then_kept() {
+    let (sessions, sid) = open_with_users(&["a", "b", "c"]).await;
     let rows = sessions.data().working_set_blocking(&sid).unwrap();
     let prior = rows
         .first()
         .and_then(|row| row.checkpoint().and(row.log_seq));
     let from = rows.first().and_then(|row| row.log_seq).unwrap_or(0);
     sessions
-        .mutate_blocking(SessionMutation::Compact {
+        .mutate(SessionMutation::Compact {
             session_id: sid.clone(),
             operation_id: MutationId::new(),
             summary: "sum".into(),
@@ -112,6 +114,7 @@ fn keep_recent_compact_reader_matches_fold_checkpoint_then_kept() {
             usage: None,
             provider_id: None,
         })
+        .await
         .unwrap();
     let visible = fold_visible(&sessions, &sid);
     let checkpoint = visible
@@ -145,11 +148,11 @@ fn keep_recent_compact_reader_matches_fold_checkpoint_then_kept() {
     assert_reader_matches_fold(&sessions, &sid);
 }
 
-#[test]
-fn revert_then_commit_discard_returns_fold_window_and_does_not_append() {
-    let (sessions, sid) = open_with_users(&["a", "b", "c"]);
+#[tokio::test]
+async fn revert_then_commit_discard_returns_fold_window_and_does_not_append() {
+    let (sessions, sid) = open_with_users(&["a", "b", "c"]).await;
     assert_eq!(sessions.entry_wire_seq_cursor(&sid), (2, 3));
-    sessions.entry_revert_to_user_anchor(&sid, 1).unwrap();
+    sessions.entry_revert_to_user_anchor(&sid, 1).await.unwrap();
     // Active tail drops to 0; the allocator high-water stays at 3 (seqs 1..2 are
     // deleted but must never be reused).
     assert_eq!(sessions.entry_wire_seq_cursor(&sid), (0, 3));
@@ -162,6 +165,7 @@ fn revert_then_commit_discard_returns_fold_window_and_does_not_append() {
     ];
     let (kind, working, _) = sessions
         .commit_turn_delta(&sid, stale, 2, "t1", &[])
+        .await
         .unwrap();
     assert!(
         matches!(kind, CommitKind::Idempotent),
@@ -188,6 +192,7 @@ fn revert_then_commit_discard_returns_fold_window_and_does_not_append() {
 
     sessions
         .insert_detail_rows(&sid, &[user_text("after")])
+        .await
         .unwrap();
     assert_eq!(
         sessions.entry_wire_seq_cursor(&sid),
@@ -197,15 +202,16 @@ fn revert_then_commit_discard_returns_fold_window_and_does_not_append() {
     assert_reader_matches_fold(&sessions, &sid);
 }
 
-#[test]
-fn commit_applied_window_matches_fold() {
-    let (sessions, sid) = open_with_users(&["a"]);
+#[tokio::test]
+async fn commit_applied_window_matches_fold() {
+    let (sessions, sid) = open_with_users(&["a"]).await;
     let persisted = sessions.data().working_set_blocking(&sid).unwrap();
     let mut rows = persisted;
     rows.push(WorkingRow::pending(user_text("b")));
     let max_seq = sessions.entry_wire_seq_cursor(&sid).0;
     let (kind, working, _) = sessions
         .commit_turn_delta(&sid, rows, max_seq, "t1", &[])
+        .await
         .unwrap();
     assert!(!matches!(kind, CommitKind::Idempotent));
     let got: Vec<(u64, String)> = working
@@ -227,9 +233,9 @@ fn commit_applied_window_matches_fold() {
     assert_eq!(got, vec![(0, "a".into()), (1, "b".into())]);
 }
 
-#[test]
-fn pipeline_begin_turn_pending_tail_has_no_log_seq() {
-    let (sessions, sid) = open_with_users(&["a", "b"]);
+#[tokio::test]
+async fn pipeline_begin_turn_pending_tail_has_no_log_seq() {
+    let (sessions, sid) = open_with_users(&["a", "b"]).await;
     let pipeline = ContextPipeline::new(
         0,
         Context {
@@ -265,14 +271,14 @@ fn pipeline_begin_turn_pending_tail_has_no_log_seq() {
     let persisted: Vec<_> = rows.iter().filter_map(|row| row.log_seq).collect();
     assert_eq!(persisted, vec![0, 1]);
 }
-fn compact(sessions: &SessionManager, sid: &str, summary: &str, kept_from: Option<u64>) {
+async fn compact(sessions: &SessionManager, sid: &str, summary: &str, kept_from: Option<u64>) {
     let rows = sessions.data().working_set_blocking(sid).unwrap();
     let prior = rows
         .first()
         .and_then(|row| row.checkpoint().and(row.log_seq));
     let from = rows.first().and_then(|row| row.log_seq).unwrap_or(0);
     sessions
-        .mutate_blocking(SessionMutation::Compact {
+        .mutate(SessionMutation::Compact {
             session_id: sid.to_string(),
             operation_id: MutationId::new(),
             summary: summary.into(),
@@ -284,6 +290,7 @@ fn compact(sessions: &SessionManager, sid: &str, summary: &str, kept_from: Optio
             usage: None,
             provider_id: None,
         })
+        .await
         .unwrap();
 }
 
@@ -309,29 +316,32 @@ fn assert_reader_starts_at_checkpoint(sessions: &SessionManager, sid: &str) {
     );
 }
 
-#[test]
-fn compact_then_append_reader_matches_fold() {
-    let (sessions, sid) = open_with_users(&["a", "b", "c"]);
-    compact(&sessions, &sid, "sum", Some(2));
+#[tokio::test]
+async fn compact_then_append_reader_matches_fold() {
+    let (sessions, sid) = open_with_users(&["a", "b", "c"]).await;
+    compact(&sessions, &sid, "sum", Some(2)).await;
     sessions
         .insert_detail_rows(&sid, &[user_text("d"), user_text("e")])
+        .await
         .unwrap();
     assert_reader_matches_fold(&sessions, &sid);
     assert_reader_starts_at_checkpoint(&sessions, &sid);
 }
 
-#[test]
-fn two_compacts_reader_matches_fold() {
-    let (sessions, sid) = open_with_users(&["a", "b", "c"]);
-    compact(&sessions, &sid, "first", Some(1));
+#[tokio::test]
+async fn two_compacts_reader_matches_fold() {
+    let (sessions, sid) = open_with_users(&["a", "b", "c"]).await;
+    compact(&sessions, &sid, "first", Some(1)).await;
     sessions
         .insert_detail_rows(&sid, &[user_text("d")])
+        .await
         .unwrap();
     // The second keep boundary sits inside the first compaction's kept tail, so
     // the older checkpoint row is inside the read range and must be dropped.
-    compact(&sessions, &sid, "second", Some(2));
+    compact(&sessions, &sid, "second", Some(2)).await;
     sessions
         .insert_detail_rows(&sid, &[user_text("e")])
+        .await
         .unwrap();
     assert_reader_matches_fold(&sessions, &sid);
     assert_reader_starts_at_checkpoint(&sessions, &sid);
@@ -343,12 +353,13 @@ fn two_compacts_reader_matches_fold() {
     assert_eq!((checkpoint.from, checkpoint.to), (3, 2));
 }
 
-#[test]
-fn empty_keep_compact_reader_matches_fold() {
-    let (sessions, sid) = open_with_users(&["a", "b"]);
-    compact(&sessions, &sid, "sum", None);
+#[tokio::test]
+async fn empty_keep_compact_reader_matches_fold() {
+    let (sessions, sid) = open_with_users(&["a", "b"]).await;
+    compact(&sessions, &sid, "sum", None).await;
     sessions
         .insert_detail_rows(&sid, &[user_text("c")])
+        .await
         .unwrap();
     assert_reader_matches_fold(&sessions, &sid);
     assert_reader_starts_at_checkpoint(&sessions, &sid);
@@ -364,24 +375,25 @@ fn empty_keep_compact_reader_matches_fold() {
     assert_eq!((checkpoint.from, checkpoint.to), (0, 2));
 }
 
-#[test]
-fn revert_then_compact_reader_matches_fold() {
-    let (sessions, sid) = open_with_users(&["a", "b", "c"]);
-    sessions.entry_revert_to_user_anchor(&sid, 1).unwrap();
+#[tokio::test]
+async fn revert_then_compact_reader_matches_fold() {
+    let (sessions, sid) = open_with_users(&["a", "b", "c"]).await;
+    sessions.entry_revert_to_user_anchor(&sid, 1).await.unwrap();
     sessions
         .insert_detail_rows(&sid, &[user_text("after")])
+        .await
         .unwrap();
-    compact(&sessions, &sid, "sum", Some(3));
+    compact(&sessions, &sid, "sum", Some(3)).await;
     assert_reader_matches_fold(&sessions, &sid);
     assert_reader_starts_at_checkpoint(&sessions, &sid);
 }
 /// A compact on a session with no surface rows has no predecessor range, so the
 /// body's \`from\` and \`to\` are both the checkpoint's own seq — the only place
 /// \`from == to\` is legal.
-#[test]
-fn empty_surface_compact_reader_matches_fold() {
-    let (sessions, sid) = open_with_users(&[]);
-    compact(&sessions, &sid, "sum", None);
+#[tokio::test]
+async fn empty_surface_compact_reader_matches_fold() {
+    let (sessions, sid) = open_with_users(&[]).await;
+    compact(&sessions, &sid, "sum", None).await;
     assert_reader_matches_fold(&sessions, &sid);
     let visible = fold_visible(&sessions, &sid);
     assert_eq!(visible.len(), 1, "only the checkpoint survives");

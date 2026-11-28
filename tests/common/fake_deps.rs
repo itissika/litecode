@@ -201,7 +201,7 @@ impl AgentDeps for FakeAgentDeps {
         self.max_steps
     }
 
-    fn persist_new(&self, items: &[Item], _result_data: &[ToolResultData]) -> Result<bool> {
+    async fn persist_new(&self, items: &[Item], _result_data: &[ToolResultData]) -> Result<bool> {
         if self.persist_fail {
             return Err(LitecodeError::ToolExecution("persist failed".into()));
         }

@@ -74,6 +74,7 @@ async fn manual_precheck_failure_publishes_one_failed_terminal() {
     let sessions = Arc::new(fixture.manager());
     sessions
         .insert_detail_rows(&sid, &[user_text("too small to compact")])
+        .await
         .unwrap();
     let provider = Arc::new(ScriptedProvider::with_texts(&[]));
     let mut ctrl = controller(Arc::clone(&sessions), fixture.dir.path(), provider);
@@ -118,7 +119,7 @@ async fn manual_compact_failure_e2e_releases_lease_and_retry_starts() {
     let seed: Vec<_> = (0..10)
         .map(|i| user_text(format!("manual-e2e-{i} {}", "x".repeat(40_000))))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
     let before = sessions.data().working_set_blocking(&sid).unwrap().len();
 
     // Both attempts return an empty summary → CompactionFailed.
@@ -194,7 +195,7 @@ async fn manual_compact_retry_after_failure_completes() {
     let seed: Vec<_> = (0..10)
         .map(|i| user_text(format!("manual-retry-ok-{i} {}", "x".repeat(40_000))))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
     let before = sessions.data().working_set_blocking(&sid).unwrap().len();
 
     // The first manual operation exhausts its two empty attempts and fails;

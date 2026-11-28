@@ -159,7 +159,7 @@ async fn compaction_request_reuses_main_model_instructions_tools_and_projected_p
     let seed: Vec<_> = (0..9)
         .map(|i| user_text(format!("prefix-seed-{i} {}", "x".repeat(40_000))))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
         vec![
@@ -256,7 +256,7 @@ async fn auto_compaction_request_uses_current_turn_binding_and_main_prefix() {
     let seed: Vec<_> = (0..9)
         .map(|i| user_text(format!("auto-prefix-seed-{i} {}", "x".repeat(40_000))))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
         vec![
@@ -296,7 +296,7 @@ async fn auto_compaction_request_uses_current_turn_binding_and_main_prefix() {
     let extra: Vec<_> = (0..12)
         .map(|i| user_text(format!("auto-prefix-extra-{i} {}", "y".repeat(40_000))))
         .collect();
-    sessions.insert_detail_rows(&sid, &extra).unwrap();
+    sessions.insert_detail_rows(&sid, &extra).await.unwrap();
     let rows_before_second_turn = sessions.data().working_set_blocking(&sid).unwrap();
     let envelope = ContextEnvelope::cold(8192);
     let occupancy = ContextMeter::measure_local(
@@ -379,7 +379,7 @@ async fn compaction_prefix_keeps_signed_reasoning_identical_to_main_request() {
     let seed: Vec<_> = (0..9)
         .map(|i| user_text(format!("reasoning-prefix-seed-{i} {}", "x".repeat(40_000))))
         .collect();
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
         vec![
@@ -432,7 +432,7 @@ async fn compaction_prefix_keeps_signed_reasoning_identical_to_main_request() {
     let extra: Vec<_> = (0..4)
         .map(|i| user_text(format!("reasoning-prefix-extra-{i} {}", "y".repeat(40_000))))
         .collect();
-    sessions.insert_detail_rows(&sid, &extra).unwrap();
+    sessions.insert_detail_rows(&sid, &extra).await.unwrap();
 
     ctrl.start_turn(
         &sid,
@@ -517,7 +517,8 @@ async fn auto_compaction_uses_exact_cut_plus_one_with_pad_and_media_prefix() {
         String::new(),
     ));
     let sid = sessions
-        .open_session_sync("/proj", "default", Some("p/m"))
+        .open_session("/proj", "default", Some("p/m"))
+        .await
         .unwrap();
     let mut seed = vec![
         user_text("old-one"),
@@ -535,7 +536,7 @@ async fn auto_compaction_uses_exact_cut_plus_one_with_pad_and_media_prefix() {
     seed.extend((0..8).map(|i| user_text(format!("tail-{i}-{}", "word ".repeat(200)))));
     seed.push(user_text("latest-source-anchor"));
     seed.push(user_text("kept-tail"));
-    sessions.insert_detail_rows(&sid, &seed).unwrap();
+    sessions.insert_detail_rows(&sid, &seed).await.unwrap();
 
     let rows = sessions.data().working_set_blocking(&sid).unwrap();
     let target = ProviderCatalog::parse(
@@ -698,11 +699,11 @@ fn primary_wire_model() -> &'static str {
         .1
 }
 
-fn seed_manual_compactable(sessions: &SessionManager, sid: &str) {
+async fn seed_manual_compactable(sessions: &SessionManager, sid: &str) {
     let seed: Vec<_> = (0..9)
         .map(|i| user_text(format!("manual-gate-seed-{i} {}", "z".repeat(40_000))))
         .collect();
-    sessions.insert_detail_rows(sid, &seed).unwrap();
+    sessions.insert_detail_rows(sid, &seed).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -710,7 +711,7 @@ async fn manual_compaction_works_without_the_hidden_compaction_agent() {
     let fixture = SessionDataFixture::new();
     let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
     let sessions = Arc::new(fixture.manager());
-    seed_manual_compactable(&sessions, &sid);
+    seed_manual_compactable(&sessions, &sid).await;
 
     let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
         vec![vec![common::assistant_text_item(
@@ -811,7 +812,7 @@ async fn manual_compaction_repairs_a_stale_session_model_like_launch_turn() {
     let fixture = SessionDataFixture::new();
     let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
     let sessions = Arc::new(fixture.manager());
-    seed_manual_compactable(&sessions, &sid);
+    seed_manual_compactable(&sessions, &sid).await;
 
     let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
         vec![vec![common::assistant_text_item(
@@ -824,6 +825,7 @@ async fn manual_compaction_repairs_a_stale_session_model_like_launch_turn() {
 
     sessions
         .set_session_model_id(&sid, Some("test/model-that-was-removed".into()))
+        .await
         .expect("inject stale sticky model");
     ctrl.start_manual_compact(&sid)
         .await

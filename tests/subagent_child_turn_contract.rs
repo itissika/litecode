@@ -172,14 +172,17 @@ async fn child_turn_reads_config_from_its_own_session_row() {
     harness
         .sessions
         .set_session_model_id(&child, Some(common::TEST_ALT_MODEL_REF.into()))
+        .await
         .expect("set model");
     harness
         .sessions
         .set_thinking_tier(&child, ThinkingTier::High)
+        .await
         .expect("set tier");
     harness
         .sessions
         .set_context_mode(&child, ContextMode::Max)
+        .await
         .expect("set mode");
 
     let sent = harness.send("call_cfg_2", &child, "second").await;
@@ -227,6 +230,7 @@ async fn child_identity_is_not_switchable_by_set_primary() {
     let _ = ctrl.take_outgoing_for(&child);
 
     ctrl.set_active_primary(&child, "default")
+        .await
         .expect("a refusal is reported on the wire, not as a hard error");
 
     let frames = ctrl.take_outgoing_for(&child);
