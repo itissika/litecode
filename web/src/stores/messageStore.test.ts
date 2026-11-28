@@ -823,3 +823,47 @@ describe("messageStore queued-batch in-flight bubble", () => {
     expect(slice.landedQueueSeq).toBeNull();
   });
 });
+
+describe("messageStore.trimHead", () => {
+  it("drops rows below minSeq and advances fromSeq without touching toSeq", () => {
+    const sid = "s-trim-1";
+    useMessageStore.getState().onBufferLoaded(sid, {
+      session_id: sid,
+      from_seq: 0,
+      to_seq: 6,
+      events: [
+        { seq: 0, kind: "item/user", state: "final", body: userMsg("u0") },
+        { seq: 1, kind: "item/assistant", state: "final", body: assistantMsg("m-a0", "a0") },
+        { seq: 2, kind: "item/user", state: "final", body: userMsg("u1") },
+        { seq: 3, kind: "item/assistant", state: "final", body: assistantMsg("m-a1", "a1") },
+        { seq: 4, kind: "item/user", state: "final", body: userMsg("u2") },
+        { seq: 5, kind: "item/assistant", state: "final", body: assistantMsg("m-a2", "a2") },
+      ],
+    });
+
+    useMessageStore.getState().trimHead(sid, 4);
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.fromSeq).toBe(4);
+    expect(slice.toSeq).toBe(6);
+    expect(slice.messages.map((m) => m.seq)).toEqual([4, 5]);
+    expect(slice.display.map((m) => m.seq)).toEqual([4, 5]);
+  });
+
+  it("ignores trimHead when loadingHistory is active or minSeq is out of bounds", () => {
+    const sid = "s-trim-2";
+    useMessageStore.getState().onBufferLoaded(sid, {
+      session_id: sid,
+      from_seq: 10,
+      to_seq: 14,
+      events: [
+        { seq: 10, kind: "item/user", state: "final", body: userMsg("u10") },
+        { seq: 11, kind: "item/assistant", state: "final", body: assistantMsg("m-a10", "a10") },
+        { seq: 12, kind: "item/user", state: "final", body: userMsg("u12") },
+        { seq: 13, kind: "item/assistant", state: "final", body: assistantMsg("m-a12", "a12") },
+      ],
+    });
+    useMessageStore.getState().trimHead(sid, 10);
+    useMessageStore.getState().trimHead(sid, 14);
+    expect(useMessageStore.getState().bySession.get(sid)!.messages.map((m) => m.seq)).toEqual([10, 11, 12, 13]);
+  });
+});

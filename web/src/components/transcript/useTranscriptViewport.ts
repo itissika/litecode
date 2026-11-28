@@ -18,7 +18,8 @@ import {
   type Bubble,
 } from "../../lib/transcriptProjection";
 import { SCROLL_INTENT_KEYS, useStickToBottom } from "../../lib/scrollStick";
-import { requestFoldCardOpen } from "../foldCardState";
+import { pruneFoldCardOpenBefore, requestFoldCardOpen } from "../foldCardState";
+import { USER_RAIL_RADIUS } from "./transcriptUserRailMarks";
 import {
   centerDelta,
   easeInOutCubic,
@@ -42,6 +43,50 @@ const MARK_ESTIMATE = 28;
 /** The transient "compacting…" line: one short row, no padding. */
 const COMPACTING_ESTIMATE = 22;
 const EDITING_ESTIMATE = 240;
+/** User turns retained after head trim; wider than the rail ±radius window. */
+export const HEAD_TRIM_KEEP_USERS = USER_RAIL_RADIUS * 2 + 4;
+/** Hysteresis trigger so head trim runs in batches instead of every turn. */
+export const HEAD_TRIM_TRIGGER_USERS = HEAD_TRIM_KEEP_USERS + 4;
+const HEAD_TRIM_MIN_HEAD_BUBBLES = 2;
+const HEAD_TRIM_MIN_DROP_USERS = 2;
+
+/** Pick a user-bubble seq to trim the head to while pinned, or null. */
+export function selectHeadTrimSeq(input: {
+  bubbles: readonly Bubble[];
+  stickToEnd: boolean;
+  loadingHistory: boolean;
+  firstVisibleIndex: number | undefined;
+  editingBubbleKey?: string;
+}): number | null {
+  if (!input.stickToEnd || input.loadingHistory) return null;
+  if (input.firstVisibleIndex == null) return null;
+  const maxCutIdx = input.firstVisibleIndex - HEAD_TRIM_MIN_HEAD_BUBBLES;
+  if (maxCutIdx <= 0) return null;
+
+  const userIndices: number[] = [];
+  for (let i = 0; i < input.bubbles.length; i++) {
+    const bubble = input.bubbles[i];
+    if (bubble?.isUser && bubble.first != null && bubble.first.seq >= 0) {
+      userIndices.push(i);
+    }
+  }
+  if (userIndices.length < HEAD_TRIM_TRIGGER_USERS) return null;
+
+  const targetSlot = userIndices.length - HEAD_TRIM_KEEP_USERS;
+  let cutSlot = targetSlot;
+  while (cutSlot > 0 && userIndices[cutSlot]! > maxCutIdx) {
+    cutSlot -= 1;
+  }
+  if (cutSlot < HEAD_TRIM_MIN_DROP_USERS) return null;
+
+  const cutIdx = userIndices[cutSlot]!;
+  if (cutIdx <= 0 || cutIdx > maxCutIdx) return null;
+  if (input.editingBubbleKey) {
+    const editIdx = input.bubbles.findIndex((b) => b.key === input.editingBubbleKey);
+    if (editIdx >= 0 && editIdx < cutIdx) return null;
+  }
+  return input.bubbles[cutIdx]!.first!.seq;
+}
 
 /**
  * Whether a measured size change should be compensated by shifting scrollTop.
@@ -103,6 +148,7 @@ export function useTranscriptViewport({
   canLoadMore,
   loadingHistory,
   onLoadMore,
+  onTrimHead,
   scrollRef,
   sessionId,
   paddingEnd,
@@ -123,6 +169,7 @@ export function useTranscriptViewport({
   canLoadMore: boolean;
   loadingHistory: boolean;
   onLoadMore: () => void;
+  onTrimHead?: (minSeq: number) => void;
   scrollRef: RefObject<HTMLDivElement | null>;
   sessionId: string;
   paddingEnd: number;
@@ -420,6 +467,36 @@ export function useTranscriptViewport({
     if (!canLoadMore || loadingHistory) return;
     if (count === 0 || firstVisibleIndex === 0) onLoadMore();
   }, [canLoadMore, count, firstVisibleIndex, loadingHistory, onLoadMore]);
+
+  useEffect(() => {
+    if (!onTrimHead) return;
+    const cutSeq = selectHeadTrimSeq({
+      bubbles,
+      stickToEnd,
+      loadingHistory,
+      firstVisibleIndex,
+      editingBubbleKey,
+    });
+    if (cutSeq == null) return;
+    const cache = virtualizer.itemSizeCache;
+    if (cache) {
+      for (const bubble of bubbles) {
+        if (bubble.first != null && bubble.first.seq >= 0 && bubble.first.seq >= cutSeq) break;
+        cache.delete(bubble.key);
+      }
+    }
+    pruneFoldCardOpenBefore(sessionId, cutSeq);
+    onTrimHead(cutSeq);
+  }, [
+    bubbles,
+    editingBubbleKey,
+    firstVisibleIndex,
+    loadingHistory,
+    onTrimHead,
+    sessionId,
+    stickToEnd,
+    virtualizer,
+  ]);
 
   // The scroller is the same node after a popout. Rebind the virtualizer onto
   // that window, and while a mini chat is open measure its row from there so

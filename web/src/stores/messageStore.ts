@@ -341,6 +341,7 @@ interface MessageStore extends MessageState {
     toSeq: number,
   ) => Promise<void>;
   loadMoreHistory: (sessionId: string) => void;
+  trimHead: (sessionId: string, minSeq: number) => void;
   ensureSeqLoaded: (
     sessionId: string,
     seq: number,
@@ -601,6 +602,33 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         .catch(() => {
           patch(sessionId, { loadingHistory: false });
         });
+    },
+
+    trimHead: (sessionId, minSeq) => {
+      const state = get();
+      const slice = state.bySession.get(sessionId);
+      if (!slice || slice.loadingHistory) return;
+      if (!Number.isFinite(minSeq) || minSeq <= slice.fromSeq || minSeq >= slice.toSeq) return;
+      const bySeq = new Map<number, HumanRow>();
+      let dropped = 0;
+      for (const [seq, row] of slice.bySeq) {
+        if (seq >= minSeq) bySeq.set(seq, row);
+        else dropped += 1;
+      }
+      if (dropped === 0) return;
+      const messages = sortedMessages(bySeq);
+      debugTrace("buffer", "trimHead", {
+        sessionId,
+        fromSeq: minSeq,
+        dropped,
+        rows: messages.length,
+      });
+      const bySession = new Map(state.bySession);
+      bySession.set(
+        sessionId,
+        withDisplay({ ...slice, bySeq, messages, fromSeq: minSeq }),
+      );
+      set({ bySession });
     },
 
     ensureSeqLoaded: async (sessionId, seq, isCurrent = () => true) => {

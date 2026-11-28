@@ -65,3 +65,15 @@ export function clearFoldCardOpen(sessionId: string): void {
     if (key.startsWith(prefix)) openIntent.delete(key);
   }
 }
+
+/** Drop state for bubbles trimmed before `minSeq`. */
+export function pruneFoldCardOpenBefore(sessionId: string, minSeq: number): void {
+  const prefix = `${sessionId}:`;
+  for (const key of openIntent.keys()) {
+    if (!key.startsWith(prefix)) continue;
+    const rest = key.slice(prefix.length);
+    const sep = rest.indexOf(":");
+    const seq = Number(sep >= 0 ? rest.slice(0, sep) : rest);
+    if (Number.isFinite(seq) && seq >= 0 && seq < minSeq) openIntent.delete(key);
+  }
+}

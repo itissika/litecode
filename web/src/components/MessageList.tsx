@@ -1,4 +1,4 @@
-import { memo, useLayoutEffect, useMemo, useRef, type CSSProperties, type RefObject } from "react";
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties, type RefObject } from "react";
 
 import type { HumanRow, PendingMessage } from "../api/types";
 import { botSourcesForRows, isBotSourced } from "../lib/botMessage";
@@ -114,6 +114,11 @@ export const MessageList = memo(function MessageList({
     (s) => s.bySession.get(sessionId)?.landedQueueSeq ?? null,
   );
   const clearLandedQueueSeq = useMessageStore((s) => s.clearLandedQueueSeq);
+  const trimHead = useMessageStore((s) => s.trimHead);
+  const handleTrimHead = useCallback(
+    (minSeq: number) => trimHead(sessionId, minSeq),
+    [sessionId, trimHead],
+  );
   const queueRows = pendingQueue ? 1 : 0;
 
   const pad = useBottomPad({ scrollRef, composerCollapsed });
@@ -126,6 +131,7 @@ export const MessageList = memo(function MessageList({
     canLoadMore,
     loadingHistory,
     onLoadMore,
+    onTrimHead: handleTrimHead,
     scrollRef,
     sessionId,
     paddingEnd: pad.bottomPad,

@@ -139,9 +139,11 @@ export function UserMessageRail({
         node.style.paddingLeft = `${Math.max(0, TICK_HIT_MIN - look.width)}px`;
         node.style.opacity = String(look.opacity);
       }
+      const known = new Set(marks.map((mark) => mark.seq));
       for (const node of root.querySelectorAll<HTMLElement>("[data-user-rail-seq]")) {
         const seq = Number(node.dataset.userRailSeq);
-        if (!drawn.has(seq)) node.style.display = "none";
+        if (!known.has(seq)) node.remove();
+        else if (!drawn.has(seq)) node.style.display = "none";
       }
     };
 
