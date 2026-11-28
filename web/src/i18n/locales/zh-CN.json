@@ -37,7 +37,7 @@
     "rename": "重命名 bot",
     "delete": "删除 bot",
     "deleteTitle": "删除 bot",
-    "deleteConfirm": "删除 bot {name}？它的自有 agent profile 和默认会话会一起删除。",
+    "deleteConfirm": "删除 bot {name}？它绑定的那条会话会一起删除。",
     "cannotDeleteBusy": "运行中的 bot 不能删除，请先停止",
     "busyCannotEdit": "bot 正在运行；身份可以修改，能力和模型编辑需要等它停止。",
     "moveToFolder": "移动到文件夹",

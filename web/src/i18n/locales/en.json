@@ -37,7 +37,7 @@
     "rename": "Rename bot",
     "delete": "Delete bot",
     "deleteTitle": "Delete bot",
-    "deleteConfirm": "Delete bot {name}? Its owned agent profile and default session are removed.",
+    "deleteConfirm": "Delete bot {name}? The session it is bound to is removed too.",
     "cannotDeleteBusy": "Stop the bot before deleting it",
     "busyCannotEdit": "This bot is running. Identity can change, but capability and model editing are disabled until it stops.",
     "moveToFolder": "Move to folder",

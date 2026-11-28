@@ -1,7 +1,7 @@
 ```node
 node : bot
 status : pending
-summary : Bot 是产品身份层：1:1 绑定普通 session，记录唯一身份/正文权威；org 可见性按调用者位置，审批默认拒绝、ask_user 自带统一超时，平台段只写规则，消费方统一从记录派生身份。
+summary : Bot 是产品身份层：1:1 绑定普通 session，记录唯一身份/正文权威；org 可见性按调用者位置，审批默认拒绝、ask_user 由前台作答且无期限，平台段只写规则，消费方统一从记录派生身份。
 x : 6156
 y : 342
 ```
@@ -29,7 +29,7 @@ y : 342
 - `tools.bot.create` 创建即入职：新 bot 挂在调用者位置下，正文从调用者复制，工作区配额约束。
 - 删除 bot 时，直接子节点顶替它的位置（父是文件夹就进文件夹，是根就成根）。
 - bot 会话的 Permission/Approval Ask 默认拒绝，不弹权限卡，工具返回 denied 后 loop 继续；Allow/Deny 规则不变，不做 per-tool 矩阵。
-- ask_user 的答复期限在工具本身：session 与 bot 同一条，统一默认值可配置；到点没答返回 no answer，loop 继续。真取消立即中止；UI 路由断开/无前台按 no answer，不误判成 turn 取消。bot 不设专属超时，只保留“Permission/Approval 默认拒绝、有前台时 ask_user 可问”的可用性策略；交互回合和 auto-turn 共用同一策略，不复用已断开的 WS sink。
+- ask_user 没有答复期限，只有三种结束：拿到回答；回合取消（立即中止）；提问通道断开（按 no answer，loop 继续，不误判成 turn 取消）。session 与 bot 同一条提问通道，bot 不设专属期限，只保留“Permission/Approval 默认拒绝、有前台时 ask_user 可问”；交互回合和 auto-turn 共用同一策略，不复用已断开的 WS sink。
 
 ## 位置与可见性
 
