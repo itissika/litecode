@@ -75,7 +75,26 @@ pub struct TurnEndRecord {
 /// Latest `turn/end` via WP-098 `SessionData::latest_turn_end_blocking`.
 /// `cancelled_by` is kept only when `reason == "cancelled"`.
 pub fn latest_turn_end(service: &SessionService, session_id: &str) -> Option<TurnEndRecord> {
-    let (turn_id, reason, by) = service.latest_turn_end(session_id).ok().flatten()?;
+    turn_end_record(service.latest_turn_end(session_id).ok().flatten())
+}
+
+/// Async twin of [`latest_turn_end`]. `session/list` runs on a Tokio worker and
+/// must await the read (which lands on the blocking pool) instead of parking
+/// that worker on SQLite.
+pub async fn latest_turn_end_async(
+    service: &SessionService,
+    session_id: &str,
+) -> Option<TurnEndRecord> {
+    turn_end_record(service.latest_turn_end_async(session_id).await.ok().flatten())
+}
+
+/// One projection, so the sync and async readers can never disagree about how
+/// a stored `turn/end` becomes a wire record.
+#[allow(clippy::type_complexity)]
+fn turn_end_record(
+    fields: Option<(String, String, Option<crate::types::StopOrigin>)>,
+) -> Option<TurnEndRecord> {
+    let (turn_id, reason, by) = fields?;
     let cancelled_by = (reason == "cancelled")
         .then(|| by.map(|b| b.as_str().to_string()))
         .flatten();
@@ -162,7 +181,13 @@ mod tests {
         }
     }
 
-    fn wp099_turn_end(m: &SessionManager, sid: &str, turn: &str, reason: &str, by: Option<&str>) {
+    async fn wp099_turn_end(
+        m: &SessionManager,
+        sid: &str,
+        turn: &str,
+        reason: &str,
+        by: Option<&str>,
+    ) {
         let mut data = json!({"turn": turn, "reason": reason, "final_text": ""});
         if let Some(by) = by {
             data["cancelled_by"] = json!(by);
@@ -179,6 +204,7 @@ mod tests {
                 state: crate::session::LogState::Final,
             }),
         )
+        .await
         .unwrap();
     }
 
@@ -197,7 +223,7 @@ mod tests {
         let parent = m.open_session("/proj", "default", None).await.unwrap();
         let child = m.test_child_session("/proj", &parent, "c").unwrap();
 
-        wp099_turn_end(&m, &child, "t1", "cancelled", Some("user"));
+        wp099_turn_end(&m, &child, "t1", "cancelled", Some("user")).await;
         assert_eq!(
             latest_turn_end(&service, &child)
                 .unwrap()
@@ -205,7 +231,7 @@ mod tests {
                 .as_deref(),
             Some("user")
         );
-        wp099_turn_end(&m, &child, "t2", "cancelled", Some("parent"));
+        wp099_turn_end(&m, &child, "t2", "cancelled", Some("parent")).await;
         assert_eq!(
             latest_turn_end(&service, &child)
                 .unwrap()
@@ -214,11 +240,11 @@ mod tests {
             Some("parent")
         );
         // Not cancelled → null even if a stray key exists.
-        wp099_turn_end(&m, &child, "t3", "completed", Some("user"));
+        wp099_turn_end(&m, &child, "t3", "completed", Some("user")).await;
         let end = latest_turn_end(&service, &child).unwrap();
         assert_eq!((end.reason.as_str(), end.cancelled_by), ("completed", None));
         // Old log without the key → null.
-        wp099_turn_end(&m, &child, "t4", "cancelled", None);
+        wp099_turn_end(&m, &child, "t4", "cancelled", None).await;
         assert_eq!(
             latest_turn_end(&service, &child).unwrap().cancelled_by,
             None
@@ -232,7 +258,7 @@ mod tests {
             let m = wp099_mgr(dir.path());
             let parent = m.open_session("/proj", "default", None).await.unwrap();
             let child = m.test_child_session("/proj", &parent, "c").unwrap();
-            wp099_turn_end(&m, &child, "t1", "cancelled", Some("user"));
+            wp099_turn_end(&m, &child, "t1", "cancelled", Some("user")).await;
             (parent, child)
         };
         let _ = parent;
@@ -250,7 +276,7 @@ mod tests {
         let service = SessionService::new(Arc::clone(&m));
         let parent = m.open_session("/proj", "default", None).await.unwrap();
         let child = m.test_child_session("/proj", &parent, "c").unwrap();
-        wp099_turn_end(&m, &child, "t1", "cancelled", Some("parent"));
+        wp099_turn_end(&m, &child, "t1", "cancelled", Some("parent")).await;
         let progress = crate::session::TurnProgress {
             turn_id: "t1".into(),
             phase: crate::runtime::observer::TurnPhase::Idle,

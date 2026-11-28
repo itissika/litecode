@@ -357,14 +357,11 @@ impl Projection {
         let latest_bill = service.latest_provider_bill(&session_id).ok().flatten();
         let meta = service.meta(&session_id).ok();
         let compacted_seq = meta.as_ref().and_then(|meta| meta.compacted_seq);
-        let surface_rewrite_seq = meta.as_ref().map_or(0, |meta| meta.surface_rewrite_seq);
-        // A bill newer than the last compact/surface rewrite is the occupancy
-        // prompt. A later checkpoint or mechanical prune retires it. No bill yet
-        // keeps the meter row.
+        // A bill newer than the last compact checkpoint is the occupancy prompt.
+        // A later checkpoint retires it. No bill yet keeps the meter row.
         let last_turn_token_stats = crate::session::store::occupancy_usage(
             latest_bill,
             compacted_seq,
-            surface_rewrite_seq,
             &meter,
         )
         .map(|usage| crate::client_protocol::protocol::TurnTokenStats {
@@ -1526,24 +1523,27 @@ mod compact_item_wire_tests {
         SessionBindingProjection::default()
     }
 
-    fn setup_with_details(texts: &[&str]) -> (Projection, String, Arc<SessionManager>) {
+    async fn setup_with_details(texts: &[&str]) -> (Projection, String, Arc<SessionManager>) {
         let sessions = Arc::new(SessionManager::ephemeral_registry());
         let sid = sessions
-            .open_session_sync("/p", "default", Some("m"))
+            .open_session("/p", "default", Some("m"))
+            .await
             .unwrap();
         sessions
             .insert_detail_rows(
                 &sid,
                 &texts.iter().map(|t| user_text(*t)).collect::<Vec<_>>(),
             )
+            .await
             .unwrap();
         let proj = Projection::new(sid.clone(), sessions.clone(), 0);
         (proj, sid, sessions)
     }
 
-    fn insert_detail(sessions: &SessionManager, sid: &str, text: &str) {
+    async fn insert_detail(sessions: &SessionManager, sid: &str, text: &str) {
         sessions
             .insert_detail_rows(sid, &[user_text(text)])
+            .await
             .unwrap();
     }
 
@@ -1599,9 +1599,9 @@ mod compact_item_wire_tests {
             .expect("server meter snapshot")
     }
 
-    #[test]
-    fn quality_compaction_failure_carries_subtype_on_operation_result_wire() {
-        let (mut proj, _sid, _sessions) = setup_with_details(&["u0"]);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn quality_compaction_failure_carries_subtype_on_operation_result_wire() {
+        let (mut proj, _sid, _sessions) = setup_with_details(&["u0"]).await;
         proj.on_event(
             InternalEvent::CompactionLifecycle {
                 trigger: CompactionTrigger::Manual,
@@ -1631,9 +1631,9 @@ mod compact_item_wire_tests {
         );
     }
 
-    #[test]
-    fn compaction_lifecycle_wire_preserves_measured_telemetry() {
-        let (mut proj, _sid, _sessions) = setup_with_details(&["u0"]);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn compaction_lifecycle_wire_preserves_measured_telemetry() {
+        let (mut proj, _sid, _sessions) = setup_with_details(&["u0"]).await;
         let telemetry = CompactionTelemetry {
             tokens_before: Some(100),
             tokens_pruned: Some(10),
@@ -1672,9 +1672,9 @@ mod compact_item_wire_tests {
         }
     }
 
-    #[test]
-    fn request_completion_and_step_events_publish_the_live_server_meter() {
-        let (mut proj, _sid, _sessions) = setup_with_details(&["u0"]);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_completion_and_step_events_publish_the_live_server_meter() {
+        let (mut proj, _sid, _sessions) = setup_with_details(&["u0"]).await;
         proj.apply_turn_started("t-meter".into(), 3);
         let envelope =
             crate::context_pipeline::ContextEnvelope::from_request_parts("system", &[], 100);
@@ -1742,15 +1742,15 @@ mod compact_item_wire_tests {
         );
     }
 
-    #[test]
-    fn cancel_seal_restamps_changed_seqs_without_next_seq_growth() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_seal_restamps_changed_seqs_without_next_seq_growth() {
         use crate::authority::responses::{
             AssistantRole, FunctionToolCall, MessageItem, OutputMessage, OutputMessageContent,
             OutputStatus, OutputTextContent,
         };
         use crate::types::Item;
 
-        let (mut proj, sid, sessions) = setup_with_details(&["u0"]);
+        let (mut proj, sid, sessions) = setup_with_details(&["u0"]).await;
         sessions
             .begin_stream_item(
                 &sid,
@@ -1767,6 +1767,7 @@ mod compact_item_wire_tests {
                 })),
                 "t-live",
             )
+            .await
             .unwrap();
         sessions
             .begin_stream_item(
@@ -1781,12 +1782,13 @@ mod compact_item_wire_tests {
                 }),
                 "t-live",
             )
+            .await
             .unwrap();
         proj.bump_buffer_revision("/p", &binding());
         let _ = proj.take_outgoing();
         let next_before_seal = proj.next_seq;
 
-        let seqs = sessions.seal_in_progress_items(&sid).unwrap();
+        let seqs = sessions.seal_in_progress_items(&sid).await.unwrap();
         assert_eq!(seqs, vec![1, 2]);
 
         proj.bump_buffer_revision("/p", &binding());
@@ -1846,11 +1848,11 @@ mod compact_item_wire_tests {
         assert_eq!(again[1]["params"]["body"]["status"], "incomplete");
     }
 
-    #[test]
-    fn revert_then_append_delivers_new_seq_using_persisted_high_water() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn revert_then_append_delivers_new_seq_using_persisted_high_water() {
         // Rows 0..8 (nine user messages); the persisted high-water is 9.
         let (mut proj, sid, sessions) =
-            setup_with_details(&["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"]);
+            setup_with_details(&["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"]).await;
         proj.bump_buffer_revision("/p", &binding());
         let _ = proj.take_outgoing();
         assert_eq!(proj.next_seq, 9, "high-water after nine appends");
@@ -1860,6 +1862,7 @@ mod compact_item_wire_tests {
         // allocator high-water stays at 9 because a truncate never rewinds it.
         sessions
             .entry_revert_to_user_anchor(&sid, 6)
+            .await
             .expect("revert");
         proj.apply_reverted("/p", &binding());
         let out = proj.take_outgoing();
@@ -1880,7 +1883,7 @@ mod compact_item_wire_tests {
 
         // Append must allocate the high-water seq 9, never the deleted seq 6, and
         // the next bump must deliver exactly that row.
-        insert_detail(&sessions, &sid, "after-revert");
+        insert_detail(&sessions, &sid, "after-revert").await;
         proj.bump_buffer_revision("/p", &binding());
         let out = proj.take_outgoing();
         let items = buffer_item_frames(&out);

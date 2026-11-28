@@ -1671,7 +1671,7 @@ pub async fn handle_jsonrpc(
                 }
             };
             let sid = resolve_sid(session, &params.session_id);
-            match session.revert_to_user_anchor(&sid, params.seq) {
+            match session.revert_to_user_anchor(&sid, params.seq).await {
                 Ok(()) => {
                     for msg in session.take_outgoing_for(&sid) {
                         emit(sink, msg);
@@ -1779,7 +1779,7 @@ pub async fn handle_jsonrpc(
                 }
             };
             let sid = resolve_sid(session, &params.session_id);
-            match session.set_active_primary(&sid, &params.agent_id) {
+            match session.set_active_primary(&sid, &params.agent_id).await {
                 Ok(()) => {
                     for msg in session.take_outgoing_for(&sid) {
                         emit(sink, msg);
@@ -1833,7 +1833,7 @@ pub async fn handle_jsonrpc(
                 }
             };
             let sid = resolve_sid(session, &params.session_id);
-            match session.set_session_model(&sid, &params.model_id) {
+            match session.set_session_model(&sid, &params.model_id).await {
                 Ok(()) => {
                     for msg in session.take_outgoing_for(&sid) {
                         emit(sink, msg);
@@ -1887,7 +1887,7 @@ pub async fn handle_jsonrpc(
                 }
             };
             let sid = resolve_sid(session, &params.session_id);
-            match session.set_thinking_tier(&sid, &params.thinking_tier) {
+            match session.set_thinking_tier(&sid, &params.thinking_tier).await {
                 Ok(()) => {
                     for msg in session.take_outgoing_for(&sid) {
                         emit(sink, msg);
@@ -1941,7 +1941,7 @@ pub async fn handle_jsonrpc(
                 }
             };
             let sid = resolve_sid(session, &params.session_id);
-            match session.set_context_mode(&sid, &params.context_mode) {
+            match session.set_context_mode(&sid, &params.context_mode).await {
                 Ok(()) => {
                     for msg in session.take_outgoing_for(&sid) {
                         emit(sink, msg);
@@ -2215,7 +2215,7 @@ fn retain_pending_on_disconnect(
 /// B: the reply_tx is connection-local, so after a disconnect nobody can answer
 /// these asks. Clear their sidecar rows; otherwise the next snapshot rebuilds a
 /// card that has no live turn behind it.
-fn retain_and_clear_pending(
+async fn retain_and_clear_pending(
     session: &SessionController,
     pending_asks: &mut HashMap<String, PendingAsk>,
 ) -> Vec<(String, String)> {
@@ -2223,7 +2223,7 @@ fn retain_and_clear_pending(
     let mut cleared: Vec<String> = Vec::new();
     for (session_id, _) in &listed {
         if !cleared.contains(session_id) {
-            session.service.clear_pending_permissions(session_id);
+            session.service.clear_pending_permissions(session_id).await;
             cleared.push(session_id.clone());
         }
     }
@@ -2325,7 +2325,10 @@ pub async fn run_session_loop(
             .collect();
         for (sid, request_id, tool) in closed_asks {
             pending_asks.remove(&request_id);
-            session.service.remove_pending_permission(&sid, &request_id);
+            session
+                .service
+                .remove_pending_permission(&sid, &request_id)
+                .await;
             emit_permission_resolved(session, &response_tx, &sid, &tool, false, false);
         }
 
@@ -2348,8 +2351,10 @@ pub async fn run_session_loop(
                 // B: register only while the owning turn is live. A process
                 // restart or a turn that already ended must not show a card:
                 // nobody is waiting on the oneshot any more.
-                let registered = session.service.upsert_pending_permission(
-                    crate::session::pending::PendingPermissionRecord {
+                let registered = session
+                    .service
+                    .upsert_pending_permission(
+                        crate::session::pending::PendingPermissionRecord {
                         session_id: perm.session_id.clone(),
                         turn_id: perm.turn_id.clone(),
                         request_id: perm.request_id.clone(),
@@ -2363,7 +2368,8 @@ pub async fn run_session_loop(
                         questions: perm.questions.clone(),
                         call_id: linked_call_id,
                     },
-                );
+                )
+                .await;
                 if !registered {
                     tracing::warn!(
                         session_id = %perm.session_id,
@@ -2437,7 +2443,10 @@ pub async fn run_session_loop(
                         selected,
                         answers,
                     ));
-                    session.service.remove_pending_permission(&sid, &request_id);
+                    session
+                        .service
+                        .remove_pending_permission(&sid, &request_id)
+                        .await;
                     emit_permission_resolved(
                         session,
                         &response_tx,
@@ -2464,7 +2473,7 @@ pub async fn run_session_loop(
                 match req {
                     Some(SessionRequest::Quit) => {
                         // B: quit ends this connection's asks; no fake Deny.
-                        let _ = retain_and_clear_pending(session, &mut pending_asks);
+                        let _ = retain_and_clear_pending(session, &mut pending_asks).await;
                         let sids: Vec<String> = session.projections.keys().cloned().collect();
                         for sid in &sids {
                             let _ = session.service.cancel_turn_async(sid, crate::types::StopOrigin::User).await;
@@ -2474,7 +2483,7 @@ pub async fn run_session_loop(
                     Some(SessionRequest::Cancel) => {
                         // WP-186: user Stop → Aborted + clear durable pending.
                         for (sid, tool) in abort_all_pending_asks(&mut pending_asks) {
-                            session.service.clear_pending_permissions(&sid);
+                            session.service.clear_pending_permissions(&sid).await;
                             emit_permission_resolved(
                                 session, &response_tx, &sid, &tool, false, false,
                             );
@@ -2493,7 +2502,7 @@ pub async fn run_session_loop(
                             .await
                         {
                             // B: connection tearing down — its asks are dead.
-                            let _ = retain_and_clear_pending(session, &mut pending_asks);
+                            let _ = retain_and_clear_pending(session, &mut pending_asks).await;
                             break;
                         }
                     }
@@ -2530,10 +2539,10 @@ pub async fn run_session_loop(
                                     always,
                                     "grant_permission received"
                                 );
-                                session.service.remove_pending_permission(
-                                    &session_id,
-                                    &request_id_for_sidecar,
-                                );
+                                session
+                                    .service
+                                    .remove_pending_permission(&session_id, &request_id_for_sidecar)
+                                    .await;
                                 emit_permission_resolved(
                                     session,
                                     &response_tx,
@@ -2555,7 +2564,7 @@ pub async fn run_session_loop(
                                 // B: a request owned by a dead turn can never be
                                 // answered. Drop the stale row and resolve the
                                 // card; otherwise the next snapshot re-adds it.
-                                if let Some(stale_sid) = session.service.clear_pending_permission_if_turn_dead(&request_id)
+                                if let Some(stale_sid) = session.service.clear_pending_permission_if_turn_dead(&request_id).await
                                 {
                                     tracing::warn!(
                                         request_id = %request_id,
@@ -2603,7 +2612,7 @@ pub async fn run_session_loop(
                     }
                     None => {
                         // B: WS gone — its asks can no longer be answered.
-                        let _ = retain_and_clear_pending(session, &mut pending_asks);
+                        let _ = retain_and_clear_pending(session, &mut pending_asks).await;
                         break;
                     }
                 }
@@ -2624,7 +2633,7 @@ pub async fn run_session_loop(
             for req in deferred {
                 match req {
                     SessionRequest::Quit => {
-                        let _ = retain_and_clear_pending(session, &mut pending_asks);
+                        let _ = retain_and_clear_pending(session, &mut pending_asks).await;
                         let _ = session
                             .service
                             .cancel_turn_async(&sid, crate::types::StopOrigin::User)
@@ -2633,7 +2642,7 @@ pub async fn run_session_loop(
                     }
                     SessionRequest::Cancel => {
                         for (rej_sid, tool) in abort_all_pending_asks(&mut pending_asks) {
-                            session.service.clear_pending_permissions(&rej_sid);
+                            session.service.clear_pending_permissions(&rej_sid).await;
                             emit_permission_resolved(
                                 session,
                                 &response_tx,
@@ -2657,7 +2666,7 @@ pub async fn run_session_loop(
                         if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub)
                             .await
                         {
-                            let _ = retain_and_clear_pending(session, &mut pending_asks);
+                            let _ = retain_and_clear_pending(session, &mut pending_asks).await;
                             return;
                         }
                     }
@@ -2686,18 +2695,18 @@ pub async fn run_session_loop(
         for req in dummy_deferred {
             match req {
                 SessionRequest::Quit => {
-                    let _ = retain_and_clear_pending(session, &mut pending_asks);
+                    let _ = retain_and_clear_pending(session, &mut pending_asks).await;
                     break;
                 }
                 SessionRequest::Cancel => {
                     for (sid, tool) in abort_all_pending_asks(&mut pending_asks) {
-                        session.service.clear_pending_permissions(&sid);
+                        session.service.clear_pending_permissions(&sid).await;
                         emit_permission_resolved(session, &response_tx, &sid, &tool, false, false);
                     }
                 }
                 SessionRequest::JsonRpc(rpc) => {
                     if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub).await {
-                        let _ = retain_and_clear_pending(session, &mut pending_asks);
+                        let _ = retain_and_clear_pending(session, &mut pending_asks).await;
                         return;
                     }
                 }
@@ -3521,8 +3530,8 @@ mod ask_loop_tests {
                 &project,
             )
             .unwrap();
-        assert!(sessions.upsert_pending_permission(
-            crate::session::pending::PendingPermissionRecord {
+        assert!(sessions
+            .upsert_pending_permission(crate::session::pending::PendingPermissionRecord {
                 session_id: child.clone(),
                 turn_id: "t1".into(),
                 request_id: "req1".into(),
@@ -3535,8 +3544,8 @@ mod ask_loop_tests {
                 multi_select: false,
                 questions: Vec::new(),
                 call_id: None,
-            }
-        ));
+            })
+            .await);
         assert_eq!(sessions.pending_permissions_snapshot(&child).len(), 1);
 
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -3552,7 +3561,7 @@ mod ask_loop_tests {
             },
         );
 
-        let listed = super::retain_and_clear_pending(&controller, &mut pending);
+        let listed = super::retain_and_clear_pending(&controller, &mut pending).await;
         assert_eq!(listed, vec![(child.clone(), "write".to_string())]);
         assert!(pending.is_empty());
         assert!(
@@ -3845,7 +3854,13 @@ mod ask_loop_tests {
 
     // ── WP-099 ──
 
-    fn wp099_turn_end(s: &SessionManager, sid: &str, turn: &str, reason: &str, by: Option<&str>) {
+    async fn wp099_turn_end(
+        s: &SessionManager,
+        sid: &str,
+        turn: &str,
+        reason: &str,
+        by: Option<&str>,
+    ) {
         let mut data = serde_json::json!({"turn": turn, "reason": reason, "final_text": ""});
         if let Some(by) = by {
             data["cancelled_by"] = serde_json::json!(by);
@@ -3862,6 +3877,7 @@ mod ask_loop_tests {
                 state: crate::session::LogState::Final,
             }),
         )
+        .await
         .unwrap();
     }
 
@@ -3882,26 +3898,26 @@ mod ask_loop_tests {
         );
         assert!(json["last_turn_cancelled_by"].is_null());
 
-        wp099_turn_end(&s, &child, "t1", "cancelled", Some("user"));
+        wp099_turn_end(&s, &child, "t1", "cancelled", Some("user")).await;
         let r = row(&c.list_sessions().await.unwrap().sessions, &child);
         assert_eq!(r.last_turn_reason, "cancelled");
         assert_eq!(r.last_turn_cancelled_by.as_deref(), Some("user"));
 
-        wp099_turn_end(&s, &child, "t2", "cancelled", Some("parent"));
+        wp099_turn_end(&s, &child, "t2", "cancelled", Some("parent")).await;
         let r = row(&c.list_sessions().await.unwrap().sessions, &child);
         assert_eq!(r.last_turn_cancelled_by.as_deref(), Some("parent"));
 
-        wp099_turn_end(&s, &child, "t3", "completed", None);
+        wp099_turn_end(&s, &child, "t3", "completed", None).await;
         let r = row(&c.list_sessions().await.unwrap().sessions, &child);
         assert_eq!(r.last_turn_cancelled_by, None);
 
         // Main session: same rule as last_turn_reason → always null (Q6).
         // A real main turn has a user message; seed it so the row is listed.
         // `turn/end` alone is a control row and does not create a list entry.
-        s.data()
-            .insert_items(&parent, &[crate::types::user_text("hello")])
+        s.insert_detail_rows(&parent, &[crate::types::user_text("hello")])
+            .await
             .unwrap();
-        wp099_turn_end(&s, &parent, "p1", "cancelled", Some("user"));
+        wp099_turn_end(&s, &parent, "p1", "cancelled", Some("user")).await;
         let r = row(&c.list_sessions().await.unwrap().sessions, &parent);
         assert_eq!(r.last_turn_cancelled_by, None);
     }

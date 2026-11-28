@@ -128,6 +128,7 @@ impl SessionController {
             let project = self.project.clone();
             self.service
                 .set_agent_id(session_id, "default".to_string())
+                .await
                 .map_err(|e| StartTurnError::Runtime(anyhow::anyhow!("{e}")))?;
             primary_agent = "default".to_string();
             let binding = self.session_binding(session_id);
@@ -142,7 +143,8 @@ impl SessionController {
         // the catalog, provider key removed) is replaced in place. sessions.db
         // writes are not turn-guarded, so this holds even while another session runs.
         self.service
-            .ensure_session_model(&self.runtime.resolved, session_id, &primary_agent);
+            .ensure_session_model(&self.runtime.resolved, session_id, &primary_agent)
+            .await;
 
         let binding = self.session_binding(session_id);
         if let Some(proj) = self.projection_mut(session_id) {
@@ -410,7 +412,8 @@ impl SessionController {
         title: Option<String>,
     ) -> anyhow::Result<()> {
         self.service
-            .set_session_title(session_id, title.as_deref())?;
+            .set_session_title(session_id, title.as_deref())
+            .await?;
         self.push_session_list().await?;
         Ok(())
     }
@@ -427,25 +430,26 @@ impl SessionController {
             }
         }
         self.service
-            .set_session_folder(session_id, folder_id.as_deref())?;
+            .set_session_folder(session_id, folder_id.as_deref())
+            .await?;
         self.push_session_list().await?;
         Ok(())
     }
 
     pub async fn create_session_folder(&mut self, name: &str, bot: bool) -> anyhow::Result<String> {
-        let folder_id = self.service.create_session_folder(name, bot)?;
+        let folder_id = self.service.create_session_folder(name, bot).await?;
         self.push_session_list().await?;
         Ok(folder_id)
     }
 
     pub async fn rename_session_folder(&mut self, id: &str, name: &str) -> anyhow::Result<()> {
-        self.service.rename_session_folder(id, name)?;
+        self.service.rename_session_folder(id, name).await?;
         self.push_session_list().await?;
         Ok(())
     }
 
     pub async fn delete_session_folder(&mut self, id: &str) -> anyhow::Result<()> {
-        self.service.delete_session_folder(id)?;
+        self.service.delete_session_folder(id).await?;
         // Folders are shared with bot rows; never leave a dangling bot folder.
         if let Some(bots) = self.runtime.bots() {
             bots.clear_folder(id);
@@ -457,20 +461,24 @@ impl SessionController {
     /// Rewrite sidebar folder order. Unknown ids are ignored; unlisted folders
     /// keep their relative order at the end.
     pub async fn reorder_session_folders(&mut self, ids: Vec<String>) -> anyhow::Result<()> {
-        self.service.reorder_session_folders(&ids)?;
+        self.service.reorder_session_folders(&ids).await?;
         self.push_session_list().await?;
         Ok(())
     }
 
     // ── per-session operations ──
 
-    pub fn revert_to_user_anchor(&mut self, session_id: &str, seq: u64) -> anyhow::Result<()> {
+    pub async fn revert_to_user_anchor(
+        &mut self,
+        session_id: &str,
+        seq: u64,
+    ) -> anyhow::Result<()> {
         let project = self.project.clone();
         let binding = self.session_binding(session_id);
         if self.projection(session_id).is_none() {
             return Err(anyhow::anyhow!("no session bound"));
         }
-        let outcome = self.service.revert_to_user_anchor(session_id, seq);
+        let outcome = self.service.revert_to_user_anchor(session_id, seq).await;
         let Some(proj) = self.projection_mut(session_id) else {
             unreachable!("projection checked above");
         };
@@ -635,7 +643,11 @@ impl SessionController {
         result
     }
 
-    pub fn set_active_primary(&mut self, session_id: &str, agent_id: &str) -> anyhow::Result<()> {
+    pub async fn set_active_primary(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> anyhow::Result<()> {
         let project = self.project.clone();
         if self.is_session_busy_for(session_id) {
             let binding = self.session_binding(session_id);
@@ -702,6 +714,7 @@ impl SessionController {
             Ok(()) => {
                 self.service
                     .set_agent_id(session_id, agent_id.to_string())
+                    .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 // Only agent_id — do not touch model_id (decoupled sticky).
                 let binding = self.session_binding(session_id);
@@ -728,7 +741,11 @@ impl SessionController {
     }
 
     /// Persist sticky session `model_id` only (does not touch `agent_id`).
-    pub fn set_session_model(&mut self, session_id: &str, model_id: &str) -> anyhow::Result<()> {
+    pub async fn set_session_model(
+        &mut self,
+        session_id: &str,
+        model_id: &str,
+    ) -> anyhow::Result<()> {
         let project = self.project.clone();
         if self.is_session_busy_for(session_id) {
             let binding = self.session_binding(session_id);
@@ -822,6 +839,7 @@ impl SessionController {
         }
         self.service
             .set_session_model_id(session_id, Some(model_id.to_string()))
+            .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         tracing::info!(
             target: "litecode.debug.model_switch",
@@ -848,7 +866,11 @@ impl SessionController {
         Ok(())
     }
 
-    pub fn set_thinking_tier(&mut self, session_id: &str, tier: &str) -> anyhow::Result<()> {
+    pub async fn set_thinking_tier(
+        &mut self,
+        session_id: &str,
+        tier: &str,
+    ) -> anyhow::Result<()> {
         let project = self.project.clone();
         let parsed = crate::platform_knobs::ThinkingTier::parse(tier).ok_or_else(|| {
             anyhow::anyhow!("invalid thinking_tier '{tier}' (expected low|medium|high)")
@@ -868,6 +890,7 @@ impl SessionController {
         }
         self.service
             .set_thinking_tier(session_id, parsed)
+            .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let binding = self.session_binding(session_id);
         if let Some(proj) = self.projection_mut(session_id) {
@@ -876,7 +899,11 @@ impl SessionController {
         Ok(())
     }
 
-    pub fn set_context_mode(&mut self, session_id: &str, mode: &str) -> anyhow::Result<()> {
+    pub async fn set_context_mode(
+        &mut self,
+        session_id: &str,
+        mode: &str,
+    ) -> anyhow::Result<()> {
         let project = self.project.clone();
         let parsed = crate::platform_knobs::ContextMode::parse(mode).ok_or_else(|| {
             anyhow::anyhow!("invalid context_mode '{mode}' (expected standard|max)")
@@ -896,6 +923,7 @@ impl SessionController {
         }
         self.service
             .set_context_mode(session_id, parsed)
+            .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let binding = self.session_binding(session_id);
         if let Some(proj) = self.projection_mut(session_id) {
@@ -948,8 +976,11 @@ pub(crate) async fn build_session_list(
     service: &crate::session::SessionService,
     resolved: &crate::config::ResolvedConfig,
 ) -> anyhow::Result<SessionList> {
+    // Every read here is the async form: this runs on a Tokio worker, and the
+    // old blocking forms parked that worker on SQLite for each row.
     let folders = service
-        .list_folders()?
+        .list_folders_async()
+        .await?
         .into_iter()
         .map(|folder| SessionFolder {
             id: folder.id,
@@ -957,7 +988,7 @@ pub(crate) async fn build_session_list(
             sort_order: folder.sort_order,
         })
         .collect();
-    let db_sessions = service.list_sessions()?;
+    let db_sessions = service.list_sessions_async().await?;
     let mut result = Vec::with_capacity(db_sessions.len());
     for row in db_sessions {
         // WP-091 R8 / P8: empty child sessions stay listed (a just-bound
@@ -977,7 +1008,7 @@ pub(crate) async fn build_session_list(
         let has_conversation = if row.is_listed_by_projection(running, busy) {
             false
         } else {
-            service.has_conversation_rows(&row.id)?
+            service.has_conversation_rows_async(&row.id).await?
         };
         if !row.is_listed(running, busy, has_conversation) {
             continue;
@@ -997,12 +1028,15 @@ pub(crate) async fn build_session_list(
             row.model_id,
         );
         // WP-099 P1: reason and cancelled_by come from the same durable
-        // turn/end record, under the same visibility rule.
+        // turn/end record, under the same visibility rule. One indexed
+        // backwards scan per row — this used to fold the whole transcript.
         let (last_turn_reason, last_turn_cancelled_by) =
             if running || row.parent_session_id.is_none() {
                 (String::new(), None)
             } else {
-                match crate::client_protocol::status_track::latest_turn_end(service, &row.id) {
+                match crate::client_protocol::status_track::latest_turn_end_async(service, &row.id)
+                    .await
+                {
                     Some(end) => (end.reason, end.cancelled_by),
                     None => (String::new(), None),
                 }

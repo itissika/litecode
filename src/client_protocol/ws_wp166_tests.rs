@@ -88,14 +88,42 @@ async fn env() -> Env {
     }
 }
 
+/// Create a session through the async writer seam.
+///
+/// The writer no longer bridges a blocking send onto a helper thread, so a
+/// `#[tokio::test]` must await `mutate` instead of calling `create_session`.
+async fn create_session(state: &ServeState) -> String {
+    state
+        .sessions
+        .data()
+        .mutate(crate::session::data::command::SessionMutation::Create {
+            operation_id: crate::session::data::command::MutationId::new(),
+            project: "/proj".to_string(),
+            agent_id: "default".to_string(),
+            model_id: None,
+            parent_session_id: None,
+            parent_call_id: None,
+            responsibility: String::new(),
+        })
+        .await
+        .expect("create session")
+        .session_id
+}
+
 /// A persisted session with one turn's worth of rows (listed: not empty).
-fn seeded_session(state: &ServeState, text: &str) -> String {
+async fn seeded_session(state: &ServeState, text: &str) -> String {
     let data = state.sessions.data();
-    let sid = data
-        .create_session("/proj", "default", None)
-        .expect("create session");
-    data.insert_items(&sid, &[crate::types::user_text(text)])
-        .expect("insert items");
+    let sid = create_session(state).await;
+    let expected = data.revision(&sid).await.expect("revision");
+    data.mutate(crate::session::data::command::SessionMutation::InsertDetails {
+        session_id: sid.clone(),
+        expected_revision: expected,
+        operation_id: crate::session::data::command::MutationId::new(),
+        items: vec![crate::types::user_text(text)],
+        turn_id: String::new(),
+    })
+    .await
+    .expect("insert items");
     sid
 }
 
@@ -208,7 +236,7 @@ async fn gate_entered(gate: &resume_gate_for_test::Gate) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_list_not_blocked_by_inflight_subscribe() {
     let env = env().await;
-    let sid = seeded_session(&env.state, "hello");
+    let sid = seeded_session(&env.state, "hello").await;
     let gate = resume_gate_for_test::install(&sid);
     let mut ws = connect(&env.url).await;
 
@@ -245,11 +273,8 @@ async fn session_list_not_blocked_by_inflight_subscribe() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_list_fastlane_matches_controller_list() {
     let env = env().await;
-    let full = seeded_session(&env.state, "has rows");
-    let data = env.state.sessions.data();
-    let empty_primary = data
-        .create_session("/proj", "default", None)
-        .expect("empty primary");
+    let full = seeded_session(&env.state, "has rows").await;
+    let empty_primary = create_session(&env.state).await;
     let mut ws = connect(&env.url).await;
     send(&mut ws, 1, "session/list", json!({})).await;
     let (reply, _) = until_reply(&mut ws, 1).await;
@@ -281,7 +306,7 @@ async fn session_list_fastlane_matches_controller_list() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subscribe_replay_frames_unchanged_with_concurrent_list() {
     let env = env().await;
-    let sid = seeded_session(&env.state, "replay me");
+    let sid = seeded_session(&env.state, "replay me").await;
 
     // B: replay parked, list answered in the middle.
     let gate = resume_gate_for_test::install(&sid);
@@ -319,7 +344,7 @@ async fn subscribe_replay_frames_unchanged_with_concurrent_list() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn no_projection_frames_stranded_after_fastlane_list() {
     let env = env().await;
-    let sid = seeded_session(&env.state, "x");
+    let sid = seeded_session(&env.state, "x").await;
     let mut ws = connect(&env.url).await;
     send(&mut ws, 1, "session/subscribe", json!({"session_id": sid})).await;
     send(&mut ws, 2, "session/list", json!({})).await;
@@ -351,7 +376,7 @@ async fn no_projection_frames_stranded_after_fastlane_list() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subscribe_unsubscribe_order_preserved_with_list() {
     let env = env().await;
-    let sid = seeded_session(&env.state, "order");
+    let sid = seeded_session(&env.state, "order").await;
     let mut ws = connect(&env.url).await;
     send(&mut ws, 1, "session/subscribe", json!({"session_id": sid})).await;
     send(
@@ -478,10 +503,8 @@ async fn startup_settled_fires_on_first_new_reply_only() {
 async fn gc_stale_empty_sessions_deferred_until_settled() {
     let env = env().await;
     let data = env.state.sessions.data().clone();
-    let stale_empty = data
-        .create_session("/proj", "default", None)
-        .expect("stale empty");
-    let kept = seeded_session(&env.state, "has rows");
+    let stale_empty = create_session(&env.state).await;
+    let kept = seeded_session(&env.state, "has rows").await;
     let db = env
         .state
         .runtime
@@ -525,7 +548,7 @@ async fn gc_stale_empty_sessions_deferred_until_settled() {
 async fn startup_settled_fires_without_list_or_new() {
     // agent/run on a `?session=` connection (no list/new ever sent).
     let env1 = env().await;
-    let sid = seeded_session(&env1.state, "hinted");
+    let sid = seeded_session(&env1.state, "hinted").await;
     let url = format!("{}&session={sid}", env1.url);
     let mut ws = connect(&url).await;
     assert!(!env1.state.sessions.is_startup_settled());
@@ -696,6 +719,7 @@ async fn bot_create_list_and_open_round_trip() {
     env.state
         .service
         .set_session_title(&session_id, Some("Bot chat"))
+        .await
         .expect("make the bot session list-visible");
     assert_eq!(
         opened.pointer("/result/session_id").and_then(Value::as_str),
@@ -879,6 +903,7 @@ async fn bot_create_list_and_open_round_trip() {
     env.state
         .service
         .set_session_title(&normal_id, Some("Normal chat"))
+        .await
         .expect("make normal session list-visible");
     send(&mut ws, 105, "session/list", json!({})).await;
     let (normal_list, _) = until_reply(&mut ws, 105).await;
@@ -1143,7 +1168,7 @@ async fn settings_agent_surface_is_read_only_for_locked_fields() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_ping_answers_immediately_while_subscribe_is_parked() {
     let env = env().await;
-    let sid = seeded_session(&env.state, "ping target");
+    let sid = seeded_session(&env.state, "ping target").await;
     let gate = resume_gate_for_test::install(&sid);
     let mut ws = connect(&env.url).await;
     let _ = until_method(&mut ws, "server/hello").await;
