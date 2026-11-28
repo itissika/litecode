@@ -14,5 +14,5 @@ domain : tools-permission
 **TUN / fake-ip 网段：** `198.18.0.0/15`（RFC 2544 benchmarking，常见 Clash/Surge/Mihomo fake-ip）不当作非公网拒绝。主机名解析到该段可过门；连接仍钉本趟解析 IP（`resolve_to_addrs`）。**坚持拒** RFC1918 / loopback / unspecified / link-local / `fe80` / unique-local / `100.64/10`。字面公网 IP 行为不变。
 
 依据：[validate_public_http_url](src/tools/webfetch.rs#validate_public_http_url)、[is_non_public_ip](src/tools/webfetch.rs#is_non_public_ip)、[is_ipv4_shared](src/tools/webfetch.rs#is_ipv4_shared)、[WebFetchTool.Tool.call_inner](src/tools/webfetch.rs#WebFetchTool.Tool.call_inner)、[is_non_public_ipv4](src/tools/webfetch.rs#is_non_public_ipv4)、[fetch_hops](src/tools/webfetch.rs#fetch_hops)。
-父节点：[tool-implementation-contract](knowledge/contracts/tool-implementation-contract.md)。
+父节点：[tool-implementation-contract](knowledge/contracts/tools/tool-implementation-contract.md)。
 相关：[tool-authorization](knowledge/contracts/tools/tool-authorization.md)。

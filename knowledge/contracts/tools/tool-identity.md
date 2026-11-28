@@ -17,7 +17,7 @@ domain : tools-permission
 - 运行期按模型给的 name 找实现（查找入口见 [tool-request-entry](knowledge/contracts/tools/tool-request-entry.md)）；call_id 配对与按调用顺序落地见 [tool-result-delivery](knowledge/contracts/tools/tool-result-delivery.md)。
 - 模型看到的是 name/description/schema 投影，按装配顺序原样发出（投影入口见 [tool-request-entry](knowledge/contracts/tools/tool-request-entry.md)）。
 
-父节点：[tool-implementation-contract](knowledge/contracts/tool-implementation-contract.md)。
-相关：[tool-implementation-contract](knowledge/contracts/tool-implementation-contract.md)、[tool-adapters](knowledge/contracts/tools/tool-adapters.md)、[tool-request-entry](knowledge/contracts/tools/tool-request-entry.md)、[tool-result-delivery](knowledge/contracts/tools/tool-result-delivery.md)。
+父节点：[tool-implementation-contract](knowledge/contracts/tools/tool-implementation-contract.md)。
+相关：[tool-implementation-contract](knowledge/contracts/tools/tool-implementation-contract.md)、[tool-adapters](knowledge/contracts/tools/tool-adapters.md)、[tool-request-entry](knowledge/contracts/tools/tool-request-entry.md)、[tool-result-delivery](knowledge/contracts/tools/tool-result-delivery.md)。
 
 依据：[trait_.rs](src/tool/trait_.rs)。

@@ -16,5 +16,5 @@ h : 373
 - 业务入口：UI、subagent 与后台自动回合走 `SessionService`；manager 只做预占、锁和写入原语，见 [session-service](knowledge/contracts/session/session-service.md)。
 - subagent session 与 primary session 底层完全等价；差别只在入口：用户对子会话只读，父经 subagent 工具发消息、停止与删除。
 
-契约展开：[session-model](knowledge/contracts/session-model.md)、[turn-lifecycle](knowledge/contracts/turn-lifecycle.md)。
+契约展开：[session-model](knowledge/contracts/session/session-model.md)、[turn-lifecycle](knowledge/contracts/agent/turn-lifecycle.md)。
 上层：[agent-design](knowledge/design/agent-design.md)。

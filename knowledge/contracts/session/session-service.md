@@ -1,39 +1,31 @@
 ```node
 node : session-service
 status : enabled
-summary : 会话业务面：UI、subagent 与后台自动回合统一走 SessionService；SessionManager 仍是原子原语与唯一写者。
+summary : 会话业务只有一个入口：业务动作走 SessionService，SessionManager 只当原子原语。
+x : 5688
+y : 720
 domain : harness-core
 ```
 
-**一句话：** 会话业务只有一个入口；原生消费者通过 `SessionService` 组装业务动作，底层 `SessionManager` 只保留预占、锁、写入和生命周期原语。
+**目标：** 会话业务只有一个入口——业务动作走 `SessionService`，`SessionManager` 只当原子原语，谁也别在外面自己拼一套回合。
 
-## 守什么
+**必须做到：**
 
-1. **一个业务面。** UI、subagent、后台自动回合的启动、停止、回退、手动压缩和队列流转都走 `SessionService`；生产代码不直接持有 `SessionManager` 做这些回合编排。工具自己读写 plan/todo 等数据仍走 manager 的数据 API，不属于这条业务入口。
-2. **manager 只做原语。** `SessionManager` 继续拥有预占状态、排他租约、seq/写入和收尾；service 只组合这些原语，不产生第二套写入路径、第二份会话状态或第二个 writer。
-3. **业务面与支持面分开。** 业务面是生命周期、对话与回合、权限交互、观测与历史；Projection 读取、runtime 构造、压缩 worker、启动/GC/shutdown、权限路由和自动回合的装配属于内部支持面，不是未来外部契约。
-4. **自动回合是内部实现。** bash 完成、custom tool 完成、子代理完成和待发消息触发的是内部 auto-turn；外部契约只应看到发消息、停止、订阅和权限应答，不暴露“启动自动回合”这个动作。
-5. **回退的租约覆盖完整动作。** 会话回退持有排他租约到投影刷新和帧发出之后；文件回退持有文件回退 plan 到工作区恢复和结果帧发出之后。手动压缩是一次 service 业务动作，先完成独占 episode 和全部输入，再交给 worker。
-6. **外部契约只映射业务面。** 未来窄外部契约应映射到 service 的业务操作；不能把 support 方法、runtime 句柄或自动回合计时器直接变成外部 API。
+- 启动、停止、回退、手动压缩、队列流转统一走 `SessionService`；UI、subagent、后台自动回合都算在内。
+- `SessionManager` 只管原语：预占、排他租约、seq 与写入、收尾；service 只组合它们，不再造第二条写入路径或第二份会话状态。
+- 业务面和支撑面分清楚：生命周期、对话回合、权限、观测属于业务面；投影读取、runtime 构造、压缩 worker、启动/GC、权限路由、自动回合装配属于支撑面。
+- 自动回合藏在内部：外部只看到发消息、停止、订阅、应答权限，看不到「启动自动回合」这个动作。
+- 回退的租约要盖住整个动作：会话回退到投影刷新和帧发出之后，文件回退到工作区恢复和结果帧之后；手动压缩先拿到独占 episode 和全部输入，再交给 worker。
+- 对外契约只映射业务面，不映射支撑面。
 
-## 为什么关键
+**绝对不做：**
 
-- 如果 UI、subagent 和后台自动回合各自组装回合启动，预占、失败释放、pending 清理和租约覆盖会分叉，最先坏的是同一 session 的并发语义。
-- 如果支持面混进外部契约，外部会被迫理解 runtime、compaction 和 projection 的内部机制，等于把内部编排固化成公开协议。
-- auto-turn 一旦对外暴露，外部就会拥有“何时自动继续”的策略权，和“发消息/停止”的用户语义重叠；它应留在内部触发器后面。
+- 在 UI、subagent、自动回合里各自组装回合启动——预占、失败释放、pending 清理会立刻分叉。
+- 让 service 自己写库，或者把 `SessionManager` 变成第二个业务入口。
+- 把支撑面（runtime 句柄、压缩 worker、自动回合计时器）暴露成外部 API。
+- 让外部拥有「什么时候自动继续」的决定权。
 
-## 证据
-
-- 业务与支持边界：[service.rs:1-17](src/session/service.rs#L1-L17)、[service.rs:56-72](src/session/service.rs#L56-L72)。
-- 对话、停止、回退与手动压缩：[conversation.rs:60-100](src/session/service/conversation.rs#L60-L100)、[conversation.rs:177-303](src/session/service/conversation.rs#L177-L303)。
-- 统一回合启动：[conversation.rs:305-377](src/session/service/conversation.rs#L305-L377)。
-- 自动回合的内部装配：[support.rs:272-320](src/session/service/support.rs#L272-L320)、[support.rs:332-397](src/session/service/support.rs#L332-L397)、[bash_auto_turn.rs:29-73](src/runtime/bash_auto_turn.rs#L29-L73)、[pending_auto_turn.rs:48-160](src/runtime/pending_auto_turn.rs#L48-L160)。
-- UI 投影只读 service：[mod.rs:68-72](src/client_protocol/controller/mod.rs#L68-L72)。
-- 回退租约覆盖：[session_lifecycle.rs:433-448](src/client_protocol/controller/session_lifecycle.rs#L433-L448)、[session_lifecycle.rs:485-600](src/client_protocol/controller/session_lifecycle.rs#L485-L600)。
-- 进程装配：[state.rs:133-165](src/serve/state.rs#L133-L165)。
-- 分层守卫：[architecture_layers.rs:114-189](tests/architecture_layers.rs#L114-L189)。
-
-`SessionManager` 的唯一写者边界仍由 [session-write-path](knowledge/contracts/session/session-write-path.md) 约束；turn 预占状态机仍由 [turn-reservation](knowledge/contracts/session/turn-reservation.md) 约束。
+依据：[SessionService](src/session/service.rs#SessionService)、[SessionService.start_turn](src/session/service/conversation.rs#SessionService.start_turn)、[SessionService.revert_to_user_anchor](src/session/service/conversation.rs#SessionService.revert_to_user_anchor)、[SessionService.begin_file_revert](src/session/service/conversation.rs#SessionService.begin_file_revert)、[SessionService.start_manual_compaction](src/session/service/conversation.rs#SessionService.start_manual_compaction)、[SessionManager](src/session/manager.rs#SessionManager)、[session_layer_does_not_absorb_the_hub](tests/architecture_layers.rs#session_layer_does_not_absorb_the_hub)。
 
 上层：[session](knowledge/framework/session.md)。
-相关：[turn-lifecycle](knowledge/contracts/turn-lifecycle.md)、[subagent-lifecycle](knowledge/contracts/subagent-lifecycle.md)、[client-projection](knowledge/contracts/client-projection.md)、[compact-pipeline](knowledge/contracts/session/compact-pipeline.md)。
+相关：[session-write-path](knowledge/contracts/session/session-write-path.md)、[turn-reservation](knowledge/contracts/session/turn-reservation.md)、[turn-lifecycle](knowledge/contracts/agent/turn-lifecycle.md)。

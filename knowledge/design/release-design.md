@@ -14,4 +14,4 @@ domain : release-desktop
 上层：[product-brief](knowledge/product-brief.md)。
 框架展开：[desktop-shell](knowledge/framework/desktop-shell.md)。
 
-- 默认瘦 NSIS —— [package_win.ps1](scripts/package_win.ps1)、[package.json](desktop/package.json)；按需组件契约见 [component-distribution](knowledge/contracts/component-distribution.md)。
+- 默认瘦 NSIS —— [package_win.ps1](scripts/package_win.ps1)、[package.json](desktop/package.json)；按需组件契约见 [component-distribution](knowledge/contracts/release/component-distribution.md)。

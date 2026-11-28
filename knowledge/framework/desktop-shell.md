@@ -13,4 +13,4 @@ domain : release-desktop
 
 依据：[sidecar.ts](desktop/src/sidecar.ts)、[main.ts](desktop/src/main.ts)、[litecodeBundlesDir](desktop/src/bundle-paths.ts#litecodeBundlesDir)。
 上层：[release-design](knowledge/design/release-design.md)。
-契约展开：[slim-packaging](knowledge/contracts/slim-packaging.md)、[component-distribution](knowledge/contracts/component-distribution.md)、[bundle-resolve](knowledge/contracts/bundle-resolve.md)。
+契约展开：[slim-packaging](knowledge/contracts/release/slim-packaging.md)、[component-distribution](knowledge/contracts/release/component-distribution.md)、[bundle-resolve](knowledge/contracts/release/bundle-resolve.md)。

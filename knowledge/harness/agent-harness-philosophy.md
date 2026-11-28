@@ -18,6 +18,6 @@ h : 537
 - 团队与基座：子 agent 是完整会话、不可嵌套；能力落工作区基座共享；内核独立进程，位置只改变连接方式。
 
 框架展开：[session](knowledge/framework/session.md)、[context](knowledge/framework/context.md)、[tools](knowledge/framework/tools.md)、[config](knowledge/framework/config.md)。
-契约展开：[item-authority](knowledge/contracts/item-authority.md)、[platform-knobs](knowledge/contracts/platform-knobs.md)。
+契约展开：[item-authority](knowledge/contracts/session/item-authority.md)、[platform-knobs](knowledge/contracts/config/platform-knobs.md)。
 上层：[product-brief](knowledge/product-brief.md)、[agent-design](knowledge/design/agent-design.md)。
 依据：[core.rs](src/agent/core.rs)、[deps.rs](src/agent/deps.rs)、[pipeline.rs](src/tool/pipeline.rs)。

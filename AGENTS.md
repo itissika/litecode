@@ -14,6 +14,7 @@ LiteCode 把 Tool 和 Context 做到极致。本文件只放：底线、怎么�
 - 找代码第一跳 `code_search`（本仓常开）；符号、定义、引用、诊断用 LSP 工具；有范围了再 `grep` / `glob` / `read`。
 - 改代码攒成一批：先把要改的片段连同锚点收齐，一次 `apply_edits` 吃掉多文件多块，再一次看全部结果。
 - 拿不准就读代码，别猜。代码和文档打架，以代码为准，并说哪份过期。
+- 尽量少写注释，看见厚的注释顺手精简到不超过50字的一句话，注释和代码会打架，永远以代码为运行时真源，设计意图问人或者去看知识库。
 
 ## 提交
 
@@ -44,7 +45,7 @@ LiteCode 把 Tool 和 Context 做到极致。本文件只放：底线、怎么�
 | 开工没头绪 / 定验收 / 判收敛 / 记经验 | `docs/agents/workflow.md` | 新功能、修 bug、验收 |
 | 发版 | `docs/agents/release.md` | 版本号、CHANGELOG、tag、Publish |
 | 打包 / 跑起来 | `docs/agents/build.md` | dev、nightly、official、安装包 |
-| 为什么这么设计 / 不变量 | `knowledge/`（先空调用 `knowledge` 看 board） | 契约、为什么、术语 |
+| 为什么这么设计 / 不变量 | `knowledge/` | 契约、为什么、术语 |
 | 要加工具卡 / 改工具面 / 动 code 模式 | `knowledge/native-code-mode` | 工具卡、schema、token 开销、code 模式 |
 
 ## 边界

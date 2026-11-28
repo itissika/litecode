@@ -17,5 +17,5 @@ domain : tools-permission
 - 求值首命中规则，否则 default [evaluate](src/permission/evaluate.rs#evaluate)；subagent view 在 engine 把 Ask 变 Deny（子权限创建时固定，运行中需审批一律拒绝，不弹给任何人） [PermissionEngine.evaluate_tool](src/permission/engine.rs#PermissionEngine.evaluate_tool)。`always` 授权是进程内 static、按 agent+tool+rule 保存，TTL 1h、每 agent 上限 100，不落盘 [grant_runtime](src/permission/grants.rs#grant_runtime)、[grants.rs:73-107](src/permission/grants.rs#L73-L107)。
 - engine 持有 resolved 快照（首次 turn 构造），“当前”指该快照，不随磁盘配置逐次刷新 [PermissionEngine.resolver](src/permission/engine.rs#PermissionEngine.resolver)；turn 入口时机见 [tool-request-entry](knowledge/contracts/tools/tool-request-entry.md)。
 
-父节点：[tool-control-boundary](knowledge/contracts/tool-control-boundary.md)。
-相关：[tool-control-boundary](knowledge/contracts/tool-control-boundary.md)、[tool-execution-context](knowledge/contracts/tools/tool-execution-context.md)、[tool-input-validation](knowledge/contracts/tools/tool-input-validation.md)。
+父节点：[tool-control-boundary](knowledge/contracts/tools/tool-control-boundary.md)。
+相关：[tool-control-boundary](knowledge/contracts/tools/tool-control-boundary.md)、[tool-execution-context](knowledge/contracts/tools/tool-execution-context.md)、[tool-input-validation](knowledge/contracts/tools/tool-input-validation.md)。

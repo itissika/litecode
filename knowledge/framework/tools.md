@@ -19,5 +19,5 @@ h : 481
   - 美观：保持格式稳定，结构清晰，统计聚合信息放开头，中间内容合理排序和聚合，需要的提醒按情况出现在尾部，提供下一步指引
   - 信息密度：md 语法优先，前端易于渲染；人类也能通过渲染的美观度判断信息密度——美观就是信息
 
-契约展开：[tool-pipeline](knowledge/contracts/tool-pipeline.md)。
+契约展开：[tool-pipeline](knowledge/contracts/tools/tool-pipeline.md)。
 上层：[agent-design](knowledge/design/agent-design.md)。

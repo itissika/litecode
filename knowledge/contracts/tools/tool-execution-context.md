@@ -1,7 +1,7 @@
 ```node
 node : tool-execution-context
-status : pending
-summary : 执行事实一次性装配成 ToolExecutionContext；提供上下文不等于每个工具都消费它。
+status : enabled
+summary : 模型只给参数；工作区、权限模式、取消、会话这些事实由执行器装一次，工具不许自己再拼一份。
 x : 2124
 y : 378
 w : 480
@@ -9,13 +9,10 @@ h : 600
 domain : tools-permission
 ```
 
-**主张：** executor 在调用前把一次调用的执行事实装配成 `ToolExecutionContext`，与模型给的 JSON 分离；管线提供上下文，是否消费由具体工具决定。
+**解决什么：** 模型只会给参数；真跑起来还得知道在哪个工作区、能不能出沙箱、什么时候该停、属于哪个会话。这批事实模型碰不到，由执行器装成一份交给工具，工具不必自己找。[ToolExecutionContext](src/tool/trait_.rs#ToolExecutionContext)
 
-- 字段：`path_mode`、`workspace_root`、`call_id`、`cancel`、`output_limit`、`session_id`、`session` [ToolExecutionContext](src/tool/trait_.rs#ToolExecutionContext)；未注入 session 时 `session_reader()` 返回错误，不静默回退 [ToolExecutionContext.session_reader](src/tool/trait_.rs#ToolExecutionContext.session_reader)。
-- 装配点在执行入口：`path_mode` 取自 `permission.path_mode(工具名)`，`output_limit = tool.max_result_size()`，`cancel` 与 turn 共享（入口生命周期见 [tool-call-lifecycle](knowledge/contracts/tools/tool-call-lifecycle.md)）。
-- 消费逐工具而异，不是统一消费：read 用 `workspace_root`/`path_mode` 解析路径 [ReadTool.call_for_execution](src/tools/read.rs#ReadTool.call_for_execution)；bash 取 `cancel`/`session_id`/`call_id`/`workspace_root` [RunTool.Tool.execute](src/tools/run.rs#RunTool.Tool.execute)。
-- Custom / MCP 是否消费上下文由各适配决定，见 [tool-adapters](knowledge/contracts/tools/tool-adapters.md)；本节点只钉上下文装配本身。
-- `is_cancellable` 默认 false、部分工具覆写为 true；该标记不参与分流，取消令牌与 join 行为见 [tool-call-lifecycle](knowledge/contracts/tools/tool-call-lifecycle.md)。
+**必须做到：** 每次调用只装一次，而且装的是真事实——工作区根取本轮上下文，路径模式取权限引擎对这个工具的判定，取消是 turn 的子令牌（工具超时只停自己，turn 取消会往下传）。[executor.rs:697-709](src/tool/executor.rs#L697-L709)
 
-父节点：[tool-control-boundary](knowledge/contracts/tool-control-boundary.md)。
-相关：[tool-control-boundary](knowledge/contracts/tool-control-boundary.md)、[tool-scheduling](knowledge/contracts/tools/tool-scheduling.md)、[tool-call-lifecycle](knowledge/contracts/tools/tool-call-lifecycle.md)。
+**绝对不允许：** 工具自己再拼一份上下文；测试兜底里那份 `path_mode: All` 尤其不能当生产入口。[Tool.call](src/tool/trait_.rs#Tool.call)
+
+上游：[tool-control-boundary](knowledge/contracts/tools/tool-control-boundary.md)。相关：[tool-scheduling](knowledge/contracts/tools/tool-scheduling.md)、[tool-call-lifecycle](knowledge/contracts/tools/tool-call-lifecycle.md)。

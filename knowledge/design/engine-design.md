@@ -15,7 +15,7 @@ h : 321
 - 横向可拓：新引擎遵循同一模型。
 
 框架展开：[config](knowledge/framework/config.md)。
-契约展开：[engine-lifecycle](knowledge/contracts/engine-lifecycle.md)、[retrieval-contract](knowledge/contracts/retrieval-contract.md)。
+契约展开：[engine-lifecycle](knowledge/contracts/workspace/engine-lifecycle.md)、[retrieval-contract](knowledge/contracts/workspace/retrieval-contract.md)。
 上层：[product-brief](knowledge/product-brief.md)。
 
-- 理念层（长生命周期、configured≠Warm、两腿两语料）与 [engine-lifecycle](knowledge/contracts/engine-lifecycle.md) / [retrieval-contract](knowledge/contracts/retrieval-contract.md) 及 `src/engines/*` 一致；无独立产品漂移。
+- 理念层（长生命周期、configured≠Warm、两腿两语料）与 [engine-lifecycle](knowledge/contracts/workspace/engine-lifecycle.md) / [retrieval-contract](knowledge/contracts/workspace/retrieval-contract.md) 及 `src/engines/*` 一致；无独立产品漂移。

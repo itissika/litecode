@@ -42,5 +42,5 @@ run code是唯一顶层tool，code模式是唯一原生tool调用方式，目标
 - tool：custom tool
   - custom tool 是重中之重：只有你才知道你需要什么，你需要的东西，你的agent需要的东西，请自己造，造出最合适的工具。
 
-契约展开：[subagent-lifecycle](knowledge/contracts/subagent-lifecycle.md)、[retrieval-contract](knowledge/contracts/retrieval-contract.md)。
+契约展开：[subagent-lifecycle](knowledge/contracts/agent/subagent-lifecycle.md)、[retrieval-contract](knowledge/contracts/workspace/retrieval-contract.md)。
 上层：[agent-design](knowledge/design/agent-design.md)、[why](knowledge/why.md)。

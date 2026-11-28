@@ -24,9 +24,9 @@ domain : harness-core
 
 **口径的边界**（各管一层，不打架）
 
-- 旋钮是 LiteCode 自己的，不是评测专用的旁路。对话里只暴露两个意图：想多久、上下文多大；供应商写法只在模型目录里对应 [platform-knobs](knowledge/contracts/platform-knobs.md)，能切的也只是目录里有的 [provider-catalog](knowledge/framework/provider-catalog.md)。工具集、提示词、模型在配置里，不在对话里。
-- 一次会话内不换。供应商、密钥、模型定一次，压缩原样复用 [turn-llm-binding](knowledge/contracts/turn-llm-binding.md)。要换就换批次。
-- 上下文是模式，不是阈值。80% 准备、100% 硬线不动 [context-budget](knowledge/contracts/context-budget.md)。
+- 旋钮是 LiteCode 自己的，不是评测专用的旁路。对话里只暴露两个意图：想多久、上下文多大；供应商写法只在模型目录里对应 [platform-knobs](knowledge/contracts/config/platform-knobs.md)，能切的也只是目录里有的 [provider-catalog](knowledge/framework/provider-catalog.md)。工具集、提示词、模型在配置里，不在对话里。
+- 一次会话内不换。供应商、密钥、模型定一次，压缩原样复用 [turn-llm-binding](knowledge/contracts/agent/turn-llm-binding.md)。要换就换批次。
+- 上下文是模式，不是阈值。80% 准备、100% 硬线不动 [context-budget](knowledge/contracts/context/context-budget.md)。
 - 少而好，不是不许造工具。默认面只许一个 `run_code`；用户自造的 custom tool 不进默认面 [featured-tools](knowledge/framework/featured-tools.md)。
 
 **要什么**（决定性的只有一句：更少成本，更高成功率）

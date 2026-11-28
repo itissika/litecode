@@ -18,6 +18,6 @@ h : 391
 - 视觉单一来源：主题由 token 承载，不散落硬编码。
 - 知识一等公民：Knowledge 与 Explorer / Search / Git 并列。
 
-契约展开：[client-projection](knowledge/contracts/client-projection.md)、[layout-ssot](knowledge/contracts/layout-ssot.md)、[knowledge-client-view](knowledge/contracts/knowledge-client-view.md)、[serve-bind-auth](knowledge/contracts/client/serve-bind-auth.md)。
-框架展开：[theme-tokens](knowledge/ux/theme-tokens.md)。
+契约展开：[client-projection](knowledge/contracts/client/client-projection.md)、[layout-ssot](knowledge/contracts/client/layout-ssot.md)、[knowledge-client-view](knowledge/contracts/client/knowledge-client-view.md)、[serve-bind-auth](knowledge/contracts/client/serve-bind-auth.md)。
+框架展开：[theme-tokens](knowledge/contracts/client/theme-tokens.md)。
 上层：[ux-design](knowledge/design/ux-design.md)。

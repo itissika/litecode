@@ -14,8 +14,8 @@ h : 337
 - 分层覆盖：Builtin < Global < Workspace，就近生效。
 - engines.json 表达引擎启停意图；工具 readiness 从配置意图派生，运行状态与执行可用性另由 owner 发布。
 
-契约展开：[config-commit](knowledge/contracts/config-commit.md)、[engine-lifecycle](knowledge/contracts/engine-lifecycle.md)、[provider-catalog](knowledge/framework/provider-catalog.md)。
+契约展开：[config-commit](knowledge/contracts/config/config-commit.md)、[engine-lifecycle](knowledge/contracts/workspace/engine-lifecycle.md)、[provider-catalog](knowledge/framework/provider-catalog.md)。
 上层：[engine-design](knowledge/design/engine-design.md)。
 
-- 唯一写入门 ConfigGate / SettingsWriter —— 见 [config-commit](knowledge/contracts/config-commit.md)；分层 Builtin < Global < Workspace 由 ResolvedConfig 兑现。
-- 运行态是投影、永不写文档 —— 与 [config-commit](knowledge/contracts/config-commit.md) 一致，无旁路写入。
+- 唯一写入门 ConfigGate / SettingsWriter —— 见 [config-commit](knowledge/contracts/config/config-commit.md)；分层 Builtin < Global < Workspace 由 ResolvedConfig 兑现。
+- 运行态是投影、永不写文档 —— 与 [config-commit](knowledge/contracts/config/config-commit.md) 一致，无旁路写入。

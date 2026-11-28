@@ -1,6 +1,6 @@
 ```node
 node : tool-call-lifecycle
-status : pending
+status : enabled
 summary : 分批执行加每调用一条结果；取消是信号，超时是止损，都不覆盖已完成结果。
 x : 2124
 y : 918
@@ -9,15 +9,24 @@ h : 531
 domain : tools-permission
 ```
 
-**主张：** 调用的生命周期以「分批执行 + 每调用一条结果」为单元；取消与超时是协作机制，不是对底层工作的保证。
+**目标：** 调用的生命周期以「分批执行 + 每调用一条结果」为单元；取消和超时是信号与止损，不是对底层工作的保证。
 
-- 开始：一个 step 里只要任一 FunctionCall 状态不完整（incomplete / in_progress）或已取消，整组调用都不执行，并以 Cancelled 收尾（[function_call_must_not_execute](src/agent/core.rs#function_call_must_not_execute)）；补位输出见 [tool-result-delivery](knowledge/contracts/tools/tool-result-delivery.md)。
-- 分批：按并发安全与资源键切批后再执行；切批规则见 [tool-scheduling](knowledge/contracts/tools/tool-scheduling.md)。
-- 取消点：执行入口与批次边界检查令牌（[run_tool](src/tool/executor.rs#run_tool)）；并发批内检测到取消时逐个 join 剩余任务而非 abort 丢弃（[ToolPipeline.join_tool_handle](src/tool/pipeline.rs#ToolPipeline.join_tool_handle)）。真实工作止于工具自身，`is_cancellable` 只是工具侧的能力声明（[Tool.is_cancellable](src/tool/trait_.rs#Tool.is_cancellable)）。
-- 超时：`tool.timeout()` 是公共包装，超时以 Error 文本返回；丢掉的是 future 包装，不保证底层线程已停（[run_tool](src/tool/executor.rs#run_tool)）。
-- 事实与观测：工具 future 一旦返回即结果，晚到取消不覆盖已完成结果（[run_tool](src/tool/executor.rs#run_tool)）；进入执行前发 TurnPhase::ExecutingTools（[AgentRuntime.AgentDeps.execute_tools](src/runtime/exec.rs#AgentRuntime.AgentDeps.execute_tools)），授权通过后相位恢复（[phase.rs:47-53](src/runtime/phase.rs#L47-L53)），这条管线不维护独立逐调用状态机。
+**必须做到：**
 
-父节点：[tool-call-contract](knowledge/contracts/tool-call-contract.md)。
+- 一个 step 里任一调用状态不完整，或整轮已取消，整组都不执行：补中断输出，按取消收尾。
+- 分批按并发安全和资源键切；切法见 [tool-scheduling](knowledge/contracts/tools/tool-scheduling.md)。
+- 取消是合作式的：框架只发信号并等落地，能不能真停看工具自己响应令牌，不按工具类型分流；批内发现取消就逐个 join 剩余任务，不 abort 丢弃。
+- 超时是止损：到点先发取消让工具自己收，等它落地；已提交的结果赢过超时，没提交才按超时返回错误文本。
+- 工具 future 返回就是结果，晚到的取消不覆盖已完成结果。
+- 进执行前发 ExecutingTools 相位；权限回答后回到执行相位（拒绝也算），中止才转取消；不另维护逐调用状态机。
+
+**绝对不做：**
+
+- 把取消或超时当成「底层工作已停」的保证。
+- 用晚到的取消覆盖已完成结果。
+- 为调用再造一份逐调用状态机。
+
+依据：[function_call_must_not_execute](src/agent/core.rs#function_call_must_not_execute)、[interrupted_outputs](src/agent/core.rs#interrupted_outputs)、[run_tool](src/tool/executor.rs#run_tool)、[effective_tool_timeout](src/tool/executor.rs#effective_tool_timeout)、[ToolPipeline.join_tool_handle](src/tool/pipeline.rs#ToolPipeline.join_tool_handle)、[execute_tools](src/runtime/exec.rs#execute_tools)、[PhasePermissionSink.leave_phase](src/runtime/phase.rs#PhasePermissionSink.leave_phase)、[committed_result_wins_over_tool_timeout](src/tool/executor.rs#committed_result_wins_over_tool_timeout)、[blocking_tool_is_interrupted_by_pipeline_timeout](src/tool/executor.rs#blocking_tool_is_interrupted_by_pipeline_timeout)。
+
+父节点：[tool-call-contract](knowledge/contracts/tools/tool-call-contract.md)。
 相关：[tool-scheduling](knowledge/contracts/tools/tool-scheduling.md)、[tool-result-delivery](knowledge/contracts/tools/tool-result-delivery.md)、[tool-execution-context](knowledge/contracts/tools/tool-execution-context.md)。
-
-依据：[interrupted_outputs](src/agent/core.rs#interrupted_outputs)。
