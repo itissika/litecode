@@ -157,13 +157,6 @@ pub trait Tool: Send + Sync {
         vec![]
     }
 
-    /// True when turn-cancel can kill the tool's real work and join it.
-    /// `tokio::task::abort` of the wrapper is not enough. Default false:
-    /// blocking MCP/custom/webfetch threads cannot be claimed cancelled.
-    fn is_cancellable(&self) -> bool {
-        false
-    }
-
     /// When true, the executor hands this call's resource-gate and write-lock
     /// guards to [`crate::tool::run_scope::SpawnLocks`] instead of holding them
     /// for the whole call. The tool releases them once its process is spawned

@@ -111,12 +111,7 @@ impl Tool for MemoryListTool {
         execution: ToolExecutionContext,
     ) -> Pin<Box<dyn Future<Output = ToolCallResult> + Send + '_>> {
         let sessions = self.handle.sessions.clone();
-        Box::pin(async move {
-            match tokio::task::spawn_blocking(move || run_list(sessions, input, execution)).await {
-                Ok(result) => result,
-                Err(error) => worker_error("memory.list", error),
-            }
-        })
+        Box::pin(async move { run_list(sessions, input, execution).await })
     }
 
     fn call_inner(&self, _input: Value) -> ToolCallResult {
@@ -140,13 +135,7 @@ impl Tool for MemoryUpsertTool {
         execution: ToolExecutionContext,
     ) -> Pin<Box<dyn Future<Output = ToolCallResult> + Send + '_>> {
         let sessions = self.handle.sessions.clone();
-        Box::pin(async move {
-            match tokio::task::spawn_blocking(move || run_upsert(sessions, input, execution)).await
-            {
-                Ok(result) => result,
-                Err(error) => worker_error("memory.upsert", error),
-            }
-        })
+        Box::pin(async move { run_upsert(sessions, input, execution).await })
     }
 
     fn call_inner(&self, _input: Value) -> ToolCallResult {
@@ -170,13 +159,7 @@ impl Tool for MemoryDeleteTool {
         execution: ToolExecutionContext,
     ) -> Pin<Box<dyn Future<Output = ToolCallResult> + Send + '_>> {
         let sessions = self.handle.sessions.clone();
-        Box::pin(async move {
-            match tokio::task::spawn_blocking(move || run_delete(sessions, input, execution)).await
-            {
-                Ok(result) => result,
-                Err(error) => worker_error("memory.delete", error),
-            }
-        })
+        Box::pin(async move { run_delete(sessions, input, execution).await })
     }
 
     fn call_inner(&self, _input: Value) -> ToolCallResult {
@@ -188,7 +171,7 @@ impl Tool for MemoryDeleteTool {
     }
 }
 
-fn run_list(
+async fn run_list(
     sessions: Option<Arc<SessionManager>>,
     _input: Value,
     execution: ToolExecutionContext,
@@ -203,14 +186,14 @@ fn run_list(
     if session_id.is_empty() {
         return coded("invalid_input", "memory.list needs an active session");
     }
-    let memory = match manager.load_memory(session_id) {
+    let memory = match manager.load_memory_async(session_id).await {
         Ok(memory) => memory,
         Err(error) => return coded("io", format!("load session memory: {error}")),
     };
     ok_data(list_data(&memory))
 }
 
-fn run_upsert(
+async fn run_upsert(
     sessions: Option<Arc<SessionManager>>,
     input: Value,
     execution: ToolExecutionContext,
@@ -230,15 +213,17 @@ fn run_upsert(
     }
     let requests = parse_upsert_requests(&input);
     let now = chrono::Utc::now().timestamp_millis();
-    let (memory, result) =
-        match manager.update_memory(session_id, |memory| Ok(memory.apply_upsert(&requests, now))) {
-            Ok(value) => value,
-            Err(error) => return coded("io", format!("save session memory: {error}")),
-        };
+    let (memory, result) = match manager
+        .update_memory(session_id, |memory| Ok(memory.apply_upsert(&requests, now)))
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return coded("io", format!("save session memory: {error}")),
+    };
     ok_data(upsert_data(&memory, result))
 }
 
-fn run_delete(
+async fn run_delete(
     sessions: Option<Arc<SessionManager>>,
     input: Value,
     execution: ToolExecutionContext,
@@ -263,11 +248,13 @@ fn run_delete(
         .filter_map(Value::as_str)
         .map(str::to_string)
         .collect();
-    let (memory, result) =
-        match manager.update_memory(session_id, |memory| Ok(memory.apply_delete(&ids))) {
-            Ok(value) => value,
-            Err(error) => return coded("io", format!("save session memory: {error}")),
-        };
+    let (memory, result) = match manager
+        .update_memory(session_id, |memory| Ok(memory.apply_delete(&ids)))
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return coded("io", format!("save session memory: {error}")),
+    };
     ok_data(delete_data(&memory, result))
 }
 
@@ -550,7 +537,10 @@ mod tests {
     #[tokio::test]
     async fn upsert_list_delete_round_trip() {
         let manager = Arc::new(SessionManager::ephemeral_registry());
-        let session_id = manager.open_session_sync("", "default", None).unwrap();
+        let session_id = manager
+            .open_session("", "default", None)
+            .await
+            .unwrap();
         let upsert = MemoryUpsertTool::new(Arc::clone(&manager));
         let list = MemoryListTool::new(Arc::clone(&manager));
         let delete = MemoryDeleteTool::new(Arc::clone(&manager));

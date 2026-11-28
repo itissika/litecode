@@ -106,11 +106,18 @@ impl Tool for PlanCreateTool {
     }
 
     fn call_inner(&self, input: Value) -> ToolCallResult {
-        self.run(
-            &input,
-            &CancellationToken::new(),
-            self.permission_sink().as_deref(),
-        )
+        // `run` awaits the session writer, so the sync helper cannot drive it.
+        // Planning needs a permission Ask bridge anyway, and a caller without
+        // one gets this exact error.
+        match self.validate_input(&input) {
+            Err(e) => ToolCallResult::error(e),
+            Ok(()) => ToolCallResult::error(
+                LitecodeError::ToolExecution(
+                    "plan.create requires a permission Ask bridge (no sink)".into(),
+                )
+                .to_string(),
+            ),
+        }
     }
 
     fn execute(
@@ -120,7 +127,7 @@ impl Tool for PlanCreateTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let sink = self.permission_sink();
         let cancel = execution.cancel.clone();
-        Box::pin(async move { self.run(&input, &cancel, sink.as_deref()) })
+        Box::pin(async move { self.run(&input, &cancel, sink.as_deref()).await })
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
@@ -143,10 +150,23 @@ impl Tool for PlanFinishTool {
     }
 
     fn call_inner(&self, _input: Value) -> ToolCallResult {
-        match self.do_finish() {
+        match self.do_finish_cleared() {
             Ok((content, data)) => ToolCallResult::ok(content).with_data(data),
             Err(e) => ToolCallResult::error(e.to_string()),
         }
+    }
+
+    fn execute(
+        &self,
+        _input: Value,
+        _execution: ToolExecutionContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        Box::pin(async move {
+            match self.do_finish().await {
+                Ok((content, data)) => ToolCallResult::ok(content).with_data(data),
+                Err(e) => ToolCallResult::error(e.to_string()),
+            }
+        })
     }
 
     fn validate_input(&self, _input: &Value) -> std::result::Result<(), String> {
@@ -159,7 +179,7 @@ impl Tool for PlanFinishTool {
 }
 
 impl PlanCreateTool {
-    fn run(
+    async fn run(
         &self,
         input: &Value,
         cancel: &CancellationToken,
@@ -168,13 +188,13 @@ impl PlanCreateTool {
         if let Err(e) = self.validate_input(input) {
             return ToolCallResult::error(e);
         }
-        match self.do_create(input, cancel, sink) {
+        match self.do_create(input, cancel, sink).await {
             Ok((content, data)) => ToolCallResult::ok(content).with_data(data),
             Err(e) => ToolCallResult::error(e.to_string()),
         }
     }
 
-    fn set_active_plan(
+    async fn set_active_plan(
         &self,
         session_id: &str,
         slug: &str,
@@ -186,7 +206,7 @@ impl PlanCreateTool {
             state.set_active_plan(plan);
             Ok(())
         })?;
-        sessions.save_task_state(session_id)?;
+        sessions.save_task_state(session_id).await?;
         Ok(())
     }
 
@@ -211,7 +231,7 @@ impl PlanCreateTool {
         Ok(slug)
     }
 
-    fn do_create(
+    async fn do_create(
         &self,
         input: &Value,
         cancel: &CancellationToken,
@@ -262,7 +282,10 @@ impl PlanCreateTool {
         // Atomic create (REV-10): stage stub, persist active-plan pointer, rename.
         std::fs::write(&tmp_path, PLAN_STUB)?;
         let revision = plan_content_revision(PLAN_STUB.as_bytes());
-        if let Err(e) = self.set_active_plan(&session_id, &slug, Some(revision.clone())) {
+        if let Err(e) = self
+            .set_active_plan(&session_id, &slug, Some(revision.clone()))
+            .await
+        {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(e);
         }
@@ -271,7 +294,7 @@ impl PlanCreateTool {
                 state.clear_plan();
                 Ok(())
             });
-            let _ = sessions.save_task_state(&session_id);
+            let _ = sessions.save_task_state(&session_id).await;
             let _ = std::fs::remove_file(&tmp_path);
             return Err(e.into());
         }
@@ -293,14 +316,26 @@ impl PlanCreateTool {
 }
 
 impl PlanFinishTool {
-    fn do_finish(&self) -> Result<(String, Value)> {
+    /// Clear the in-memory pointer only. Used by the sync `call_inner` helper,
+    /// which must not block on the session writer.
+    fn do_finish_cleared(&self) -> Result<(String, Value)> {
         let sessions = self.store.sessions()?;
         let sid = self.store.session_id()?;
         sessions.with_entry_task_state_mut(&sid, |state| {
             state.clear_plan();
             Ok(())
         })?;
-        sessions.save_task_state(&sid)?;
+        Ok(("Active plan cleared.".into(), json!({ "cleared": true })))
+    }
+
+    async fn do_finish(&self) -> Result<(String, Value)> {
+        let sessions = self.store.sessions()?;
+        let sid = self.store.session_id()?;
+        sessions.with_entry_task_state_mut(&sid, |state| {
+            state.clear_plan();
+            Ok(())
+        })?;
+        sessions.save_task_state(&sid).await?;
         Ok(("Active plan cleared.".into(), json!({ "cleared": true })))
     }
 }
@@ -380,17 +415,33 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn test_create_rejected_does_not_create_file() {
+    #[tokio::test]
+    async fn test_create_rejected_does_not_create_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (manager, sid) = setup(dir.path());
+        let dir_path = dir.path().to_path_buf();
+        let (manager, sid) = tokio::task::spawn_blocking(move || setup(&dir_path))
+            .await
+            .expect("setup");
         let sink =
             Arc::new(RecordingPermissionSink::new(AskOutcome::Deny).with_free_text("too vague"));
         let tool = make_create_tool_with_sink(Arc::clone(&manager), &sid, sink);
 
-        let result = tool.call(serde_json::json!({
-            "summary": "Do stuff"
-        }));
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "summary": "Do stuff"
+                }),
+                ToolExecutionContext {
+                    path_mode: crate::workspace::ToolPathMode::Safe,
+                    workspace_root: dir.path().to_path_buf(),
+                    call_id: "test-plan-reject".into(),
+                    cancel: tokio_util::sync::CancellationToken::new(),
+                    output_limit: 32_768,
+                    session_id: sid.clone(),
+                    session: None,
+                },
+            )
+            .await;
         assert!(
             result.content.contains("rejected"),
             "got: {}",

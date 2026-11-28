@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use crate::session::manager::SessionManager;
 use crate::session::task_state::{TodoItem, TodoStatus};
 use crate::tool::Tool;
+use crate::tool::trait_::ToolExecutionContext;
 use crate::types::{Result, ToolCallResult};
 
 pub struct TodoWriteTool {
@@ -44,7 +45,69 @@ impl Tool for TodoWriteTool {
         "todo.write"
     }
 
-    fn call_inner(&self, input: Value) -> ToolCallResult {
+    fn call_inner(&self, _input: Value) -> ToolCallResult {
+        // `commit_todos` awaits the session writer. The sync helper must not
+        // block a runtime worker, so the durable write only happens through
+        // `execute`; code-mode / unit-test callers go through `execute`.
+        ToolCallResult::error(
+            crate::types::LitecodeError::ToolExecution(
+                "todo.write must be executed through the async tool boundary".into(),
+            )
+            .to_string(),
+        )
+    }
+
+    fn execute(
+        &self,
+        input: Value,
+        _execution: ToolExecutionContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        Box::pin(async move { self.run(input).await })
+    }
+
+    fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
+        let todos = match input.get("todos") {
+            None => return Err(crate::tool::missing_parameter("todos")),
+            Some(v) => v
+                .as_array()
+                .ok_or_else(|| crate::tool::expected_type("todos", "array", v))?,
+        };
+
+        for (i, item) in todos.iter().enumerate() {
+            let content_path = format!("todos[{i}].content");
+            let status_path = format!("todos[{i}].status");
+            match item.get("content") {
+                None => return Err(crate::tool::missing_parameter(&content_path)),
+                Some(v) => {
+                    let content = crate::tool::require_string_value(v, &content_path)?;
+                    if content.is_empty() {
+                        return Err(crate::tool::must_be_nonempty_string(&content_path));
+                    }
+                }
+            }
+            match item.get("status") {
+                None => return Err(crate::tool::missing_parameter(&status_path)),
+                Some(v) => {
+                    let status = crate::tool::require_string_value(v, &status_path)?;
+                    let valid = ["pending", "in_progress", "completed"];
+                    if !valid.contains(&status) {
+                        return Err(crate::tool::must_be_one_of(&status_path, &valid, status));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn set_active_session(&self, session_id: String) {
+        *self.current_session_id.lock().unwrap() = Some(session_id);
+    }
+}
+
+impl TodoWriteTool {
+    /// Validate, normalize, persist. The single durable path for this tool.
+    async fn run(&self, input: Value) -> ToolCallResult {
         if let Err(e) = self.validate_input(&input) {
             return ToolCallResult::error(e);
         }
@@ -74,7 +137,7 @@ impl Tool for TodoWriteTool {
             });
         }
 
-        match self.commit_todos(&todos) {
+        match self.commit_todos(&todos).await {
             Ok(committed) => {
                 // Count the SUBMITTED list, not the committed one. The only
                 // normalization is "all completed -> dropped", which would
@@ -121,50 +184,9 @@ impl Tool for TodoWriteTool {
         }
     }
 
-    fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
-        let todos = match input.get("todos") {
-            None => return Err(crate::tool::missing_parameter("todos")),
-            Some(v) => v
-                .as_array()
-                .ok_or_else(|| crate::tool::expected_type("todos", "array", v))?,
-        };
-
-        for (i, item) in todos.iter().enumerate() {
-            let content_path = format!("todos[{i}].content");
-            let status_path = format!("todos[{i}].status");
-            match item.get("content") {
-                None => return Err(crate::tool::missing_parameter(&content_path)),
-                Some(v) => {
-                    let content = crate::tool::require_string_value(v, &content_path)?;
-                    if content.is_empty() {
-                        return Err(crate::tool::must_be_nonempty_string(&content_path));
-                    }
-                }
-            }
-            match item.get("status") {
-                None => return Err(crate::tool::missing_parameter(&status_path)),
-                Some(v) => {
-                    let status = crate::tool::require_string_value(v, &status_path)?;
-                    let valid = ["pending", "in_progress", "completed"];
-                    if !valid.contains(&status) {
-                        return Err(crate::tool::must_be_one_of(&status_path, &valid, status));
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn set_active_session(&self, session_id: String) {
-        *self.current_session_id.lock().unwrap() = Some(session_id);
-    }
-}
-
-impl TodoWriteTool {
     /// Commit the submitted list, returning the POST-normalize state so callers
     /// report counts that match what was actually persisted (not the raw input).
-    fn commit_todos(&self, todos: &[TodoItem]) -> Result<Vec<TodoItem>> {
+    async fn commit_todos(&self, todos: &[TodoItem]) -> Result<Vec<TodoItem>> {
         let sessions = self.sessions.as_ref().ok_or_else(|| {
             crate::types::LitecodeError::ToolExecution(
                 "todo.write requires an active session manager".into(),
@@ -176,7 +198,7 @@ impl TodoWriteTool {
             state.normalize();
             Ok(state.todos.clone())
         })?;
-        sessions.save_task_state(&sid)?;
+        sessions.save_task_state(&sid).await?;
         Ok(committed)
     }
 }

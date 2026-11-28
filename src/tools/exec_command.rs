@@ -263,10 +263,6 @@ impl Tool for ExecCommandTool {
         None
     }
 
-    fn is_cancellable(&self) -> bool {
-        true
-    }
-
     fn releases_lock_after_spawn(&self) -> bool {
         true
     }

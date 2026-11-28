@@ -133,10 +133,6 @@ impl Tool for CustomTool {
         // Self-enforced inside run_sync_with_lifecycle so cancel/kill stay coupled.
         None
     }
-
-    fn is_cancellable(&self) -> bool {
-        true
-    }
 }
 
 /// Validate a definition + sample input without registering the tool.

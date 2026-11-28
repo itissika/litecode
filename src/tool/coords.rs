@@ -97,4 +97,36 @@ pub fn attach_offset_footer(body: &str, offset: usize, shown: usize, total: usiz
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_lines_are_numbered_from_one_in_a_fixed_width_column() {
+        assert_eq!(format_file_line(1, "fn main() {}"), "     1: fn main() {}\n");
+        assert_eq!(format_file_line(12000, "x"), " 12000: x\n");
+    }
+
+    #[test]
+    fn labels_use_one_l_prefix_and_collapse_equal_ranges() {
+        assert_eq!(format_line_label(12, 12), "L12");
+        assert_eq!(format_line_label(12, 15), "L12-15");
+        assert_eq!(format_path_lines("src/a.rs", 12, 12), "src/a.rs:L12");
+        assert_eq!(format_path_lines("src/a.rs", 12, 15), "src/a.rs:L12-15");
+    }
+
+    #[test]
+    fn line_lists_cap_at_eight_and_report_the_rest() {
+        assert_eq!(format_line_list(&[1, 3]), "L1, L3");
+        let nine: Vec<u32> = (1..=9).collect();
+        assert_eq!(
+            format_line_list(&nine),
+            "L1, L2, L3, L4, L5, L6, L7, L8 (and 1 more)"
+        );
+    }
+
+    #[test]
+    fn hit_offsets_are_zero_based_continuation_tokens() {
+        assert_eq!(format_offset_more(0), "More hits: pass offset=0.");
+        assert_eq!(format_offset_more(40), "More hits: pass offset=40.");
+    }
+}

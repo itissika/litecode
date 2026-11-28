@@ -1567,10 +1567,6 @@ impl Tool for CodeTool {
         )
     }
 
-    fn is_cancellable(&self) -> bool {
-        true
-    }
-
     fn max_result_size(&self) -> usize {
         // render 保证预算，外层不 spill
         usize::MAX

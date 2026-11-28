@@ -69,6 +69,7 @@ pub async fn spawn_child_job(
             call_id,
             &spec.responsibility,
         )
+        .await
         .map_err(|error| format!("child turn start failed: {error}"))?;
 
     if !deps.service.publish_internal(
@@ -105,7 +106,7 @@ pub async fn spawn_child_job(
                 error = %error,
                 "subagent child turn failed to start"
             );
-            let _ = deps.service.remove_session(&child_session_id);
+            let _ = deps.service.remove_session(&child_session_id).await;
             return Err(format!("child turn start failed: {error}"));
         }
     };
@@ -381,10 +382,6 @@ impl Tool for SubagentLaunchTool {
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
-        true
-    }
-
-    fn is_cancellable(&self) -> bool {
         true
     }
 

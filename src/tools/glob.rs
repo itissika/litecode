@@ -73,10 +73,6 @@ impl Tool for GlobTool {
     fn timeout(&self) -> Option<Duration> {
         Some(Duration::from_secs(30))
     }
-
-    fn is_cancellable(&self) -> bool {
-        true
-    }
 }
 
 impl GlobTool {

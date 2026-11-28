@@ -82,4 +82,63 @@ impl ToolCallResult {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_and_ok_prefixes_are_not_doubled() {
+        assert_eq!(compose(ToolSignalLevel::Error, "boom", None), "Error: boom");
+        assert_eq!(compose(ToolSignalLevel::Ok, "done", None), "done");
+    }
+
+    #[test]
+    fn warning_status_is_its_own_block_after_the_body() {
+        let text = compose_full(
+            ToolSignalLevel::Warning,
+            "wrote 2 files",
+            None,
+            Some("3 lines skipped"),
+            None,
+        );
+        assert_eq!(text, "wrote 2 files\n\nWarning: 3 lines skipped");
+        let text = compose_full(
+            ToolSignalLevel::Warning,
+            "",
+            None,
+            Some("3 lines skipped"),
+            None,
+        );
+        assert_eq!(text, "Warning: 3 lines skipped");
+    }
+
+    #[test]
+    fn hint_is_a_separate_block_never_glued_onto_a_status_line() {
+        let text = compose_full(
+            ToolSignalLevel::Error,
+            "boom",
+            Some("retry later"),
+            None,
+            None,
+        );
+        assert_eq!(text, "Error: boom\n\nHint: retry later");
+        assert!(!text.contains(". Hint:"));
+    }
+
+    #[test]
+    fn appendix_follows_the_hint_block() {
+        let text = compose_full(ToolSignalLevel::Ok, "ok", Some("note"), None, Some("diag"));
+        assert_eq!(text, "ok\n\nHint: note\ndiag");
+    }
+
+    #[test]
+    fn finalizing_twice_leaves_the_text_unchanged() {
+        let once = ToolCallResult::ok_with_hint("body", "note").finalize_signals();
+        assert_eq!(once.content, "body\n\nHint: note");
+        assert!(once.composed);
+        assert!(once.hint.is_none());
+
+        let twice = once.clone().finalize_signals();
+        assert_eq!(twice.content, once.content);
+        assert!(twice.composed);
+    }
+}

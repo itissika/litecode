@@ -229,17 +229,19 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn fixture() -> (tempfile::TempDir, Arc<SessionManager>, String, String) {
+    async fn fixture() -> (tempfile::TempDir, Arc<SessionManager>, String, String) {
         let dir = tempfile::tempdir().unwrap();
         let sessions = Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
             dir.path().join("sessions.db").to_str().unwrap().to_string(),
         ));
         let parent = sessions
-            .open_session_sync("/proj", "default", None)
+            .open_session("/proj", "default", None)
+            .await
             .unwrap();
         let child = sessions
             .open_child_session("/proj", "reviewer", None, &parent, "call-1")
+            .await
             .unwrap();
         (dir, sessions, parent, child)
     }
@@ -259,7 +261,7 @@ mod tests {
         (router, wakes)
     }
 
-    fn append_turn_end(sessions: &SessionManager, sid: &str, turn: &str) {
+    async fn append_turn_end(sessions: &SessionManager, sid: &str, turn: &str) {
         sessions
             .apply(
                 sid,
@@ -273,15 +275,16 @@ mod tests {
                     state: crate::session::LogState::Final,
                 }),
             )
+            .await
             .unwrap();
     }
 
-    #[test]
-    fn hub_lagged_rescan_dedups_per_child() {
-        let (_dir, sessions, parent, child) = fixture();
+    #[tokio::test]
+    async fn hub_lagged_rescan_dedups_per_child() {
+        let (_dir, sessions, parent, child) = fixture().await;
         let (mut router, wakes) =
             counting_router(Arc::new(SessionService::new(Arc::clone(&sessions))));
-        append_turn_end(&sessions, &child, "t1");
+        append_turn_end(&sessions, &child, "t1").await;
         assert!(router.handle(Err(broadcast::error::RecvError::Lagged(1))));
         // Simulate a restart that lost `delivered` while the result is unread.
         router.delivered.clear();

@@ -282,10 +282,6 @@ impl Tool for SubagentSendTool {
         false
     }
 
-    fn is_cancellable(&self) -> bool {
-        true
-    }
-
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
         SendMode::parse(input).map(|_| ())
     }

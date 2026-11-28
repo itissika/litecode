@@ -335,10 +335,6 @@ impl Tool for BrowserTool {
         Some(self.op.timeout())
     }
 
-    fn is_cancellable(&self) -> bool {
-        true
-    }
-
     fn execute(
         &self,
         input: Value,

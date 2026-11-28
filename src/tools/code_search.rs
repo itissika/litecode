@@ -294,10 +294,6 @@ impl Tool for CodeSearchTool {
         // budget owns the deadline and cancels this cancellable tool.
         None
     }
-
-    fn is_cancellable(&self) -> bool {
-        true
-    }
 }
 
 fn parse_top_k(

@@ -223,10 +223,6 @@ impl Tool for SubagentWaitTool {
         false
     }
 
-    fn is_cancellable(&self) -> bool {
-        true
-    }
-
     fn set_active_session(&self, session_id: String) {
         *self.session_id.lock().unwrap() = session_id;
     }

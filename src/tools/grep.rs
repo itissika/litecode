@@ -145,10 +145,6 @@ impl Tool for GrepTool {
     fn timeout(&self) -> Option<Duration> {
         Some(Duration::from_secs(30))
     }
-
-    fn is_cancellable(&self) -> bool {
-        true
-    }
 }
 
 fn dispatch(input: Value, execution: ToolExecutionContext, examine_cap: usize) -> ToolCallResult {

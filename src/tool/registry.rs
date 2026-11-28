@@ -190,10 +190,6 @@ macro_rules! delegate_tool_inner {
             self.inner.resource_keys(input, path_mode, workspace_root)
         }
 
-        fn is_cancellable(&self) -> bool {
-            self.inner.is_cancellable()
-        }
-
         fn releases_lock_after_spawn(&self) -> bool {
             self.inner.releases_lock_after_spawn()
         }
@@ -1117,6 +1113,59 @@ mod tests {
             .unwrap()
             .description;
         assert!(sdk.contains("read(args: {"));
+    }
+
+    #[test]
+    fn colliding_custom_name_cannot_drop_the_builtin_tool() {
+        let mut global = GlobalSettings::default();
+        global
+            .custom_tools
+            .push(crate::config::schema::CustomToolDefinition {
+                name: "hover".into(),
+                description: String::new(),
+                schema: crate::config::schema::ToolSchema {
+                    schema_type: "object".into(),
+                    properties: serde_json::json!({}),
+                    required: Vec::new(),
+                },
+                command: "echo".into(),
+                args: Vec::new(),
+                timeout: 30,
+                rules: Vec::new(),
+                suite: None,
+            });
+        let mut bindings = default_bindings();
+        for id in ["lsp", "hover"] {
+            bindings.insert(
+                id.into(),
+                AgentToolBinding {
+                    enabled: true,
+                    preset: None,
+                    allowed_tools: None,
+                },
+            );
+        }
+        global.agents.insert(
+            "default".into(),
+            AgentProfile {
+                tools: bindings,
+                ..Default::default()
+            },
+        );
+        let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
+        let tools = list_tools_with(&resolved, 0, Some(test_host(&resolved, 0)));
+        let sdk = tools[0]
+            .transport_spec(&dummy_ctx())
+            .unwrap()
+            .description;
+        assert!(
+            sdk.contains("hover(args: RangeInput)"),
+            "builtin LSP hover must keep its name: {sdk}"
+        );
+        assert!(
+            !sdk.contains("External tool: hover"),
+            "the colliding custom tool must not reach the surface: {sdk}"
+        );
     }
 
     #[test]

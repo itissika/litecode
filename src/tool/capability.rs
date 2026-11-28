@@ -146,7 +146,7 @@ fn custom_permission_surface(tools: &[CustomToolDefinition]) -> PermissionSurfac
     }
 }
 
-fn push_capability(catalog: &mut CapabilityCatalog, capability: Capability) {
+fn push_capability(catalog: &mut CapabilityCatalog, mut capability: Capability) {
     if catalog
         .capabilities
         .iter()
@@ -158,18 +158,29 @@ fn push_capability(catalog: &mut CapabilityCatalog, capability: Capability) {
         ));
         return;
     }
-    for member in capability.member_ids() {
-        if let Some(owner) = catalog.member_owner.get(member) {
+    let declared = capability.members.len();
+    let mut kept = Vec::with_capacity(declared);
+    for member in std::mem::take(&mut capability.members) {
+        if let Some(owner) = catalog.member_owner.get(&member.id) {
+            // The name belongs to the earlier card. Recording the error is not
+            // enough: a card that still lists the member would instantiate a
+            // second tool under that name and shadow the owner.
             catalog.errors.push(format!(
-                "member '{member}' is claimed by both '{owner}' and '{}'",
-                capability.id
+                "member '{}' is claimed by both '{owner}' and '{}'",
+                member.id, capability.id
             ));
         } else {
             catalog
                 .member_owner
-                .insert(member.to_string(), capability.id.clone());
+                .insert(member.id.clone(), capability.id.clone());
+            kept.push(member);
         }
     }
+    if kept.is_empty() && declared > 0 {
+        // Every member lost its name: the card has nothing to own.
+        return;
+    }
+    capability.members = kept;
     catalog.capabilities.push(capability);
 }
 
@@ -231,7 +242,13 @@ fn push_custom(
         },
     );
     if let Some(suite) = id.strip_prefix("suite:") {
-        for member in member_ids {
+        // Only members that kept their name may register an alias; a collided
+        // member was dropped from the card above.
+        let kept: Vec<String> = catalog
+            .get(&id)
+            .map(|card| card.member_ids().map(str::to_string).collect())
+            .unwrap_or_default();
+        for member in kept {
             let alias = format!("{suite}.{member}");
             match catalog.member_owner.get(&alias).cloned() {
                 // An alias never displaces an owner that was registered earlier:
@@ -739,6 +756,12 @@ mod tests {
             catalog.errors.iter().any(|error| error.contains("hover")),
             "{:?}",
             catalog.errors
+        );
+        // The earlier card keeps the name; the later claim is void, not shared.
+        assert_eq!(catalog.member_capability_id("hover"), Some("lsp"));
+        assert!(
+            catalog.get("hover").is_none(),
+            "a custom card whose only member lost its name must not be listed"
         );
     }
 
