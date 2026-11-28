@@ -131,6 +131,14 @@
   line-height: 1.75;
 }
 
+/* Nested lists step in 24px per level instead of the 28px the top level uses
+   (pl-7 on the ul/ol renderers in MarkdownBody). Deep outlines keep their
+   hierarchy without every level spending as much width as the first.
+   Specificity (0,1,2) beats the Tailwind pl-7 utility (0,1,0). */
+.agent-markdown :is(ul, ol) :is(ul, ol) {
+  padding-left: 1.5rem;
+}
+
 /* ── Code blocks ── */
 .agent-code-block {
   overflow: hidden;

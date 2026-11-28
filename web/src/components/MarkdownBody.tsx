@@ -108,10 +108,10 @@ export const MarkdownBody = memo(function MarkdownBody({
           <p className="mb-2.5 last:mb-0 leading-relaxed">{children}</p>
         ),
       ul: ({ children }: { children?: ReactNode }) => (
-        <ul className="mb-2 list-disc pl-5 last:mb-0">{children}</ul>
+        <ul className="mb-2 list-disc pl-7 last:mb-0">{children}</ul>
       ),
       ol: ({ children }: { children?: ReactNode }) => (
-        <ol className="mb-2 list-decimal pl-5 last:mb-0">{children}</ol>
+        <ol className="mb-2 list-decimal pl-7 last:mb-0">{children}</ol>
       ),
       li: ({ children }: { children?: ReactNode }) => (
         <li className="mb-0.5">{children}</li>

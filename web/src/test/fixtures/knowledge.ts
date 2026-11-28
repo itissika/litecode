@@ -9,7 +9,7 @@ export const knowledgeFolderFixture = indexed.folders;
 
 /**
  * What the backend snapshot reports for this corpus: the three planted faults.
- * Verdicts are the backend's (`knowledge/contracts/knowledge-ref-authority.md`);
+ * Verdicts are the backend's (`knowledge/contracts/knowledge/knowledge-ref-authority.md`);
  * tests and previews use this instead of judging locally.
  */
 export const knowledgeFixtureIssues: KnowledgeIssue[] = [
